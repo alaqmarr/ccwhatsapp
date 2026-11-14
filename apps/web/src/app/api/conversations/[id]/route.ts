@@ -7,6 +7,7 @@ import {
   upsertSyncedContact,
 } from "@cc/database";
 import {
+  getCachedEcosystemCatalog,
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
@@ -60,6 +61,7 @@ export async function GET(
     args: [id],
   });
 
+  await getCachedEcosystemCatalog().catch(() => null);
   const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks, teamsRes] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,

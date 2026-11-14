@@ -202,6 +202,12 @@ export function InboxClient({
     initialData.templates[0]?.id || ""
   );
   const [sending, setSending] = useState<boolean>(false);
+  const [showShortLinksPicker, setShowShortLinksPicker] =
+    useState<boolean>(false);
+  const [shortLinkQuery, setShortLinkQuery] = useState<string>("");
+  const [shortLinkBrandFilter, setShortLinkBrandFilter] = useState<
+    "ALL" | "CC" | "CE53"
+  >("ALL");
   const [showRightDrawer, setShowRightDrawer] = useState<boolean>(true);
   const [toast, setToast] = useState<string>("");
 
@@ -1943,28 +1949,130 @@ export function InboxClient({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Zero-AI Quick Short Links Bar (/l/...) */}
+            {/* Zero-AI Quick Short Links Bar (/l/...) + Searchable Auto-Synced Product Links Picker */}
             {detail && detail.customLinks.length > 0 && (
-              <div className="bg-[#f8f9fa] border-t border-[#d1d7db] px-4 py-1.5 shrink-0 flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-[#54656f] shrink-0">
-                  Quick Short Links:
-                </span>
-                <div className="flex items-center gap-1.5 overflow-x-auto">
-                  {detail.customLinks.slice(0, 4).map((lnk) => (
+              <div className="bg-[#f8f9fa] border-t border-[#d1d7db] px-4 py-1.5 shrink-0 relative">
+                {showShortLinksPicker && (
+                  <div className="absolute bottom-full left-4 right-4 mb-1.5 z-30 rounded-lg bg-white border border-[#d1d7db] shadow-lg p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1 text-[11px]">
+                        {(
+                          [
+                            { key: "ALL", label: "All Links" },
+                            { key: "CC", label: "Classic Concepts" },
+                            { key: "CE53", label: "Classic Edge 53" },
+                          ] as const
+                        ).map((tb) => (
+                          <button
+                            key={tb.key}
+                            type="button"
+                            onClick={() => setShortLinkBrandFilter(tb.key)}
+                            className={`px-2 py-0.5 rounded font-medium cursor-pointer ${
+                              shortLinkBrandFilter === tb.key
+                                ? "bg-[#00a884] text-white"
+                                : "bg-[#f0f2f5] text-[#54656f] hover:text-[#111b21]"
+                            }`}
+                          >
+                            {tb.label}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowShortLinksPicker(false)}
+                        className="p-1 rounded hover:bg-neutral-100 text-[#667781] cursor-pointer"
+                        aria-label="Close short links picker"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-[#667781] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={shortLinkQuery}
+                        onChange={(e) => setShortLinkQuery(e.target.value)}
+                        placeholder="Search Classic Concepts or Classic Edge 53 product, SKU, or /l/code..."
+                        className="w-full rounded-md border border-[#d1d7db] pl-8 pr-3 py-1.5 text-xs text-[#111b21] focus:outline-none focus:border-[#00a884]"
+                      />
+                    </div>
+                    <div className="max-h-48 overflow-y-auto divide-y divide-[#f0f2f5]">
+                      {detail.customLinks
+                        .filter((lnk) => {
+                          const isCe =
+                            lnk.utmCampaign === "auto_classicedge53" ||
+                            lnk.code.startsWith("ce53-");
+                          const isCc =
+                            lnk.utmCampaign === "auto_classicconcepts" ||
+                            lnk.code.startsWith("cc-");
+                          if (shortLinkBrandFilter === "CE53" && !isCe) {
+                            return false;
+                          }
+                          if (shortLinkBrandFilter === "CC" && !isCc) {
+                            return false;
+                          }
+                          const q = shortLinkQuery.trim().toLowerCase();
+                          if (!q) return true;
+                          return `${lnk.title} ${lnk.code} ${lnk.targetUrl}`
+                            .toLowerCase()
+                            .includes(q);
+                        })
+                        .slice(0, 60)
+                        .map((lnk) => (
+                          <button
+                            key={lnk.id}
+                            type="button"
+                            onClick={() => {
+                              appendToComposer(
+                                `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
+                              );
+                              setShowShortLinksPicker(false);
+                              composerInputRef.current?.focus();
+                            }}
+                            className="w-full text-left py-1.5 px-2 hover:bg-[#f0f2f5] rounded flex items-center justify-between gap-2 text-xs cursor-pointer"
+                          >
+                            <span className="font-medium text-[#111b21] truncate">
+                              {lnk.title}
+                            </span>
+                            <span className="font-mono text-[11px] text-[#008069] shrink-0">
+                              /l/{lnk.code}
+                            </span>
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-[#54656f] shrink-0">
+                    Quick Short Links:
+                  </span>
+                  <div className="flex items-center gap-1.5 overflow-x-auto">
+                    {detail.customLinks.slice(0, 4).map((lnk) => (
+                      <button
+                        key={lnk.id}
+                        type="button"
+                        onClick={() =>
+                          appendToComposer(
+                            `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
+                          )
+                        }
+                        title={lnk.title}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-neutral-100 border border-[#d1d7db] text-[11px] text-[#3b4a54] cursor-pointer whitespace-nowrap"
+                      >
+                        <Link2 className="w-3 h-3 text-[#00a884]" />
+                        <span>/l/{lnk.code}</span>
+                      </button>
+                    ))}
                     <button
-                      key={lnk.id}
                       type="button"
-                      onClick={() =>
-                        appendToComposer(
-                          `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
-                        )
-                      }
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-neutral-100 border border-[#d1d7db] text-[11px] text-[#3b4a54] cursor-pointer whitespace-nowrap"
+                      onClick={() => setShowShortLinksPicker((prev) => !prev)}
+                      className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#e7fce3] hover:bg-[#d9fdd3] border border-[#00a884]/35 text-[11px] font-semibold text-[#008069] cursor-pointer whitespace-nowrap"
                     >
-                      <Link2 className="w-3 h-3 text-[#00a884]" />
-                      <span>/l/{lnk.code}</span>
+                      <Search className="w-3 h-3" />
+                      <span>All Products ({detail.customLinks.length})</span>
                     </button>
-                  ))}
+                  </div>
                 </div>
               </div>
             )}

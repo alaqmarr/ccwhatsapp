@@ -9,10 +9,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 restart_on_error() {
-  echo "WARNING: Update/build failed. Restoring previous PM2 process (${APP_NAME})..."
-  pm2 start ecosystem.config.cjs --update-env || pm2 restart "${APP_NAME}" || true
+  if [ -f "node_modules/next/dist/bin/next" ] && [ -f "apps/web/.next/BUILD_ID" ]; then
+    echo "WARNING: Update/build failed. Restoring previous PM2 process (${APP_NAME})..."
+    pm2 start ecosystem.config.cjs --update-env || pm2 restart "${APP_NAME}" || true
+  else
+    echo "ERROR: Dependencies or Next.js build not present yet. Run 'bash setup.sh' to complete initial install."
+  fi
 }
 trap restart_on_error ERR
+
+install_workspace_deps() {
+  # 1. Remove any orphaned npm atomic-rename temp directories (.next-*, .libsql-*, etc.) that trigger ENOTEMPTY
+  if [ -d "node_modules" ]; then
+    find node_modules apps packages -maxdepth 3 -name ".*-*" -exec rm -rf {} + 2>/dev/null || true
+    if [ "$(uname -s)" = "Linux" ] && { ls node_modules/@next/swc-win32-* >/dev/null 2>&1 || { [ -d "node_modules/next" ] && [ ! -f "node_modules/next/package.json" ]; }; }; then
+      echo "      -> Detected incomplete or cross-platform node_modules; cleaning before install..."
+      rm -rf node_modules apps/*/node_modules packages/*/node_modules
+    fi
+  fi
+
+  # 2. Install workspace dependencies (including TypeScript & Tailwind build devDependencies)
+  if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund; then
+    echo "      -> npm install hit a stale directory state (such as ENOTEMPTY). Cleaning node_modules and retrying..."
+    rm -rf node_modules apps/*/node_modules packages/*/node_modules
+    npm cache verify >/dev/null 2>&1 || true
+    if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund; then
+      echo "      -> Retrying with fresh Linux package-lock resolution..."
+      rm -rf node_modules apps/*/node_modules packages/*/node_modules package-lock.json
+      NODE_ENV=development npm install --include=dev --no-audit --no-fund
+    fi
+  fi
+}
 
 echo "=================================================="
 echo "Starting Safe Zero-Data-Loss Update (${APP_NAME})"
@@ -28,9 +55,9 @@ fi
 git pull --ff-only || git pull
 chmod +x setup.sh update.sh 2>/dev/null || true
 
-# 2. Install workspace dependencies
+# 2. Install workspace dependencies (auto-recovers from ENOTEMPTY)
 echo "[2/7] Installing dependencies..."
-npm install --no-audit --no-fund
+install_workspace_deps
 
 # 3. Stop PM2 briefly before checkpointing & backing up live SQLite databases
 if pm2 describe "${APP_NAME}" >/dev/null 2>&1; then
@@ -40,7 +67,7 @@ else
   echo "[3/7] '${APP_NAME}' is not currently running; proceeding with backup check..."
 fi
 
-# 4. Safe WAL-checkpointed backup of all 6 domain SQLite databases (retains latest 5 pre-update snapshots)
+# 4. Safe WAL-checkpointed backup of all 7 domain SQLite databases (retains latest 5 pre-update snapshots)
 if compgen -G "data/*.db" >/dev/null 2>&1; then
   SNAP_DIR="backups/pre-update-$(date +%Y%m%d_%H%M%S)"
   mkdir -p "$SNAP_DIR"
@@ -97,7 +124,7 @@ sleep 3
 
 if curl -sSf -L -o /dev/null "http://127.0.0.1:${APP_PORT}/login"; then
   echo "=================================================="
-  echo "SUCCESS: '${APP_NAME}' updated & live on port ${APP_PORT} (all chats, templates & settings retained)!"
+  echo "SUCCESS: '${APP_NAME}' updated & live on port ${APP_PORT} (all chats, contacts, templates & settings retained)!"
   echo "=================================================="
 else
   echo "WARNING: Health check did not immediately return 200. Recent PM2 logs:"

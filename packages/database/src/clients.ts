@@ -535,8 +535,242 @@ export interface MainWebsiteProduct {
   basePrice: number | null;
   mainImage: string | null;
   url: string;
+  shortCode?: string;
+  shortUrl?: string;
   modelsSummary?: string | null;
   specsSummary?: string | null;
+}
+
+export function resolvePublicShortLinkOrigin(): string {
+  const raw = (
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_BASE_URL ||
+    "https://whatsapp.ccapl.cc"
+  ).trim();
+  return raw.replace(/\/+$/, "");
+}
+
+function toShortSlugPart(input: string): string {
+  return String(input || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildPreferredProductShortCode(item: MainWebsiteProduct): string {
+  const prefix = item.brand === "CLASSIC_EDGE_53" ? "ce53" : "cc";
+  const firstSku = item.sku
+    ? item.sku.split("/")[0].split(",")[0].trim()
+    : "";
+  let skuPart = toShortSlugPart(firstSku);
+  if (prefix === "cc" && skuPart.startsWith("cc-")) {
+    skuPart = skuPart.slice(3);
+  } else if (prefix === "ce53" && skuPart.startsWith("ce53-")) {
+    skuPart = skuPart.slice(5);
+  } else if (prefix === "ce53" && skuPart.startsWith("ce-")) {
+    skuPart = skuPart.slice(3);
+  }
+
+  if (skuPart.length >= 3 && skuPart.length <= 18 && skuPart !== "test") {
+    return `${prefix}-${skuPart}`;
+  }
+
+  const rawSlug = String(item.slug || "").trim();
+  const isLikelyCuid = /^c[a-z0-9]{20,}$/i.test(rawSlug);
+  const rawCandidate = !isLikelyCuid && rawSlug ? rawSlug : item.name;
+  let slugPart = toShortSlugPart(rawCandidate).replace(/^acrylic-/, "");
+  if (!slugPart) {
+    slugPart = toShortSlugPart(rawCandidate) || toShortSlugPart(item.id) || "item";
+  }
+  slugPart = slugPart.slice(0, 24).replace(/-+$/, "");
+  if (prefix === "cc" && slugPart.startsWith("cc-")) {
+    slugPart = slugPart.slice(3);
+  } else if (prefix === "ce53" && slugPart.startsWith("ce53-")) {
+    slugPart = slugPart.slice(5);
+  }
+  return `${prefix}-${slugPart || "item"}`;
+}
+
+function appendWhatsAppShortLinkUtm(
+  rawUrl: string,
+  brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53"
+): string {
+  const clean = String(rawUrl || "").trim();
+  if (!clean || /[?&]utm_source=/i.test(clean)) return clean;
+  const sep = clean.includes("?") ? "&" : "?";
+  const campaign =
+    brand === "CLASSIC_EDGE_53" ? "auto_classicedge53" : "auto_classicconcepts";
+  return `${clean}${sep}utm_source=whatsapp&utm_medium=shortlink&utm_campaign=${campaign}`;
+}
+
+function isDummyPlaceholderRow(id: unknown, name: unknown): boolean {
+  const cleanId = String(id || "").trim().toLowerCase();
+  const cleanName = String(name || "").trim().toLowerCase();
+  return cleanId === "test" && (cleanName === "test" || cleanName === "test product");
+}
+
+let shortLinkTableReady = false;
+let shortLinkSyncChain: Promise<void> = Promise.resolve();
+
+/**
+ * Automatically creates or updates short links (`/l/<code>` in `conversations.db -> custom_links`)
+ * for every product, machine, and consumable fetched from Classic Concepts (`classicconcepts.in`)
+ * and Classic Edge 53 (`classicedge53.com`), preserving existing short codes and click counts.
+ */
+export async function ensureEcosystemProductShortLinks(
+  items: MainWebsiteProduct[]
+): Promise<MainWebsiteProduct[]> {
+  if (!items || items.length === 0) return items;
+
+  const origin = resolvePublicShortLinkOrigin();
+  const codeByIndex = new Map<number, string>();
+
+  const task = shortLinkSyncChain.then(async () => {
+    try {
+      const conv = getRawLibSqlClient("conversations");
+      if (!shortLinkTableReady) {
+        await conv.execute("PRAGMA journal_mode = WAL;");
+        await conv.execute("PRAGMA busy_timeout = 5000;");
+        await conv.execute(`CREATE TABLE IF NOT EXISTS custom_links (
+          id TEXT PRIMARY KEY,
+          code TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL,
+          target_url TEXT NOT NULL,
+          link_type TEXT NOT NULL DEFAULT 'PRODUCT',
+          product_slug TEXT,
+          utm_campaign TEXT,
+          created_by_name TEXT NOT NULL,
+          clicks_count INTEGER NOT NULL DEFAULT 0,
+          last_clicked_at TEXT,
+          created_at TEXT NOT NULL
+        )`);
+        shortLinkTableReady = true;
+      }
+
+      const existingRes = await conv.execute(
+        `SELECT id, code, title, target_url, product_slug, utm_campaign FROM custom_links`
+      );
+
+      const byProductKey = new Map<
+        string,
+        {
+          id: string;
+          code: string;
+          title: string;
+          targetUrl: string;
+          utmCampaign: string;
+        }
+      >();
+      const usedCodes = new Set<string>();
+
+      for (const row of existingRes.rows) {
+        const code = String(row.code || "").trim().toLowerCase();
+        if (code) usedCodes.add(code);
+        const pSlug = row.product_slug ? String(row.product_slug).trim() : "";
+        if (pSlug && !byProductKey.has(pSlug)) {
+          byProductKey.set(pSlug, {
+            id: String(row.id),
+            code,
+            title: String(row.title || ""),
+            targetUrl: String(row.target_url || ""),
+            utmCampaign: String(row.utm_campaign || ""),
+          });
+        }
+      }
+
+      const writeStmts: { sql: string; args: (string | number | null)[] }[] = [];
+      const nowIso = new Date().toISOString();
+
+      items.forEach((item, idx) => {
+        const brandPrefix = item.brand === "CLASSIC_EDGE_53" ? "ce53" : "cc";
+        const productKey = `${brandPrefix}:${item.itemType.toLowerCase()}:${item.slug || item.id}`;
+        const utmCampaign =
+          item.brand === "CLASSIC_EDGE_53"
+            ? "auto_classicedge53"
+            : "auto_classicconcepts";
+        const createdByName =
+          item.brand === "CLASSIC_EDGE_53"
+            ? "Auto Sync (Classic Edge 53)"
+            : "Auto Sync (Classic Concepts)";
+        const desiredTitle = item.name.trim();
+        const desiredTargetUrl = appendWhatsAppShortLinkUtm(item.url, item.brand);
+
+        const existing = byProductKey.get(productKey);
+        if (existing) {
+          codeByIndex.set(idx, existing.code);
+          if (
+            existing.title !== desiredTitle ||
+            existing.targetUrl !== desiredTargetUrl ||
+            existing.utmCampaign !== utmCampaign
+          ) {
+            writeStmts.push({
+              sql: `UPDATE custom_links
+                    SET title = ?, target_url = ?, utm_campaign = ?
+                    WHERE id = ?`,
+              args: [desiredTitle, desiredTargetUrl, utmCampaign, existing.id],
+            });
+            existing.title = desiredTitle;
+            existing.targetUrl = desiredTargetUrl;
+            existing.utmCampaign = utmCampaign;
+          }
+          return;
+        }
+
+        const baseCode = buildPreferredProductShortCode(item);
+        let chosenCode = baseCode;
+        let suffix = 2;
+        while (usedCodes.has(chosenCode)) {
+          chosenCode = `${baseCode}-${suffix}`;
+          suffix++;
+        }
+        usedCodes.add(chosenCode);
+        codeByIndex.set(idx, chosenCode);
+
+        const linkId = `lnk_auto_${brandPrefix}_${Math.random().toString(36).slice(2, 10)}`;
+        byProductKey.set(productKey, {
+          id: linkId,
+          code: chosenCode,
+          title: desiredTitle,
+          targetUrl: desiredTargetUrl,
+          utmCampaign,
+        });
+
+        writeStmts.push({
+          sql: `INSERT OR IGNORE INTO custom_links (
+            id, code, title, target_url, link_type, product_slug, utm_campaign, created_by_name, clicks_count, created_at
+          ) VALUES (?, ?, ?, ?, 'PRODUCT', ?, ?, ?, 0, ?)`,
+          args: [
+            linkId,
+            chosenCode,
+            desiredTitle,
+            desiredTargetUrl,
+            productKey,
+            utmCampaign,
+            createdByName,
+            nowIso,
+          ],
+        });
+      });
+
+      if (writeStmts.length > 0) {
+        await conv.batch(writeStmts, "write");
+      }
+    } catch {
+      // Non-blocking fallback: still attach deterministic short codes in memory if DB is temporarily unavailable
+    }
+  });
+
+  shortLinkSyncChain = task.catch(() => {});
+  await task;
+
+  return items.map((item, idx) => {
+    const code = codeByIndex.get(idx) || buildPreferredProductShortCode(item);
+    return {
+      ...item,
+      shortCode: code,
+      shortUrl: `${origin}/l/${code}`,
+    };
+  });
 }
 
 export interface MainWebsiteEnquiry {
@@ -623,23 +857,28 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
       if (res.ok) {
         const data: any = await res.json();
         if (Array.isArray(data?.products) && data.products.length > 0) {
-          return data.products.map((p: any) => ({
-            id: String(p.id),
-            brand: "CLASSIC_CONCEPTS" as const,
-            brandLabel: "Classic Concepts",
-            itemType: "PRODUCT" as const,
-            name: String(p.name),
-            slug: String(p.slug),
-            sku: p.sku ? String(p.sku) : null,
-            categoryName: String(p.categoryName || "Acrylic Products"),
-            description: p.description ? String(p.description) : null,
-            basePrice: typeof p.basePrice === "number" ? p.basePrice : null,
-            mainImage: p.mainImage ? String(p.mainImage) : null,
-            url: String(p.url || `https://classicconcepts.in/shop/p/${p.slug}`),
-            specsSummary: Array.isArray(p.specifications)
-              ? p.specifications.slice(0, 3).map((s: any) => `${s.key}: ${s.value}`).join(", ")
-              : null,
-          }));
+          const apiItems: MainWebsiteProduct[] = data.products
+            .filter((p: any) => !isDummyPlaceholderRow(p?.id, p?.name))
+            .map((p: any) => ({
+              id: String(p.id),
+              brand: "CLASSIC_CONCEPTS" as const,
+              brandLabel: "Classic Concepts",
+              itemType: "PRODUCT" as const,
+              name: String(p.name),
+              slug: String(p.slug),
+              sku: p.sku ? String(p.sku) : null,
+              categoryName: String(p.categoryName || "Acrylic Products"),
+              description: p.description ? String(p.description) : null,
+              basePrice: typeof p.basePrice === "number" ? p.basePrice : null,
+              mainImage: p.mainImage ? String(p.mainImage) : null,
+              url: String(p.url || `https://classicconcepts.in/shop/p/${p.slug}`),
+              specsSummary: Array.isArray(p.specifications)
+                ? p.specifications.slice(0, 3).map((s: any) => `${s.key}: ${s.value}`).join(", ")
+                : null,
+            }));
+          if (apiItems.length > 0) {
+            return ensureEcosystemProductShortLinks(apiItems);
+          }
         }
       }
     } catch {
@@ -649,7 +888,7 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
 
   try {
     const client = getMainCatalogClient();
-    if (!client) return FALLBACK_CLASSIC_CATALOG;
+    if (!client) return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_CATALOG);
 
     const res = await client.execute({
       sql: `
@@ -674,9 +913,14 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
       args: [],
     });
 
-    if (res.rows.length === 0) return FALLBACK_CLASSIC_CATALOG;
+    const validRows = res.rows.filter(
+      (r) => !isDummyPlaceholderRow(r.id, r.name)
+    );
+    if (validRows.length === 0) {
+      return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_CATALOG);
+    }
 
-    return res.rows.map((r) => {
+    const dbItems: MainWebsiteProduct[] = validRows.map((r) => {
       const slug = String(r.slug);
       const effectivePrice =
         r.discountPrice !== null && r.discountPrice !== undefined && Number(r.discountPrice) > 0
@@ -702,8 +946,10 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         url: `https://classicconcepts.in/shop/p/${slug}`,
       };
     });
+
+    return ensureEcosystemProductShortLinks(dbItems);
   } catch {
-    return FALLBACK_CLASSIC_CATALOG;
+    return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_CATALOG);
   }
 }
 
@@ -722,6 +968,7 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
         const data: any = await res.json();
         const combined: MainWebsiteProduct[] = [];
         for (const m of data?.machines || []) {
+          if (isDummyPlaceholderRow(m?.id, m?.name)) continue;
           combined.push({
             id: String(m.id),
             brand: "CLASSIC_EDGE_53",
@@ -746,6 +993,7 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
           });
         }
         for (const c of data?.consumables || []) {
+          if (isDummyPlaceholderRow(c?.id, c?.name)) continue;
           combined.push({
             id: String(c.id),
             brand: "CLASSIC_EDGE_53",
@@ -761,7 +1009,9 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
             url: String(c.url || `https://classicedge53.com/consumables/${c.id}`),
           });
         }
-        if (combined.length > 0) return combined;
+        if (combined.length > 0) {
+          return ensureEcosystemProductShortLinks(combined);
+        }
       }
     } catch {
       // Fallback to direct LibSQL read below
@@ -770,7 +1020,7 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
 
   try {
     const client = getClassicEdgeClient();
-    if (!client) return FALLBACK_CLASSIC_EDGE_MACHINES;
+    if (!client) return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_EDGE_MACHINES);
 
     const [machinesRes, modelsRes, specsRes, consRes] = await Promise.all([
       client.execute(`SELECT id, name, description, keywords, coverImage FROM Product ORDER BY updatedAt DESC`),
@@ -798,6 +1048,7 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
 
     const items: MainWebsiteProduct[] = [];
     for (const r of machinesRes.rows) {
+      if (isDummyPlaceholderRow(r.id, r.name)) continue;
       const id = String(r.id);
       const models = modelsByProd.get(id) || [];
       const specs = specsByProd.get(id) || [];
@@ -820,6 +1071,7 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
     }
 
     for (const c of consRes.rows) {
+      if (isDummyPlaceholderRow(c.id, c.name)) continue;
       const id = String(c.id);
       items.push({
         id,
@@ -838,9 +1090,11 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
       });
     }
 
-    return items.length > 0 ? items : FALLBACK_CLASSIC_EDGE_MACHINES;
+    return ensureEcosystemProductShortLinks(
+      items.length > 0 ? items : FALLBACK_CLASSIC_EDGE_MACHINES
+    );
   } catch {
-    return FALLBACK_CLASSIC_EDGE_MACHINES;
+    return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_EDGE_MACHINES);
   }
 }
 

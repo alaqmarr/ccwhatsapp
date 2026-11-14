@@ -885,6 +885,8 @@ export interface AcrioRecommendedItem {
   sku: string | null;
   priceInr: number | null;
   url: string;
+  shortCode?: string | null;
+  shortUrl?: string | null;
   brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
   brandLabel: string;
   itemType: "PRODUCT" | "MACHINE" | "CONSUMABLE";
@@ -907,13 +909,13 @@ export async function getCachedEcosystemCatalog(): Promise<{
 }> {
   const [classicConceptsProducts, classicEdgeItems] = await Promise.all([
     rememberWhatsAppCache(
-      "ecosystem:cc-products:v1",
+      "ecosystem:cc-products:v2",
       ["cc-products"],
       3600,
       () => loadAllClassicConceptsProducts()
     ),
     rememberWhatsAppCache(
-      "ecosystem:ce53-items:v1",
+      "ecosystem:ce53-items:v2",
       ["ce53-machines"],
       3600,
       () => loadAllClassicEdgeItems()
@@ -931,14 +933,16 @@ export async function syncEcosystemRedisCache(): Promise<{
   classicConceptsCount: number;
   classicEdgeMachinesCount: number;
   classicEdgeConsumablesCount: number;
+  autoShortLinksCount: number;
   syncedAt: string;
 }> {
   await invalidateWhatsAppCacheTags(["cc-products", "ce53-machines", "acrio-replies"]);
-  const { classicConceptsProducts, classicEdgeItems } = await getCachedEcosystemCatalog();
+  const { classicConceptsProducts, classicEdgeItems, allItems } = await getCachedEcosystemCatalog();
   return {
     classicConceptsCount: classicConceptsProducts.length,
     classicEdgeMachinesCount: classicEdgeItems.filter((i) => i.itemType === "MACHINE").length,
     classicEdgeConsumablesCount: classicEdgeItems.filter((i) => i.itemType === "CONSUMABLE").length,
+    autoShortLinksCount: allItems.filter((i) => Boolean(i.shortCode)).length,
     syncedAt: new Date().toISOString(),
   };
 }
@@ -996,6 +1000,8 @@ export async function runAcrioChatCopilot(params: {
     sku: c.sku,
     priceInr: c.basePrice,
     url: c.url,
+    shortCode: c.shortCode || null,
+    shortUrl: c.shortUrl || null,
     brand: c.brand,
     brandLabel: c.brandLabel,
     itemType: c.itemType,
@@ -1008,7 +1014,7 @@ export async function runAcrioChatCopilot(params: {
   if (smartCategory === "Acrylic Machines (CE53)") {
     localReplies.push(
       topProduct
-        ? `Hello ${firstName}! For acrylic fabrication, check our ${topProduct.name}${topProduct.sku ? ` (${topProduct.sku})` : ""} from Classic Edge 53: ${topProduct.url}`
+        ? `Hello ${firstName}! For acrylic fabrication, check our ${topProduct.name}${topProduct.sku ? ` (${topProduct.sku})` : ""} from Classic Edge 53: ${topProduct.shortUrl || topProduct.url}`
         : `Hello ${firstName}! Tell us the sheet thickness and working width you need and our Classic Edge 53 machine specialist will share the right model and brochure.`,
       `Hi ${firstName}, would you like the specification sheet, live demo video, and landed quotation for this machine?`,
       `Hello ${firstName}, we also stock genuine diamond cutters, heaters, and machine consumables ready for dispatch. Let us know your city for delivery details.`
@@ -1016,15 +1022,15 @@ export async function runAcrioChatCopilot(params: {
   } else if (smartCategory === "Podiums & Stage") {
     localReplies.push(
       `Hi ${firstName}! Yes, we have wide-top clear stage podiums ready and can add your front logo before dispatch. Shall I share our ready models and sizes?`,
-      `Hello ${firstName}, here is our podium collection link: https://whatsapp.ccapl.cc/l/stage-podiums. Let us know your preferred height or logo file and we will confirm delivery.`,
+      `Hello ${firstName}, here is our podium collection link: ${topProduct?.shortUrl || "https://whatsapp.ccapl.cc/l/stage-podiums"}. Let us know your preferred height or logo file and we will confirm delivery.`,
       `Hi ${firstName}, our team checked stock availability. Share your event date and delivery city so we can reserve it right away.`
     );
   } else if (smartCategory === "Awards & Trophies") {
     localReplies.push(
-      `Hello ${firstName}! For student and event awards, we have clear acrylic mementos and plaques within your budget, including logo printing: https://whatsapp.ccapl.cc/l/student-awards`,
+      `Hello ${firstName}! For student and event awards, we have clear acrylic mementos and plaques within your budget, including logo printing: ${topProduct?.shortUrl || "https://whatsapp.ccapl.cc/l/student-awards"}`,
       `Hi ${firstName}, please share the total quantity and event date, plus your logo file, so we can send 3 matching trophy designs with bulk pricing.`,
       topProduct
-        ? `Hello ${firstName}, our ${topProduct.name}${topProduct.basePrice ? ` (Rs ${topProduct.basePrice})` : ""} is very popular for ceremonies. Would you like a sample layout with your logo?`
+        ? `Hello ${firstName}, our ${topProduct.name}${topProduct.basePrice ? ` (Rs ${topProduct.basePrice})` : ""} is very popular for ceremonies (${topProduct.shortUrl || topProduct.url}). Would you like a sample layout with your logo?`
         : `Hello ${firstName}, we can print your institution logo and student names on clear acrylic awards. What quantity do you need?`
     );
   } else if (smartCategory === "Custom Fabrication") {
@@ -1037,7 +1043,7 @@ export async function runAcrioChatCopilot(params: {
     localReplies.push(
       `Hello ${firstName}! Thank you for messaging Classic Concepts. Tell us the product, machine, size, or quantity you need and I will share the closest options right away.`,
       topProduct
-        ? `Hi ${firstName}, based on your message, take a look at ${topProduct.name}: ${topProduct.url}`
+        ? `Hi ${firstName}, based on your message, take a look at ${topProduct.name}: ${topProduct.shortUrl || topProduct.url}`
         : `Hi ${firstName}, here is our main catalog link: https://whatsapp.ccapl.cc/l/stage-podiums. Let me know if you need acrylic products or Classic Edge 53 machines!`,
       `Hi ${firstName}, I am checking this with our team and will update you shortly.`
     );
@@ -1181,7 +1187,7 @@ Return ONLY valid JSON:
               role: "user",
               content: `Customer: ${params.customerName}
 Matching catalog & machine items:
-${matches.map((c) => `- [${c.brandLabel} ${c.itemType}] ${c.name}${c.sku ? ` (${c.sku})` : ""}${c.basePrice ? ` Rs ${c.basePrice}` : ""} -> ${c.url}`).join("\n")}
+${matches.map((c) => `- [${c.brandLabel} ${c.itemType}] ${c.name}${c.sku ? ` (${c.sku})` : ""}${c.basePrice ? ` Rs ${c.basePrice}` : ""} -> ${c.shortUrl || c.url}`).join("\n")}
 Recent chat:
 ${historyLines}
 Latest customer message: ${rawText}`,
@@ -1250,7 +1256,7 @@ Latest customer message: ${rawText}`,
       needsHumanHandoff: false,
       handoffReason: "",
       customerReply: sanitizePlainEnglish(
-        `Hi ${firstName}! Here is our matching Classic Edge 53 machine: ${top.name}${top.sku ? ` (${top.sku})` : ""} - ${top.url}. Share your sheet thickness or city for a quote, or reply "talk to team" to connect with our Sales Team.`
+        `Hi ${firstName}! Here is our matching Classic Edge 53 machine: ${top.name}${top.sku ? ` (${top.sku})` : ""} (${top.shortUrl || top.url}). Share your sheet thickness or city for a quote, or reply "talk to team" to connect with our Sales Team.`
       ),
       smartCategory,
       priority,
@@ -1270,7 +1276,7 @@ Latest customer message: ${rawText}`,
         needsHumanHandoff: false,
         handoffReason: "",
         customerReply: sanitizePlainEnglish(
-          `Hi ${firstName}! Take a look at our ${top.name}${top.basePrice ? ` (Rs ${top.basePrice})` : ""}: ${top.url}. Let me know the quantity or size you need, or reply "talk to team" anytime to speak with our Sales Team.`
+          `Hi ${firstName}! Take a look at our ${top.name}${top.basePrice ? ` (Rs ${top.basePrice})` : ""}: ${top.shortUrl || top.url}. Let me know the quantity or size you need, or reply "talk to team" anytime to speak with our Sales Team.`
         ),
         smartCategory,
         priority,

@@ -15,6 +15,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Search,
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
@@ -245,7 +246,7 @@ export default function MarketingAndLinksPage() {
   const [previewError, setPreviewError] = useState<string>("");
   const [savingList, setSavingList] = useState<boolean>(false);
 
-  // Short-Link Creator
+  // Short-Link Creator & Auto-Synced Catalog Filter
   const [linkTitle, setLinkTitle] = useState<string>("");
   const [linkCode, setLinkCode] = useState<string>("");
   const [linkTargetUrl, setLinkTargetUrl] = useState<string>(
@@ -253,6 +254,12 @@ export default function MarketingAndLinksPage() {
   );
   const [linkType, setLinkType] = useState<string>("CATALOG");
   const [copiedCode, setCopiedCode] = useState<string>("");
+  const [linkSearch, setLinkSearch] = useState<string>("");
+  const [linkSourceFilter, setLinkSourceFilter] = useState<
+    "ALL" | "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | "MANUAL"
+  >("ALL");
+  const [syncingCatalogLinks, setSyncingCatalogLinks] =
+    useState<boolean>(false);
 
   function flashMessage(msg: string, isError = false) {
     if (isError) {
@@ -626,6 +633,80 @@ export default function MarketingAndLinksPage() {
     setCopiedCode(code);
     setTimeout(() => setCopiedCode(""), 2000);
   }
+
+  async function handleSyncProductLinks() {
+    setSyncingCatalogLinks(true);
+    try {
+      const res = await fetch("/api/cache/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "sync" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        await loadMarketingData(true);
+        const totalAuto = Number(data.autoShortLinksCount ?? 0);
+        flashMessage(
+          `Synced ${totalAuto} product short links from Classic Concepts and Classic Edge 53.`
+        );
+      } else {
+        flashMessage(data.error || "Could not sync product short links.", true);
+      }
+    } catch {
+      flashMessage("Network error while syncing product short links.", true);
+    } finally {
+      setSyncingCatalogLinks(false);
+    }
+  }
+
+  const classifyLinkBrand = useCallback(
+    (
+      lnk: CustomLinkItem
+    ): "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | "MANUAL" => {
+      if (
+        lnk.utmCampaign === "auto_classicedge53" ||
+        lnk.createdByName.includes("Classic Edge 53")
+      ) {
+        return "CLASSIC_EDGE_53";
+      }
+      if (
+        lnk.utmCampaign === "auto_classicconcepts" ||
+        lnk.createdByName.includes("Classic Concepts")
+      ) {
+        return "CLASSIC_CONCEPTS";
+      }
+      return "MANUAL";
+    },
+    []
+  );
+
+  const linkCounts = useMemo(() => {
+    let cc = 0;
+    let ce = 0;
+    let manual = 0;
+    for (const l of customLinks) {
+      const kind = classifyLinkBrand(l);
+      if (kind === "CLASSIC_CONCEPTS") cc++;
+      else if (kind === "CLASSIC_EDGE_53") ce++;
+      else manual++;
+    }
+    return { all: customLinks.length, cc, ce, manual };
+  }, [customLinks, classifyLinkBrand]);
+
+  const filteredCustomLinks = useMemo(() => {
+    const q = linkSearch.trim().toLowerCase();
+    return customLinks.filter((lnk) => {
+      const kind = classifyLinkBrand(lnk);
+      if (linkSourceFilter !== "ALL" && kind !== linkSourceFilter) {
+        return false;
+      }
+      if (q) {
+        const hay = `${lnk.title} ${lnk.code} ${lnk.targetUrl} ${lnk.createdByName}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [customLinks, classifyLinkBrand, linkSourceFilter, linkSearch]);
 
   function openInspector(b: BroadcastItem) {
     setInspectBroadcast(b);
@@ -1448,15 +1529,34 @@ export default function MarketingAndLinksPage() {
         </div>
       </div>
 
-      {/* SECTION 3: Custom Short Links on whatsapp.ccapl.cc */}
+      {/* SECTION 3: Product & Custom Short Links on whatsapp.ccapl.cc */}
       <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold text-neutral-900">
-            Custom Short Links ({WHATSAPP_PUBLIC_DOMAIN}/l/...)
-          </h2>
-          <p className="text-xs text-neutral-500 mt-0.5">
-            Create clean short links for products, catalogs, or custom quotes and see how many times customers click them.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-neutral-900">
+              Product &amp; Custom Short Links ({WHATSAPP_PUBLIC_DOMAIN}/l/...)
+            </h2>
+            <p className="text-xs text-neutral-500 mt-0.5">
+              Short links are automatically created whenever products and machines are fetched from Classic Concepts and Classic Edge 53. You can also add custom links below.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleSyncProductLinks}
+            disabled={syncingCatalogLinks}
+            className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white hover:bg-neutral-50 px-3 py-1.5 text-xs font-medium text-neutral-800 cursor-pointer disabled:opacity-60"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${
+                syncingCatalogLinks ? "animate-spin" : ""
+              }`}
+            />
+            <span>
+              {syncingCatalogLinks
+                ? "Syncing Catalogs..."
+                : "Sync Classic Concepts + CE53 Links"}
+            </span>
+          </button>
         </div>
 
         <form
@@ -1468,14 +1568,14 @@ export default function MarketingAndLinksPage() {
             required
             value={linkTitle}
             onChange={(e) => setLinkTitle(e.target.value)}
-            placeholder="Title (e.g. Stage Podiums)"
+            placeholder="Custom title (e.g. Diwali Offer)"
             className="rounded-md border border-neutral-300 px-3 py-2"
           />
           <input
             type="text"
             value={linkCode}
             onChange={(e) => setLinkCode(e.target.value)}
-            placeholder="Short name (e.g. podiums)"
+            placeholder="Short name (e.g. diwali)"
             className="rounded-md border border-neutral-300 px-3 py-2 font-mono"
           />
           <input
@@ -1501,9 +1601,52 @@ export default function MarketingAndLinksPage() {
             className="inline-flex items-center justify-center gap-1.5 rounded-md bg-neutral-900 hover:bg-neutral-800 text-white font-medium px-4 py-2 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Create Link</span>
+            <span>Create Custom Link</span>
           </button>
         </form>
+
+        <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1 border-t border-neutral-100">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            {(
+              [
+                { key: "ALL", label: `All (${linkCounts.all})` },
+                {
+                  key: "CLASSIC_CONCEPTS",
+                  label: `Classic Concepts (${linkCounts.cc})`,
+                },
+                {
+                  key: "CLASSIC_EDGE_53",
+                  label: `Classic Edge 53 (${linkCounts.ce})`,
+                },
+                { key: "MANUAL", label: `Manual (${linkCounts.manual})` },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setLinkSourceFilter(tab.key)}
+                className={`px-2.5 py-1 rounded-md border font-medium cursor-pointer transition ${
+                  linkSourceFilter === tab.key
+                    ? "bg-neutral-900 text-white border-neutral-900"
+                    : "bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="relative w-full sm:w-72">
+            <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={linkSearch}
+              onChange={(e) => setLinkSearch(e.target.value)}
+              placeholder="Search product name, SKU, or /l/code..."
+              className="w-full rounded-md border border-neutral-300 pl-8 pr-3 py-1.5 text-xs"
+            />
+          </div>
+        </div>
 
         {initialLoading ? (
           <CardListSkeleton rows={2} />
@@ -1515,59 +1658,83 @@ export default function MarketingAndLinksPage() {
             onRetry={() => loadMarketingData(false)}
             retrying={refreshing}
           />
+        ) : filteredCustomLinks.length === 0 ? (
+          <p className="text-xs text-neutral-500 text-center py-6">
+            No short links matched your filter.
+          </p>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {customLinks.map((lnk) => (
-              <div
-                key={lnk.id}
-                className="p-3.5 rounded-md border border-neutral-200 bg-neutral-50 flex flex-col justify-between gap-2 text-xs"
-              >
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-neutral-900 truncate">
-                      {lnk.title}
-                    </span>
-                    <span className="px-2 py-0.5 rounded bg-white border border-neutral-200 text-neutral-700 text-[11px] font-medium">
-                      {lnk.clicksCount} clicks
-                    </span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-h-[480px] overflow-y-auto pr-1">
+            {filteredCustomLinks.map((lnk) => {
+              const kind = classifyLinkBrand(lnk);
+              return (
+                <div
+                  key={lnk.id}
+                  className="p-3.5 rounded-md border border-neutral-200 bg-neutral-50 flex flex-col justify-between gap-2 text-xs"
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-neutral-900 truncate">
+                        {lnk.title}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-white border border-neutral-200 text-neutral-700 text-[11px] font-medium shrink-0">
+                        {lnk.clicksCount} clicks
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                          kind === "CLASSIC_EDGE_53"
+                            ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                            : kind === "CLASSIC_CONCEPTS"
+                            ? "bg-rose-50 text-rose-700 border border-rose-200"
+                            : "bg-neutral-200/70 text-neutral-700"
+                        }`}
+                      >
+                        {kind === "CLASSIC_EDGE_53"
+                          ? "Classic Edge 53"
+                          : kind === "CLASSIC_CONCEPTS"
+                          ? "Classic Concepts"
+                          : "Custom"}
+                      </span>
+                      <span className="font-mono text-xs text-blue-800 truncate">
+                        {WHATSAPP_PUBLIC_DOMAIN}/l/{lnk.code}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-neutral-500 truncate mt-1">
+                      {lnk.targetUrl}
+                    </div>
                   </div>
-                  <div className="font-mono text-xs text-blue-800 mt-1 truncate">
-                    {WHATSAPP_PUBLIC_DOMAIN}/l/{lnk.code}
-                  </div>
-                  <div className="text-[11px] text-neutral-500 truncate mt-0.5">
-                    {lnk.targetUrl}
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => copyShortLink(lnk.code)}
+                      className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-xs font-medium text-neutral-800 cursor-pointer"
+                    >
+                      {copiedCode === lnk.code ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-600" />
+                          <span>Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>Copy Link</span>
+                        </>
+                      )}
+                    </button>
+                    <a
+                      href={`/l/${lnk.code}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-2.5 py-1.5 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-700"
+                      title="Open destination"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => copyShortLink(lnk.code)}
-                    className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-xs font-medium text-neutral-800 cursor-pointer"
-                  >
-                    {copiedCode === lnk.code ? (
-                      <>
-                        <Check className="w-3 h-3 text-emerald-600" />
-                        <span>Copied</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3 h-3" />
-                        <span>Copy Link</span>
-                      </>
-                    )}
-                  </button>
-                  <a
-                    href={`/l/${lnk.code}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-2.5 py-1.5 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-700"
-                    title="Open destination"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

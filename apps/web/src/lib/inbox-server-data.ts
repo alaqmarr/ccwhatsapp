@@ -185,6 +185,7 @@ export interface CustomLinkItem {
   code: string;
   title: string;
   targetUrl: string;
+  utmCampaign?: string | null;
   clicksCount: number;
 }
 
@@ -253,6 +254,7 @@ export async function getConversationDetailServer(
     });
   }
 
+  await getCachedEcosystemCatalog().catch(() => null);
   const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,

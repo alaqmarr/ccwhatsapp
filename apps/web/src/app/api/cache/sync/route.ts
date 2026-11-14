@@ -32,6 +32,7 @@ export async function GET() {
     classicConceptsCount: catalog.classicConceptsProducts.length,
     classicEdgeMachinesCount: catalog.classicEdgeItems.filter((i) => i.itemType === "MACHINE").length,
     classicEdgeConsumablesCount: catalog.classicEdgeItems.filter((i) => i.itemType === "CONSUMABLE").length,
+    autoShortLinksCount: catalog.allItems.filter((i) => Boolean(i.shortCode)).length,
     lastSyncedAt: cacheSummary.lastSyncedAt,
     aiConnected: Boolean(aiKeyInfo.apiKey),
     aiKeySource: aiKeyInfo.source,

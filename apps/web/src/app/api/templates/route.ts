@@ -57,17 +57,17 @@ export async function GET() {
   const mkt = getRawLibSqlClient("marketing");
   const bill = getRawLibSqlClient("billing_ops");
 
-  const [tplRes, pricingRes, customLinks, catalog] = await Promise.all([
+  const catalog = await getCachedEcosystemCatalog().catch(() => ({
+    classicConceptsProducts: [],
+    classicEdgeItems: [],
+    allItems: [],
+  }));
+  const [tplRes, pricingRes, customLinks] = await Promise.all([
     mkt.execute(
       `SELECT * FROM templates ORDER BY COALESCE(updated_at, created_at) DESC`
     ),
     bill.execute(`SELECT * FROM pricing_config WHERE id = 'default' LIMIT 1`),
     listCustomAdminLinks(),
-    getCachedEcosystemCatalog().catch(() => ({
-      classicConceptsProducts: [],
-      classicEdgeItems: [],
-      allItems: [],
-    })),
   ]);
 
   const pRow = (pricingRes.rows[0] || {}) as Record<string, unknown>;

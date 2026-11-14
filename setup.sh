@@ -8,6 +8,30 @@ DEFAULT_PORT="3007"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+install_workspace_deps() {
+  # 1. Remove any orphaned npm atomic-rename temp directories (.next-*, .libsql-*, etc.) that trigger ENOTEMPTY
+  if [ -d "node_modules" ]; then
+    find node_modules apps packages -maxdepth 3 -name ".*-*" -exec rm -rf {} + 2>/dev/null || true
+    # If Windows optional binaries were copied onto Linux or next/package.json is broken, wipe node_modules cleanly
+    if [ "$(uname -s)" = "Linux" ] && { ls node_modules/@next/swc-win32-* >/dev/null 2>&1 || { [ -d "node_modules/next" ] && [ ! -f "node_modules/next/package.json" ]; }; }; then
+      echo "      -> Detected incomplete or cross-platform node_modules; cleaning before install..."
+      rm -rf node_modules apps/*/node_modules packages/*/node_modules
+    fi
+  fi
+
+  # 2. Install workspace dependencies (including TypeScript & Tailwind build devDependencies)
+  if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund; then
+    echo "      -> npm install hit a stale directory state (such as ENOTEMPTY). Cleaning node_modules and retrying..."
+    rm -rf node_modules apps/*/node_modules packages/*/node_modules
+    npm cache verify >/dev/null 2>&1 || true
+    if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund; then
+      echo "      -> Retrying with fresh Linux package-lock resolution..."
+      rm -rf node_modules apps/*/node_modules packages/*/node_modules package-lock.json
+      NODE_ENV=development npm install --include=dev --no-audit --no-fund
+    fi
+  fi
+}
+
 echo "=================================================="
 echo "Classic Concepts WhatsApp Desk - First-Time Setup"
 echo "PM2 Process: ${APP_NAME} | Default Port: ${DEFAULT_PORT}"
@@ -44,7 +68,7 @@ if [ ! -f ".env.production" ]; then
   if [ -f ".env.production.example" ]; then
     cp .env.production.example .env.production
     echo "[4/7] Created .env.production from .env.production.example."
-    echo "      -> Edit .env.production anytime to add ANTHROPIC_API_KEY or SMTP_*."
+    echo "      -> Edit .env.production anytime to add credentials."
   fi
 else
   echo "[4/7] Found existing .env.production."
@@ -59,7 +83,7 @@ fi
 
 # 6. Install dependencies, typecheck, and build production Next.js bundle
 echo "[6/7] Installing workspace dependencies & building Next.js app..."
-npm install --no-audit --no-fund
+install_workspace_deps
 npm run typecheck
 rm -rf apps/web/.next
 NODE_OPTIONS="--max-old-space-size=1536" npm run build

@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { buildAcrioSmartMarketingSegment } from "@cc/connections";
+import {
+  buildAcrioSmartMarketingSegment,
+  getCachedEcosystemCatalog,
+} from "@cc/connections";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
 import { hasPermission } from "@cc/rbac";
 import { createCustomAdminLink, listCustomAdminLinks } from "@cc/storage";
@@ -84,6 +87,7 @@ export async function GET(req: Request) {
   }
 
   const bill = getRawLibSqlClient("billing_ops");
+  await getCachedEcosystemCatalog().catch(() => null);
   const [tplRes, listRes, bcRes, links, pricingRes, queueSettings] =
     await Promise.all([
       mkt.execute(`SELECT * FROM templates ORDER BY created_at DESC`),
