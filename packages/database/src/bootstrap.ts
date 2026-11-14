@@ -19,15 +19,17 @@ export async function ensureDatabasesBootstrapped(): Promise<void> {
 async function runBootstrapInternal(): Promise<void> {
   const auth = getRawLibSqlClient("core_auth");
   const conv = getRawLibSqlClient("conversations");
+  const contacts = getRawLibSqlClient("contacts");
   const crm = getRawLibSqlClient("crm_orders");
   const mkt = getRawLibSqlClient("marketing");
   const bill = getRawLibSqlClient("billing_ops");
   const queue = getRawLibSqlClient("queue_jobs");
 
-  // Enable WAL mode across all 6 LibSQL databases for fast concurrent reads & writes
+  // Enable WAL mode across all 7 LibSQL databases for fast concurrent reads & writes
   await Promise.all([
     auth.execute("PRAGMA journal_mode = WAL;"),
     conv.execute("PRAGMA journal_mode = WAL;"),
+    contacts.execute("PRAGMA journal_mode = WAL;"),
     crm.execute("PRAGMA journal_mode = WAL;"),
     mkt.execute("PRAGMA journal_mode = WAL;"),
     bill.execute("PRAGMA journal_mode = WAL;"),
@@ -214,6 +216,64 @@ async function runBootstrapInternal(): Promise<void> {
       // Column already exists
     }
   }
+
+  // 2b. contacts.db — Master WhatsApp Contacts Directory, Groups & Import History
+  await contacts.batch(
+    [
+      `CREATE TABLE IF NOT EXISTS contacts (
+        id TEXT PRIMARY KEY,
+        phone TEXT NOT NULL UNIQUE,
+        whatsapp_name TEXT DEFAULT '',
+        name TEXT NOT NULL,
+        email TEXT DEFAULT '',
+        company_name TEXT DEFAULT '',
+        designation TEXT DEFAULT '',
+        organization_type TEXT NOT NULL DEFAULT 'Business',
+        city TEXT DEFAULT '',
+        state TEXT DEFAULT '',
+        country TEXT NOT NULL DEFAULT 'India',
+        gst_number TEXT DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'MANUAL',
+        stage TEXT NOT NULL DEFAULT 'NEW_LEAD',
+        acrio_segment TEXT NOT NULL DEFAULT 'Active Prospect',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        groups_json TEXT NOT NULL DEFAULT '[]',
+        opt_in_marketing INTEGER NOT NULL DEFAULT 1,
+        opt_out_reason TEXT DEFAULT '',
+        assigned_owner_id TEXT,
+        assigned_owner_name TEXT DEFAULT '',
+        lifetime_value_inr REAL NOT NULL DEFAULT 0,
+        total_orders_count INTEGER NOT NULL DEFAULT 0,
+        total_messages_count INTEGER NOT NULL DEFAULT 0,
+        notes TEXT DEFAULT '',
+        last_contacted_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_contacts_stage ON contacts (stage, opt_in_marketing)`,
+      `CREATE INDEX IF NOT EXISTS idx_contacts_updated ON contacts (updated_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_contacts_city ON contacts (city)`,
+      `CREATE TABLE IF NOT EXISTS contact_groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT NOT NULL DEFAULT '',
+        color TEXT NOT NULL DEFAULT 'emerald',
+        created_by_name TEXT NOT NULL DEFAULT 'System',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS contact_import_logs (
+        id TEXT PRIMARY KEY,
+        source_label TEXT NOT NULL,
+        imported_count INTEGER NOT NULL DEFAULT 0,
+        updated_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        imported_by_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`,
+    ],
+    "write"
+  );
 
   // 3. crm_orders.db
   await crm.batch(
@@ -1883,5 +1943,161 @@ async function seedInitialOperationalData(): Promise<void> {
         ],
       });
     }
+  }
+
+  // ==========================================================================
+  // SEED STARTER CONTACT GROUPS & BACKFILL CONTACTS.DB FROM CRM + CONVERSATIONS
+  // ==========================================================================
+  const contacts = getRawLibSqlClient("contacts");
+  const bootNowIso = new Date().toISOString();
+  const starterGroups = [
+    {
+      id: "grp_vip",
+      name: "VIP & Repeat Buyers",
+      description: "High-value repeat corporate, hotel, and institutional buyers",
+      color: "amber",
+    },
+    {
+      id: "grp_edu",
+      name: "Schools & Universities",
+      description: "Colleges, universities, and auditorium podium buyers",
+      color: "blue",
+    },
+    {
+      id: "grp_corp",
+      name: "Corporate & Hospitality",
+      description: "Hotels, event halls, offices, and retail signage buyers",
+      color: "emerald",
+    },
+    {
+      id: "grp_machines",
+      name: "Classic Edge 53 Machine Leads",
+      description: "Fabricators & signage shops interested in diamond polishers & benders",
+      color: "purple",
+    },
+  ];
+  for (const g of starterGroups) {
+    await contacts.execute({
+      sql: `INSERT OR IGNORE INTO contact_groups (id, name, description, color, created_by_name, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'System', ?, ?)`,
+      args: [g.id, g.name, g.description, g.color, bootNowIso, bootNowIso],
+    });
+  }
+
+  const [allCrmCusts, allConvRows, msgCountRows] = await Promise.all([
+    crm.execute(`SELECT * FROM customers`),
+    conv.execute(`SELECT * FROM conversations`),
+    conv.execute(
+      `SELECT c.customer_phone as phone, COUNT(m.id) as cnt
+       FROM conversations c
+       LEFT JOIN messages m ON m.conversation_id = c.id AND m.direction IN ('INBOUND', 'OUTBOUND')
+       GROUP BY c.customer_phone`
+    ),
+  ]);
+
+  const msgCountByPhone = new Map<string, number>();
+  for (const r of msgCountRows.rows) {
+    msgCountByPhone.set(String(r.phone || ""), Number(r.cnt ?? 0));
+  }
+
+  const convByPhone = new Map<string, Record<string, unknown>>();
+  for (const r of allConvRows.rows) {
+    convByPhone.set(String(r.customer_phone || ""), r as Record<string, unknown>);
+  }
+
+  for (const c of allCrmCusts.rows) {
+    const phone = String(c.phone || "").trim();
+    if (!phone) continue;
+    const convRow = convByPhone.get(phone);
+    const ltv = Number(c.lifetime_value_inr ?? 0);
+    const orders = Number(c.total_orders_count ?? 0);
+    const orgType = String(c.organization_type || "Business");
+    const inferredStage =
+      ltv >= 50000 || orders >= 3
+        ? "VIP"
+        : orders >= 2
+        ? "REPEAT_BUYER"
+        : orders >= 1
+        ? "CUSTOMER"
+        : convRow
+        ? "QUALIFIED"
+        : "NEW_LEAD";
+
+    const autoGroups: string[] = [];
+    if (inferredStage === "VIP" || inferredStage === "REPEAT_BUYER") {
+      autoGroups.push("grp_vip");
+    }
+    if (/school|college|univ|educat|instit/i.test(orgType + " " + String(c.company_name || ""))) {
+      autoGroups.push("grp_edu");
+    } else if (/hotel|corp|hospitality|business|event/i.test(orgType)) {
+      autoGroups.push("grp_corp");
+    }
+    if (/machine|polisher|bender|edge/i.test(String(c.tags_json || "") + " " + String(c.notes || ""))) {
+      autoGroups.push("grp_machines");
+    }
+
+    await contacts.execute({
+      sql: `INSERT OR IGNORE INTO contacts (
+        id, phone, whatsapp_name, name, email, company_name, designation,
+        organization_type, city, state, country, gst_number, source, stage,
+        acrio_segment, tags_json, groups_json, opt_in_marketing, opt_out_reason,
+        assigned_owner_id, assigned_owner_name, lifetime_value_inr, total_orders_count,
+        total_messages_count, notes, last_contacted_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, '', 'India', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        `cnt_${String(c.id).replace(/^cust_/, "")}`,
+        phone,
+        convRow ? String(convRow.customer_name || "") : "",
+        String(c.name || phone),
+        String(c.email || ""),
+        String(c.company_name || ""),
+        orgType,
+        String(c.city || ""),
+        String(c.gst_number || ""),
+        orders > 0 ? "ORDER" : convRow ? "WHATSAPP_INBOUND" : "MANUAL",
+        inferredStage,
+        String(c.acrio_segment || "Active Prospect"),
+        String(c.tags_json || "[]"),
+        JSON.stringify(autoGroups),
+        Number(c.opt_in_marketing ?? 1),
+        convRow?.assigned_staff_id && String(convRow.assigned_staff_id) !== "ACRIO"
+          ? String(convRow.assigned_staff_id)
+          : null,
+        convRow?.assigned_staff_name && String(convRow.assigned_staff_name) !== "ACRIO"
+          ? String(convRow.assigned_staff_name)
+          : "",
+        ltv,
+        orders,
+        msgCountByPhone.get(phone) ?? 0,
+        String(c.notes || ""),
+        String(c.last_interaction_at || bootNowIso),
+        String(c.created_at || bootNowIso),
+        String(c.last_interaction_at || bootNowIso),
+      ],
+    });
+  }
+
+  for (const r of allConvRows.rows) {
+    const phone = String(r.customer_phone || "").trim();
+    if (!phone) continue;
+    await contacts.execute({
+      sql: `INSERT OR IGNORE INTO contacts (
+        id, phone, whatsapp_name, name, organization_type, source, stage,
+        acrio_segment, tags_json, opt_in_marketing, total_messages_count,
+        last_contacted_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'Business', 'WHATSAPP_INBOUND', 'NEW_LEAD', ?, ?, 1, ?, ?, ?, ?)`,
+      args: [
+        `cnt_${String(r.id).replace(/^conv_/, "")}`,
+        phone,
+        String(r.customer_name || phone),
+        String(r.customer_name || phone),
+        String(r.smart_category || "Active Prospect"),
+        String(r.tags_json || "[]"),
+        msgCountByPhone.get(phone) ?? 0,
+        String(r.last_message_at || bootNowIso),
+        String(r.created_at || bootNowIso),
+        String(r.last_message_at || bootNowIso),
+      ],
+    });
   }
 }

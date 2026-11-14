@@ -325,3 +325,57 @@ export const workerHeartbeatsTable = sqliteTable("worker_heartbeats", {
   processedCount: integer("processed_count").notNull().default(0),
   infoJson: text("info_json").default("{}"),
 });
+
+// ============================================================================
+// 7. CONTACTS.DB — Master Contacts Directory, Groups, Tags & Import Logs
+// ============================================================================
+export const contactsTable = sqliteTable("contacts", {
+  id: text("id").primaryKey(),
+  phone: text("phone").notNull().unique(),
+  whatsappName: text("whatsapp_name").default(""),
+  name: text("name").notNull(),
+  email: text("email").default(""),
+  companyName: text("company_name").default(""),
+  designation: text("designation").default(""),
+  organizationType: text("organization_type").notNull().default("Business"),
+  city: text("city").default(""),
+  state: text("state").default(""),
+  country: text("country").notNull().default("India"),
+  gstNumber: text("gst_number").default(""),
+  source: text("source").notNull().default("MANUAL"), // WHATSAPP_INBOUND | WEBSITE_ENQUIRY | CSV_IMPORT | MANUAL | ORDER
+  stage: text("stage").notNull().default("NEW_LEAD"), // NEW_LEAD | QUALIFIED | QUOTED | CUSTOMER | REPEAT_BUYER | VIP | INACTIVE
+  acrioSegment: text("acrio_segment").notNull().default("Active Prospect"),
+  tagsJson: text("tags_json").notNull().default("[]"),
+  groupsJson: text("groups_json").notNull().default("[]"),
+  optInMarketing: integer("opt_in_marketing").notNull().default(1),
+  optOutReason: text("opt_out_reason").default(""),
+  assignedOwnerId: text("assigned_owner_id"),
+  assignedOwnerName: text("assigned_owner_name").default(""),
+  lifetimeValueInr: real("lifetime_value_inr").notNull().default(0),
+  totalOrdersCount: integer("total_orders_count").notNull().default(0),
+  totalMessagesCount: integer("total_messages_count").notNull().default(0),
+  notes: text("notes").default(""),
+  lastContactedAt: text("last_contacted_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const contactGroupsTable = sqliteTable("contact_groups", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  color: text("color").notNull().default("emerald"),
+  createdByName: text("created_by_name").notNull().default("System"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const contactImportLogsTable = sqliteTable("contact_import_logs", {
+  id: text("id").primaryKey(),
+  sourceLabel: text("source_label").notNull(),
+  importedCount: integer("imported_count").notNull().default(0),
+  updatedCount: integer("updated_count").notNull().default(0),
+  skippedCount: integer("skipped_count").notNull().default(0),
+  importedByName: text("imported_by_name").notNull(),
+  createdAt: text("created_at").notNull(),
+});

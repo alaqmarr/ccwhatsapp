@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   BarChart3,
   BookOpen,
+  Contact2,
   Users,
   Megaphone,
   FileText,
@@ -72,6 +73,12 @@ export function AppShell({
           href: "/dashboard/inbox",
           label: "Customer Chats",
           icon: WhatsAppLogoIcon,
+          visible: isActiveAccount && user.role !== "CLIENT",
+        },
+        {
+          href: "/dashboard/contacts",
+          label: "Contacts Database",
+          icon: Contact2,
           visible: isActiveAccount && user.role !== "CLIENT",
         },
         {

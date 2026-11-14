@@ -22,6 +22,9 @@ export type Permission =
   | "acrio:use_chat_copilot"
   | "crm:view_customer_360"
   | "crm:manage_orders_notes"
+  | "contacts:view"
+  | "contacts:manage"
+  | "contacts:delete"
   | "links:use_custom_links"
   // Admin permissions
   | "inbox:assign_chats"
@@ -52,11 +55,14 @@ const STAFF_PERMISSIONS: Permission[] = [
   "acrio:use_chat_copilot",
   "crm:view_customer_360",
   "crm:manage_orders_notes",
+  "contacts:view",
+  "contacts:manage",
   "links:use_custom_links",
 ];
 
 const ADMIN_PERMISSIONS: Permission[] = [
   ...STAFF_PERMISSIONS,
+  "contacts:delete",
   "inbox:assign_chats",
   "links:manage_custom_links",
   "marketing:manage_lists",

@@ -132,11 +132,20 @@ export async function processInboundAutomations(params: {
   // Automatic WhatsApp Opt-Out Protection: if customer replies STOP / UNSUBSCRIBE, mark opted out immediately!
   if (/^(stop|stop\s*promotions|stop\s*offers|unsubscribe|opt\s*out)\W*$/i.test(lower)) {
     const crm = getRawLibSqlClient("crm_orders");
+    const contacts = getRawLibSqlClient("contacts");
     const mkt = getRawLibSqlClient("marketing");
-    await crm.execute({
-      sql: `UPDATE customers SET opt_in_marketing = 0, last_interaction_at = ? WHERE phone = ?`,
-      args: [nowIso, params.customerPhone],
-    });
+    await Promise.all([
+      crm.execute({
+        sql: `UPDATE customers SET opt_in_marketing = 0, last_interaction_at = ? WHERE phone = ?`,
+        args: [nowIso, params.customerPhone],
+      }),
+      contacts
+        .execute({
+          sql: `UPDATE contacts SET opt_in_marketing = 0, opt_out_reason = 'Replied STOP on WhatsApp', updated_at = ? WHERE phone = ?`,
+          args: [nowIso, params.customerPhone],
+        })
+        .catch(() => {}),
+    ]);
     await mkt.execute({
       sql: `UPDATE broadcast_recipients
             SET status = 'SKIPPED',

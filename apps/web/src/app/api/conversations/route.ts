@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { sendWhatsAppCloudMessage } from "@cc/connections";
-import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+  upsertSyncedContact,
+} from "@cc/database";
 import { hasPermission, normalizeWhatsAppNumber } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
 import {
@@ -181,6 +185,14 @@ export async function POST(req: Request) {
       ],
     });
   }
+
+  await upsertSyncedContact({
+    phone: phoneCheck.e164,
+    name: customerName,
+    organizationType: body.organizationType ? String(body.organizationType) : undefined,
+    source: direction === "INBOUND" ? "WHATSAPP_INBOUND" : "MANUAL",
+    lastContactedAt: nowIso,
+  }).catch(() => {});
 
   const existingConv = await conv.execute({
     sql: `SELECT id, status, assigned_staff_id FROM conversations WHERE customer_phone = ? LIMIT 1`,

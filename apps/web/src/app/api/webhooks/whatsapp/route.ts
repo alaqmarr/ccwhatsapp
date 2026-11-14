@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { getSetupStatus } from "@cc/auth";
 import { verifyMetaWebhookSignature } from "@cc/connections";
-import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+  upsertSyncedContact,
+} from "@cc/database";
 import { socketHub } from "@cc/sockets";
 import {
   applyWhatsAppMessageReceipt,
@@ -89,6 +93,13 @@ export async function POST(req: Request) {
             args: [custId, e164, contactName, nowIso, nowIso],
           });
         }
+        await upsertSyncedContact({
+          phone: e164,
+          name: contactName,
+          whatsappName: String(contacts[0]?.profile?.name || "").trim() || undefined,
+          source: "WHATSAPP_INBOUND",
+          lastContactedAt: nowIso,
+        }).catch(() => {});
 
         const existingConv = await conv.execute({
           sql: `SELECT id, status, assigned_staff_id FROM conversations WHERE customer_phone = ? LIMIT 1`,

@@ -4,6 +4,7 @@ import {
   ensureDatabasesBootstrapped,
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
+  upsertSyncedContact,
 } from "@cc/database";
 import {
   sendWhatsAppCloudMessage,
@@ -733,15 +734,27 @@ export async function POST(
         customerPhone,
       ],
     });
+    await upsertSyncedContact({
+      phone: customerPhone,
+      companyName: body.companyName !== undefined ? String(body.companyName || "") : undefined,
+      organizationType:
+        body.organizationType !== undefined ? String(body.organizationType || "") : undefined,
+      city: body.city !== undefined ? String(body.city || "") : undefined,
+      acrioSegment: body.acrioSegment !== undefined ? String(body.acrioSegment || "") : undefined,
+      notes: body.notes !== undefined ? String(body.notes || "") : undefined,
+      lastContactedAt: nowIso,
+    }).catch(() => {});
     return NextResponse.json({ ok: true });
   }
 
   if (action === "add_order") {
     const custRes = await crm.execute({
-      sql: `SELECT id FROM customers WHERE phone = ? LIMIT 1`,
+      sql: `SELECT id, lifetime_value_inr, total_orders_count FROM customers WHERE phone = ? LIMIT 1`,
       args: [customerPhone],
     });
     const custId = custRes.rows[0] ? String(custRes.rows[0].id) : `cust_${crypto.randomUUID().slice(0, 6)}`;
+    const prevLtv = custRes.rows[0] ? Number(custRes.rows[0].lifetime_value_inr ?? 0) : 0;
+    const prevOrders = custRes.rows[0] ? Number(custRes.rows[0].total_orders_count ?? 0) : 0;
     const amount = Number(body.totalAmountInr || 0);
     const orderNumber =
       String(body.orderNumber || "").trim() ||
@@ -778,6 +791,15 @@ export async function POST(
       ],
       "write"
     );
+    const nextOrders = prevOrders + 1;
+    const nextLtv = prevLtv + amount;
+    await upsertSyncedContact({
+      phone: customerPhone,
+      lifetimeValueInr: nextLtv,
+      totalOrdersCount: nextOrders,
+      stage: nextLtv >= 50000 || nextOrders >= 3 ? "VIP" : nextOrders >= 2 ? "REPEAT_BUYER" : "CUSTOMER",
+      lastContactedAt: nowIso,
+    }).catch(() => {});
     return NextResponse.json({ ok: true, orderNumber });
   }
 
