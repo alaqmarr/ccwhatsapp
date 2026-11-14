@@ -112,6 +112,7 @@ export async function GET(
       billingCategory: String(m.billing_category),
       body: String(m.body),
       templateName: m.template_name ? String(m.template_name) : null,
+      waMessageId: m.wa_message_id ? String(m.wa_message_id) : null,
       deliveryStatus: String(m.delivery_status),
       createdAt: String(m.created_at),
       metadata,
@@ -256,6 +257,52 @@ export async function POST(
   const cRow = cRes.rows[0] as Record<string, unknown>;
   const customerPhone = String(cRow.customer_phone);
 
+  const resolveQuotedReply = async () => {
+    const rawReplyObj =
+      body.replyTo && typeof body.replyTo === "object"
+        ? (body.replyTo as Record<string, unknown>)
+        : null;
+    const requestedMsgId = String(
+      body.replyToMessageId || rawReplyObj?.messageId || ""
+    ).trim();
+
+    if (requestedMsgId && !requestedMsgId.startsWith("optimistic_")) {
+      const origRes = await conv.execute({
+        sql: `SELECT id, wa_message_id, sender_name, sender_type, direction, body
+              FROM messages
+              WHERE id = ? AND conversation_id = ?
+              LIMIT 1`,
+        args: [requestedMsgId, id],
+      });
+      const orig = origRes.rows[0] as Record<string, unknown> | undefined;
+      if (orig) {
+        return {
+          messageId: String(orig.id),
+          waMessageId: orig.wa_message_id ? String(orig.wa_message_id) : null,
+          senderName: String(orig.sender_name || ""),
+          senderType: String(orig.sender_type || ""),
+          direction: String(orig.direction || ""),
+          body: String(orig.body || "").slice(0, 280),
+        };
+      }
+    }
+
+    if (rawReplyObj && String(rawReplyObj.body || "").trim()) {
+      return {
+        messageId: requestedMsgId || null,
+        waMessageId: rawReplyObj.waMessageId
+          ? String(rawReplyObj.waMessageId)
+          : null,
+        senderName: String(rawReplyObj.senderName || "Message"),
+        senderType: rawReplyObj.senderType ? String(rawReplyObj.senderType) : "",
+        direction: rawReplyObj.direction ? String(rawReplyObj.direction) : "",
+        body: String(rawReplyObj.body || "").slice(0, 280),
+      };
+    }
+
+    return null;
+  };
+
   // 1. Outbound WhatsApp Reply
   // Regular 24h window chat is 100% FREE (₹0.00).
   // ONLY Templated messages (MARKETING ₹0.95, UTILITY/AUTHENTICATION ₹0.30) are billed here!
@@ -274,10 +321,14 @@ export async function POST(
         ? "AUTHENTICATION"
         : "UTILITY";
 
+    const replyMeta = await resolveQuotedReply();
+    const metadataJson = JSON.stringify(replyMeta ? { replyTo: replyMeta } : {});
+
     const sendRes = await sendWhatsAppCloudMessage({
       toPhone: customerPhone,
       bodyText: text,
       templateName,
+      replyToWaMessageId: replyMeta?.waMessageId || undefined,
       simulateAsyncDelivery: true,
       forceSandbox: Boolean(body.forceSandbox),
     });
@@ -302,8 +353,8 @@ export async function POST(
         {
           sql: `INSERT INTO messages (
             id, conversation_id, direction, sender_type, sender_name, message_type,
-            billing_category, body, template_name, wa_message_id, delivery_status, created_at
-          ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, ?, ?, ?, ?, ?, ?)`,
+            billing_category, body, template_name, metadata_json, wa_message_id, delivery_status, created_at
+          ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args: [
             msgId,
             id,
@@ -312,6 +363,7 @@ export async function POST(
             isTemplate ? templateBillingCategory : "FREE_CHAT",
             text,
             templateName || null,
+            metadataJson,
             sendRes.waMessageId,
             sendRes.deliveryStatus,
             nowIso,
@@ -399,6 +451,7 @@ export async function POST(
       deliveryStatus: sendRes.deliveryStatus,
       mode: sendRes.mode,
       billed: sendRes.ok && isTemplate,
+      replyTo: replyMeta,
       error: sendRes.error,
     });
   }
@@ -416,17 +469,19 @@ export async function POST(
       return NextResponse.json({ ok: false, error: "Internal note cannot be empty." }, { status: 400 });
     }
 
+    const replyMeta = await resolveQuotedReply();
+    const metadataJson = JSON.stringify(replyMeta ? { replyTo: replyMeta } : {});
     const noteId = `msg_note_${crypto.randomUUID().slice(0, 8)}`;
     await conv.execute({
       sql: `INSERT INTO messages (
         id, conversation_id, direction, sender_type, sender_name, message_type,
-        billing_category, body, delivery_status, created_at
-      ) VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
-      args: [noteId, id, user.name, noteText, nowIso],
+        billing_category, body, metadata_json, delivery_status, created_at
+      ) VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, ?, 'SAVED', ?)`,
+      args: [noteId, id, user.name, noteText, metadataJson, nowIso],
     });
 
     socketHub.emit("note:new", { conversationId: id, senderName: user.name, noteText });
-    return NextResponse.json({ ok: true, noteId });
+    return NextResponse.json({ ok: true, noteId, replyTo: replyMeta });
   }
 
   // 2b. Human Staff Takes Over Chat from ACRIO (defaults to Sales Team)

@@ -6,6 +6,7 @@ import {
   BarChart3,
   Check,
   Clock,
+  CornerUpLeft,
   ExternalLink,
   FileText,
   Link2,
@@ -38,9 +39,26 @@ import type {
   ConversationDetailBundle,
   ConversationSummary,
   InitialInboxPayload,
+  QuotedMessageRef,
   StaffOption,
   TeamOption,
 } from "@/lib/inbox-server-data";
+
+function extractQuotedReply(m: ChatMessage): QuotedMessageRef | null {
+  const raw = m.metadata?.replyTo;
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const body = String(obj.body || "").trim();
+  if (!body) return null;
+  return {
+    messageId: obj.messageId ? String(obj.messageId) : null,
+    waMessageId: obj.waMessageId ? String(obj.waMessageId) : null,
+    senderName: String(obj.senderName || "Message"),
+    senderType: obj.senderType ? String(obj.senderType) : "",
+    direction: obj.direction ? String(obj.direction) : "",
+    body,
+  };
+}
 
 function formatShortThreadTime(iso: string): string {
   const d = new Date(iso);
@@ -178,6 +196,8 @@ export function InboxClient({
     "REPLY"
   );
   const [replyText, setReplyText] = useState<string>("");
+  const [replyingTo, setReplyingTo] = useState<QuotedMessageRef | null>(null);
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(
     initialData.templates[0]?.id || ""
   );
@@ -233,8 +253,15 @@ export function InboxClient({
   const [quickNoteDraft, setQuickNoteDraft] = useState<string>("");
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
+
+  useEffect(() => {
+    setReplyingTo(null);
+    setHighlightedMsgId(null);
+  }, [selectedId]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -548,18 +575,61 @@ export function InboxClient({
     [messages]
   );
 
+  function startReplyToMessage(m: ChatMessage) {
+    setReplyingTo({
+      messageId: m.id,
+      waMessageId: m.waMessageId || null,
+      senderName: m.senderName,
+      senderType: m.senderType,
+      direction: m.direction,
+      body: m.body.slice(0, 280),
+    });
+    if (composerMode === "NOTE") {
+      setComposerMode("REPLY");
+    }
+    requestAnimationFrame(() => {
+      composerInputRef.current?.focus();
+    });
+  }
+
+  function jumpToQuotedMessage(quoted: QuotedMessageRef) {
+    let targetId = quoted.messageId || "";
+    if (!targetId && quoted.waMessageId) {
+      const matched = messages.find(
+        (item) => item.waMessageId && item.waMessageId === quoted.waMessageId
+      );
+      if (matched) targetId = matched.id;
+    }
+    if (!targetId) return;
+    const el = document.getElementById(`chat-msg-${targetId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedMsgId(targetId);
+    if (highlightTimeoutRef.current) {
+      clearTimeout(highlightTimeoutRef.current);
+    }
+    highlightTimeoutRef.current = setTimeout(() => {
+      setHighlightedMsgId((prev) => (prev === targetId ? null : prev));
+    }, 1800);
+  }
+
   async function handleComposerSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedId || !replyText.trim() || !detail) return;
 
     const textToSend = replyText.trim();
     const currentConvId = selectedId;
+    const activeReplyRef = replyingTo;
     setSending(true);
     setReplyText("");
+    setReplyingTo(null);
 
     // Optimistic UI append at 0ms: starts as SENDING (clock + "Sending") -> SENT (1 tick) -> DELIVERED (2 grey ticks) -> READ (2 blue ticks)
     const tempId = `optimistic_${Date.now()}`;
     const nowIso = new Date().toISOString();
+    const optimisticMetadata = activeReplyRef
+      ? { replyTo: activeReplyRef }
+      : null;
     const optimisticMsg: ChatMessage =
       composerMode === "NOTE"
         ? {
@@ -573,6 +643,7 @@ export function InboxClient({
             templateName: null,
             deliveryStatus: "SAVED",
             createdAt: nowIso,
+            metadata: optimisticMetadata,
           }
         : {
             id: tempId,
@@ -591,6 +662,7 @@ export function InboxClient({
                 : null,
             deliveryStatus: "SENDING",
             createdAt: nowIso,
+            metadata: optimisticMetadata,
           };
 
     const optimisticBundle: ConversationDetailBundle = {
@@ -644,7 +716,8 @@ export function InboxClient({
 
     const patchOptimisticReceipt = (
       nextId: string,
-      nextDeliveryStatus: string
+      nextDeliveryStatus: string,
+      nextWaMessageId?: string | null
     ) => {
       const cur = detailCacheRef.current.get(currentConvId);
       if (cur) {
@@ -652,7 +725,12 @@ export function InboxClient({
           ...cur,
           messages: cur.messages.map((m) =>
             m.id === tempId
-              ? { ...m, id: nextId, deliveryStatus: nextDeliveryStatus }
+              ? {
+                  ...m,
+                  id: nextId,
+                  deliveryStatus: nextDeliveryStatus,
+                  ...(nextWaMessageId ? { waMessageId: nextWaMessageId } : {}),
+                }
               : m
           ),
         };
@@ -682,6 +760,8 @@ export function InboxClient({
           body: JSON.stringify({
             action: "add_internal_note",
             noteText: textToSend,
+            replyToMessageId: activeReplyRef?.messageId || undefined,
+            replyTo: activeReplyRef || undefined,
           }),
         });
         showToast("Internal team note saved (Free).");
@@ -695,6 +775,8 @@ export function InboxClient({
             messageType: "TEMPLATE",
             templateName: activeTemplate.name,
             billingCategory: activeTemplate.category,
+            replyToMessageId: activeReplyRef?.messageId || undefined,
+            replyTo: activeReplyRef || undefined,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -705,7 +787,8 @@ export function InboxClient({
         }
         patchOptimisticReceipt(
           String(data.messageId || tempId),
-          String(data.deliveryStatus || "SENT")
+          String(data.deliveryStatus || "SENT"),
+          data.waMessageId ? String(data.waMessageId) : null
         );
         const rateLabel =
           activeTemplate.category === "MARKETING" ? "₹0.95" : "₹0.30";
@@ -719,6 +802,8 @@ export function InboxClient({
             action: "send_message",
             text: textToSend,
             messageType: "TEXT",
+            replyToMessageId: activeReplyRef?.messageId || undefined,
+            replyTo: activeReplyRef || undefined,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -729,7 +814,8 @@ export function InboxClient({
         }
         patchOptimisticReceipt(
           String(data.messageId || tempId),
-          String(data.deliveryStatus || "SENT")
+          String(data.deliveryStatus || "SENT"),
+          data.waMessageId ? String(data.waMessageId) : null
         );
       }
       await Promise.all([
@@ -1677,11 +1763,21 @@ export function InboxClient({
                   m.direction === "INTERNAL" ||
                   m.messageType === "INTERNAL_NOTE";
                 const isOutbound = m.direction === "OUTBOUND";
+                const quotedReply = extractQuotedReply(m);
+                const isHighlighted = highlightedMsgId === m.id;
 
                 if (isInternalNote) {
                   return (
-                    <div key={m.id} className="flex justify-center my-2">
-                      <div className="w-full max-w-[78%] rounded-lg px-3.5 py-2.5 bg-[#fef3c7] border border-[#f59e0b]/45 shadow-2xs text-[#78350f]">
+                    <div
+                      key={m.id}
+                      id={`chat-msg-${m.id}`}
+                      className="flex justify-center my-2"
+                    >
+                      <div
+                        className={`w-full max-w-[78%] rounded-lg px-3.5 py-2.5 bg-[#fef3c7] border border-[#f59e0b]/45 shadow-2xs text-[#78350f] transition-all duration-300 ${
+                          isHighlighted ? "ring-2 ring-[#00a884]" : ""
+                        }`}
+                      >
                         <div className="flex items-center justify-between gap-3 text-[11px] font-semibold mb-1">
                           <span className="inline-flex items-center gap-1">
                             <Lock className="w-3 h-3 text-amber-700" />
@@ -1694,6 +1790,20 @@ export function InboxClient({
                             })}
                           </span>
                         </div>
+                        {quotedReply && (
+                          <button
+                            type="button"
+                            onClick={() => jumpToQuotedMessage(quotedReply)}
+                            className="w-full text-left mb-1.5 rounded-md px-2.5 py-1.5 bg-amber-100/85 hover:bg-amber-200/70 border-l-[3.5px] border-amber-600 transition cursor-pointer"
+                          >
+                            <div className="text-[11px] font-semibold text-amber-950 truncate">
+                              {quotedReply.senderName}
+                            </div>
+                            <div className="text-[12px] text-amber-900/85 line-clamp-2 leading-snug">
+                              {quotedReply.body}
+                            </div>
+                          </button>
+                        )}
                         <p className="text-[13px] whitespace-pre-wrap leading-relaxed">
                           {m.body}
                         </p>
@@ -1704,17 +1814,26 @@ export function InboxClient({
 
                 const isAcrioBubble = m.billingCategory === "ACRIO";
                 const isTemplateBubble = m.messageType === "TEMPLATE";
+                const quotedIsAcrio =
+                  quotedReply?.senderType === "ACRIO" ||
+                  quotedReply?.senderName === "ACRIO";
+                const quotedIsOutbound = quotedReply?.direction === "OUTBOUND";
 
                 return (
                   <div
                     key={m.id}
-                    className={`flex ${
+                    id={`chat-msg-${m.id}`}
+                    className={`group flex ${
                       isOutbound ? "justify-end" : "justify-start"
                     }`}
                   >
                     <div
-                      className={`max-w-[74%] rounded-lg px-3 py-2 shadow-2xs relative ${
-                        isOutbound
+                      onDoubleClick={() => startReplyToMessage(m)}
+                      title="Double-click or press Reply to quote this message"
+                      className={`max-w-[74%] rounded-lg px-3 py-2 shadow-2xs relative transition-all duration-300 ${
+                        isHighlighted
+                          ? "ring-2 ring-[#00a884] bg-[#fff8d6] text-[#111b21]"
+                          : isOutbound
                           ? "bg-[#d9fdd3] text-[#111b21] rounded-tr-none"
                           : "bg-white text-[#111b21] rounded-tl-none"
                       }`}
@@ -1745,8 +1864,57 @@ export function InboxClient({
                                 : "₹0.30"}
                             </span>
                           )}
+                          <button
+                            type="button"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              startReplyToMessage(m);
+                            }}
+                            title="Reply to this message"
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-medium text-[#54656f] hover:text-[#111b21] hover:bg-black/8 opacity-75 group-hover:opacity-100 transition cursor-pointer"
+                          >
+                            <CornerUpLeft className="w-3 h-3" />
+                            <span>Reply</span>
+                          </button>
                         </div>
                       </div>
+
+                      {quotedReply && (
+                        <button
+                          type="button"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            jumpToQuotedMessage(quotedReply);
+                          }}
+                          title="Jump to original message"
+                          className={`w-full text-left my-1 rounded-md px-2.5 py-1.5 border-l-[3.5px] transition cursor-pointer ${
+                            quotedIsAcrio
+                              ? "border-indigo-600"
+                              : quotedIsOutbound
+                              ? "border-[#00a884]"
+                              : "border-[#e31837]"
+                          } ${
+                            isOutbound
+                              ? "bg-[#cfe9ba]/75 hover:bg-[#c5e4ae]"
+                              : "bg-[#f0f2f5] hover:bg-[#e6eaee]"
+                          }`}
+                        >
+                          <div
+                            className={`text-[11px] font-semibold truncate ${
+                              quotedIsAcrio
+                                ? "text-indigo-800"
+                                : quotedIsOutbound
+                                ? "text-[#008069]"
+                                : "text-[#e31837]"
+                            }`}
+                          >
+                            {quotedReply.senderName}
+                          </div>
+                          <div className="text-[12px] text-[#54656f] line-clamp-2 leading-snug">
+                            {quotedReply.body}
+                          </div>
+                        </button>
+                      )}
 
                       <p className="text-[14px] whitespace-pre-wrap leading-[1.52] tracking-[-0.006em]">
                         {m.body}
@@ -1904,12 +2072,80 @@ export function InboxClient({
                 )}
               </div>
 
+              {replyingTo && (
+                <div
+                  className={`flex items-start justify-between gap-2.5 rounded-lg bg-white px-3 py-2 border border-[#d1d7db] border-l-4 shadow-2xs ${
+                    replyingTo.senderType === "ACRIO" ||
+                    replyingTo.senderName === "ACRIO"
+                      ? "border-l-indigo-600"
+                      : replyingTo.direction === "OUTBOUND"
+                      ? "border-l-[#00a884]"
+                      : "border-l-[#e31837]"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => jumpToQuotedMessage(replyingTo)}
+                    className="min-w-0 flex-1 text-left cursor-pointer"
+                  >
+                    <div className="flex items-center gap-1.5 text-[11.5px] font-semibold">
+                      <CornerUpLeft
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          replyingTo.senderType === "ACRIO" ||
+                          replyingTo.senderName === "ACRIO"
+                            ? "text-indigo-700"
+                            : replyingTo.direction === "OUTBOUND"
+                            ? "text-[#008069]"
+                            : "text-[#e31837]"
+                        }`}
+                      />
+                      <span
+                        className={`truncate ${
+                          replyingTo.senderType === "ACRIO" ||
+                          replyingTo.senderName === "ACRIO"
+                            ? "text-indigo-800"
+                            : replyingTo.direction === "OUTBOUND"
+                            ? "text-[#008069]"
+                            : "text-[#e31837]"
+                        }`}
+                      >
+                        Replying to {replyingTo.senderName}
+                      </span>
+                      <span className="text-[10.5px] font-normal text-[#667781] hidden sm:inline">
+                        •{" "}
+                        {composerMode === "NOTE"
+                          ? "Attached to private team note"
+                          : "Customer sees quoted message on WhatsApp"}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[12px] text-[#54656f] line-clamp-2 leading-snug">
+                      {replyingTo.body}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReplyingTo(null)}
+                    aria-label="Cancel quoted reply"
+                    title="Cancel quoted reply (Esc)"
+                    className="p-1 rounded-md text-[#667781] hover:text-[#111b21] hover:bg-neutral-100 cursor-pointer shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
               <div className="flex items-end gap-2">
                 <textarea
+                  ref={composerInputRef}
                   rows={2}
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
                   onKeyDown={(e) => {
+                    if (e.key === "Escape" && replyingTo) {
+                      e.preventDefault();
+                      setReplyingTo(null);
+                      return;
+                    }
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       void handleComposerSubmit(e);

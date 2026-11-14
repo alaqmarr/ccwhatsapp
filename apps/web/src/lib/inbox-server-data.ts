@@ -42,6 +42,15 @@ export interface ConversationSummary {
   tags: string[];
 }
 
+export interface QuotedMessageRef {
+  messageId?: string | null;
+  waMessageId?: string | null;
+  senderName: string;
+  senderType?: string;
+  direction?: string;
+  body: string;
+}
+
 export interface ChatMessage {
   id: string;
   direction: string;
@@ -51,6 +60,7 @@ export interface ChatMessage {
   billingCategory: string;
   body: string;
   templateName: string | null;
+  waMessageId?: string | null;
   deliveryStatus: string;
   createdAt: string;
   metadata?: Record<string, unknown> | null;
@@ -294,6 +304,7 @@ export async function getConversationDetailServer(
       billingCategory: String(m.billing_category),
       body: String(m.body),
       templateName: m.template_name ? String(m.template_name) : null,
+      waMessageId: m.wa_message_id ? String(m.wa_message_id) : null,
       deliveryStatus: String(m.delivery_status),
       createdAt: String(m.created_at),
       metadata,

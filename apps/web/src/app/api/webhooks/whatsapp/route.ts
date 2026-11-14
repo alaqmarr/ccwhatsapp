@@ -78,6 +78,7 @@ export async function POST(req: Request) {
           msg?.text?.body ||
           msg?.button?.text ||
           msg?.interactive?.button_reply?.title ||
+          msg?.interactive?.list_reply?.title ||
           "[Media / Attachment]";
 
         const existingCust = await crm.execute({
@@ -180,16 +181,49 @@ export async function POST(req: Request) {
         // Customer replied -> any earlier outbound messages in this thread were clearly read
         await markPriorOutboundMessagesRead(convId);
 
+        // Resolve quoted reply context if customer swiped/replied to an earlier WhatsApp message
+        const contextWaId = String(msg?.context?.id || "").trim();
+        let inboundMetadataJson = "{}";
+        if (contextWaId) {
+          const origRes = await conv.execute({
+            sql: `SELECT id, sender_name, sender_type, direction, body
+                  FROM messages
+                  WHERE wa_message_id = ?
+                  LIMIT 1`,
+            args: [contextWaId],
+          });
+          const orig = origRes.rows[0] as Record<string, unknown> | undefined;
+          const replyTo = orig
+            ? {
+                messageId: String(orig.id),
+                waMessageId: contextWaId,
+                senderName: String(orig.sender_name || "Classic Concepts"),
+                senderType: String(orig.sender_type || "STAFF"),
+                direction: String(orig.direction || "OUTBOUND"),
+                body: String(orig.body || "").slice(0, 280),
+              }
+            : {
+                messageId: null,
+                waMessageId: contextWaId,
+                senderName: "Earlier WhatsApp message",
+                senderType: "STAFF",
+                direction: "OUTBOUND",
+                body: "Customer replied to an earlier message on WhatsApp",
+              };
+          inboundMetadataJson = JSON.stringify({ replyTo });
+        }
+
         await conv.execute({
           sql: `INSERT INTO messages (
             id, conversation_id, direction, sender_type, sender_name, message_type,
-            billing_category, body, wa_message_id, delivery_status, created_at
-          ) VALUES (?, ?, 'INBOUND', 'CUSTOMER', ?, 'TEXT', 'FREE_CHAT', ?, ?, 'DELIVERED', ?)`,
+            billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+          ) VALUES (?, ?, 'INBOUND', 'CUSTOMER', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, 'DELIVERED', ?)`,
           args: [
             `msg_${crypto.randomUUID().slice(0, 8)}`,
             convId,
             contactName,
             String(textBody),
+            inboundMetadataJson,
             String(msg?.id || ""),
             nowIso,
           ],

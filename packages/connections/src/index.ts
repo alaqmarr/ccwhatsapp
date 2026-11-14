@@ -153,6 +153,7 @@ export async function sendWhatsAppCloudMessage(params: {
   templateName?: string;
   languageCode?: string;
   templateComponents?: Record<string, unknown>[];
+  replyToWaMessageId?: string;
   simulateAsyncDelivery?: boolean;
   forceSandbox?: boolean;
 }): Promise<OutboundWhatsAppSendResult> {
@@ -180,10 +181,23 @@ export async function sendWhatsAppCloudMessage(params: {
 
   if (mode === "LIVE_META_CLOUD" && phoneNumberId && accessToken) {
     try {
+      const rawReplyWaId = String(params.replyToWaMessageId || "").trim();
+      const validReplyWaId =
+        rawReplyWaId &&
+        !rawReplyWaId.startsWith("wamid.sandbox") &&
+        !rawReplyWaId.startsWith("wamid.sim_") &&
+        !rawReplyWaId.startsWith("sim_")
+          ? rawReplyWaId
+          : "";
+      const contextField = validReplyWaId
+        ? { context: { message_id: validReplyWaId } }
+        : {};
+
       const payload = params.templateName
         ? {
             messaging_product: "whatsapp",
             to: recipientDigits,
+            ...contextField,
             type: "template",
             template: {
               name: params.templateName,
@@ -197,6 +211,7 @@ export async function sendWhatsAppCloudMessage(params: {
             messaging_product: "whatsapp",
             recipient_type: "individual",
             to: recipientDigits,
+            ...contextField,
             type: "text",
             text: { preview_url: true, body: params.bodyText },
           };
