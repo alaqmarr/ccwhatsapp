@@ -971,7 +971,7 @@ export function InboxClient({
   }
 
   return (
-    <div className="h-[calc(100vh)] w-full flex overflow-hidden bg-[#f0f2f5] select-text">
+    <div className="h-[calc(100dvh)] lg:h-full w-full flex overflow-hidden bg-[#f0f2f5] select-text">
       {/* Toast Notification */}
       {toast && (
         <div className="fixed bottom-5 right-5 z-50 px-3.5 py-2 rounded-lg bg-neutral-900 text-white text-xs font-medium shadow-lg">
