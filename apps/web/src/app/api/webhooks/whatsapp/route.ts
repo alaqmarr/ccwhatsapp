@@ -104,11 +104,11 @@ export async function POST(req: Request) {
               id, customer_phone, customer_name, customer_id, status, priority,
               smart_category, assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name,
               escalation_level, waiting_since, unread_count, last_message_preview, last_message_at, window_expires_at, created_at
-            ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', 'ACRIO', 'ACRIO', NULL, 'ACRIO Assistant', 'P0', NULL, 1, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', 'ACRIO', 'ACRIO', NULL, 'System (ACRIO)', 'P0', NULL, 1, ?, ?, ?, ?)`,
             args: [convId, e164, contactName, custId, String(textBody).slice(0, 140), nowIso, windowExp, nowIso],
           });
         } else {
-          const resetToAcrio = prevStatus === "RESOLVED" || !prevStaffId;
+          const resetToAcrio = prevStatus === "RESOLVED";
           const isHumanOwned = !resetToAcrio && prevStaffId !== "ACRIO";
           await conv.execute({
             sql: `UPDATE conversations
@@ -116,7 +116,7 @@ export async function POST(req: Request) {
                       assigned_staff_id = CASE WHEN ? = 1 THEN 'ACRIO' ELSE assigned_staff_id END,
                       assigned_staff_name = CASE WHEN ? = 1 THEN 'ACRIO' ELSE assigned_staff_name END,
                       assigned_team_id = CASE WHEN ? = 1 THEN NULL ELSE assigned_team_id END,
-                      assigned_team_name = CASE WHEN ? = 1 THEN 'ACRIO Assistant' ELSE assigned_team_name END,
+                      assigned_team_name = CASE WHEN ? = 1 THEN 'System (ACRIO)' ELSE assigned_team_name END,
                       escalation_level = CASE WHEN ? = 1 THEN 'P0' ELSE escalation_level END,
                       waiting_since = CASE WHEN ? = 1 THEN COALESCE(waiting_since, ?) ELSE waiting_since END,
                       unread_count = unread_count + 1,

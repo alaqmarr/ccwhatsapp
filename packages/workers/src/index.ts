@@ -119,8 +119,9 @@ export async function processInboundAutomations(params: {
   const currentAssignedId = convRow.assigned_staff_id
     ? String(convRow.assigned_staff_id)
     : "";
-  const isHandledByAcrio =
-    params.isNewConversation || !currentAssignedId || currentAssignedId === "ACRIO";
+  // STRICT RULE: ACRIO is ONLY used when the chat is assigned to System ('ACRIO')!
+  // Never run ACRIO on chats assigned to human staff/teams so AI credits and ₹0.30 bills are saved.
+  const isHandledByAcrio = currentAssignedId === "ACRIO";
 
   const rulesRes = await conv.execute(
     `SELECT * FROM automations WHERE is_enabled = 1`
@@ -258,7 +259,7 @@ export async function processInboundAutomations(params: {
                 assigned_staff_id = 'ACRIO',
                 assigned_staff_name = 'ACRIO',
                 assigned_team_id = NULL,
-                assigned_team_name = 'ACRIO Assistant',
+                assigned_team_name = 'System (ACRIO)',
                 smart_category = ?,
                 priority = ?,
                 escalation_level = 'P0',

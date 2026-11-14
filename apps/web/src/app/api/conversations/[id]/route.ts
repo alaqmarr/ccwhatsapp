@@ -6,7 +6,6 @@ import {
   getRawLibSqlClient,
 } from "@cc/database";
 import {
-  runAcrioChatCopilot,
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
@@ -14,6 +13,7 @@ import { socketHub } from "@cc/sockets";
 import { listCustomAdminLinks, rememberWhatsAppCache } from "@cc/storage";
 import {
   checkAndEscalateWaitingChats,
+  processInboundAutomations,
   recordDualPricingLedgerEntry,
   smartAssignConversation,
   type BillingMessageCategory,
@@ -125,14 +125,8 @@ export async function GET(
     p1WaitMinutes: Number(t.p1_wait_minutes ?? 12),
   }));
 
-  const acrio = await runAcrioChatCopilot({
-    customerName: String(cRow.customer_name),
-    organizationType: customerRow?.organization_type
-      ? String(customerRow.organization_type)
-      : undefined,
-    recentMessages: messages.map((m) => ({ direction: m.direction, body: m.body })),
-    ordersSummary: orders.map((o) => `${o.orderNumber}: ${o.itemsSummary} (${o.fulfillmentStatus})`),
-  });
+  // Never run ACRIO on chat open/refresh — ACRIO only runs in the backend when assigned to System (ACRIO)
+  const acrio = null;
 
   return NextResponse.json({
     ok: true,
@@ -386,8 +380,8 @@ export async function POST(
     return NextResponse.json({ ok: true });
   }
 
-  // 2c. Return Chat Back to ACRIO Automatic Handling
-  if (action === "return_to_acrio") {
+  // 2c. Agent Assigns Chat to System (ACRIO)
+  if (action === "return_to_acrio" || (action === "assign_staff" && body.staffId === "ACRIO")) {
     await conv.batch(
       [
         {
@@ -396,7 +390,7 @@ export async function POST(
                     assigned_staff_id = 'ACRIO',
                     assigned_staff_name = 'ACRIO',
                     assigned_team_id = NULL,
-                    assigned_team_name = 'ACRIO Assistant',
+                    assigned_team_name = 'System (ACRIO)',
                     escalation_level = 'P0',
                     waiting_since = NULL
                 WHERE id = ?`,
@@ -411,7 +405,7 @@ export async function POST(
             `msg_note_${crypto.randomUUID().slice(0, 8)}`,
             id,
             user.name,
-            `${user.name} handed this chat back to ACRIO for automatic answers.`,
+            `${user.name} assigned this chat to System (ACRIO).`,
             nowIso,
           ],
         },
@@ -419,10 +413,28 @@ export async function POST(
       "write"
     );
 
+    // Only run ACRIO immediately if the customer's latest non-note message is still unanswered (INBOUND).
+    // Otherwise, save AI credits & ₹0.30 bills and wait until the customer sends a new message!
+    const lastCustOrStaffMsg = await conv.execute({
+      sql: `SELECT direction, body FROM messages
+            WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
+            ORDER BY created_at DESC LIMIT 1`,
+      args: [id],
+    });
+    const tailMsg = lastCustOrStaffMsg.rows[0];
+    if (tailMsg && String(tailMsg.direction) === "INBOUND") {
+      await processInboundAutomations({
+        conversationId: id,
+        customerPhone,
+        inboundText: String(tailMsg.body || ""),
+        isNewConversation: false,
+      });
+    }
+
     socketHub.emit("conversation:assigned", {
       conversationId: id,
       staffName: "ACRIO",
-      teamName: "ACRIO Assistant",
+      teamName: "System (ACRIO)",
       escalationLevel: "P0",
     });
     return NextResponse.json({ ok: true });
@@ -458,7 +470,9 @@ export async function POST(
         ? body.teamName
           ? String(body.teamName)
           : null
-        : cRow.assigned_team_name && String(cRow.assigned_team_name) !== "ACRIO Assistant"
+        : cRow.assigned_team_name &&
+            String(cRow.assigned_team_name) !== "ACRIO Assistant" &&
+            String(cRow.assigned_team_name) !== "System (ACRIO)"
         ? String(cRow.assigned_team_name)
         : "Sales Team";
     const escalationLevel =
@@ -528,15 +542,15 @@ export async function POST(
   if (action === "reopen") {
     await conv.execute({
       sql: `UPDATE conversations
-            SET status = 'OPEN',
-                assigned_staff_id = 'ACRIO',
-                assigned_staff_name = 'ACRIO',
-                assigned_team_id = NULL,
-                assigned_team_name = 'ACRIO Assistant',
+            SET status = 'ASSIGNED',
+                assigned_staff_id = ?,
+                assigned_staff_name = ?,
+                assigned_team_id = 'team_sales',
+                assigned_team_name = 'Sales Team',
                 escalation_level = 'P0',
                 waiting_since = NULL
             WHERE id = ?`,
-      args: [id],
+      args: [user.id, user.name, id],
     });
     return NextResponse.json({ ok: true });
   }

@@ -180,7 +180,7 @@ export async function POST(req: Request) {
         direction === "INBOUND" ? "ACRIO" : user.id,
         direction === "INBOUND" ? "ACRIO" : user.name,
         direction === "INBOUND" ? null : "team_sales",
-        direction === "INBOUND" ? "ACRIO Assistant" : "Sales Team",
+        direction === "INBOUND" ? "System (ACRIO)" : "Sales Team",
         direction === "INBOUND" ? 1 : 0,
         text.slice(0, 140),
         nowIso,
@@ -189,8 +189,9 @@ export async function POST(req: Request) {
       ],
     });
   } else if (direction === "INBOUND") {
-    // Reopened chats reset to ACRIO first; human-owned open chats start/keep their wait timer
-    const resetToAcrio = prevStatus === "RESOLVED" || !prevStaffId;
+    // Only assign to System (ACRIO) when customer initiates a fresh conversation after RESOLVED.
+    // If already open with human staff/team, NEVER switch back to ACRIO automatically!
+    const resetToAcrio = prevStatus === "RESOLVED";
     const isHumanOwned = !resetToAcrio && prevStaffId !== "ACRIO";
     await conv.execute({
       sql: `UPDATE conversations
@@ -198,7 +199,7 @@ export async function POST(req: Request) {
                 assigned_staff_id = CASE WHEN ? = 1 THEN 'ACRIO' ELSE assigned_staff_id END,
                 assigned_staff_name = CASE WHEN ? = 1 THEN 'ACRIO' ELSE assigned_staff_name END,
                 assigned_team_id = CASE WHEN ? = 1 THEN NULL ELSE assigned_team_id END,
-                assigned_team_name = CASE WHEN ? = 1 THEN 'ACRIO Assistant' ELSE assigned_team_name END,
+                assigned_team_name = CASE WHEN ? = 1 THEN 'System (ACRIO)' ELSE assigned_team_name END,
                 escalation_level = CASE WHEN ? = 1 THEN 'P0' ELSE escalation_level END,
                 waiting_since = CASE WHEN ? = 1 THEN COALESCE(waiting_since, ?) ELSE waiting_since END,
                 unread_count = unread_count + 1,

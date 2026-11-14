@@ -1394,13 +1394,13 @@ async function seedInitialOperationalData(): Promise<void> {
     }
   }
 
-  // Ensure any unassigned open chats always start with ACRIO
+  // Ensure any unassigned open chats always start with System (ACRIO)
   await conv.execute(
     `UPDATE conversations
      SET assigned_staff_id = 'ACRIO',
          assigned_staff_name = 'ACRIO',
-         assigned_team_name = COALESCE(assigned_team_name, 'ACRIO Assistant')
-     WHERE status != 'RESOLVED' AND assigned_staff_id IS NULL`
+         assigned_team_name = 'System (ACRIO)'
+     WHERE status != 'RESOLVED' AND (assigned_staff_id IS NULL OR assigned_staff_id = 'ACRIO')`
   );
   // Keep Sales Team as #1 default priority rank
   await conv.execute(

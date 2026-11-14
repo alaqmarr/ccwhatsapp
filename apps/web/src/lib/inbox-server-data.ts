@@ -4,7 +4,7 @@ import {
   getRawLibSqlClient,
   resolveSharedAnthropicApiKey,
 } from "@cc/database";
-import { getCachedEcosystemCatalog, runAcrioChatCopilot } from "@cc/connections";
+import { getCachedEcosystemCatalog } from "@cc/connections";
 import {
   getWhatsAppCacheSummary,
   listCustomAdminLinks,
@@ -279,16 +279,8 @@ export async function getConversationDetailServer(
     occurredAt: String(r.occurred_at),
   }));
 
-  const acrio = await runAcrioChatCopilot({
-    customerName: String(cRow.customer_name),
-    organizationType: customerRow?.organization_type
-      ? String(customerRow.organization_type)
-      : undefined,
-    recentMessages: messages.map((m) => ({ direction: m.direction, body: m.body })),
-    ordersSummary: orders.map(
-      (o) => `${o.orderNumber}: ${o.itemsSummary} (${o.fulfillmentStatus})`
-    ),
-  });
+  // Never invoke ACRIO on UI chat loads/polls — ACRIO only runs in the backend when assigned to System (ACRIO)
+  const acrio: AcrioCopilot | null = null;
 
   return {
     conversation: {

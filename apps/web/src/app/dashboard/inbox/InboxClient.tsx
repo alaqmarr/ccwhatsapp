@@ -5,14 +5,11 @@ import Link from "next/link";
 import {
   Check,
   CheckCheck,
-  ChevronDown,
-  ChevronUp,
   Clock,
   ExternalLink,
   FileText,
   Link2,
   Lock,
-  Package,
   PanelRightClose,
   PanelRightOpen,
   Plus,
@@ -22,7 +19,6 @@ import {
   StickyNote,
   UserCheck,
   Users,
-  Wrench,
   X,
 } from "lucide-react";
 import {
@@ -166,7 +162,6 @@ export function InboxClient({
     initialData.templates[0]?.id || ""
   );
   const [sending, setSending] = useState<boolean>(false);
-  const [showAcrioBar, setShowAcrioBar] = useState<boolean>(true);
   const [showRightDrawer, setShowRightDrawer] = useState<boolean>(true);
   const [toast, setToast] = useState<string>("");
 
@@ -237,7 +232,10 @@ export function InboxClient({
     setEditOrgType(bundle.customer?.organizationType || "Business");
     setEditCity(bundle.customer?.city || "");
     setEditNotes(bundle.customer?.notes || "");
-    setResolveSummary(bundle.acrio?.resolutionDraft || "");
+    setResolveSummary(
+      bundle.acrio?.resolutionDraft ||
+        `Resolved enquiry with ${bundle.conversation.customerName}.`
+    );
   }, []);
 
   // Silent background refresh of thread list (never clears existing threads!)
@@ -499,7 +497,8 @@ export function InboxClient({
               assignedTeamId: detail.conversation.assignedTeamId || "team_sales",
               assignedTeamName:
                 detail.conversation.assignedTeamName &&
-                detail.conversation.assignedTeamName !== "ACRIO Assistant"
+                detail.conversation.assignedTeamName !== "ACRIO Assistant" &&
+                detail.conversation.assignedTeamName !== "System (ACRIO)"
                   ? detail.conversation.assignedTeamName
                   : "Sales Team",
               waitingSince: null,
@@ -594,7 +593,7 @@ export function InboxClient({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "return_to_acrio" }),
     });
-    showToast("Handed back to ACRIO for automatic answers.");
+    showToast("Assigned chat to System (ACRIO).");
     await Promise.all([
       fetchAndCacheDetail(selectedId, false),
       refreshThreadsSilently(),
@@ -628,7 +627,14 @@ export function InboxClient({
     const chosenTeam = teams.find((t) => t.id === assignTeamId);
     const chosenStaff = staffList.find((s) => s.id === assignStaffId);
 
-    if (!assignStaffId) {
+    if (assignStaffId === "ACRIO") {
+      await fetch(`/api/conversations/${selectedId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "return_to_acrio" }),
+      });
+      showToast("Assigned chat to System (ACRIO).");
+    } else if (!assignStaffId) {
       await fetch(`/api/conversations/${selectedId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -798,7 +804,7 @@ export function InboxClient({
                 )}
               </h1>
               <p className="text-[11px] text-[#667781] truncate">
-                ACRIO first • Handoff to Sales Team
+                System (ACRIO) • Handoff to Sales Team
               </p>
             </div>
           </div>
@@ -869,8 +875,8 @@ export function InboxClient({
                   key: "ACRIO",
                   label:
                     acrioThreadsCount > 0
-                      ? `ACRIO (${acrioThreadsCount})`
-                      : "ACRIO",
+                      ? `System (${acrioThreadsCount})`
+                      : "System",
                 },
                 { key: "UNREAD", label: "Unread" },
                 { key: "MINE", label: "Mine" },
@@ -975,7 +981,7 @@ export function InboxClient({
                       ) : isAcrio ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 font-medium inline-flex items-center gap-1">
                           <Sparkles className="w-2.5 h-2.5" />
-                          <span>ACRIO Auto</span>
+                          <span>System (ACRIO)</span>
                         </span>
                       ) : (
                         <>
@@ -1089,7 +1095,7 @@ export function InboxClient({
                     {isAcrioHandling && activeConv.status !== "RESOLVED" && (
                       <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-900 font-medium inline-flex items-center gap-1">
                         <Sparkles className="w-3 h-3" />
-                        <span>ACRIO handling automatically</span>
+                        <span>Assigned to System (ACRIO)</span>
                       </span>
                     )}
 
@@ -1191,10 +1197,10 @@ export function InboxClient({
                         type="button"
                         onClick={handleReturnToAcrio}
                         className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-xs font-medium text-indigo-800 cursor-pointer"
-                        title="Let ACRIO resume automatic answers on this chat"
+                        title="Assign chat to System (ACRIO) for automatic handling"
                       >
                         <Sparkles className="w-3.5 h-3.5" />
-                        <span>Hand to ACRIO</span>
+                        <span>Assign to System</span>
                       </button>
                     </>
                   )
@@ -1246,10 +1252,11 @@ export function InboxClient({
             >
               {/* Top WhatsApp Security/Context Pill */}
               <div className="flex justify-center pb-1">
-                <div className="px-3 py-1 rounded-md bg-[#fff5c4] border border-[#f2df8d] text-[11px] text-[#54656f] shadow-2xs text-center max-w-lg">
-                  New chats start with <strong>ACRIO</strong> (₹0.30/reply) and hand over to{" "}
-                  <strong>Sales Team</strong> when needed. Normal staff chat replies and{" "}
-                  <strong>Internal Team Notes</strong> are <strong>Free (₹0.00)</strong>.
+                <div className="px-3 py-1 rounded-md bg-[#fff5c4] border border-[#f2df8d] text-[11px] text-[#54656f] shadow-2xs text-center max-w-xl">
+                  <strong>ACRIO</strong> runs only when a chat is assigned to{" "}
+                  <strong>System</strong> (when a customer starts a chat or an agent
+                  assigns to System). On staff-assigned chats, ACRIO is off to save AI
+                  credits & bills, and staff replies are <strong>Free (₹0.00)</strong>.
                 </div>
               </div>
 
@@ -1369,109 +1376,29 @@ export function InboxClient({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* ACRIO Collapsible Reply & Ecosystem Catalog Bar (Classic Concepts + Classic Edge 53) */}
-            {detail?.acrio && (
-              <div className="bg-[#f8f9fa] border-t border-[#d1d7db] px-4 py-2 shrink-0">
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowAcrioBar((p) => !p)}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#111b21] cursor-pointer"
-                  >
-                    <ClassicConceptsMark size={16} />
-                    <span>ACRIO Smart Suggestions</span>
-                    <span className="text-[11px] font-normal text-[#667781]">
-                      ({detail.acrio.smartCategory})
-                    </span>
-                    {showAcrioBar ? (
-                      <ChevronDown className="w-3.5 h-3.5 text-[#54656f]" />
-                    ) : (
-                      <ChevronUp className="w-3.5 h-3.5 text-[#54656f]" />
-                    )}
-                  </button>
-
-                  {detail.customLinks.length > 0 && (
-                    <div className="flex items-center gap-1 overflow-x-auto">
-                      {detail.customLinks.slice(0, 2).map((lnk) => (
-                        <button
-                          key={lnk.id}
-                          type="button"
-                          onClick={() =>
-                            appendToComposer(
-                              `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
-                            )
-                          }
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-neutral-100 border border-[#d1d7db] text-[11px] text-[#3b4a54] cursor-pointer whitespace-nowrap"
-                        >
-                          <Link2 className="w-3 h-3 text-[#00a884]" />
-                          <span>/l/{lnk.code}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
+            {/* Zero-AI Quick Short Links Bar (/l/...) */}
+            {detail && detail.customLinks.length > 0 && (
+              <div className="bg-[#f8f9fa] border-t border-[#d1d7db] px-4 py-1.5 shrink-0 flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-[#54656f] shrink-0">
+                  Quick Short Links:
+                </span>
+                <div className="flex items-center gap-1.5 overflow-x-auto">
+                  {detail.customLinks.slice(0, 4).map((lnk) => (
+                    <button
+                      key={lnk.id}
+                      type="button"
+                      onClick={() =>
+                        appendToComposer(
+                          `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
+                        )
+                      }
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-neutral-100 border border-[#d1d7db] text-[11px] text-[#3b4a54] cursor-pointer whitespace-nowrap"
+                    >
+                      <Link2 className="w-3 h-3 text-[#00a884]" />
+                      <span>/l/{lnk.code}</span>
+                    </button>
+                  ))}
                 </div>
-
-                {showAcrioBar && (
-                  <div className="mt-2 space-y-2">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                      {detail.acrio.suggestedReplies.map((rep, idx) => (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            if (composerMode === "NOTE") setComposerMode("REPLY");
-                            setReplyText(rep);
-                          }}
-                          className="text-left p-2 rounded-md bg-white hover:bg-[#e7fce3]/40 border border-[#d1d7db] hover:border-[#00a884] text-xs text-[#111b21] line-clamp-2 cursor-pointer transition-colors"
-                          title={rep}
-                        >
-                          {rep}
-                        </button>
-                      ))}
-                    </div>
-
-                    {detail.acrio.recommendedProducts.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-[11px] text-[#667781]">
-                          Insert catalog link:
-                        </span>
-                        {detail.acrio.recommendedProducts.map((p) => {
-                          const isEdge = p.brand === "CLASSIC_EDGE_53";
-                          return (
-                            <button
-                              key={`${p.brand || "CC"}_${p.slug}`}
-                              type="button"
-                              onClick={() =>
-                                appendToComposer(
-                                  `${p.name}${
-                                    p.modelsSummary ? ` (${p.modelsSummary})` : ""
-                                  }: ${p.url}`
-                                )
-                              }
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-medium cursor-pointer ${
-                                isEdge
-                                  ? "bg-amber-50/80 hover:bg-amber-100 border-amber-200 text-amber-950"
-                                  : "bg-white hover:bg-neutral-100 border-[#d1d7db] text-[#111b21]"
-                              }`}
-                            >
-                              {isEdge ? (
-                                <Wrench className="w-3 h-3 text-amber-700" />
-                              ) : (
-                                <Package className="w-3 h-3 text-[#e31837]" />
-                              )}
-                              <span>{p.name}</span>
-                              {p.priceInr ? (
-                                <span className="text-[#667781]">
-                                  ₹{p.priceInr.toLocaleString("en-IN")}
-                                </span>
-                              ) : null}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             )}
 
@@ -1982,7 +1909,7 @@ export function InboxClient({
             </div>
 
             <p className="text-xs text-neutral-600">
-              Sales Team is our default handoff team. If a P0 member cannot reply within the team wait limit, the chat automatically escalates to P1 and then P2.
+              Sales Team is our default handoff team (ACRIO stays off on staff-assigned chats to save AI credits & charges). Choose <strong>System (ACRIO)</strong> under Assignee only if you want ACRIO to answer incoming customer messages automatically.
             </p>
 
             <div>
@@ -1991,8 +1918,9 @@ export function InboxClient({
               </label>
               <select
                 value={assignTeamId}
+                disabled={assignStaffId === "ACRIO"}
                 onChange={(e) => setAssignTeamId(e.target.value)}
-                className="w-full rounded-md border border-neutral-300 px-3 py-2 text-xs bg-white"
+                className="w-full rounded-md border border-neutral-300 px-3 py-2 text-xs bg-white disabled:opacity-50"
               >
                 {teams.map((tm) => (
                   <option key={tm.id} value={tm.id}>
@@ -2009,10 +1937,11 @@ export function InboxClient({
                 </label>
                 <select
                   value={assignTier}
+                  disabled={assignStaffId === "ACRIO"}
                   onChange={(e) =>
                     setAssignTier(e.target.value as "P0" | "P1" | "P2")
                   }
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-xs bg-white"
+                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-xs bg-white disabled:opacity-50"
                 >
                   <option value="P0">P0 (First Responder)</option>
                   <option value="P1">P1 (Escalation Backup)</option>
@@ -2022,14 +1951,15 @@ export function InboxClient({
 
               <div>
                 <label className="block text-xs font-medium text-neutral-700 mb-1">
-                  Team Member
+                  Assignee
                 </label>
                 <select
                   value={assignStaffId}
                   onChange={(e) => setAssignStaffId(e.target.value)}
                   className="w-full rounded-md border border-neutral-300 px-3 py-2 text-xs bg-white"
                 >
-                  <option value="">Auto-pick least busy</option>
+                  <option value="">Auto-pick least busy in team</option>
+                  <option value="ACRIO">System (ACRIO)</option>
                   {staffList.map((st) => (
                     <option key={st.id} value={st.id}>
                       {st.name}

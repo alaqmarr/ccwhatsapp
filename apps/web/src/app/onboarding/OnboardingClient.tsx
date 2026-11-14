@@ -51,16 +51,16 @@ const ONBOARDING_MODULES: Array<{
   },
   {
     id: "acrio_copilot",
-    title: "3. ACRIO Automatic Handling & Sales Team Handoff",
+    title: "3. System (ACRIO) Handling & Sales Team Handoff",
     icon: HelpCircle,
     summary:
-      "How ACRIO answers new customer questions first and connects them to our Sales Team when needed.",
+      "ACRIO is used ONLY when a chat is assigned to System (when a customer starts a conversation or an agent assigns to System).",
     points: [
-      "Every new customer chat starts with ACRIO, which answers product and machine questions automatically using Classic Concepts and Classic Edge 53 catalogs.",
-      "If the customer asks to speak to our team, or if ACRIO cannot resolve a custom quote or drawing request, ACRIO connects the chat directly to our Sales Team.",
-      "When you open a chat, ACRIO also shows 3 ready-to-send reply drafts and matching product or machine links above the message box.",
+      "When a customer initiates a new conversation, the chat is assigned to System (ACRIO) and ACRIO answers product and machine questions automatically using Classic Concepts and Classic Edge 53 catalogs.",
+      "If the customer asks to speak to support or ACRIO cannot resolve the query, ACRIO connects the chat to our Sales Team (default).",
+      "Once a chat is assigned to our staff or Sales Team, ACRIO stays completely off to save AI credits and ₹0.30 message bills. Agents can click 'Assign to System' anytime if they want ACRIO to handle incoming replies again.",
     ],
-    tip: "You can click 'Take Over Chat' anytime to step in personally, or 'Hand Back to ACRIO' when done.",
+    tip: "Click 'Take Over Chat' to step in personally (free ₹0.00 replies), or 'Assign to System' only when you want ACRIO to take over.",
   },
   {
     id: "customer_360",
