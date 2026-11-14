@@ -23,7 +23,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { ElementErrorState } from "@cc/ui";
+import { ElementErrorState, formatDateTimeShortIst } from "@cc/ui";
 
 interface TeamMemberItem {
   id: string;
@@ -1377,12 +1377,7 @@ export function TeamsClient({
                           )}
                         </td>
                         <td className="py-2.5 text-[11px] text-neutral-500 whitespace-nowrap">
-                          {new Date(log.createdAt).toLocaleString([], {
-                            day: "numeric",
-                            month: "short",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
+                          {formatDateTimeShortIst(log.createdAt)}
                         </td>
                       </tr>
                     ))}

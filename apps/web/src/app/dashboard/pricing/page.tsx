@@ -8,6 +8,7 @@ import {
   MetricStatCard,
   StatCardsSkeleton,
   TableRowsSkeleton,
+  formatDateTimeIst,
 } from "@cc/ui";
 
 interface CategoryBreakdown {
@@ -300,7 +301,7 @@ export default function CostBreakdownPage() {
                 data.recentEntries.map((e) => (
                   <tr key={e.id}>
                     <td className="py-2.5 pr-3 text-neutral-500">
-                      {new Date(e.billedAt).toLocaleString()}
+                      {formatDateTimeIst(e.billedAt)}
                     </td>
                     <td className="py-2.5 px-3 font-mono text-neutral-800">
                       {e.customerPhone}

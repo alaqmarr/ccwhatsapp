@@ -367,7 +367,7 @@ export async function getConversationDetailServer(
     occurredAt: String(r.occurred_at),
   }));
 
-  // Never invoke ACRIO on UI chat loads/polls — ACRIO only runs in the backend when assigned to System (ACRIO)
+  // Never invoke ACRIO on UI chat loads/polls - ACRIO only runs in the backend when assigned to System (ACRIO)
   const acrio: AcrioCopilot | null = null;
 
   return {

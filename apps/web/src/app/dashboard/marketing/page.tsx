@@ -33,7 +33,10 @@ import {
   WhatsAppFormattedText,
   WhatsAppLogoIcon,
   WhatsAppMessageTicks,
+  formatDateTimeIst,
   formatShortLinkUrl,
+  formatTimeIst,
+  parseLocalIstToUtcIso,
 } from "@cc/ui";
 
 type PacingMode = "SAFE_STEADY" | "EXTRA_CAREFUL" | "WARMED_FAST";
@@ -423,9 +426,7 @@ export default function MarketingAndLinksPage() {
     if (!bcListId || !bcTemplateId || launching) return;
     setLaunching(true);
     try {
-      const scheduledIso = bcScheduledFor
-        ? new Date(bcScheduledFor).toISOString()
-        : null;
+      const scheduledIso = parseLocalIstToUtcIso(bcScheduledFor);
       const res = await fetch("/api/marketing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1214,11 +1215,7 @@ export default function MarketingAndLinksPage() {
                           {b.totalRecipients} contacts
                         </div>
                         <div className="text-[11px] text-neutral-500">
-                          {new Date(b.createdAt).toLocaleDateString()}{" "}
-                          {new Date(b.createdAt).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
+                          {formatDateTimeIst(b.createdAt)}
                         </div>
                       </div>
                     </div>
@@ -1828,10 +1825,8 @@ export default function MarketingAndLinksPage() {
                           </td>
                           <td className="py-2.5 px-3 text-neutral-600">
                             {r.sentAt
-                              ? `Sent ${new Date(r.sentAt).toLocaleTimeString()}`
-                              : `Scheduled ${new Date(
-                                  r.scheduledAt
-                                ).toLocaleTimeString()}`}
+                              ? `Sent ${formatTimeIst(r.sentAt)}`
+                              : `Scheduled ${formatTimeIst(r.scheduledAt)}`}
                           </td>
                           <td className="py-2.5 pl-3 text-neutral-600">
                             {r.skipOrErrorReason || "Ready"}

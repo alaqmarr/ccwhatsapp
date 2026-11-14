@@ -2373,12 +2373,7 @@ export default function TemplatesStudioPage() {
                           )}
 
                           <div className="flex items-center justify-end gap-1.5 text-[10px] text-[#667781]">
-                            <span>
-                              {new Date().toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
-                            </span>
+                            <span>10:30 AM</span>
                             <WhatsAppMessageTicks
                               status="READ"
                               showLabel

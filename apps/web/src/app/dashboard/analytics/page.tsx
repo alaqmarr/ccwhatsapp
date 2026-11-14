@@ -23,6 +23,7 @@ import {
   TableRowsSkeleton,
   WhatsAppLogoIcon,
   WhatsAppMessageTicks,
+  formatDateTimeShortIst,
   formatShortLinkUrl,
 } from "@cc/ui";
 
@@ -215,14 +216,8 @@ function formatDuration(seconds: number | null | undefined): string {
 
 function formatDateTimeIst(iso: string | null | undefined): string {
   if (!iso) return "Pending";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const formatted = formatDateTimeShortIst(iso);
+  return formatted || "Pending";
 }
 
 function formatSourceLabel(src: string): string {

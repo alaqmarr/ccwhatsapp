@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import { formatInTimeZone, toZonedTime, fromZonedTime } from "date-fns-tz";
+
+const APP_TIMEZONE = "Asia/Kolkata";
 import {
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
@@ -105,7 +108,7 @@ export async function recordDualPricingLedgerEntry(params: {
  * Runs inbound ACRIO-first backend handling + smart tagging:
  * 1. Initial assignment is ALWAYS `ACRIO`, which answers product & machine queries automatically.
  * 2. If the customer asks to talk to support/staff OR ACRIO is unable to resolve the query,
- *    ACRIO connects the chat to human staff — defaulting ALWAYS to `Sales Team` (`P0 -> P1 -> P2`).
+ *    ACRIO connects the chat to human staff - defaulting ALWAYS to `Sales Team` (`P0 -> P1 -> P2`).
  * 3. If the chat was already handed over to a human staff member, ACRIO steps aside and starts
  *    the customer wait-time clock (`waiting_since`) so P0 -> P1 -> P2 escalation protects wait time.
  */
@@ -1197,7 +1200,7 @@ export async function processInboundAutomations(params: {
   });
 
   if (!acrioTurn.needsHumanHandoff) {
-    // ACRIO answered the query automatically — keep assigned to ACRIO with zero customer wait!
+    // ACRIO answered the query automatically - keep assigned to ACRIO with zero customer wait!
     await conv.execute({
       sql: `UPDATE conversations
             SET status = 'OPEN',
@@ -1790,7 +1793,7 @@ export async function getBroadcastQueueSettings(): Promise<BroadcastQueueSafetyS
   await ensureDatabasesBootstrapped();
   const mkt = getRawLibSqlClient("marketing");
   const { dateKey } = getCurrentIstDateAndTime();
-  const startOfDayIso = new Date(`${dateKey}T00:00:00+05:30`).toISOString();
+  const startOfDayIso = fromZonedTime(`${dateKey} 00:00:00`, APP_TIMEZONE).toISOString();
 
   const [cfgRes, todayRes] = await Promise.all([
     mkt.execute(
@@ -2448,7 +2451,7 @@ export async function processMarketingBroadcastQueue(): Promise<number> {
           sql: `UPDATE broadcasts
                 SET status = ?,
                     sent_count = sent_count + 1,
-                    delivered_count = delivered_count + 1,
+                    delivered_count = delivered_count + (CASE WHEN ? = 'DELIVERED' THEN 1 ELSE 0 END),
                     queued_count = ?,
                     consecutive_failures = 0,
                     client_billed_inr = ROUND(client_billed_inr + ?, 2),
@@ -2459,6 +2462,7 @@ export async function processMarketingBroadcastQueue(): Promise<number> {
                 WHERE id = ?`,
           args: [
             nextStatus,
+            out.deliveryStatus,
             remainingQueued,
             billed.clientUnitRateInr,
             billed.actualMetaUnitCostInr,
@@ -2715,6 +2719,10 @@ export async function applyWhatsAppMessageReceipt(params: {
   waMessageId?: string | null;
   messageId?: string | null;
   status: "SENT" | "DELIVERED" | "READ" | "FAILED";
+  errorCode?: string | number | null;
+  errorMessage?: string | null;
+  errorDetails?: string | null;
+  timestampIso?: string | null;
 }): Promise<{ updated: boolean; conversationId: string | null }> {
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
@@ -2732,14 +2740,14 @@ export async function applyWhatsAppMessageReceipt(params: {
     const existingRes = await conv.execute(
       waId
         ? {
-            sql: `SELECT id, conversation_id, delivery_status, wa_message_id
+            sql: `SELECT id, conversation_id, delivery_status, wa_message_id, metadata_json
                   FROM messages
                   WHERE wa_message_id = ?
                   LIMIT 1`,
             args: [waId],
           }
         : {
-            sql: `SELECT id, conversation_id, delivery_status, wa_message_id
+            sql: `SELECT id, conversation_id, delivery_status, wa_message_id, metadata_json
                   FROM messages
                   WHERE id = ?
                   LIMIT 1`,
@@ -2755,9 +2763,24 @@ export async function applyWhatsAppMessageReceipt(params: {
       const currentStatus = String(row.delivery_status || "SENT");
 
       if (canAdvanceDeliveryStatus(currentStatus, nextStatus)) {
+        let meta: Record<string, unknown> = {};
+        if (row.metadata_json) {
+          try {
+            meta = JSON.parse(String(row.metadata_json));
+          } catch {
+            meta = {};
+          }
+        }
+        if (nextStatus === "FAILED" || params.errorCode || params.errorMessage) {
+          meta.errorCode = params.errorCode ? String(params.errorCode) : (meta.errorCode ?? null);
+          meta.errorMessage = params.errorMessage ? String(params.errorMessage) : (meta.errorMessage ?? null);
+          if (params.errorDetails) meta.errorDetails = String(params.errorDetails);
+          meta.failedAt = params.timestampIso || new Date().toISOString();
+        }
+
         await conv.execute({
-          sql: `UPDATE messages SET delivery_status = ? WHERE id = ?`,
-          args: [nextStatus, resolvedMsgId],
+          sql: `UPDATE messages SET delivery_status = ?, metadata_json = ? WHERE id = ?`,
+          args: [nextStatus, JSON.stringify(meta), resolvedMsgId],
         });
         updated = true;
       }
@@ -2767,7 +2790,7 @@ export async function applyWhatsAppMessageReceipt(params: {
   // Sync broadcast_recipients + broadcasts counters if this wamid belongs to a campaign
   if (resolvedWaId) {
     const recRes = await mkt.execute({
-      sql: `SELECT id, broadcast_id, status
+      sql: `SELECT id, broadcast_id, status, skip_or_error_reason
             FROM broadcast_recipients
             WHERE wa_message_id = ?
             LIMIT 1`,
@@ -2778,9 +2801,21 @@ export async function applyWhatsAppMessageReceipt(params: {
       const broadcastId = String(rec.broadcast_id);
       const curRecStatus = String(rec.status || "SENT");
       if (canAdvanceDeliveryStatus(curRecStatus, nextStatus)) {
+        let errorReason = rec.skip_or_error_reason ? String(rec.skip_or_error_reason) : null;
+        if (nextStatus === "FAILED") {
+          const parts: string[] = [];
+          if (params.errorCode) parts.push(`Code ${params.errorCode}`);
+          if (params.errorMessage) parts.push(String(params.errorMessage));
+          if (params.errorDetails) parts.push(String(params.errorDetails));
+          errorReason = parts.length > 0 ? parts.join(": ") : (errorReason || "Delivery failed");
+        }
+
         await mkt.execute({
-          sql: `UPDATE broadcast_recipients SET status = ? WHERE id = ?`,
-          args: [nextStatus, String(rec.id)],
+          sql: `UPDATE broadcast_recipients
+                SET status = ?,
+                    skip_or_error_reason = COALESCE(?, skip_or_error_reason)
+                WHERE id = ?`,
+          args: [nextStatus, errorReason, String(rec.id)],
         });
         await mkt.execute({
           sql: `UPDATE broadcasts
@@ -2803,6 +2838,8 @@ export async function applyWhatsAppMessageReceipt(params: {
           broadcastId,
           waMessageId: resolvedWaId,
           status: nextStatus,
+          errorCode: params.errorCode ? String(params.errorCode) : null,
+          errorMessage: params.errorMessage ? String(params.errorMessage) : null,
         });
       }
     }
@@ -2814,6 +2851,8 @@ export async function applyWhatsAppMessageReceipt(params: {
       messageId: resolvedMsgId,
       waMessageId: resolvedWaId,
       status: nextStatus,
+      errorCode: params.errorCode ? String(params.errorCode) : null,
+      errorMessage: params.errorMessage ? String(params.errorMessage) : null,
     });
   }
 
@@ -3257,16 +3296,11 @@ function getCurrentIstDateAndTime(): {
   minute: number;
 } {
   const now = new Date();
-  // IST = UTC + 05:30
-  const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
-  const ist = new Date(istMs);
-  const yyyy = ist.getUTCFullYear();
-  const mm = String(ist.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(ist.getUTCDate()).padStart(2, "0");
+  const zoned = toZonedTime(now, APP_TIMEZONE);
   return {
-    dateKey: `${yyyy}-${mm}-${dd}`,
-    hour: ist.getUTCHours(),
-    minute: ist.getUTCMinutes(),
+    dateKey: formatInTimeZone(now, APP_TIMEZONE, "yyyy-MM-dd"),
+    hour: zoned.getHours(),
+    minute: zoned.getMinutes(),
   };
 }
 

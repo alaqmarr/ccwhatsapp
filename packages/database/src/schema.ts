@@ -1,7 +1,7 @@
 import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 
 // ============================================================================
-// 1. CORE_AUTH.DB — Staff, Roles, Email OTPs, Sessions & /setup Wizard State
+// 1. CORE_AUTH.DB - Staff, Roles, Email OTPs, Sessions & /setup Wizard State
 // ============================================================================
 export const usersTable = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -49,7 +49,7 @@ export const setupStateTable = sqliteTable("setup_state", {
 });
 
 // ============================================================================
-// 2. CONVERSATIONS.DB — Chats, Messages, Assignments, Resolutions, Automations, Links
+// 2. CONVERSATIONS.DB - Chats, Messages, Assignments, Resolutions, Automations, Links
 // ============================================================================
 export const conversationsTable = sqliteTable("conversations", {
   id: text("id").primaryKey(),
@@ -141,7 +141,7 @@ export const conversationAssignmentsTable = sqliteTable("conversation_assignment
 });
 
 // ============================================================================
-// 3. CRM_ORDERS.DB — Customers, Smart Categorisations, Orders & Past Relations
+// 3. CRM_ORDERS.DB - Customers, Smart Categorisations, Orders & Past Relations
 // ============================================================================
 export const customersTable = sqliteTable("customers", {
   id: text("id").primaryKey(),
@@ -210,7 +210,7 @@ export const orderTrackingsTable = sqliteTable("order_trackings", {
 });
 
 // ============================================================================
-// 4. MARKETING.DB — Templates, ACRIO Marketing Lists & Broadcast Campaigns
+// 4. MARKETING.DB - Templates, ACRIO Marketing Lists & Broadcast Campaigns
 // ============================================================================
 export const templatesTable = sqliteTable("templates", {
   id: text("id").primaryKey(),
@@ -262,7 +262,7 @@ export const broadcastsTable = sqliteTable("broadcasts", {
 });
 
 // ============================================================================
-// 5. BILLING_OPS.DB — Dual Pricing (0.95 / 0.30 vs Actual Meta Cost) & Midnight GDrive Backups
+// 5. BILLING_OPS.DB - Dual Pricing (0.95 / 0.30 vs Actual Meta Cost) & Midnight GDrive Backups
 // ============================================================================
 export const pricingConfigTable = sqliteTable("pricing_config", {
   id: text("id").primaryKey(),
@@ -326,7 +326,7 @@ export const backupLogsTable = sqliteTable("backup_logs", {
 });
 
 // ============================================================================
-// 6. QUEUE_JOBS.DB — Durable LibSQL Micro-Queue & Worker Heartbeats
+// 6. QUEUE_JOBS.DB - Durable LibSQL Micro-Queue & Worker Heartbeats
 // ============================================================================
 export const jobsTable = sqliteTable("jobs", {
   id: text("id").primaryKey(),
@@ -350,7 +350,7 @@ export const workerHeartbeatsTable = sqliteTable("worker_heartbeats", {
 });
 
 // ============================================================================
-// 7. CONTACTS.DB — Master Contacts Directory, Groups, Tags & Import Logs
+// 7. CONTACTS.DB - Master Contacts Directory, Groups, Tags & Import Logs
 // ============================================================================
 export const contactsTable = sqliteTable("contacts", {
   id: text("id").primaryKey(),

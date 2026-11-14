@@ -83,23 +83,44 @@ export async function POST(req: Request) {
             ? "PAUSED"
             : "PENDING_APPROVAL";
 
-        if (metaTplId || metaTplName) {
-          await mkt
-            .execute({
-              sql: `UPDATE templates
-                    SET approval_status = ?,
-                        rejection_reason = ?,
-                        meta_template_id = COALESCE(NULLIF(?, ''), meta_template_id),
-                        updated_at = ?
-                    WHERE meta_template_id = ? OR LOWER(name) = LOWER(?)`,
-              args: [mappedStatus, reason, metaTplId, nowIso, metaTplId, metaTplName],
-            })
-            .catch(() => {});
-          socketHub.emit("template:updated", {
-            metaTemplateId: metaTplId,
-            name: metaTplName,
-            status: mappedStatus,
-          });
+        const cleanMetaTplId = metaTplId.trim();
+        const cleanMetaTplName = metaTplName.trim();
+        if (cleanMetaTplId || cleanMetaTplName) {
+          const matchClauses: string[] = [];
+          const matchArgs: any[] = [];
+          if (cleanMetaTplId) {
+            matchClauses.push(`(meta_template_id = ? AND meta_template_id != '')`);
+            matchArgs.push(cleanMetaTplId);
+          }
+          if (cleanMetaTplName) {
+            matchClauses.push(`(LOWER(name) = LOWER(?) AND name != '')`);
+            matchArgs.push(cleanMetaTplName);
+          }
+          if (matchClauses.length > 0) {
+            /* F9: Guarded template query prevents matching empty strings */
+            await mkt
+              .execute({
+                sql: `UPDATE templates
+                      SET approval_status = ?,
+                          rejection_reason = ?,
+                          meta_template_id = COALESCE(NULLIF(?, ''), meta_template_id),
+                          updated_at = ?
+                      WHERE ${matchClauses.join(" OR ")}`,
+                args: [
+                  mappedStatus,
+                  reason,
+                  cleanMetaTplId || null,
+                  nowIso,
+                  ...matchArgs,
+                ],
+              })
+              .catch(() => {});
+            socketHub.emit("template:updated", {
+              metaTemplateId: cleanMetaTplId,
+              name: cleanMetaTplName,
+              status: mappedStatus,
+            });
+          }
         }
         continue;
       }
@@ -111,6 +132,76 @@ export async function POST(req: Request) {
         const e164 = `+${fromDigits}`;
         const contactName =
           String(contacts[0]?.profile?.name || "").trim() || e164;
+
+        /* F8: Parse Meta timestamp (epoch seconds) to UTC ISO string */
+        let msgTimestampIso = nowIso;
+        if (msg?.timestamp) {
+          const epochSec = Number(msg.timestamp);
+          if (!Number.isNaN(epochSec) && epochSec > 0) {
+            msgTimestampIso = new Date(epochSec * 1000).toISOString();
+          }
+        }
+        const msgWindowExp = new Date(
+          new Date(msgTimestampIso).getTime() + 24 * 60 * 60 * 1000
+        ).toISOString();
+
+        /* F6: Inbound media type parsing and extraction */
+        const rawType = String(msg?.type || "").toLowerCase();
+        let messageType: "TEXT" | "IMAGE" | "DOCUMENT" | "VIDEO" | "AUDIO" = "TEXT";
+        let mediaMeta: {
+          mediaId: string;
+          mimeType: string;
+          filename?: string;
+          caption?: string;
+          sha256?: string;
+        } | null = null;
+
+        if ((rawType === "image" || Boolean(msg?.image)) && msg?.image) {
+          messageType = "IMAGE";
+          const m = msg.image;
+          mediaMeta = {
+            mediaId: String(m.id || ""),
+            mimeType: String(m.mime_type || "image/jpeg"),
+            caption: m.caption ? String(m.caption).trim() : undefined,
+            sha256: m.sha256 ? String(m.sha256) : undefined,
+          };
+        } else if ((rawType === "document" || Boolean(msg?.document)) && msg?.document) {
+          messageType = "DOCUMENT";
+          const m = msg.document;
+          mediaMeta = {
+            mediaId: String(m.id || ""),
+            mimeType: String(m.mime_type || "application/pdf"),
+            filename: m.filename ? String(m.filename).trim() : undefined,
+            caption: m.caption ? String(m.caption).trim() : undefined,
+            sha256: m.sha256 ? String(m.sha256) : undefined,
+          };
+        } else if ((rawType === "video" || Boolean(msg?.video)) && msg?.video) {
+          messageType = "VIDEO";
+          const m = msg.video;
+          mediaMeta = {
+            mediaId: String(m.id || ""),
+            mimeType: String(m.mime_type || "video/mp4"),
+            caption: m.caption ? String(m.caption).trim() : undefined,
+            sha256: m.sha256 ? String(m.sha256) : undefined,
+          };
+        } else if ((rawType === "audio" || Boolean(msg?.audio)) && msg?.audio) {
+          messageType = "AUDIO";
+          const m = msg.audio;
+          mediaMeta = {
+            mediaId: String(m.id || ""),
+            mimeType: String(m.mime_type || "audio/ogg"),
+            sha256: m.sha256 ? String(m.sha256) : undefined,
+          };
+        } else if ((rawType === "sticker" || Boolean(msg?.sticker)) && msg?.sticker) {
+          messageType = "IMAGE";
+          const m = msg.sticker;
+          mediaMeta = {
+            mediaId: String(m.id || ""),
+            mimeType: String(m.mime_type || "image/webp"),
+            sha256: m.sha256 ? String(m.sha256) : undefined,
+          };
+        }
+
         const buttonText =
           msg?.button?.text ||
           msg?.interactive?.button_reply?.title ||
@@ -127,10 +218,21 @@ export async function POST(req: Request) {
             buttonText ||
             buttonPayload
         );
-        const textBody =
-          msg?.text?.body ||
-          buttonText ||
-          "[Media / Attachment]";
+
+        let textBody = "";
+        if (messageType === "IMAGE") {
+          textBody = mediaMeta?.caption || "[Image]";
+        } else if (messageType === "DOCUMENT") {
+          textBody =
+            mediaMeta?.caption ||
+            (mediaMeta?.filename ? `[Document] ${mediaMeta.filename}` : "[Document]");
+        } else if (messageType === "VIDEO") {
+          textBody = mediaMeta?.caption || "[Video]";
+        } else if (messageType === "AUDIO") {
+          textBody = msg?.audio?.voice ? "[Voice Note]" : "[Audio]";
+        } else {
+          textBody = msg?.text?.body || buttonText || "[Message]";
+        }
 
         const existingCust = await crm.execute({
           sql: `SELECT id FROM customers WHERE phone = ? LIMIT 1`,
@@ -173,7 +275,7 @@ export async function POST(req: Request) {
               smart_category, assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name,
               escalation_level, waiting_since, unread_count, last_message_preview, last_message_at, window_expires_at, created_at
             ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', 'ACRIO', 'ACRIO', NULL, 'System (ACRIO)', 'P0', NULL, 1, ?, ?, ?, ?)`,
-            args: [convId, e164, contactName, custId, String(textBody).slice(0, 140), nowIso, windowExp, nowIso],
+            args: [convId, e164, contactName, custId, String(textBody).slice(0, 140), msgTimestampIso, msgWindowExp, nowIso],
           });
         } else {
           const resetToAcrio = prevStatus === "RESOLVED";
@@ -201,8 +303,8 @@ export async function POST(req: Request) {
               isHumanOwned ? 1 : 0,
               nowIso,
               String(textBody).slice(0, 140),
-              nowIso,
-              windowExp,
+              msgTimestampIso,
+              msgWindowExp,
               convId,
             ],
           });
@@ -234,7 +336,7 @@ export async function POST(req: Request) {
 
         // Resolve quoted reply context if customer swiped/replied to an earlier WhatsApp message
         const contextWaId = String(msg?.context?.id || "").trim();
-        let inboundMetadataJson = "{}";
+        const metaObj: Record<string, unknown> = {};
         if (contextWaId) {
           const origRes = await conv.execute({
             sql: `SELECT id, sender_name, sender_type, direction, body
@@ -261,22 +363,46 @@ export async function POST(req: Request) {
                 direction: "OUTBOUND",
                 body: "Customer replied to an earlier message on WhatsApp",
               };
-          inboundMetadataJson = JSON.stringify({ replyTo });
+          metaObj.replyTo = replyTo;
         }
+
+        if (mediaMeta) {
+          metaObj.media = {
+            media_id: mediaMeta.mediaId,
+            mime_type: mediaMeta.mimeType,
+            filename: mediaMeta.filename,
+            caption: mediaMeta.caption,
+            sha256: mediaMeta.sha256,
+            download_url: `/api/media/${mediaMeta.mediaId}`,
+            mediaId: mediaMeta.mediaId,
+            mimeType: mediaMeta.mimeType,
+            downloadUrl: `/api/media/${mediaMeta.mediaId}`,
+          };
+          metaObj.media_id = mediaMeta.mediaId;
+          metaObj.mediaId = mediaMeta.mediaId;
+          metaObj.mime_type = mediaMeta.mimeType;
+          metaObj.mimeType = mediaMeta.mimeType;
+          if (mediaMeta.filename) metaObj.filename = mediaMeta.filename;
+          if (mediaMeta.caption) metaObj.caption = mediaMeta.caption;
+          if (mediaMeta.sha256) metaObj.sha256 = mediaMeta.sha256;
+        }
+
+        const inboundMetadataJson = JSON.stringify(metaObj);
 
         await conv.execute({
           sql: `INSERT INTO messages (
             id, conversation_id, direction, sender_type, sender_name, message_type,
             billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
-          ) VALUES (?, ?, 'INBOUND', 'CUSTOMER', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, 'DELIVERED', ?)`,
+          ) VALUES (?, ?, 'INBOUND', 'CUSTOMER', ?, ?, 'FREE_CHAT', ?, ?, ?, 'DELIVERED', ?)`,
           args: [
             `msg_${crypto.randomUUID().slice(0, 8)}`,
             convId,
             contactName,
+            messageType,
             String(textBody),
             inboundMetadataJson,
             String(msg?.id || ""),
-            nowIso,
+            msgTimestampIso,
           ],
         });
 
@@ -305,9 +431,33 @@ export async function POST(req: Request) {
             rawStatus === "READ" ||
             rawStatus === "FAILED")
         ) {
+          const firstErr =
+            Array.isArray(st?.errors) && st.errors.length > 0
+              ? st.errors[0]
+              : null;
+          const errorCode =
+            firstErr?.code != null ? String(firstErr.code) : null;
+          const errorMessage =
+            firstErr?.message ||
+            firstErr?.title ||
+            firstErr?.error_data?.details ||
+            null;
+          const errorDetails = firstErr?.error_data?.details || null;
+          let stTimestampIso: string | undefined = undefined;
+          if (st?.timestamp) {
+            const epochSec = Number(st.timestamp);
+            if (!Number.isNaN(epochSec) && epochSec > 0) {
+              stTimestampIso = new Date(epochSec * 1000).toISOString();
+            }
+          }
+
           await applyWhatsAppMessageReceipt({
             waMessageId: waId,
-            status: rawStatus,
+            status: rawStatus as "SENT" | "DELIVERED" | "READ" | "FAILED",
+            errorCode,
+            errorMessage,
+            errorDetails,
+            timestampIso: stTimestampIso,
           });
         }
       }

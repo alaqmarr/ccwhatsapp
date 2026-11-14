@@ -47,6 +47,8 @@ const nextConfig: NextConfig = {
     "whatsapp.ccapl.cc",
     "track.ccapl.cc",
     "track.ccapl.in",
+    "ccapl.cc",
+    "www.ccapl.cc",
   ],
   transpilePackages: [
     "@cc/auth",

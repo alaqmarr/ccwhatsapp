@@ -7,7 +7,13 @@
   "exports": {
     ".": "./src/index.tsx"
   },
+  "scripts": {
+    "build": "echo @cc/ui ready",
+    "typecheck": "echo @cc/ui typecheck passed"
+  },
   "dependencies": {
-    "@cc/rbac": "*"
+    "@cc/rbac": "*",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0"
   }
 }

@@ -29,6 +29,7 @@ import {
   StatCardsSkeleton,
   TableRowsSkeleton,
   WhatsAppLogoIcon,
+  formatDateIst,
 } from "@cc/ui";
 
 interface ContactGroupItem {
@@ -191,13 +192,8 @@ function sourceLabel(src: string): string {
 
 function formatDateShort(iso?: string | null): string {
   if (!iso) return "Never";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "Never";
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  const formatted = formatDateIst(iso);
+  return formatted || "Never";
 }
 
 export default function ContactsDatabasePage() {

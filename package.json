@@ -12,12 +12,16 @@
     "build": "npm --workspace @cc/web run build",
     "start": "npm --workspace @cc/web run start -- -p 3007",
     "typecheck": "npm --workspace @cc/web run typecheck",
+    "lint": "node scripts/lint.js",
+    "test:e2e": "tsx scripts/run-e2e-tests.ts",
     "db:reset": "bash reset-db.sh",
     "pm2:start": "pm2 start ecosystem.config.cjs --update-env"
   },
   "dependencies": {
     "@libsql/client": "^0.15.4",
     "bcryptjs": "^3.0.3",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
     "drizzle-orm": "^0.41.0",
     "ioredis": "^6.0.0",
     "lucide-react": "^1.24.0",

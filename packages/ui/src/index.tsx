@@ -728,7 +728,7 @@ function renderWhatsAppInline(
       );
       lastIdx = start + raw.length;
     } else if (match[2]) {
-      // URL — trim trailing punctuation cleanly
+      // URL - trim trailing punctuation cleanly
       let cleanUrl = raw;
       let trailing = "";
       while (/[.,;:!?)]$/.test(cleanUrl)) {
@@ -919,3 +919,6 @@ export function WhatsAppFormattedText({
     </div>
   );
 }
+
+export * from "./dates";
+

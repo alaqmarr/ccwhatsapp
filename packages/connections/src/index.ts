@@ -8,6 +8,7 @@ import {
   getRawLibSqlClient,
   loadAllClassicConceptsProducts,
   loadAllClassicEdgeItems,
+  normalizeWhatsAppPhone,
   resolveBackupDirectory,
   resolveClassicConceptsInternalUrl,
   resolveClassicEdgeInternalUrl,
@@ -30,7 +31,6 @@ import {
 } from "@cc/storage";
 
 const LOCKED_CLAUDE_MODEL = "claude-haiku-5-5" as const;
-const WIRE_FALLBACK_CLAUDE_MODEL = "claude-haiku-4-5-20251001" as const;
 
 export async function callClaudeHaikuMessages(params: {
   apiKey: string;
@@ -59,10 +59,7 @@ export async function callClaudeHaikuMessages(params: {
       signal: AbortSignal.timeout(params.timeoutMs ?? 11000),
     });
 
-  let res = await sendWithModel(LOCKED_CLAUDE_MODEL);
-  if (!res.ok && res.status === 404) {
-    res = await sendWithModel(WIRE_FALLBACK_CLAUDE_MODEL);
-  }
+  const res = await sendWithModel(LOCKED_CLAUDE_MODEL);
   if (!res.ok) return null;
   const json: any = await res.json().catch(() => null);
   const text = json?.content?.[0]?.text;
@@ -83,17 +80,36 @@ export function formatWhatsAppOutboundText(text: string): string {
     .replace(/\s+\u2013\s+/g, ", ")
     .replace(/--+/g, ", ")
     .replace(/\bbespoke\b/gi, "custom-made")
-    .replace(/\bmeticulous(?:ly)?\b/gi, "careful")
-    .replace(/\bseamless(?:ly)?\b/gi, "smooth")
+    .replace(/\bmeticulously\b/gi, "carefully")
+    .replace(/\bmeticulous\b/gi, "careful")
+    .replace(/\bseamlessly\b/gi, "smoothly")
+    .replace(/\bseamless\b/gi, "smooth")
     .replace(/\bunparalleled\b/gi, "top")
-    .replace(/\bstate-of-the-art\b/gi, "modern")
-    .replace(/\bcutting-edge\b/gi, "modern")
-    .replace(/\boptical-grade\b/gi, "crystal-clear")
+    .replace(/\bstate[- ]of[- ]the[- ]art\b/gi, "modern")
+    .replace(/\bcutting[- ]edge\b/gi, "modern")
+    .replace(/\boptical[- ]grade\b/gi, "crystal-clear")
     .replace(/\bconsultative\b/gi, "helpful")
+    .replace(/\bdelving\b/gi, "checking")
+    .replace(/\bdelved\b/gi, "checked")
+    .replace(/\bdelves\b/gi, "checks")
     .replace(/\bdelve\b/gi, "check")
+    .replace(/\belevating\b/gi, "improving")
+    .replace(/\belevated\b/gi, "improved")
+    .replace(/\belevates\b/gi, "improves")
     .replace(/\belevate\b/gi, "improve")
+    .replace(/\brobustly\b/gi, "strongly")
     .replace(/\brobust\b/gi, "strong")
+    .replace(/\butiliz(ing|ation)\b/gi, "using")
+    .replace(/\butilis(ing|ation)\b/gi, "using")
+    .replace(/\butilized\b/gi, "used")
+    .replace(/\butilised\b/gi, "used")
+    .replace(/\butilizes\b/gi, "uses")
+    .replace(/\butilises\b/gi, "uses")
     .replace(/\butilize\b/gi, "use")
+    .replace(/\butilise\b/gi, "use")
+    .replace(/\bleveraging\b/gi, "using")
+    .replace(/\bleveraged\b/gi, "used")
+    .replace(/\bleverages\b/gi, "uses")
     .replace(/\bleverage\b/gi, "use")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+\n/g, "\n")
@@ -295,7 +311,8 @@ export async function sendWhatsAppCloudMessage(params: {
     : String(cfg.mode || "SANDBOX_SIMULATOR");
   const phoneNumberId = String(cfg.phoneNumberId || "").trim();
   const accessToken = String(cfg.systemUserAccessToken || "").trim();
-  const recipientDigits = params.toPhone.replace(/\D/g, "");
+  const normalizedPhone = normalizeWhatsAppPhone(params.toPhone);
+  const recipientDigits = (normalizedPhone || params.toPhone).replace(/\D/g, "");
   const formattedBody = params.templateName
     ? params.bodyText
     : formatWhatsAppOutboundText(params.bodyText);
@@ -892,27 +909,48 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
 
   if (mode === "LIVE_META_CLOUD" && wabaId && accessToken) {
     try {
-      const res = await fetch(
-        `https://graph.facebook.com/v21.0/${encodeURIComponent(
-          wabaId
-        )}/message_templates?fields=id,name,language,category,status,quality_score,rejected_reason,components&limit=100`,
-        {
+      let nextUrl: string | null = `https://graph.facebook.com/v21.0/${encodeURIComponent(
+        wabaId
+      )}/message_templates?fields=id,name,language,category,status,quality_score,rejected_reason,components&limit=100`;
+      const allItems: any[] = [];
+      let pageCount = 0;
+      const MAX_PAGES = 10;
+
+      while (nextUrl && pageCount < MAX_PAGES) {
+        pageCount++;
+        const res = await fetch(nextUrl, {
           headers: { Authorization: `Bearer ${accessToken}` },
           signal: AbortSignal.timeout(20000),
+        });
+        const json: any = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (pageCount === 1) {
+            return {
+              ok: false,
+              mode: "LIVE_META_CLOUD",
+              syncedCount: 0,
+              message:
+                json?.error?.message || `Meta template sync failed (HTTP ${res.status}).`,
+            };
+          }
+          break;
         }
-      );
-      const json: any = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        return {
-          ok: false,
-          mode: "LIVE_META_CLOUD",
-          syncedCount: 0,
-          message:
-            json?.error?.message || `Meta template sync failed (HTTP ${res.status}).`,
-        };
+        const pageItems: any[] = Array.isArray(json?.data) ? json.data : [];
+        allItems.push(...pageItems);
+        if (json?.paging?.next && typeof json.paging.next === "string") {
+          nextUrl = json.paging.next;
+        } else if (json?.paging?.cursors?.after && pageItems.length >= 100) {
+          nextUrl = `https://graph.facebook.com/v21.0/${encodeURIComponent(
+            wabaId
+          )}/message_templates?fields=id,name,language,category,status,quality_score,rejected_reason,components&limit=100&after=${encodeURIComponent(
+            json.paging.cursors.after
+          )}`;
+        } else {
+          nextUrl = null;
+        }
       }
 
-      const items: any[] = Array.isArray(json?.data) ? json.data : [];
+      const items: any[] = allItems;
       let synced = 0;
 
       for (const item of items) {
@@ -944,8 +982,56 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
         const footerComp = comps.find((c) => c.type === "FOOTER");
         const btnComp = comps.find((c) => c.type === "BUTTONS");
 
+        const bodyText = String(bodyComp?.text || name);
+        const bodyMatches = Array.from(bodyText.matchAll(/\{\{(\d+)\}\}/g)).map((m) =>
+          Number(m[1])
+        );
+        const uniqueVarNums = Array.from(new Set(bodyMatches)).sort((a, b) => a - b);
+        const varSpecs = uniqueVarNums.map((num) => {
+          if (item.category === "AUTHENTICATION" && num === 1) {
+            return {
+              index: 1,
+              label: "Verification Code",
+              sourceField: "custom" as const,
+              sampleValue: "482910",
+            };
+          }
+          if (num === 1) {
+            return {
+              index: 1,
+              label: "Customer First Name",
+              sourceField: "customer.firstName" as const,
+              sampleValue: "Rahul",
+            };
+          }
+          if (num === 2) {
+            return {
+              index: 2,
+              label: "Order Number",
+              sourceField: "order.latestNumber" as const,
+              sampleValue: "CC-2026-1089",
+            };
+          }
+          return {
+            index: num,
+            label: `Detail ${num}`,
+            sourceField: "custom" as const,
+            sampleValue: "ready for dispatch",
+          };
+        });
+        const variablesSchemaJson = JSON.stringify(varSpecs);
+
+        const headerType = headerComp?.format ? String(headerComp.format).toUpperCase() : "NONE";
+        const headerText = headerComp?.text ? String(headerComp.text) : null;
+        const headerMediaUrl = headerComp?.example?.header_handle?.[0]
+          ? String(headerComp.example.header_handle[0])
+          : null;
+        const footerText = footerComp?.text ? String(footerComp.text) : null;
+        const category = String(item.category || "MARKETING").toUpperCase();
+        const language = String(item.language || "en");
+
         const existing = await mkt.execute({
-          sql: `SELECT id, buttons_json FROM templates WHERE name = ? LIMIT 1`,
+          sql: `SELECT id, buttons_json, variables_schema_json FROM templates WHERE name = ? LIMIT 1`,
           args: [name],
         });
 
@@ -988,50 +1074,72 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
             })
           : prevButtons;
 
+        const firstUrlBtn = buttons.find((b) => b.type === "URL");
+
         if (existing.rows[0]) {
           await mkt.execute({
             sql: `UPDATE templates
                   SET meta_template_id = ?,
+                      language = ?,
+                      category = ?,
                       approval_status = ?,
                       meta_quality_score = ?,
                       rejection_reason = ?,
+                      header_type = ?,
+                      header_text = COALESCE(?, header_text),
+                      header_media_url = COALESCE(?, header_media_url),
                       body_text = COALESCE(?, body_text),
+                      footer_text = COALESCE(?, footer_text),
+                      cta_label = COALESCE(?, cta_label),
+                      cta_url = COALESCE(?, cta_url),
                       buttons_json = ?,
+                      variables_schema_json = ?,
                       updated_at = ?
                   WHERE id = ?`,
             args: [
               metaId,
+              language,
+              category,
               approvalStatus,
               quality,
               rejReason,
+              headerType,
+              headerText,
+              headerMediaUrl,
               bodyComp?.text ? String(bodyComp.text) : null,
+              footerText,
+              firstUrlBtn?.text || null,
+              firstUrlBtn?.url || null,
               JSON.stringify(buttons),
+              variablesSchemaJson,
               nowIso,
               String(existing.rows[0].id),
             ],
           });
           synced++;
         } else {
-          const firstUrlBtn = buttons.find((b) => b.type === "URL");
           await mkt.execute({
             sql: `INSERT INTO templates (
               id, name, language, category, header_type, header_text, body_text,
-              footer_text, cta_label, cta_url, buttons_json, meta_template_id,
+              header_media_url, footer_text, cta_label, cta_url, buttons_json,
+              variables_schema_json, meta_template_id,
               meta_quality_score, approval_status, rejection_reason, created_by_name,
               updated_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Meta Sync', ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Meta Sync', ?, ?)`,
             args: [
               `tpl_${crypto.randomUUID().slice(0, 8)}`,
               name,
-              String(item.language || "en"),
-              String(item.category || "MARKETING").toUpperCase(),
-              headerComp?.format ? String(headerComp.format) : "NONE",
-              headerComp?.text ? String(headerComp.text) : null,
-              String(bodyComp?.text || name),
-              footerComp?.text ? String(footerComp.text) : null,
+              language,
+              category,
+              headerType,
+              headerText,
+              bodyText,
+              headerMediaUrl,
+              footerText,
               firstUrlBtn?.text || null,
               firstUrlBtn?.url || null,
               JSON.stringify(buttons),
+              variablesSchemaJson,
               metaId,
               quality,
               approvalStatus,
@@ -1145,7 +1253,7 @@ export async function getCachedEcosystemCatalog(): Promise<{
 
 /**
  * Formats matched products/machines into a clean, grouped, numbered list using ultra-short
- * `https://ccapl.cc/<6-char-id>` links — never stuffing raw SEO titles into sentences.
+ * `https://ccapl.cc/<6-char-id>` links - never stuffing raw SEO titles into sentences.
  */
 export function buildGroupedProductShortLinksSection(params: {
   allItems: MainWebsiteProduct[];
@@ -1331,7 +1439,7 @@ export async function runAcrioChatCopilot(params: {
     modelsSummary: c.modelsSummary || null,
   }));
 
-  // Zero Anthropic AI calls here to save AI credits — AI is strictly reserved for
+  // Zero Anthropic AI calls here to save AI credits - AI is strictly reserved for
   // runAcrioAutonomousTurn when a chat is assigned to System (ACRIO)!
   const groupedPreview = buildGroupedProductShortLinksSection({
     allItems,

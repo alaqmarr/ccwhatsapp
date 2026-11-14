@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { formatInTimeZone, toZonedTime, fromZonedTime } from "date-fns-tz";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
 import { canViewCostBreakdown, hasPermission, isDevRole } from "@cc/rbac";
 import { checkAndEscalateWaitingChats } from "@cc/workers";
@@ -22,19 +23,19 @@ function computeAverage(nums: number[]): number | null {
   return Math.round(sum / nums.length);
 }
 
+const APP_TIMEZONE = "Asia/Kolkata";
+
 function toIstDateKey(iso: string): string {
-  const ms = new Date(iso).getTime();
-  if (Number.isNaN(ms)) return "";
-  // IST = UTC + 5h30m (19,800,000 ms)
-  const ist = new Date(ms + 5.5 * 60 * 60 * 1000);
-  return ist.toISOString().slice(0, 10);
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return formatInTimeZone(d, APP_TIMEZONE, "yyyy-MM-dd");
 }
 
 function toIstHour(iso: string): number | null {
-  const ms = new Date(iso).getTime();
-  if (Number.isNaN(ms)) return null;
-  const ist = new Date(ms + 5.5 * 60 * 60 * 1000);
-  return ist.getUTCHours();
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const zoned = toZonedTime(d, APP_TIMEZONE);
+  return zoned.getHours();
 }
 
 function formatHourLabel(h: number): string {
@@ -66,18 +67,9 @@ export async function GET(req: Request) {
 
   if (range === "today") {
     // Start of current IST day
-    const istNow = new Date(nowMs + 5.5 * 60 * 60 * 1000);
-    const startIstUtcMs =
-      Date.UTC(
-        istNow.getUTCFullYear(),
-        istNow.getUTCMonth(),
-        istNow.getUTCDate(),
-        0,
-        0,
-        0
-      ) -
-      5.5 * 60 * 60 * 1000;
-    cutoffIso = new Date(startIstUtcMs).toISOString();
+    const dateKey = formatInTimeZone(new Date(nowMs), APP_TIMEZONE, "yyyy-MM-dd");
+    const startOfIstDay = fromZonedTime(`${dateKey} 00:00:00`, APP_TIMEZONE);
+    cutoffIso = startOfIstDay.toISOString();
     daysSpan = 1;
   } else if (range === "7d") {
     cutoffIso = new Date(nowMs - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -434,12 +426,8 @@ export async function GET(req: Request) {
   for (let i = chartDays - 1; i >= 0; i--) {
     const dMs = nowMs - i * 24 * 60 * 60 * 1000;
     const key = toIstDateKey(new Date(dMs).toISOString());
-    const parsed = new Date(`${key}T00:00:00Z`);
-    const label = parsed.toLocaleDateString("en-IN", {
-      day: "numeric",
-      month: "short",
-      timeZone: "UTC",
-    });
+    const parsed = fromZonedTime(`${key} 00:00:00`, APP_TIMEZONE);
+    const label = formatInTimeZone(parsed, APP_TIMEZONE, "d MMM");
     dailyMap.set(key, {
       date: key,
       label,

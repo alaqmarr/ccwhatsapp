@@ -18,6 +18,8 @@ import {
   MetricStatCard,
   StatCardsSkeleton,
   TableRowsSkeleton,
+  formatDateIst,
+  formatDateTimeIst,
 } from "@cc/ui";
 import type { AccountStatus } from "@cc/rbac";
 
@@ -786,7 +788,7 @@ export default function DevProfitAndOpsPage() {
                     pricing.recentEntries.map((e) => (
                       <tr key={e.id}>
                         <td className="py-2.5 pr-3 text-neutral-500">
-                          {new Date(e.billedAt).toLocaleString()}
+                          {formatDateTimeIst(e.billedAt)}
                         </td>
                         <td className="py-2.5 px-3 font-mono text-neutral-800">
                           {e.customerPhone}
@@ -931,7 +933,7 @@ export default function DevProfitAndOpsPage() {
                         <AccountStatusBadge status={acc.status} />
                       </td>
                       <td className="py-3 pl-3 text-right text-neutral-500">
-                        {new Date(acc.createdAt).toLocaleDateString()}
+                        {formatDateIst(acc.createdAt)}
                       </td>
                     </tr>
                   ))}
@@ -1145,7 +1147,7 @@ export default function DevProfitAndOpsPage() {
                       </div>
                       <p className="text-neutral-600">{log.detailsMessage}</p>
                       <div className="flex items-center justify-between text-[11px] text-neutral-400">
-                        <span>{new Date(log.completedAt).toLocaleString()}</span>
+                        <span>{formatDateTimeIst(log.completedAt)}</span>
                         {log.googleDriveLink && (
                           <a
                             href={log.googleDriveLink}

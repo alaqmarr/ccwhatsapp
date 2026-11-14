@@ -43,7 +43,12 @@ import {
   WhatsAppLogoIcon,
   WhatsAppMessageTicks,
   buildClientProviderTrackingUrl,
+  formatDateIst,
+  formatDateShortIst,
+  formatDateTimeShortIst,
   formatShortLinkUrl,
+  formatThreadTimeIst,
+  formatTimeIst,
   stripWhatsAppFormatting,
 } from "@cc/ui";
 import type {
@@ -99,18 +104,8 @@ function extractQuotedReply(m: ChatMessage): QuotedMessageRef | null {
   };
 }
 
-function formatShortThreadTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const now = new Date();
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  if (sameDay) {
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
-  return d.toLocaleDateString([], { day: "numeric", month: "short" });
+function formatShortThreadTime(iso: string, serverNowMs?: number): string {
+  return formatThreadTimeIst(iso, serverNowMs);
 }
 
 function formatWindowCountdown(
@@ -167,15 +162,7 @@ function formatResponseSpeed(seconds: number | null): string | null {
 }
 
 function formatDateTimeShort(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString([], {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDateTimeShortIst(iso);
 }
 
 const CANNED_QUICK_REPLIES = [
@@ -1621,7 +1608,7 @@ export function InboxClient({
                             : "text-[#667781] font-medium"
                         }`}
                       >
-                        {formatShortThreadTime(t.lastMessageAt)}
+                        {formatThreadTimeIst(t.lastMessageAt, initialData.serverNowMs)}
                       </span>
                     </div>
 
@@ -1682,6 +1669,7 @@ export function InboxClient({
 
                           {waitObj && (
                             <span
+                              suppressHydrationWarning
                               className={`text-[10px] px-1.5 py-0.5 rounded font-medium inline-flex items-center gap-0.5 ${
                                 waitObj.minutes >= 8
                                   ? "bg-red-100 text-red-800"
@@ -1691,7 +1679,7 @@ export function InboxClient({
                               }`}
                             >
                               <Clock className="w-2.5 h-2.5" />
-                              <span>Wait {waitObj.text}</span>
+                              <span suppressHydrationWarning>Wait {waitObj.text}</span>
                             </span>
                           )}
                         </>
@@ -1811,6 +1799,7 @@ export function InboxClient({
                   <div className="flex flex-wrap items-center gap-2 mt-0.5 text-[11px]">
                     {/* Required phrasing: "Chat window expires in {time}" */}
                     <span
+                      suppressHydrationWarning
                       className={`font-medium ${
                         windowStatus.open ? "text-[#008069]" : "text-amber-700"
                       }`}
@@ -1828,6 +1817,7 @@ export function InboxClient({
                     {/* Live Customer Waiting Counter (for Sales Team / Human Staff) */}
                     {activeWait && (
                       <span
+                        suppressHydrationWarning
                         className={`px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 ${
                           activeWait.minutes >= 8
                             ? "bg-red-100 text-red-800"
@@ -1837,7 +1827,7 @@ export function InboxClient({
                         }`}
                       >
                         <Clock className="w-3 h-3" />
-                        <span>Customer waiting {activeWait.text}</span>
+                        <span suppressHydrationWarning>Customer waiting {activeWait.text}</span>
                       </span>
                     )}
 
@@ -2114,6 +2104,7 @@ export function InboxClient({
                             </span>
                           ) : livePendingWait ? (
                             <span
+                              suppressHydrationWarning
                               className={`inline-flex items-center gap-1 font-medium ${
                                 livePendingWait.minutes >= 5
                                   ? "text-red-700"
@@ -2121,7 +2112,7 @@ export function InboxClient({
                               }`}
                             >
                               <Clock className="w-3 h-3" />
-                              <span>
+                              <span suppressHydrationWarning>
                                 Awaiting first response ({livePendingWait.text})
                               </span>
                             </span>
@@ -2164,10 +2155,7 @@ export function InboxClient({
                             <span>Internal Team Note • {m.senderName}</span>
                           </span>
                           <span className="font-normal text-amber-800/80">
-                            {new Date(m.createdAt).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
+                            {formatTimeIst(m.createdAt)}
                           </span>
                         </div>
                         {quotedReply && (
@@ -2348,10 +2336,7 @@ export function InboxClient({
 
                       <div className="flex items-center justify-end gap-1.5 mt-1 text-[10.5px] tabular-nums text-[#667781]">
                         <span>
-                          {new Date(m.createdAt).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
+                          {formatTimeIst(m.createdAt)}
                         </span>
                         {isOutbound && (
                           <WhatsAppMessageTicks
@@ -2440,7 +2425,7 @@ export function InboxClient({
                       </span>
                     </span>
                     {activeWait && (
-                      <span className="text-[11px] font-semibold text-amber-800">
+                      <span suppressHydrationWarning className="text-[11px] font-semibold text-amber-800">
                         Waiting {activeWait.text}
                       </span>
                     )}
@@ -3441,10 +3426,7 @@ export function InboxClient({
                         <div className="flex items-center justify-between text-[11px] font-semibold text-amber-950">
                           <span>{n.senderName}</span>
                           <span className="font-normal text-amber-800">
-                            {new Date(n.createdAt).toLocaleDateString([], {
-                              day: "numeric",
-                              month: "short",
-                            })}
+                            {formatDateShortIst(n.createdAt)}
                           </span>
                         </div>
                         <WhatsAppFormattedText
@@ -3533,7 +3515,7 @@ export function InboxClient({
                                     {formatResponseSpeed(asg.firstResponseSeconds)})
                                   </strong>
                                 ) : pendingWait ? (
-                                  <strong className="text-amber-800">
+                                  <strong suppressHydrationWarning className="text-amber-800">
                                     Waiting {pendingWait.text}
                                   </strong>
                                 ) : (
@@ -3568,7 +3550,7 @@ export function InboxClient({
                               {r.relationType}
                             </span>
                             <span>
-                              {new Date(r.occurredAt).toLocaleDateString()}
+                              {formatDateIst(r.occurredAt)}
                             </span>
                           </div>
                           <p className="text-xs text-neutral-700">{r.summary}</p>
@@ -3597,7 +3579,7 @@ export function InboxClient({
                           <div className="flex items-center justify-between text-[11px] text-blue-800 font-medium">
                             <span>{eq.source}</span>
                             <span>
-                              {new Date(eq.createdAt).toLocaleDateString()}
+                              {formatDateIst(eq.createdAt)}
                             </span>
                           </div>
                           <p className="text-xs text-neutral-800">{eq.message}</p>

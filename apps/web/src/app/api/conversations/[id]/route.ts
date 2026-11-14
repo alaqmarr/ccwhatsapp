@@ -191,7 +191,7 @@ export async function GET(
     p1WaitMinutes: Number(t.p1_wait_minutes ?? 12),
   }));
 
-  // Never run ACRIO on chat open/refresh — ACRIO only runs in the backend when assigned to System (ACRIO)
+  // Never run ACRIO on chat open/refresh - ACRIO only runs in the backend when assigned to System (ACRIO)
   const acrio = null;
 
   return NextResponse.json({
@@ -332,22 +332,26 @@ export async function POST(
 
     const templateName = body.templateName ? String(body.templateName).trim() : undefined;
     const isTemplate = body.messageType === "TEMPLATE" || Boolean(templateName);
+    let tplRecord: Record<string, unknown> | null = null;
     if (isTemplate && templateName) {
       const mkt = getRawLibSqlClient("marketing");
       const tplCheck = await mkt.execute({
-        sql: `SELECT approval_status FROM templates WHERE name = ? LIMIT 1`,
+        sql: `SELECT approval_status, language, header_type, header_media_url, variables_schema_json FROM templates WHERE name = ? LIMIT 1`,
         args: [templateName],
       });
-      if (tplCheck.rows[0] && String(tplCheck.rows[0].approval_status) !== "APPROVED") {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: `Only official Meta-APPROVED templates can be sent on WhatsApp ("${templateName}" is ${String(
-              tplCheck.rows[0].approval_status
-            )}).`,
-          },
-          { status: 400 }
-        );
+      if (tplCheck.rows[0]) {
+        tplRecord = tplCheck.rows[0] as Record<string, unknown>;
+        if (String(tplRecord.approval_status) !== "APPROVED") {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: `Only official Meta-APPROVED templates can be sent on WhatsApp ("${templateName}" is ${String(
+                tplRecord.approval_status
+              )}).`,
+            },
+            { status: 400 }
+          );
+        }
       }
     }
     const templateBillingCategory: BillingMessageCategory =
@@ -380,10 +384,66 @@ export async function POST(
     if (ctaButtonMeta) metaObj.ctaButton = ctaButtonMeta;
     const metadataJson = JSON.stringify(metaObj);
 
+    /* Forward template components and language code to prevent Meta error 132000 */
+    let templateComponents: Record<string, unknown>[] | undefined = Array.isArray(
+      body.templateComponents
+    )
+      ? (body.templateComponents as Record<string, unknown>[])
+      : undefined;
+
+    if (
+      !templateComponents &&
+      (Array.isArray(body.templateVariables) || Array.isArray(body.variables))
+    ) {
+      const rawVars = (body.templateVariables || body.variables) as unknown[];
+      if (rawVars.length > 0) {
+        templateComponents = [
+          {
+            type: "body",
+            parameters: rawVars.map((v) => ({
+              type: "text",
+              text: String(v ?? ""),
+            })),
+          },
+        ];
+      }
+    }
+
+    const headerType = String(tplRecord?.header_type || "NONE").toUpperCase();
+    const headerMediaUrl = body.headerMediaUrl
+      ? String(body.headerMediaUrl).trim()
+      : tplRecord?.header_media_url
+      ? String(tplRecord.header_media_url).trim()
+      : "";
+    if (
+      (headerType === "IMAGE" || headerType === "VIDEO" || headerType === "DOCUMENT") &&
+      headerMediaUrl
+    ) {
+      if (!templateComponents) templateComponents = [];
+      const hasHeader = templateComponents.some(
+        (c) => String(c?.type || "").toLowerCase() === "header"
+      );
+      if (!hasHeader) {
+        const mediaKey = headerType.toLowerCase();
+        templateComponents.unshift({
+          type: "header",
+          parameters: [{ type: mediaKey, [mediaKey]: { link: headerMediaUrl } }],
+        });
+      }
+    }
+
+    const languageCode = body.languageCode
+      ? String(body.languageCode).trim()
+      : tplRecord?.language
+      ? String(tplRecord.language).trim()
+      : undefined;
+
     const sendRes = await sendWhatsAppCloudMessage({
       toPhone: customerPhone,
       bodyText: text,
       templateName,
+      templateComponents,
+      languageCode,
       replyToWaMessageId: replyMeta?.waMessageId || undefined,
       ctaButton: ctaButtonMeta
         ? {

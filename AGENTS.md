@@ -3,7 +3,7 @@
 ## Domain
 - Official WhatsApp platform domain: **`whatsapp.ccapl.cc`** (`https://whatsapp.ccapl.cc`).
 - Webhook URL: `https://whatsapp.ccapl.cc/api/webhooks/whatsapp`
-- Custom short links: `https://whatsapp.ccapl.cc/l/<code-slug>`
+- Custom short links: `https://ccapl.cc/<6-char-id>` (with `/l/[code]` backwards-compatible)
 
 ## UI / UX Rules
 1. **No AI design patterns**: Avoid neon purple/indigo gradients, sparkles, bubbly pills, shouty micro-caps, or generic AI SaaS templates.

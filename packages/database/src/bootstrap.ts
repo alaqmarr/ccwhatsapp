@@ -248,7 +248,7 @@ async function runBootstrapInternal(): Promise<void> {
     }
   }
 
-  // 2b. contacts.db — Master WhatsApp Contacts Directory, Groups & Import History
+  // 2b. contacts.db - Master WhatsApp Contacts Directory, Groups & Import History
   await contacts.batch(
     [
       `CREATE TABLE IF NOT EXISTS contacts (
@@ -1295,7 +1295,7 @@ async function seedInitialOperationalData(): Promise<void> {
                   "Hello {{1}}, explore our latest crystal-clear banquet podiums and tabletop menu holders crafted for hotels and convention halls.",
                   "Classic Concepts • Reply STOP to opt out",
                   "View Hotel Collection",
-                  "https://whatsapp.ccapl.cc/l/stage-podiums",
+                  "https://ccapl.cc/stage-podiums",
                   "APPROVED",
                   120,
                   isoNow,
@@ -1314,7 +1314,7 @@ async function seedInitialOperationalData(): Promise<void> {
                   "Hello {{1}}, planning an upcoming college event or convocation? Check our ready-to-print acrylic trophies, plaques, and stage podiums.",
                   "Classic Concepts • Since 2008",
                   "See Award Options",
-                  "https://whatsapp.ccapl.cc/l/student-awards",
+                  "https://ccapl.cc/student-awards",
                   "APPROVED",
                   85,
                   isoNow,
