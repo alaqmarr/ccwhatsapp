@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
@@ -543,7 +544,7 @@ export interface MainWebsiteProduct {
   specsSummary?: string | null;
 }
 
-export function resolvePublicShortLinkOrigin(): string {
+export function resolveWhatsAppWebAppOrigin(): string {
   const raw = (
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.APP_URL ||
@@ -551,6 +552,24 @@ export function resolvePublicShortLinkOrigin(): string {
     "https://whatsapp.ccapl.cc"
   ).trim();
   return raw.replace(/\/+$/, "");
+}
+
+export function resolveShortLinkDomainOrigin(): string {
+  const raw = (
+    process.env.SHORTLINK_PUBLIC_ORIGIN ||
+    process.env.NEXT_PUBLIC_SHORTLINK_ORIGIN ||
+    "https://ccapl.cc"
+  ).trim();
+  return raw.replace(/\/+$/, "");
+}
+
+export function resolvePublicShortLinkOrigin(): string {
+  return resolveShortLinkDomainOrigin();
+}
+
+export function buildPublicShortUrl(code: string): string {
+  const clean = String(code || "").trim().replace(/^\/+/, "");
+  return `${resolveShortLinkDomainOrigin()}/${clean}`;
 }
 
 export function resolvePublicTrackingOrigin(): string {
@@ -1025,6 +1044,185 @@ export async function deleteOrderTracking(idOrKey: string): Promise<boolean> {
   return Number(res.rowsAffected ?? 0) > 0;
 }
 
+export function resolveEcosystemBridgeKey(): string {
+  resolveMonorepoRoot();
+  return (
+    process.env.CC_BRIDGE_KEY ||
+    process.env.INTERNAL_BRIDGE_SECRET ||
+    "cc_internal_ecosystem_bridge_2026"
+  ).trim();
+}
+
+export function resolveClassicConceptsInternalUrl(): string {
+  resolveMonorepoRoot();
+  return (
+    process.env.CLASSICCONCEPTS_API_URL || "http://127.0.0.1:3003"
+  )
+    .trim()
+    .replace(/\/+$/, "");
+}
+
+export function resolveClassicEdgeInternalUrl(): string {
+  resolveMonorepoRoot();
+  return (process.env.CLASSICEDGE_API_URL || "http://127.0.0.1:3002")
+    .trim()
+    .replace(/\/+$/, "");
+}
+
+export interface EcosystemBridgeStatus {
+  classicEdge3002: {
+    online: boolean;
+    url: string;
+    latencyMs: number;
+    dbFallbackAvailable: boolean;
+    smtpConfigured?: boolean;
+  };
+  classicConcepts3003: {
+    online: boolean;
+    url: string;
+    latencyMs: number;
+    dbFallbackAvailable: boolean;
+    smtpConfigured?: boolean;
+  };
+  whatsapp3007: {
+    online: boolean;
+    port: number;
+  };
+  checkedAt: string;
+}
+
+export async function checkEcosystemBridgesHealth(): Promise<EcosystemBridgeStatus> {
+  const key = resolveEcosystemBridgeKey();
+  const ceUrl = resolveClassicEdgeInternalUrl();
+  const ccUrl = resolveClassicConceptsInternalUrl();
+
+  const probe = async (baseUrl: string) => {
+    const t0 = Date.now();
+    try {
+      const res = await fetch(`${baseUrl}/api/internal/bridge?action=health`, {
+        headers: { "x-cc-bridge-key": key },
+        signal: AbortSignal.timeout(2200),
+      });
+      if (!res.ok) {
+        return { online: false, latencyMs: Date.now() - t0, smtpConfigured: false };
+      }
+      const data: any = await res.json().catch(() => ({}));
+      return {
+        online: Boolean(data?.ok),
+        latencyMs: Date.now() - t0,
+        smtpConfigured: Boolean(data?.smtpConfigured),
+      };
+    } catch {
+      return { online: false, latencyMs: Date.now() - t0, smtpConfigured: false };
+    }
+  };
+
+  const [ceProbe, ccProbe] = await Promise.all([probe(ceUrl), probe(ccUrl)]);
+
+  return {
+    classicEdge3002: {
+      online: ceProbe.online,
+      url: ceUrl,
+      latencyMs: ceProbe.latencyMs,
+      dbFallbackAvailable: Boolean(resolveClassicEdgeDbPath()),
+      smtpConfigured: ceProbe.smtpConfigured,
+    },
+    classicConcepts3003: {
+      online: ccProbe.online,
+      url: ccUrl,
+      latencyMs: ccProbe.latencyMs,
+      dbFallbackAvailable: Boolean(resolveMainWebsiteDbPath()),
+      smtpConfigured: ccProbe.smtpConfigured,
+    },
+    whatsapp3007: {
+      online: true,
+      port: Number(process.env.PORT || 3007),
+    },
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function mapWebsiteBridgeStatusToShipment(raw: string): ShipmentStatus {
+  const s = String(raw || "").trim().toUpperCase();
+  if (/DELIVER|COMPLETE/.test(s)) return "DELIVERED";
+  if (/OUT_FOR_DELIVERY/.test(s)) return "OUT_FOR_DELIVERY";
+  if (/IN_TRANSIT/.test(s)) return "IN_TRANSIT";
+  if (/DISPATCH|SHIP/.test(s)) return "DISPATCHED";
+  if (/READY/.test(s)) return "READY_FOR_DISPATCH";
+  if (/PROCESS|PRODUCTION|PAID/.test(s)) return "IN_PRODUCTION";
+  return "ORDER_CONFIRMED";
+}
+
+async function fetchWebsiteBridgeOrders(params: {
+  orderId?: string;
+  phone?: string;
+  email?: string;
+}): Promise<OrderTrackingRecord[]> {
+  const key = resolveEcosystemBridgeKey();
+  const qs = new URLSearchParams({ action: "orders" });
+  if (params.orderId) qs.set("orderId", params.orderId);
+  if (params.phone) qs.set("phone", params.phone);
+  if (params.email) qs.set("email", params.email);
+
+  const endpoints = [
+    { url: resolveClassicConceptsInternalUrl(), defaultBrand: "CLASSIC_CONCEPTS" as const },
+    { url: resolveClassicEdgeInternalUrl(), defaultBrand: "CLASSIC_EDGE_53" as const },
+  ];
+
+  const found: OrderTrackingRecord[] = [];
+
+  await Promise.all(
+    endpoints.map(async (ep) => {
+      try {
+        const res = await fetch(`${ep.url}/api/internal/bridge?${qs.toString()}`, {
+          headers: { "x-cc-bridge-key": key },
+          signal: AbortSignal.timeout(2500),
+        });
+        if (!res.ok) return;
+        const json: any = await res.json().catch(() => ({}));
+        const orders: any[] = Array.isArray(json?.orders) ? json.orders : [];
+        for (const o of orders) {
+          const displayOrderId = sanitizeOrderDisplayId(
+            String(o.orderNumber || o.orderId || o.id || "")
+          );
+          if (!displayOrderId) continue;
+          const shipmentStatus = mapWebsiteBridgeStatusToShipment(
+            String(o.shipmentStatus || o.status || "ORDER_CONFIRMED")
+          );
+          const upserted = await upsertOrderTracking({
+            orderId: displayOrderId,
+            brand: o.brand || ep.defaultBrand,
+            customerName: String(o.customerName || o.name || ""),
+            customerPhone: normalizeWhatsAppPhone(String(o.customerPhone || o.phone || "")) || String(o.customerPhone || o.phone || ""),
+            itemsSummary: String(o.itemsSummary || "Website Order"),
+            providerCode: String(o.providerCode || "WORKSHOP"),
+            providerName: String(
+              o.providerName ||
+                (ep.defaultBrand === "CLASSIC_EDGE_53"
+                  ? "Classic Edge 53 Dispatch"
+                  : "Classic Concepts Dispatch")
+            ),
+            awbNumber: String(o.awbNumber || ""),
+            providerTrackingUrl: String(o.providerTrackingUrl || ""),
+            shipmentStatus,
+            createdByName:
+              ep.defaultBrand === "CLASSIC_EDGE_53"
+                ? "Classic Edge 53 (:3002)"
+                : "Classic Concepts (:3003)",
+          });
+          if (upserted.ok && upserted.tracking) {
+            found.push(upserted.tracking);
+          }
+        }
+      } catch {
+        // Non-blocking: falls back to local SQLite below
+      }
+    })
+  );
+
+  return found;
+}
+
 export async function lookupOrderTracking(params: {
   orderInput: string;
   preferredBrand?: string;
@@ -1057,7 +1255,14 @@ export async function lookupOrderTracking(params: {
     matchedRow = allRes.rows.find((r) => {
       const rAlnum = stripOrderAlnum(String(r.order_id || ""));
       const rAwb = stripOrderAlnum(String(r.awb_number || ""));
-      return rAlnum === alnumKey || (rAwb.length >= 5 && rAwb === alnumKey);
+      return (
+        rAlnum === alnumKey ||
+        `cc${rAlnum}` === alnumKey ||
+        `ce53${rAlnum}` === alnumKey ||
+        rAlnum === `cc${alnumKey}` ||
+        rAlnum === `ce53${alnumKey}` ||
+        (rAwb.length >= 5 && rAwb === alnumKey)
+      );
     }) as Record<string, unknown> | undefined;
   }
 
@@ -1082,7 +1287,13 @@ export async function lookupOrderTracking(params: {
     return mapOrderTrackingRow(matchedRow);
   }
 
-  // 2. Fallback to CRM customer_orders if order exists in workshop/CRM without courier AWB yet
+  // 2. Live HTTP Bridge check across Classic Concepts (:3003) and Classic Edge 53 (:3002)
+  const bridgeOrders = await fetchWebsiteBridgeOrders({ orderId: decoded });
+  if (bridgeOrders.length > 0) {
+    return bridgeOrders[0];
+  }
+
+  // 3. Fallback to CRM customer_orders if order exists in workshop/CRM without courier AWB yet
   const crmOrdersRes = await crm.execute(
     `SELECT o.*, c.name as customer_name
      FROM customer_orders o
@@ -1117,33 +1328,24 @@ export async function lookupOrderTracking(params: {
       /^https?:\/\//i.test(maybeUrl) &&
       !/classicconcepts\.in|classicedge53\.com/i.test(maybeUrl);
 
-    return {
-      id: String(matchedCrmOrder.id),
+    const upserted = await upsertOrderTracking({
       orderId: orderNum,
-      lookupKey: normalizeOrderLookupKey(orderNum),
       brand,
-      brandLabel: brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts",
       customerName: String(matchedCrmOrder.customer_name || ""),
       customerPhone: String(matchedCrmOrder.customer_phone || ""),
-      conversationId: null,
       itemsSummary: items,
       providerCode: "WORKSHOP",
       providerName: isExternalProviderUrl ? "Courier Partner" : "Workshop Fulfillment",
-      awbNumber: "",
       providerTrackingUrl: isExternalProviderUrl ? maybeUrl : "",
-      publicTrackingUrl: `${resolvePublicTrackingOrigin()}/${encodeURIComponent(orderNum)}`,
       shipmentStatus,
-      estimatedDelivery: "",
-      notes: "",
-      lookupsCount: 1,
-      lastLookedUpAt: new Date().toISOString(),
-      createdByName: "CRM",
-      createdAt: String(matchedCrmOrder.ordered_at || ""),
-      updatedAt: String(matchedCrmOrder.ordered_at || ""),
-    };
+      createdByName: "CRM Sync",
+    });
+    if (upserted.ok && upserted.tracking) {
+      return upserted.tracking;
+    }
   }
 
-  // 3. Fallback to Classic Concepts website CartOrder table (dev.db) if present
+  // 4. Fallback to Classic Concepts website CartOrder table (dev.db) if present
   const siteClient = getMainCatalogClient();
   if (siteClient) {
     try {
@@ -1174,85 +1376,239 @@ export async function lookupOrderTracking(params: {
           )
           .join(", ");
         const st = String(foundCart.status || "Pending");
-        const shipmentStatus: ShipmentStatus =
-          st === "Completed"
-            ? "DELIVERED"
-            : st === "Processing"
-            ? "IN_PRODUCTION"
-            : "ORDER_CONFIRMED";
-        const displayId = cid.slice(-6).toUpperCase();
-        return {
-          id: cid,
+        const shipmentStatus = mapWebsiteBridgeStatusToShipment(st);
+        const displayId = `CC-${cid.slice(-6).toUpperCase()}`;
+        const upserted = await upsertOrderTracking({
           orderId: displayId,
-          lookupKey: normalizeOrderLookupKey(displayId),
           brand: "CLASSIC_CONCEPTS",
-          brandLabel: "Classic Concepts",
           customerName: String(foundCart.name || ""),
-          customerPhone: String(foundCart.phone || ""),
-          conversationId: null,
-          itemsSummary: summary || "Website Cart Order",
+          customerPhone: normalizeWhatsAppPhone(String(foundCart.phone || "")) || String(foundCart.phone || ""),
+          itemsSummary: summary || "Classic Concepts Website Order",
           providerCode: "WORKSHOP",
           providerName: "Classic Concepts Dispatch",
-          awbNumber: "",
-          providerTrackingUrl: "",
-          publicTrackingUrl: `${resolvePublicTrackingOrigin()}/${displayId}`,
           shipmentStatus,
-          estimatedDelivery: "",
-          notes: "",
-          lookupsCount: 1,
-          lastLookedUpAt: new Date().toISOString(),
-          createdByName: "Website",
-          createdAt: String(foundCart.createdAt || ""),
-          updatedAt: String(foundCart.createdAt || ""),
-        };
+          createdByName: "Classic Concepts DB",
+        });
+        if (upserted.ok && upserted.tracking) {
+          return upserted.tracking;
+        }
       }
     } catch {
       // Ignore if CartOrder table doesn't exist
     }
   }
 
+  // 5. Fallback to Classic Edge 53 website Order table (dev.db) if present
+  const ceClient = getClassicEdgeClient();
+  if (ceClient) {
+    try {
+      const ceOrdersRes = await ceClient.execute(
+        `SELECT id, customerName, customerPhone, status, items, createdAt FROM "Order" ORDER BY createdAt DESC LIMIT 200`
+      );
+      const foundCe = ceOrdersRes.rows.find((r: Record<string, unknown>) => {
+        const cid = String(r.id || "");
+        const short6 = cid.slice(-6).toLowerCase();
+        return (
+          cid.toLowerCase() === decoded.toLowerCase() ||
+          short6 === alnumKey ||
+          `ce53${short6}` === alnumKey ||
+          `ce${short6}` === alnumKey
+        );
+      });
+      if (foundCe) {
+        const cid = String(foundCe.id);
+        let summary = "Classic Edge 53 Machine / Consumable Order";
+        try {
+          const parsedItems = JSON.parse(String(foundCe.items || "[]"));
+          if (Array.isArray(parsedItems) && parsedItems.length > 0) {
+            summary = parsedItems
+              .map((it: any) => `${Number(it.quantity || 1)}x ${String(it.name || it.productName || "Item")}`)
+              .join(", ");
+          }
+        } catch {
+          // Keep default summary
+        }
+        const displayId = `CE53-${cid.slice(-6).toUpperCase()}`;
+        const upserted = await upsertOrderTracking({
+          orderId: displayId,
+          brand: "CLASSIC_EDGE_53",
+          customerName: String(foundCe.customerName || ""),
+          customerPhone: normalizeWhatsAppPhone(String(foundCe.customerPhone || "")) || String(foundCe.customerPhone || ""),
+          itemsSummary: summary,
+          providerCode: "WORKSHOP",
+          providerName: "Classic Edge 53 Dispatch",
+          shipmentStatus: mapWebsiteBridgeStatusToShipment(String(foundCe.status || "Pending")),
+          createdByName: "Classic Edge 53 DB",
+        });
+        if (upserted.ok && upserted.tracking) {
+          return upserted.tracking;
+        }
+      }
+    } catch {
+      // Ignore if Order table doesn't exist
+    }
+  }
+
   return null;
 }
 
-function toShortSlugPart(input: string): string {
-  return String(input || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+export async function lookupCustomerOrdersAcrossEcosystem(params: {
+  orderInput?: string;
+  customerPhone?: string;
+  customerEmail?: string;
+}): Promise<{
+  exactMatch: OrderTrackingRecord | null;
+  phoneOrders: OrderTrackingRecord[];
+}> {
+  await ensureOrderTrackingTableExists();
+  const crm = getRawLibSqlClient("crm_orders");
+
+  let exactMatch: OrderTrackingRecord | null = null;
+  if (params.orderInput?.trim()) {
+    exactMatch = await lookupOrderTracking({
+      orderInput: params.orderInput.trim(),
+      incrementCounter: true,
+    });
+  }
+
+  const last10 = String(params.customerPhone || "")
+    .replace(/\D/g, "")
+    .slice(-10);
+
+  const byOrderKey = new Map<string, OrderTrackingRecord>();
+  if (exactMatch) {
+    byOrderKey.set(exactMatch.lookupKey, exactMatch);
+  }
+
+  if (last10.length >= 10 || params.customerEmail?.trim()) {
+    // Pull live orders by phone/email across :3003 & :3002 bridges
+    const bridgeFound = await fetchWebsiteBridgeOrders({
+      phone: last10 || undefined,
+      email: params.customerEmail?.trim() || undefined,
+    });
+    for (const b of bridgeFound) {
+      byOrderKey.set(b.lookupKey, b);
+    }
+
+    // Pull local order_trackings matching phone last-10 digits
+    if (last10.length >= 10) {
+      const trkRes = await crm.execute({
+        sql: `SELECT * FROM order_trackings WHERE customer_phone LIKE ? ORDER BY updated_at DESC LIMIT 8`,
+        args: [`%${last10}%`],
+      });
+      for (const r of trkRes.rows) {
+        const mapped = mapOrderTrackingRow(r as Record<string, unknown>);
+        if (!byOrderKey.has(mapped.lookupKey)) {
+          byOrderKey.set(mapped.lookupKey, mapped);
+        }
+      }
+
+      // Also check customer_orders in crm_orders.db
+      const crmRes = await crm.execute({
+        sql: `SELECT o.*, c.name as customer_name
+              FROM customer_orders o
+              LEFT JOIN customers c ON c.id = o.customer_id
+              WHERE o.customer_phone LIKE ?
+              ORDER BY o.ordered_at DESC
+              LIMIT 5`,
+        args: [`%${last10}%`],
+      });
+      for (const r of crmRes.rows) {
+        const orderNum = String(r.order_number || "");
+        const key = normalizeOrderLookupKey(orderNum);
+        if (key && !byOrderKey.has(key)) {
+          const up = await upsertOrderTracking({
+            orderId: orderNum,
+            brand: inferOrderBrand(orderNum, null, String(r.items_summary || "")),
+            customerName: String(r.customer_name || ""),
+            customerPhone: String(r.customer_phone || ""),
+            itemsSummary: String(r.items_summary || ""),
+            providerCode: "WORKSHOP",
+            providerName: "Workshop Fulfillment",
+            shipmentStatus: mapWebsiteBridgeStatusToShipment(String(r.fulfillment_status || "IN_PRODUCTION")),
+            createdByName: "CRM Sync",
+          });
+          if (up.ok && up.tracking) {
+            byOrderKey.set(up.tracking.lookupKey, up.tracking);
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    exactMatch,
+    phoneOrders: Array.from(byOrderKey.values()).slice(0, 6),
+  };
 }
 
-function buildPreferredProductShortCode(item: MainWebsiteProduct): string {
-  const prefix = item.brand === "CLASSIC_EDGE_53" ? "ce53" : "cc";
-  const firstSku = item.sku
-    ? item.sku.split("/")[0].split(",")[0].trim()
-    : "";
-  let skuPart = toShortSlugPart(firstSku);
-  if (prefix === "cc" && skuPart.startsWith("cc-")) {
-    skuPart = skuPart.slice(3);
-  } else if (prefix === "ce53" && skuPart.startsWith("ce53-")) {
-    skuPart = skuPart.slice(5);
-  } else if (prefix === "ce53" && skuPart.startsWith("ce-")) {
-    skuPart = skuPart.slice(3);
+const SHORT_OUTER_ALPHABET =
+  "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+const SHORT_INNER_ALPHABET =
+  "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789-@+$=";
+
+/**
+ * Generates an exact 6-character URL-safe short ID for `https://ccapl.cc/<6-char-id>`.
+ * Outer characters (index 0 & 5) are alphanumeric so WhatsApp/iOS/Android link auto-detection
+ * never trims trailing punctuation, while inner characters include numbers + URL special chars.
+ */
+export function generateSixCharShortCode(seed?: string, salt = 0): string {
+  const bytes = seed
+    ? crypto.createHash("sha256").update(`${seed}#${salt}`).digest()
+    : crypto.randomBytes(8);
+  const c0 = SHORT_OUTER_ALPHABET[bytes[0] % SHORT_OUTER_ALPHABET.length];
+  const c1 = SHORT_INNER_ALPHABET[bytes[1] % SHORT_INNER_ALPHABET.length];
+  const c2 = SHORT_INNER_ALPHABET[bytes[2] % SHORT_INNER_ALPHABET.length];
+  const c3 = SHORT_INNER_ALPHABET[bytes[3] % SHORT_INNER_ALPHABET.length];
+  const c4 = SHORT_INNER_ALPHABET[bytes[4] % SHORT_INNER_ALPHABET.length];
+  const c5 = SHORT_OUTER_ALPHABET[bytes[5] % SHORT_OUTER_ALPHABET.length];
+  return `${c0}${c1}${c2}${c3}${c4}${c5}`;
+}
+
+/**
+ * Cleans verbose/scraped SEO product titles so AI & WhatsApp lists show crisp, human-readable names
+ * (strips `| ...` SEO tails, scraped questions like "Do you like this...?", and verbose comma tails).
+ */
+export function cleanDisplayProductName(raw: string): string {
+  let text = String(raw || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "Acrylic Product";
+
+  // Strip pipe-separated SEO suffixes e.g. "| Custom Cut Sizes Available..."
+  text = text.split("|")[0].trim();
+
+  // Strip scraped conversational tails or stray questions e.g. "Do you like this personality?"
+  text = text
+    .replace(/\b(?:do you like|would you like|what do you think)[^?]*\??/gi, "")
+    .replace(/\s*\?+$/, "")
+    .trim();
+
+  // Strip em-dashes / double-hyphens suffixes if verbose
+  if (text.length > 52 && /\s[—–-]\s/.test(text)) {
+    text = text.split(/\s[—–-]\s/)[0].trim();
   }
 
-  if (skuPart.length >= 3 && skuPart.length <= 18 && skuPart !== "test") {
-    return `${prefix}-${skuPart}`;
+  // If comma-stuffed SEO title ("Premium Multi-Purpose Acrylic Sheets, Clear & Coloured Acrylic Panels"), keep the primary name
+  if (text.includes(",")) {
+    const firstPart = text.split(",")[0].trim();
+    if (firstPart.length >= 14) {
+      text = firstPart;
+    }
   }
 
-  const rawSlug = String(item.slug || "").trim();
-  const isLikelyCuid = /^c[a-z0-9]{20,}$/i.test(rawSlug);
-  const rawCandidate = !isLikelyCuid && rawSlug ? rawSlug : item.name;
-  let slugPart = toShortSlugPart(rawCandidate).replace(/^acrylic-/, "");
-  if (!slugPart) {
-    slugPart = toShortSlugPart(rawCandidate) || toShortSlugPart(item.id) || "item";
+  // Hard cap at 64 chars on word boundary
+  if (text.length > 64) {
+    text = text.slice(0, 62).replace(/\s+\S*$/, "").trim();
   }
-  slugPart = slugPart.slice(0, 24).replace(/-+$/, "");
-  if (prefix === "cc" && slugPart.startsWith("cc-")) {
-    slugPart = slugPart.slice(3);
-  } else if (prefix === "ce53" && slugPart.startsWith("ce53-")) {
-    slugPart = slugPart.slice(5);
-  }
-  return `${prefix}-${slugPart || "item"}`;
+
+  return text || "Acrylic Product";
+}
+
+function buildPreferredProductShortCode(item: MainWebsiteProduct, salt = 0): string {
+  const brandPrefix = item.brand === "CLASSIC_EDGE_53" ? "ce53" : "cc";
+  const seed = `${brandPrefix}:${item.itemType.toLowerCase()}:${item.slug || item.id}`;
+  return generateSixCharShortCode(seed, salt);
 }
 
 function appendWhatsAppShortLinkUtm(
@@ -1277,16 +1633,17 @@ let shortLinkTableReady = false;
 let shortLinkSyncChain: Promise<void> = Promise.resolve();
 
 /**
- * Automatically creates or updates short links (`/l/<code>` in `conversations.db -> custom_links`)
- * for every product, machine, and consumable fetched from Classic Concepts (`classicconcepts.in`)
- * and Classic Edge 53 (`classicedge53.com`), preserving existing short codes and click counts.
+ * Automatically creates or updates ultra-short 6-character links (`https://ccapl.cc/<6-char-id>`)
+ * in `conversations.db -> custom_links` for every product, machine, and consumable fetched from
+ * Classic Concepts (`classicconcepts.in`) and Classic Edge 53 (`classicedge53.com`),
+ * upgrading any legacy long auto-slugs in-place while preserving click counts!
  */
 export async function ensureEcosystemProductShortLinks(
   items: MainWebsiteProduct[]
 ): Promise<MainWebsiteProduct[]> {
   if (!items || items.length === 0) return items;
 
-  const origin = resolvePublicShortLinkOrigin();
+  const origin = resolveShortLinkDomainOrigin();
   const codeByIndex = new Map<number, string>();
 
   const task = shortLinkSyncChain.then(async () => {
@@ -1328,13 +1685,13 @@ export async function ensureEcosystemProductShortLinks(
       const usedCodes = new Set<string>();
 
       for (const row of existingRes.rows) {
-        const code = String(row.code || "").trim().toLowerCase();
-        if (code) usedCodes.add(code);
+        const rawCode = String(row.code || "").trim();
+        if (rawCode) usedCodes.add(rawCode.toLowerCase());
         const pSlug = row.product_slug ? String(row.product_slug).trim() : "";
         if (pSlug && !byProductKey.has(pSlug)) {
           byProductKey.set(pSlug, {
             id: String(row.id),
-            code,
+            code: rawCode,
             title: String(row.title || ""),
             targetUrl: String(row.target_url || ""),
             utmCampaign: String(row.utm_campaign || ""),
@@ -1356,23 +1713,39 @@ export async function ensureEcosystemProductShortLinks(
           item.brand === "CLASSIC_EDGE_53"
             ? "Auto Sync (Classic Edge 53)"
             : "Auto Sync (Classic Concepts)";
-        const desiredTitle = item.name.trim();
+        const desiredTitle = cleanDisplayProductName(item.name);
         const desiredTargetUrl = appendWhatsAppShortLinkUtm(item.url, item.brand);
 
         const existing = byProductKey.get(productKey);
         if (existing) {
-          codeByIndex.set(idx, existing.code);
+          let nextCode = existing.code;
+          // Upgrade legacy long slugs (e.g. cc-premium-multi-purpose-ac) to exact 6-char IDs!
+          if (nextCode.length !== 6) {
+            usedCodes.delete(nextCode.toLowerCase());
+            let salt = 0;
+            let candidate = buildPreferredProductShortCode(item, salt);
+            while (usedCodes.has(candidate.toLowerCase())) {
+              salt++;
+              candidate = buildPreferredProductShortCode(item, salt);
+            }
+            usedCodes.add(candidate.toLowerCase());
+            nextCode = candidate;
+          }
+
+          codeByIndex.set(idx, nextCode);
           if (
+            existing.code !== nextCode ||
             existing.title !== desiredTitle ||
             existing.targetUrl !== desiredTargetUrl ||
             existing.utmCampaign !== utmCampaign
           ) {
             writeStmts.push({
               sql: `UPDATE custom_links
-                    SET title = ?, target_url = ?, utm_campaign = ?
+                    SET code = ?, title = ?, target_url = ?, utm_campaign = ?
                     WHERE id = ?`,
-              args: [desiredTitle, desiredTargetUrl, utmCampaign, existing.id],
+              args: [nextCode, desiredTitle, desiredTargetUrl, utmCampaign, existing.id],
             });
+            existing.code = nextCode;
             existing.title = desiredTitle;
             existing.targetUrl = desiredTargetUrl;
             existing.utmCampaign = utmCampaign;
@@ -1380,14 +1753,13 @@ export async function ensureEcosystemProductShortLinks(
           return;
         }
 
-        const baseCode = buildPreferredProductShortCode(item);
-        let chosenCode = baseCode;
-        let suffix = 2;
-        while (usedCodes.has(chosenCode)) {
-          chosenCode = `${baseCode}-${suffix}`;
-          suffix++;
+        let salt = 0;
+        let chosenCode = buildPreferredProductShortCode(item, salt);
+        while (usedCodes.has(chosenCode.toLowerCase())) {
+          salt++;
+          chosenCode = buildPreferredProductShortCode(item, salt);
         }
-        usedCodes.add(chosenCode);
+        usedCodes.add(chosenCode.toLowerCase());
         codeByIndex.set(idx, chosenCode);
 
         const linkId = `lnk_auto_${brandPrefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -1420,7 +1792,7 @@ export async function ensureEcosystemProductShortLinks(
         await conv.batch(writeStmts, "write");
       }
     } catch {
-      // Non-blocking fallback: still attach deterministic short codes in memory if DB is temporarily unavailable
+      // Non-blocking fallback: still attach deterministic 6-char short codes in memory
     }
   });
 
@@ -1428,11 +1800,12 @@ export async function ensureEcosystemProductShortLinks(
   await task;
 
   return items.map((item, idx) => {
-    const code = codeByIndex.get(idx) || buildPreferredProductShortCode(item);
+    const code = codeByIndex.get(idx) || buildPreferredProductShortCode(item, 0);
     return {
       ...item,
+      name: cleanDisplayProductName(item.name),
       shortCode: code,
-      shortUrl: `${origin}/l/${code}`,
+      shortUrl: `${origin}/${code}`,
     };
   });
 }
@@ -1512,7 +1885,7 @@ function getClassicEdgeClient(): Client | null {
  * via API if configured, or directly from the local SQLite database.
  */
 export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProduct[]> {
-  const apiUrl = (process.env.CLASSICCONCEPTS_API_URL || "").trim().replace(/\/+$/, "");
+  const apiUrl = resolveClassicConceptsInternalUrl();
   if (apiUrl) {
     try {
       const res = await fetch(`${apiUrl}/api/whatsapp-catalog`, {
@@ -1622,7 +1995,7 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
  * specifications, and consumables (`classicedge53.com`) via API or direct LibSQL read.
  */
 export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
-  const apiUrl = (process.env.CLASSICEDGE_API_URL || "").trim().replace(/\/+$/, "");
+  const apiUrl = resolveClassicEdgeInternalUrl();
   if (apiUrl) {
     try {
       const res = await fetch(`${apiUrl}/api/whatsapp-catalog`, {

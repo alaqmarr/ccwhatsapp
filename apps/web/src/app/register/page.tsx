@@ -115,7 +115,7 @@ export default function RegisterStaffPage() {
               Staff Registration
             </h1>
             <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
-              Use your active WhatsApp number and your @classiconcepts.in work email.
+              Register with your active WhatsApp number and email address.
               After verifying your email code, your account goes to Superadmin or Dev for approval.
             </p>
           </div>
@@ -183,14 +183,14 @@ export default function RegisterStaffPage() {
 
               <div>
                 <label className="block text-xs font-medium text-neutral-700 mb-1">
-                  Company Email (@classiconcepts.in)
+                  Email Address
                 </label>
                 <input
                   type="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="rahul@classiconcepts.in"
+                  placeholder="rahul@gmail.com"
                   className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
                 />
               </div>

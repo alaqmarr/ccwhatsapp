@@ -69,7 +69,6 @@ const ADMIN_PERMISSIONS: Permission[] = [
   "marketing:send_broadcasts",
   "automations:manage",
   "templates:manage",
-  "billing:view_client_pricing",
 ];
 
 const MANAGER_PERMISSIONS: Permission[] = [
@@ -79,6 +78,7 @@ const MANAGER_PERMISSIONS: Permission[] = [
 
 const SUPERADMIN_PERMISSIONS: Permission[] = [
   ...ADMIN_PERMISSIONS,
+  "billing:view_client_pricing",
   "staff:approve_accounts",
   "staff:manage_roles",
   "templates:manage",
@@ -101,7 +101,6 @@ const DEV_PERMISSIONS: Permission[] = [
 const CLIENT_PERMISSIONS: Permission[] = [
   "onboarding:view",
   "analytics:view",
-  "billing:view_client_pricing",
 ];
 
 export const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
@@ -150,9 +149,26 @@ export function canApproveStaff(
   targetDesiredRole: UserRole
 ): boolean {
   if (!isSuperAdminCapable(approverRole)) return false;
-  // Only a DEV can promote another user to DEV
+  // Only a DEV can create, approve, or modify another DEV
   if (targetDesiredRole === "DEV" && approverRole !== "DEV") return false;
   return true;
+}
+
+/**
+ * DEV accounts are NEVER auto-assigned by round-robin/escalation, and regular STAFF/ADMIN
+ * cannot manually assign chats to DEV. Only MANAGER, SUPERADMIN, and DEV can assign chats to DEV
+ * (or DEV auto-assigns to themselves when replying inside a chat).
+ */
+export function canAssignToDev(role: UserRole | string | null | undefined): boolean {
+  return role === "DEV" || role === "SUPERADMIN" || role === "MANAGER";
+}
+
+/**
+ * Cost Breakdown is visible only to SUPERADMIN and DEV (never regular staff/admin/manager).
+ * Actual Meta wholesale cost & profit/margin remain strictly reserved for DEV.
+ */
+export function canViewCostBreakdown(role: UserRole | string | null | undefined): boolean {
+  return role === "DEV" || role === "SUPERADMIN";
 }
 
 /**
@@ -166,21 +182,15 @@ export function getPricingDashboardMode(
   return role === "DEV" ? "dev_actual_and_margin" : "client_set_pricing";
 }
 
-export const ALLOWED_STAFF_EMAIL_DOMAINS = [
-  "classiconcepts.in",
-  "classicconcepts.in",
-] as const;
+export const ALLOWED_STAFF_EMAIL_DOMAINS: readonly string[] = [];
 
-export function isAllowedStaffEmail(email: string, extraDomains: string[] = []): boolean {
+/**
+ * Accepts any valid email address (staff do not need a @classicconcepts.in domain).
+ */
+export function isAllowedStaffEmail(email: string, _extraDomains: string[] = []): boolean {
   const clean = email.trim().toLowerCase();
-  const atIndex = clean.lastIndexOf("@");
-  if (atIndex <= 0) return false;
-  const domain = clean.slice(atIndex + 1);
-  const allowed = new Set<string>([
-    ...ALLOWED_STAFF_EMAIL_DOMAINS,
-    ...extraDomains.map((d) => d.trim().toLowerCase()).filter(Boolean),
-  ]);
-  return allowed.has(domain);
+  if (clean.length < 5 || clean.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clean);
 }
 
 export function normalizeWhatsAppNumber(raw: string): {

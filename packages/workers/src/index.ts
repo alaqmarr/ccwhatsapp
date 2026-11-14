@@ -2,11 +2,18 @@ import crypto from "node:crypto";
 import {
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
+  lookupCustomerOrdersAcrossEcosystem,
+  resolvePublicTrackingOrigin,
+  type OrderTrackingRecord,
 } from "@cc/database";
 import {
   executeMultiDatabaseBackup,
+  formatWhatsAppOutboundText,
   runAcrioAutonomousTurn,
+  runGuardedButtonFlowAiReply,
+  sendStaffAssignmentEmailNotification,
   sendWhatsAppCloudMessage,
+  type WhatsAppTemplateButton,
 } from "@cc/connections";
 import {
   claimPendingJobs,
@@ -102,14 +109,327 @@ export async function recordDualPricingLedgerEntry(params: {
  * 3. If the chat was already handed over to a human staff member, ACRIO steps aside and starts
  *    the customer wait-time clock (`waiting_since`) so P0 -> P1 -> P2 escalation protects wait time.
  */
+function humanizeShipmentStatus(status: string): string {
+  switch (status) {
+    case "ORDER_CONFIRMED":
+      return "Order Confirmed (Queued for Workshop)";
+    case "IN_PRODUCTION":
+      return "In Production / Fabrication";
+    case "READY_FOR_DISPATCH":
+      return "Ready & Packed for Dispatch";
+    case "DISPATCHED":
+      return "Dispatched via Courier";
+    case "IN_TRANSIT":
+      return "In Transit";
+    case "OUT_FOR_DELIVERY":
+      return "Out for Delivery Today";
+    case "DELIVERED":
+      return "Delivered";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
+
+function formatOrderStatusWhatsAppMessage(order: OrderTrackingRecord): string {
+  const lines = [
+    `*Order Status: #${order.orderId}* (${order.brandLabel})`,
+    `• *Current Stage:* ${humanizeShipmentStatus(order.shipmentStatus)}`,
+  ];
+  if (order.itemsSummary) {
+    lines.push(`• *Items:* ${order.itemsSummary}`);
+  }
+  if (order.providerName && order.providerCode !== "WORKSHOP") {
+    lines.push(
+      `• *Courier:* ${order.providerName}${order.awbNumber ? ` (AWB: *${order.awbNumber}*)` : ""}`
+    );
+  }
+  if (order.estimatedDelivery) {
+    lines.push(`• *Expected Delivery:* ${order.estimatedDelivery}`);
+  }
+  lines.push(``, `Live Tracking Link:\n${order.publicTrackingUrl}`);
+  return formatWhatsAppOutboundText(lines.join("\n"));
+}
+
+function extractOrderLookupCandidate(rawText: string): {
+  explicitOrderId: string | null;
+  asksAboutOrder: boolean;
+} {
+  const trimmed = rawText.trim();
+  const lower = trimmed.toLowerCase();
+
+  // Match branded order numbers like CC-1089,CC-ABC123, CE53-401, CE-202, ORD-991, or #CC1089
+  const brandedMatch = trimmed.match(
+    /\b((?:CC|CE53|CE|ORD)-[A-Z0-9-]{3,18})\b/i
+  );
+  if (brandedMatch?.[1]) {
+    return { explicitOrderId: brandedMatch[1].toUpperCase(), asksAboutOrder: true };
+  }
+
+  // Match "order #12345" or "order id: ABC123"
+  const labeledMatch = trimmed.match(
+    /\b(?:order\s*(?:id|no|number|#)|awb|docket|lr\s*no)\s*[:#-]?\s*([A-Z0-9-]{4,22})\b/i
+  );
+  if (labeledMatch?.[1] && /\d/.test(labeledMatch[1])) {
+    return { explicitOrderId: labeledMatch[1].toUpperCase(), asksAboutOrder: true };
+  }
+
+  // Match standalone "#10482" or standalone short code if user only typed an order token
+  const hashMatch = trimmed.match(/^#?([A-Z]{0,4}-?\d{4,14}|[A-Z0-9]{6,10})$/i);
+  if (
+    hashMatch?.[1] &&
+    /\d/.test(hashMatch[1]) &&
+    !/^\d{10}$/.test(hashMatch[1]) // don't confuse a 10-digit Indian mobile number with an order ID
+  ) {
+    return { explicitOrderId: hashMatch[1].toUpperCase(), asksAboutOrder: true };
+  }
+
+  const asksAboutOrder =
+    /\b(where\s+is\s+my\s+order|order\s+status|track\s+(?:my\s+)?order|dispatch\s+status|delivery\s+status|shipment\s+status|tracking\s+link|check\s+my\s+order)\b/i.test(
+      lower
+    );
+
+  return { explicitOrderId: null, asksAboutOrder };
+}
+
+export function matchAutomationTrigger(params: {
+  triggerType: string;
+  triggerCondition: string;
+  inboundText: string;
+  isNewConversation?: boolean;
+  buttonPayload?: string;
+}): boolean {
+  const tType = String(params.triggerType || "").toUpperCase();
+  const rawCond = String(params.triggerCondition || "").trim();
+  const condLower = rawCond.toLowerCase();
+  const textTrimmed = String(params.inboundText || "").trim();
+  const lower = textTrimmed.toLowerCase();
+
+  if (tType === "FIRST_CONTACT") {
+    return Boolean(params.isNewConversation);
+  }
+  if (tType === "OUT_OF_HOURS_IST") {
+    const { hour } = getCurrentIstDateAndTime();
+    // Outside 9:30 AM - 7:30 PM IST -> hour < 9 or hour >= 20
+    return hour < 9 || hour >= 20;
+  }
+  if (tType === "ORDER_INQUIRY") {
+    const det = extractOrderLookupCandidate(textTrimmed);
+    return Boolean(det.explicitOrderId || det.asksAboutOrder);
+  }
+  if (tType === "BUTTON_PAYLOAD" && condLower) {
+    const targetPayload = (params.buttonPayload || lower).toLowerCase();
+    return condLower
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .some((w) => targetPayload === w || lower === w);
+  }
+  if (tType === "EXACT" && condLower) {
+    return condLower
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .some((w) => lower === w);
+  }
+  if (tType === "REGEX" && rawCond) {
+    try {
+      const rx = new RegExp(rawCond, "i");
+      return rx.test(textTrimmed);
+    } catch {
+      return false;
+    }
+  }
+  if ((tType === "KEYWORD" || tType === "CONTAINS") && condLower) {
+    const words = condLower
+      .split(",")
+      .map((w) => w.trim())
+      .filter(Boolean);
+    return words.some((w) => lower.includes(w));
+  }
+  return false;
+}
+
+export async function evaluateAutomationRulesDryRun(params: {
+  sampleText: string;
+  isNewConversation?: boolean;
+  buttonPayload?: string;
+}): Promise<{
+  orderLookupDetected: { explicitOrderId: string | null; asksAboutOrder: boolean };
+  matchedRules: {
+    id: string;
+    name: string;
+    triggerType: string;
+    actionType: string;
+    stopFurtherAi: boolean;
+    simulatedReply?: string;
+    assignedTeamId?: string;
+    smartCategory?: string;
+  }[];
+  wouldInvokeAcrioAi: boolean;
+}> {
+  await ensureDatabasesBootstrapped();
+  const conv = getRawLibSqlClient("conversations");
+  const rulesRes = await conv.execute(
+    `SELECT * FROM automations WHERE is_enabled = 1 ORDER BY COALESCE(priority_order, 100) ASC, created_at ASC`
+  );
+
+  const orderLookupDetected = extractOrderLookupCandidate(params.sampleText);
+  const matchedRules: {
+    id: string;
+    name: string;
+    triggerType: string;
+    actionType: string;
+    stopFurtherAi: boolean;
+    simulatedReply?: string;
+    assignedTeamId?: string;
+    smartCategory?: string;
+  }[] = [];
+
+  let stoppedAi = Boolean(
+    orderLookupDetected.explicitOrderId || orderLookupDetected.asksAboutOrder
+  );
+
+  for (const r of rulesRes.rows) {
+    const triggerType = String(r.trigger_type || "");
+    const triggerCondition = String(r.trigger_condition || "");
+    if (
+      !matchAutomationTrigger({
+        triggerType,
+        triggerCondition,
+        inboundText: params.sampleText,
+        isNewConversation: params.isNewConversation,
+        buttonPayload: params.buttonPayload,
+      })
+    ) {
+      continue;
+    }
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(String(r.action_payload_json || "{}"));
+    } catch {
+      payload = {};
+    }
+    const actionType = String(r.action_type || "");
+    const stopFurtherAi =
+      actionType === "AUTO_REPLY" ||
+      actionType === "ASSIGN_TEAM" ||
+      actionType === "AUTO_ASSIGN" ||
+      actionType === "OPT_OUT"
+        ? payload.stopFurtherAi !== false
+        : Boolean(payload.stopFurtherAi);
+
+    if (stopFurtherAi) stoppedAi = true;
+
+    matchedRules.push({
+      id: String(r.id),
+      name: String(r.name),
+      triggerType,
+      actionType,
+      stopFurtherAi,
+      simulatedReply: payload.replyText ? String(payload.replyText) : undefined,
+      assignedTeamId: payload.teamId ? String(payload.teamId) : undefined,
+      smartCategory: payload.smartCategory
+        ? String(payload.smartCategory)
+        : undefined,
+    });
+  }
+
+  return {
+    orderLookupDetected,
+    matchedRules,
+    wouldInvokeAcrioAi: !stoppedAi,
+  };
+}
+
+async function performCustomerOptOut(params: {
+  conversationId: string;
+  customerPhone: string;
+  reasonLabel: string;
+}): Promise<void> {
+  const conv = getRawLibSqlClient("conversations");
+  const crm = getRawLibSqlClient("crm_orders");
+  const contacts = getRawLibSqlClient("contacts");
+  const mkt = getRawLibSqlClient("marketing");
+  const nowIso = new Date().toISOString();
+
+  await Promise.all([
+    crm.execute({
+      sql: `UPDATE customers SET opt_in_marketing = 0, last_interaction_at = ? WHERE phone = ?`,
+      args: [nowIso, params.customerPhone],
+    }),
+    contacts
+      .execute({
+        sql: `UPDATE contacts SET opt_in_marketing = 0, opt_out_reason = ?, updated_at = ? WHERE phone = ?`,
+        args: [params.reasonLabel, nowIso, params.customerPhone],
+      })
+      .catch(() => {}),
+    mkt.execute({
+      sql: `UPDATE broadcast_recipients
+            SET status = 'SKIPPED',
+                skip_or_error_reason = ?
+            WHERE customer_phone = ? AND status = 'QUEUED'`,
+      args: [params.reasonLabel, params.customerPhone],
+    }),
+  ]);
+
+  const confirmBody =
+    "You have been removed from our promotional messages. You can still message us here anytime for orders or support.";
+  const sendRes = await sendWhatsAppCloudMessage({
+    toPhone: params.customerPhone,
+    bodyText: confirmBody,
+    simulateAsyncDelivery: true,
+  });
+  const optOutMsgId = `msg_optout_${crypto.randomUUID().slice(0, 8)}`;
+  await conv.execute({
+    sql: `INSERT INTO messages (
+      id, conversation_id, direction, sender_type, sender_name, message_type,
+      billing_category, body, wa_message_id, delivery_status, created_at
+    ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', 'Opt-Out Protection', 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+    args: [
+      optOutMsgId,
+      params.conversationId,
+      confirmBody,
+      sendRes.waMessageId,
+      sendRes.deliveryStatus,
+      nowIso,
+    ],
+  });
+  if (sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR") {
+    scheduleSandboxDeliveryReceipt({
+      conversationId: params.conversationId,
+      messageId: optOutMsgId,
+      waMessageId: sendRes.waMessageId,
+    });
+  }
+  socketHub.emit("message:new", {
+    conversationId: params.conversationId,
+    senderName: "Opt-Out Protection",
+    text: confirmBody,
+  });
+}
+
+/**
+ * Runs inbound deterministic flows BEFORE ACRIO AI so button actions, order lookups,
+ * and auto-replies never get hijacked by AI and AI credits stay strictly protected:
+ * 1. Opt-Out (`STOP`) Protection
+ * 2. Template Quick-Reply Button Flow Manager (`AUTO_REPLY`, `ASSIGN_TEAM`, `SEND_ORDER_TRACKING`, `SEND_APPROVED_TEMPLATE`, `OPT_OUT_DND`, `SMART_AI_WITH_GUARD`)
+ * 3. Live Order ID & Order Status Lookup across `:3002`, `:3003`, and `:3007` (0 AI credits)
+ * 4. Advanced Auto-Reply Rules Engine (`EXACT`, `CONTAINS`, `REGEX`, `FIRST_CONTACT`, `OUT_OF_HOURS_IST`, `BUTTON_PAYLOAD`)
+ * 5. Multi-Turn ACRIO AI Specialist (`claude-haiku-5-5`) when assigned to System (`ACRIO`)
+ */
 export async function processInboundAutomations(params: {
   conversationId: string;
   customerPhone: string;
   inboundText: string;
   isNewConversation: boolean;
+  isButtonClick?: boolean;
+  buttonPayload?: string;
+  buttonText?: string;
+  replyToWaMessageId?: string;
 }): Promise<void> {
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
+  const mkt = getRawLibSqlClient("marketing");
 
   const convRes = await conv.execute({
     sql: `SELECT * FROM conversations WHERE id = ? LIMIT 1`,
@@ -119,81 +439,521 @@ export async function processInboundAutomations(params: {
   const currentAssignedId = convRow.assigned_staff_id
     ? String(convRow.assigned_staff_id)
     : "";
-  // STRICT RULE: ACRIO is ONLY used when the chat is assigned to System ('ACRIO')!
-  // Never run ACRIO on chats assigned to human staff/teams so AI credits and ₹0.30 bills are saved.
   const isHandledByAcrio = currentAssignedId === "ACRIO";
-
-  const rulesRes = await conv.execute(
-    `SELECT * FROM automations WHERE is_enabled = 1`
-  );
   const lower = params.inboundText.toLowerCase().trim();
   const nowIso = new Date().toISOString();
 
-  // Automatic WhatsApp Opt-Out Protection: if customer replies STOP / UNSUBSCRIBE, mark opted out immediately!
-  if (/^(stop|stop\s*promotions|stop\s*offers|unsubscribe|opt\s*out)\W*$/i.test(lower)) {
-    const crm = getRawLibSqlClient("crm_orders");
-    const contacts = getRawLibSqlClient("contacts");
-    const mkt = getRawLibSqlClient("marketing");
-    await Promise.all([
-      crm.execute({
-        sql: `UPDATE customers SET opt_in_marketing = 0, last_interaction_at = ? WHERE phone = ?`,
-        args: [nowIso, params.customerPhone],
-      }),
-      contacts
-        .execute({
-          sql: `UPDATE contacts SET opt_in_marketing = 0, opt_out_reason = 'Replied STOP on WhatsApp', updated_at = ? WHERE phone = ?`,
-          args: [nowIso, params.customerPhone],
-        })
-        .catch(() => {}),
-    ]);
-    await mkt.execute({
-      sql: `UPDATE broadcast_recipients
-            SET status = 'SKIPPED',
-                skip_or_error_reason = 'Customer replied STOP to opt out'
-            WHERE customer_phone = ? AND status = 'QUEUED'`,
-      args: [params.customerPhone],
+  // --------------------------------------------------------------------------
+  // 1. Automatic WhatsApp Opt-Out Protection
+  // --------------------------------------------------------------------------
+  if (
+    /^(stop|stop\s*promotions|stop\s*offers|unsubscribe|opt\s*out)\W*$/i.test(
+      lower
+    )
+  ) {
+    await performCustomerOptOut({
+      conversationId: params.conversationId,
+      customerPhone: params.customerPhone,
+      reasonLabel: "Replied STOP on WhatsApp",
     });
-    const confirmBody =
-      "You have been removed from our promotional messages. You can still message us here anytime for orders or support.";
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 2. Template Quick-Reply Button Flow Engine (Runs BEFORE ACRIO!)
+  // --------------------------------------------------------------------------
+  const clickedText = (params.buttonText || params.inboundText || "").trim();
+  let matchedTemplateRow: Record<string, unknown> | undefined;
+  let matchedButton: WhatsAppTemplateButton | undefined;
+
+  // Check if customer replied directly to a specific outbound TEMPLATE message (via context.id) or recent template in last 72h
+  const tplMsgRes = params.replyToWaMessageId
+    ? await conv.execute({
+        sql: `SELECT template_name, body, created_at FROM messages
+              WHERE conversation_id = ? AND wa_message_id = ? AND message_type = 'TEMPLATE'
+              LIMIT 1`,
+        args: [params.conversationId, params.replyToWaMessageId],
+      })
+    : await conv.execute({
+        sql: `SELECT template_name, body, created_at FROM messages
+              WHERE conversation_id = ? AND direction = 'OUTBOUND' AND message_type = 'TEMPLATE'
+              ORDER BY created_at DESC LIMIT 1`,
+        args: [params.conversationId],
+      });
+
+  const recentTplMsg = tplMsgRes.rows[0] as Record<string, unknown> | undefined;
+  if (recentTplMsg?.template_name) {
+    const tplAgeHours =
+      (Date.now() - new Date(String(recentTplMsg.created_at || 0)).getTime()) /
+      3600000;
+    if (params.isButtonClick || params.replyToWaMessageId || tplAgeHours <= 72) {
+      const tplDbRes = await mkt.execute({
+        sql: `SELECT * FROM templates WHERE name = ? LIMIT 1`,
+        args: [String(recentTplMsg.template_name)],
+      });
+      if (tplDbRes.rows[0]) {
+        matchedTemplateRow = tplDbRes.rows[0] as Record<string, unknown>;
+        try {
+          const parsedBtns: WhatsAppTemplateButton[] = JSON.parse(
+            String(matchedTemplateRow.buttons_json || "[]")
+          );
+          matchedButton = parsedBtns.find(
+            (b) =>
+              b.type === "QUICK_REPLY" &&
+              (b.text.trim().toLowerCase() === clickedText.toLowerCase() ||
+                (params.buttonPayload &&
+                  b.id.toLowerCase() === params.buttonPayload.toLowerCase()))
+          );
+        } catch {
+          matchedButton = undefined;
+        }
+      }
+    }
+  }
+
+  // Execute deterministic Quick Reply Button Flow if matched (or if an explicit WhatsApp button click arrived)
+  if (matchedButton || params.isButtonClick) {
+    const btnLabel = matchedButton?.text || clickedText;
+    const flow = matchedButton?.flowAction;
+    let effectiveAction = flow?.actionType || "NONE";
+
+    // Smart zero-credit default action when a Quick Reply button has no explicit flow configured yet
+    if (effectiveAction === "NONE" && (matchedButton || params.isButtonClick)) {
+      if (/stop|opt\s*out|unsubscribe/i.test(btnLabel)) {
+        effectiveAction = "OPT_OUT_DND";
+      } else if (/track|order\s*status|where\s*is/i.test(btnLabel)) {
+        effectiveAction = "SEND_ORDER_TRACKING";
+      } else if (/sales|talk|speak|call|quote|team|support|agent|book/i.test(btnLabel)) {
+        effectiveAction = "ASSIGN_TEAM";
+      } else if (flow?.replyText?.trim()) {
+        effectiveAction = "AUTO_REPLY";
+      }
+    }
+
+    if (effectiveAction === "OPT_OUT_DND") {
+      await performCustomerOptOut({
+        conversationId: params.conversationId,
+        customerPhone: params.customerPhone,
+        reasonLabel: `Clicked Quick Reply "${btnLabel}"`,
+      });
+      return;
+    }
+
+    if (effectiveAction === "SEND_ORDER_TRACKING") {
+      const lookup = await lookupCustomerOrdersAcrossEcosystem({
+        customerPhone: params.customerPhone,
+      });
+      const latestOrder = lookup.exactMatch || lookup.phoneOrders[0] || null;
+      const bodyText = latestOrder
+        ? formatOrderStatusWhatsAppMessage(latestOrder)
+        : formatWhatsAppOutboundText(
+            `Please reply with your *Order ID* (for example *CC-1089* or *CE53-401*), and I will pull up your live dispatch status and tracking link right away.\n\nYou can also track anytime at:\n${resolvePublicTrackingOrigin()}`
+          );
+      const sendRes = await sendWhatsAppCloudMessage({
+        toPhone: params.customerPhone,
+        bodyText,
+        ctaButton: latestOrder
+          ? {
+              label: "Track Order",
+              url: latestOrder.publicTrackingUrl,
+              footerText: latestOrder.brandLabel,
+            }
+          : undefined,
+        simulateAsyncDelivery: true,
+      });
+      const msgId = `msg_flow_${crypto.randomUUID().slice(0, 8)}`;
+      await conv.batch(
+        [
+          {
+            sql: `INSERT INTO messages (
+              id, conversation_id, direction, sender_type, sender_name, message_type,
+              billing_category, body, wa_message_id, delivery_status, created_at
+            ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+            args: [
+              msgId,
+              params.conversationId,
+              `Template Flow (${btnLabel})`,
+              bodyText,
+              sendRes.waMessageId,
+              sendRes.deliveryStatus,
+              nowIso,
+            ],
+          },
+          {
+            sql: `UPDATE conversations
+                  SET smart_category = 'Order & Delivery',
+                      unread_count = 0,
+                      last_message_preview = ?,
+                      last_message_at = ?
+                  WHERE id = ?`,
+            args: [bodyText.slice(0, 140), nowIso, params.conversationId],
+          },
+        ],
+        "write"
+      );
+      socketHub.emit("message:new", {
+        conversationId: params.conversationId,
+        senderName: `Template Flow (${btnLabel})`,
+        text: bodyText,
+      });
+      return;
+    }
+
+    if (effectiveAction === "ASSIGN_TEAM") {
+      const ackReply = formatWhatsAppOutboundText(
+        flow?.replyText?.trim() ||
+          `Got your selection (*${btnLabel}*). I am connecting you to our *Sales Team* right now so a specialist can help you directly.`
+      );
+      const sendRes = await sendWhatsAppCloudMessage({
+        toPhone: params.customerPhone,
+        bodyText: ackReply,
+        ctaButton:
+          flow?.ctaUrl && /^https?:\/\//i.test(flow.ctaUrl)
+            ? { label: flow.ctaLabel || "View Details", url: flow.ctaUrl }
+            : undefined,
+        simulateAsyncDelivery: true,
+      });
+      const msgId = `msg_flow_${crypto.randomUUID().slice(0, 8)}`;
+      await conv.batch(
+        [
+          {
+            sql: `INSERT INTO messages (
+              id, conversation_id, direction, sender_type, sender_name, message_type,
+              billing_category, body, wa_message_id, delivery_status, created_at
+            ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+            args: [
+              msgId,
+              params.conversationId,
+              `Template Flow (${btnLabel})`,
+              ackReply,
+              sendRes.waMessageId,
+              sendRes.deliveryStatus,
+              nowIso,
+            ],
+          },
+          {
+            sql: `UPDATE conversations
+                  SET smart_category = COALESCE(?, smart_category),
+                      priority = COALESCE(?, priority),
+                      last_message_preview = ?,
+                      last_message_at = ?
+                  WHERE id = ?`,
+            args: [
+              flow?.smartCategory || null,
+              flow?.priority || "HIGH",
+              ackReply.slice(0, 140),
+              nowIso,
+              params.conversationId,
+            ],
+          },
+        ],
+        "write"
+      );
+      await smartAssignConversation({
+        conversationId: params.conversationId,
+        inboundText: btnLabel,
+        preferredTeamId: flow?.teamId || "team_sales",
+        onlyIfUnassigned: false,
+        startWaitingTimer: true,
+        triggeredByName: `Template Button (${btnLabel})`,
+        handoffReasonFromAcrio: `Customer tapped template quick reply "${btnLabel}"`,
+      });
+      socketHub.emit("message:new", {
+        conversationId: params.conversationId,
+        senderName: `Template Flow (${btnLabel})`,
+        text: ackReply,
+      });
+      return;
+    }
+
+    if (effectiveAction === "AUTO_REPLY" && flow?.replyText?.trim()) {
+      const replyBody = formatWhatsAppOutboundText(flow.replyText.trim());
+      const sendRes = await sendWhatsAppCloudMessage({
+        toPhone: params.customerPhone,
+        bodyText: replyBody,
+        ctaButton:
+          flow.ctaUrl && /^https?:\/\//i.test(flow.ctaUrl)
+            ? { label: flow.ctaLabel || "Open Link", url: flow.ctaUrl }
+            : undefined,
+        simulateAsyncDelivery: true,
+      });
+      const msgId = `msg_flow_${crypto.randomUUID().slice(0, 8)}`;
+      await conv.batch(
+        [
+          {
+            sql: `INSERT INTO messages (
+              id, conversation_id, direction, sender_type, sender_name, message_type,
+              billing_category, body, wa_message_id, delivery_status, created_at
+            ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+            args: [
+              msgId,
+              params.conversationId,
+              `Template Flow (${btnLabel})`,
+              replyBody,
+              sendRes.waMessageId,
+              sendRes.deliveryStatus,
+              nowIso,
+            ],
+          },
+          {
+            sql: `UPDATE conversations
+                  SET smart_category = COALESCE(?, smart_category),
+                      priority = COALESCE(?, priority),
+                      unread_count = 0,
+                      last_message_preview = ?,
+                      last_message_at = ?
+                  WHERE id = ?`,
+            args: [
+              flow.smartCategory || null,
+              flow.priority || null,
+              replyBody.slice(0, 140),
+              nowIso,
+              params.conversationId,
+            ],
+          },
+        ],
+        "write"
+      );
+      socketHub.emit("message:new", {
+        conversationId: params.conversationId,
+        senderName: `Template Flow (${btnLabel})`,
+        text: replyBody,
+      });
+      return;
+    }
+
+    if (effectiveAction === "SEND_APPROVED_TEMPLATE" && flow?.templateName) {
+      const targetTplRes = await mkt.execute({
+        sql: `SELECT * FROM templates WHERE name = ? AND approval_status = 'APPROVED' LIMIT 1`,
+        args: [flow.templateName],
+      });
+      const targetTpl = targetTplRes.rows[0] as Record<string, unknown> | undefined;
+      if (targetTpl) {
+        const tplBody = String(targetTpl.body_text || "");
+        const tplCat = String(targetTpl.category || "UTILITY") as BillingMessageCategory;
+        const sendRes = await sendWhatsAppCloudMessage({
+          toPhone: params.customerPhone,
+          bodyText: tplBody,
+          templateName: String(targetTpl.name),
+          languageCode: String(targetTpl.language || "en"),
+          simulateAsyncDelivery: true,
+        });
+        const msgId = `msg_flowtpl_${crypto.randomUUID().slice(0, 8)}`;
+        await conv.execute({
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            template_name, billing_category, body, wa_message_id, delivery_status, created_at
+          ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEMPLATE', ?, ?, ?, ?, ?, ?)`,
+          args: [
+            msgId,
+            params.conversationId,
+            `Template Flow (${btnLabel})`,
+            String(targetTpl.name),
+            tplCat,
+            tplBody,
+            sendRes.waMessageId,
+            sendRes.deliveryStatus,
+            nowIso,
+          ],
+        });
+        if (sendRes.ok) {
+          await recordDualPricingLedgerEntry({
+            messageId: msgId,
+            conversationId: params.conversationId,
+            customerPhone: params.customerPhone,
+            category: tplCat,
+            staffName: `Template Flow (${btnLabel})`,
+          });
+        }
+        socketHub.emit("message:new", {
+          conversationId: params.conversationId,
+          senderName: `Template Flow (${btnLabel})`,
+          text: tplBody,
+        });
+        return;
+      }
+    }
+
+    if (effectiveAction === "SMART_AI_WITH_GUARD") {
+      const aiReply = await runGuardedButtonFlowAiReply({
+        customerName: String(convRow.customer_name || params.customerPhone),
+        buttonText: btnLabel,
+        aiInstruction:
+          flow?.aiInstruction ||
+          `Answer the customer's button tap "${btnLabel}" concisely and ask 1 practical next step.`,
+      });
+      const sendRes = await sendWhatsAppCloudMessage({
+        toPhone: params.customerPhone,
+        bodyText: aiReply,
+        simulateAsyncDelivery: true,
+      });
+      const msgId = `msg_flowai_${crypto.randomUUID().slice(0, 8)}`;
+      await conv.execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, wa_message_id, delivery_status, created_at
+        ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', 'ACRIO (Button Flow)', 'TEXT', 'ACRIO', ?, ?, ?, ?)`,
+        args: [
+          msgId,
+          params.conversationId,
+          aiReply,
+          sendRes.waMessageId,
+          sendRes.deliveryStatus,
+          nowIso,
+        ],
+      });
+      await recordDualPricingLedgerEntry({
+        messageId: msgId,
+        conversationId: params.conversationId,
+        customerPhone: params.customerPhone,
+        category: "ACRIO",
+        staffName: "ACRIO Button Flow",
+      });
+      socketHub.emit("message:new", {
+        conversationId: params.conversationId,
+        senderName: "ACRIO (Button Flow)",
+        text: aiReply,
+      });
+      return;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 3. Direct Order ID & Order Status Ecosystem Lookup (:3002, :3003, :3007)
+  //    Runs BEFORE ACRIO with 0 AI credits whenever customer asks order status!
+  // --------------------------------------------------------------------------
+  const orderDetection = extractOrderLookupCandidate(params.inboundText);
+  if (
+    isHandledByAcrio &&
+    (orderDetection.explicitOrderId || orderDetection.asksAboutOrder)
+  ) {
+    const ecosystemLookup = await lookupCustomerOrdersAcrossEcosystem({
+      orderInput: orderDetection.explicitOrderId || undefined,
+      customerPhone: params.customerPhone,
+    });
+
+    const primaryOrder =
+      ecosystemLookup.exactMatch ||
+      (!orderDetection.explicitOrderId ? ecosystemLookup.phoneOrders[0] : null);
+
+    let orderReply = "";
+    let ctaButton:
+      | { label: string; url: string; footerText?: string }
+      | undefined;
+
+    if (primaryOrder) {
+      orderReply = formatOrderStatusWhatsAppMessage(primaryOrder);
+      if (
+        !orderDetection.explicitOrderId &&
+        ecosystemLookup.phoneOrders.length > 1
+      ) {
+        const extraLines = ecosystemLookup.phoneOrders
+          .slice(1, 4)
+          .map(
+            (o) =>
+              `• *#${o.orderId}* (${humanizeShipmentStatus(o.shipmentStatus)}): ${o.publicTrackingUrl}`
+          )
+          .join("\n");
+        orderReply = `${orderReply}\n\n*Other recent orders on your number:*\n${extraLines}`;
+      }
+      ctaButton = {
+        label: "Track Order",
+        url: primaryOrder.publicTrackingUrl,
+        footerText: primaryOrder.brandLabel,
+      };
+    } else if (orderDetection.explicitOrderId) {
+      const otherOrdersHint =
+        ecosystemLookup.phoneOrders.length > 0
+          ? `\n\nHowever, we found ${ecosystemLookup.phoneOrders.length === 1 ? "this order" : "these orders"} linked to your WhatsApp number:\n${ecosystemLookup.phoneOrders
+              .slice(0, 3)
+              .map(
+                (o) =>
+                  `• *#${o.orderId}* (${humanizeShipmentStatus(o.shipmentStatus)}): ${o.publicTrackingUrl}`
+              )
+              .join("\n")}`
+          : "";
+      orderReply = formatWhatsAppOutboundText(
+        `I checked Classic Concepts and Classic Edge 53 for order *#${orderDetection.explicitOrderId}*, and could not find a matching dispatch record under that ID yet.${otherOrdersHint}\n\nPlease double-check the Order ID on your invoice/confirmation email, or reply *"talk to team"* and our dispatch desk will verify it for you right away.`
+      );
+      ctaButton = {
+        label: "Track Order",
+        url: resolvePublicTrackingOrigin(),
+        footerText: "Classic Concepts & Classic Edge 53",
+      };
+    } else {
+      orderReply = formatWhatsAppOutboundText(
+        `Please share your *Order ID* (for example *CC-1089* or *CE53-401*), and I will look up your live production or courier status immediately!\n\nYou can also check anytime on our tracking portal:\n${resolvePublicTrackingOrigin()}`
+      );
+      ctaButton = {
+        label: "Open Tracking",
+        url: resolvePublicTrackingOrigin(),
+      };
+    }
+
     const sendRes = await sendWhatsAppCloudMessage({
       toPhone: params.customerPhone,
-      bodyText: confirmBody,
+      bodyText: orderReply,
+      ctaButton,
       simulateAsyncDelivery: true,
     });
-    const optOutMsgId = `msg_optout_${crypto.randomUUID().slice(0, 8)}`;
-    await conv.execute({
-      sql: `INSERT INTO messages (
-        id, conversation_id, direction, sender_type, sender_name, message_type,
-        billing_category, body, wa_message_id, delivery_status, created_at
-      ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', 'Opt-Out Protection', 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
-      args: [
-        optOutMsgId,
-        params.conversationId,
-        confirmBody,
-        sendRes.waMessageId,
-        sendRes.deliveryStatus,
-        nowIso,
+    const orderMsgId = `msg_ord_${crypto.randomUUID().slice(0, 8)}`;
+    const replyIso = new Date().toISOString();
+    await conv.batch(
+      [
+        {
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, wa_message_id, delivery_status, created_at
+          ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', 'Order Tracker', 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+          args: [
+            orderMsgId,
+            params.conversationId,
+            orderReply,
+            sendRes.waMessageId,
+            sendRes.deliveryStatus,
+            replyIso,
+          ],
+        },
+        {
+          sql: `UPDATE conversations
+                SET smart_category = 'Order & Delivery',
+                    unread_count = 0,
+                    waiting_since = NULL,
+                    last_message_preview = ?,
+                    last_message_at = ?
+                WHERE id = ?`,
+          args: [orderReply.slice(0, 140), replyIso, params.conversationId],
+        },
       ],
-    });
+      "write"
+    );
     if (sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR") {
       scheduleSandboxDeliveryReceipt({
         conversationId: params.conversationId,
-        messageId: optOutMsgId,
+        messageId: orderMsgId,
         waMessageId: sendRes.waMessageId,
       });
     }
     socketHub.emit("message:new", {
       conversationId: params.conversationId,
-      senderName: "Opt-Out Protection",
-      text: confirmBody,
+      senderName: "Order Tracker",
+      text: orderReply,
     });
     return;
   }
 
+  // --------------------------------------------------------------------------
+  // 4. Advanced Auto-Replies & Routing Rules Engine
+  // --------------------------------------------------------------------------
+  const rulesRes = await conv.execute(
+    `SELECT * FROM automations WHERE is_enabled = 1 ORDER BY COALESCE(priority_order, 100) ASC, created_at ASC`
+  );
+  let ruleStoppedFurtherAi = false;
+
   for (const r of rulesRes.rows) {
-    const triggerType = String(r.trigger_type);
-    const cond = String(r.trigger_condition || "").toLowerCase();
-    const actionType = String(r.action_type);
+    const triggerType = String(r.trigger_type || "");
+    const triggerCondition = String(r.trigger_condition || "");
+    const actionType = String(r.action_type || "");
     let payload: Record<string, unknown> = {};
     try {
       payload = JSON.parse(String(r.action_payload_json || "{}"));
@@ -201,13 +961,13 @@ export async function processInboundAutomations(params: {
       payload = {};
     }
 
-    let matched = false;
-    if (triggerType === "FIRST_CONTACT" && params.isNewConversation) {
-      matched = true;
-    } else if (triggerType === "KEYWORD" && cond) {
-      const words = cond.split(",").map((w) => w.trim()).filter(Boolean);
-      matched = words.some((w) => lower.includes(w));
-    }
+    const matched = matchAutomationTrigger({
+      triggerType,
+      triggerCondition,
+      inboundText: params.inboundText,
+      isNewConversation: params.isNewConversation,
+      buttonPayload: params.buttonPayload,
+    });
 
     if (!matched) continue;
 
@@ -215,6 +975,15 @@ export async function processInboundAutomations(params: {
       sql: `UPDATE automations SET runs_count = runs_count + 1, last_triggered_at = ? WHERE id = ?`,
       args: [nowIso, String(r.id)],
     });
+
+    if (actionType === "OPT_OUT") {
+      await performCustomerOptOut({
+        conversationId: params.conversationId,
+        customerPhone: params.customerPhone,
+        reasonLabel: `Rule: ${String(r.name)}`,
+      });
+      return;
+    }
 
     if (actionType === "SMART_TAG") {
       await conv.execute({
@@ -228,38 +997,119 @@ export async function processInboundAutomations(params: {
           params.conversationId,
         ],
       });
-    } else if (actionType === "AUTO_REPLY" && payload.replyText && !isHandledByAcrio) {
-      // Only fire static keyword auto-replies when ACRIO isn't already answering automatically
-      const replyBody = String(payload.replyText);
-      const sendRes = await sendWhatsAppCloudMessage({
-        toPhone: params.customerPhone,
-        bodyText: replyBody,
-        simulateAsyncDelivery: true,
-      });
-      const msgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
-      await conv.execute({
-        sql: `INSERT INTO messages (
-          id, conversation_id, direction, sender_type, sender_name, message_type,
-          billing_category, body, wa_message_id, delivery_status, created_at
-        ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
-        args: [
-          msgId,
-          params.conversationId,
-          String(r.name),
-          replyBody,
-          sendRes.waMessageId,
-          sendRes.deliveryStatus,
-          nowIso,
-        ],
-      });
-      if (sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR") {
-        scheduleSandboxDeliveryReceipt({
-          conversationId: params.conversationId,
-          messageId: msgId,
-          waMessageId: sendRes.waMessageId,
+    } else if (
+      (actionType === "ASSIGN_TEAM" || actionType === "AUTO_ASSIGN") &&
+      (isHandledByAcrio || payload.forceReassign === true)
+    ) {
+      if (payload.replyText && String(payload.replyText).trim()) {
+        const replyBody = formatWhatsAppOutboundText(String(payload.replyText));
+        const sendRes = await sendWhatsAppCloudMessage({
+          toPhone: params.customerPhone,
+          bodyText: replyBody,
+          simulateAsyncDelivery: true,
+        });
+        const msgId = `msg_rule_${crypto.randomUUID().slice(0, 8)}`;
+        await conv.execute({
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, wa_message_id, delivery_status, created_at
+          ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+          args: [
+            msgId,
+            params.conversationId,
+            String(r.name),
+            replyBody,
+            sendRes.waMessageId,
+            sendRes.deliveryStatus,
+            nowIso,
+          ],
         });
       }
+      await smartAssignConversation({
+        conversationId: params.conversationId,
+        inboundText: params.inboundText,
+        preferredTeamId: payload.teamId ? String(payload.teamId) : "team_sales",
+        onlyIfUnassigned: false,
+        startWaitingTimer: true,
+        triggeredByName: `Auto-Rule (${String(r.name)})`,
+        handoffReasonFromAcrio: `Matched routing rule "${String(r.name)}"`,
+      });
+      return;
+    } else if (actionType === "AUTO_REPLY" && payload.replyText) {
+      const stopFurtherAi = payload.stopFurtherAi !== false;
+      // Fire auto-reply when either stopFurtherAi is enabled (replaces AI to save credits!) or chat is not on ACRIO
+      if (stopFurtherAi || !isHandledByAcrio) {
+        const replyBody = formatWhatsAppOutboundText(String(payload.replyText));
+        const sendRes = await sendWhatsAppCloudMessage({
+          toPhone: params.customerPhone,
+          bodyText: replyBody,
+          ctaButton:
+            payload.ctaUrl && /^https?:\/\//i.test(String(payload.ctaUrl))
+              ? {
+                  label: String(payload.ctaLabel || "Open Link"),
+                  url: String(payload.ctaUrl),
+                }
+              : undefined,
+          simulateAsyncDelivery: true,
+        });
+        const msgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
+        await conv.batch(
+          [
+            {
+              sql: `INSERT INTO messages (
+                id, conversation_id, direction, sender_type, sender_name, message_type,
+                billing_category, body, wa_message_id, delivery_status, created_at
+              ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+              args: [
+                msgId,
+                params.conversationId,
+                String(r.name),
+                replyBody,
+                sendRes.waMessageId,
+                sendRes.deliveryStatus,
+                nowIso,
+              ],
+            },
+            {
+              sql: `UPDATE conversations
+                    SET smart_category = COALESCE(?, smart_category),
+                        priority = COALESCE(?, priority),
+                        last_message_preview = ?,
+                        last_message_at = ?
+                    WHERE id = ?`,
+              args: [
+                payload.smartCategory ? String(payload.smartCategory) : null,
+                payload.priority ? String(payload.priority) : null,
+                replyBody.slice(0, 140),
+                nowIso,
+                params.conversationId,
+              ],
+            },
+          ],
+          "write"
+        );
+        if (sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR") {
+          scheduleSandboxDeliveryReceipt({
+            conversationId: params.conversationId,
+            messageId: msgId,
+            waMessageId: sendRes.waMessageId,
+          });
+        }
+        socketHub.emit("message:new", {
+          conversationId: params.conversationId,
+          senderName: String(r.name),
+          text: replyBody,
+        });
+        if (stopFurtherAi) {
+          ruleStoppedFurtherAi = true;
+          break;
+        }
+      }
     }
+  }
+
+  if (ruleStoppedFurtherAi) {
+    return;
   }
 
   // Case A: Chat is already connected to a human staff member -> keep human owner & start wait timer
@@ -275,18 +1125,25 @@ export async function processInboundAutomations(params: {
 
   // Case B: Initial / active ACRIO assignment -> ACRIO handles the query automatically in the backend!
   const recentRes = await conv.execute({
-    sql: `SELECT direction, body FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 6`,
+    sql: `SELECT direction, sender_type, body FROM messages
+          WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
+          ORDER BY created_at DESC LIMIT 16`,
     args: [params.conversationId],
   });
   const recentMessages = [...recentRes.rows].reverse().map((m) => ({
     direction: String(m.direction),
+    senderType: String(m.sender_type || ""),
     body: String(m.body),
   }));
+  const hasAlreadyGreeted = recentMessages.some(
+    (m) => m.direction === "OUTBOUND"
+  );
 
   const acrioTurn = await runAcrioAutonomousTurn({
     customerName: String(convRow.customer_name || params.customerPhone),
     inboundText: params.inboundText,
     recentMessages,
+    hasAlreadyGreeted,
   });
 
   // Send ACRIO's automatic WhatsApp reply (either answering directly or confirming handoff to Sales Team)
@@ -514,9 +1371,10 @@ export async function smartAssignConversation(params: {
 
   const teamId = String(chosenTeam.id);
   const teamName = String(chosenTeam.name);
+  const auth = getRawLibSqlClient("core_auth");
 
-  // Load active chat counts per staff member for smart least-loaded balancing
-  const [membersRes, loadRes] = await Promise.all([
+  // Load active chat counts per staff member for smart least-loaded balancing (excluding DEV roles from auto-assign)
+  const [membersRes, loadRes, devUsersRes] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM team_members WHERE team_id = ? AND is_available = 1`,
       args: [teamId],
@@ -527,7 +1385,10 @@ export async function smartAssignConversation(params: {
        WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL AND assigned_staff_id != 'ACRIO'
        GROUP BY assigned_staff_id`
     ),
+    auth.execute(`SELECT id FROM users WHERE role = 'DEV'`),
   ]);
+
+  const devUserIds = new Set(devUsersRes.rows.map((u) => String(u.id)));
 
   const loadMap = new Map<string, number>();
   for (const r of loadRes.rows) {
@@ -546,7 +1407,7 @@ export async function smartAssignConversation(params: {
 
   for (const tier of tierOrder) {
     const candidates = (membersRes.rows as Record<string, unknown>[]).filter(
-      (m) => String(m.tier) === tier
+      (m) => String(m.tier) === tier && !devUserIds.has(String(m.staff_id))
     );
     if (candidates.length === 0) continue;
 
@@ -562,6 +1423,39 @@ export async function smartAssignConversation(params: {
     chosenMember = underCap || candidates[0];
     chosenTier = tier;
     break;
+  }
+
+  // Fallback: if chosenTeam had no available members, check any available non-DEV team member or active non-DEV user
+  if (!chosenMember) {
+    const anyTeamMemberRes = await conv.execute(
+      `SELECT * FROM team_members WHERE is_available = 1`
+    );
+    const anyPool = (anyTeamMemberRes.rows as Record<string, unknown>[]).filter(
+      (m) => !devUserIds.has(String(m.staff_id))
+    );
+    if (anyPool.length > 0) {
+      anyPool.sort(
+        (a, b) =>
+          (loadMap.get(String(a.staff_id)) ?? 0) -
+          (loadMap.get(String(b.staff_id)) ?? 0)
+      );
+      chosenMember = anyPool[0];
+      chosenTier = (String(chosenMember.tier || "P0") as "P0" | "P1" | "P2");
+    } else {
+      const activeUsersRes = await auth.execute(
+        `SELECT id, name FROM users WHERE status = 'ACTIVE' AND role != 'DEV' ORDER BY created_at ASC`
+      );
+      if (activeUsersRes.rows.length > 0) {
+        const sortedUsers = [...activeUsersRes.rows].sort(
+          (a, b) =>
+            (loadMap.get(String(a.id)) ?? 0) - (loadMap.get(String(b.id)) ?? 0)
+        );
+        chosenMember = {
+          staff_id: String(sortedUsers[0].id),
+          staff_name: String(sortedUsers[0].name),
+        };
+      }
+    }
   }
 
   const staffId = chosenMember ? String(chosenMember.staff_id) : null;
@@ -592,6 +1486,10 @@ export async function smartAssignConversation(params: {
     ],
   });
 
+  const assignmentReason =
+    params.handoffReasonFromAcrio ||
+    `Smart-assigned to least-loaded ${chosenTier} responder in ${teamName}`;
+
   await logConversationAssignment({
     conversationId: params.conversationId,
     customerPhone: String(current.customer_phone || ""),
@@ -610,11 +1508,29 @@ export async function smartAssignConversation(params: {
     assignedByName: params.handoffReasonFromAcrio
       ? "System (ACRIO)"
       : params.triggeredByName || "Smart Router",
-    reason:
-      params.handoffReasonFromAcrio ||
-      `Smart-assigned to least-loaded ${chosenTier} responder in ${teamName}`,
+    reason: assignmentReason,
     assignedAt: nowIso,
   });
+
+  // Notify assigned individual staff member via email dispatch
+  if (staffId && staffId !== "ACRIO" && staffId !== existingStaffId) {
+    void sendStaffAssignmentEmailNotification({
+      staffId,
+      staffName: staffName || "Team Member",
+      customerName: String(current.customer_name || current.customer_phone || "Customer"),
+      customerPhone: String(current.customer_phone || ""),
+      smartCategory: String(current.smart_category || "General Enquiry"),
+      priority: String(current.priority || "HIGH"),
+      escalationLevel: chosenTier,
+      teamName,
+      reason: assignmentReason,
+      latestMessage: String(
+        params.inboundText || current.last_message_preview || ""
+      ),
+      conversationId: params.conversationId,
+      isEscalation: false,
+    }).catch(() => {});
+  }
 
   socketHub.emit("conversation:assigned", {
     conversationId: params.conversationId,
@@ -641,10 +1557,11 @@ export async function smartAssignConversation(params: {
 export async function checkAndEscalateWaitingChats(): Promise<number> {
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
+  const auth = getRawLibSqlClient("core_auth");
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
 
-  const [waitingRes, teamsRes, membersRes, loadRes] = await Promise.all([
+  const [waitingRes, teamsRes, membersRes, loadRes, devUsersRes] = await Promise.all([
     conv.execute(
       `SELECT * FROM conversations
        WHERE status != 'RESOLVED'
@@ -659,9 +1576,12 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
        WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL AND assigned_staff_id != 'ACRIO'
        GROUP BY assigned_staff_id`
     ),
+    auth.execute(`SELECT id FROM users WHERE role = 'DEV'`),
   ]);
 
   if (waitingRes.rows.length === 0) return 0;
+
+  const devUserIds = new Set(devUsersRes.rows.map((u) => String(u.id)));
 
   const teamMap = new Map<string, Record<string, unknown>>();
   for (const t of teamsRes.rows) {
@@ -706,13 +1626,18 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
     if (!targetTier) continue;
 
     const teamMembers = (membersRes.rows as Record<string, unknown>[]).filter(
-      (m) => String(m.team_id) === teamId && String(m.tier) === targetTier
+      (m) =>
+        String(m.team_id) === teamId &&
+        String(m.tier) === targetTier &&
+        !devUserIds.has(String(m.staff_id))
     );
     const fallbackMembers =
       teamMembers.length > 0
         ? teamMembers
         : (membersRes.rows as Record<string, unknown>[]).filter(
-            (m) => String(m.tier) === targetTier
+            (m) =>
+              String(m.tier) === targetTier &&
+              !devUserIds.has(String(m.staff_id))
           );
 
     fallbackMembers.sort((a, b) => {
@@ -776,6 +1701,23 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
       reason: `Customer waited ${roundedMins} min without a reply. Escalated from ${currentLevel} to ${targetTier}.`,
       assignedAt: nowIso,
     });
+
+    if (nextStaffId && nextStaffId !== "ACRIO") {
+      void sendStaffAssignmentEmailNotification({
+        staffId: nextStaffId,
+        staffName: nextStaffName,
+        customerName: String(row.customer_name || row.customer_phone || "Customer"),
+        customerPhone: String(row.customer_phone || ""),
+        smartCategory: String(row.smart_category || "General Enquiry"),
+        priority: nextPriority,
+        escalationLevel: targetTier,
+        teamName,
+        reason: `Customer waited ${roundedMins} min without a reply. Escalated from ${currentLevel} to ${targetTier}.`,
+        latestMessage: String(row.last_message_preview || ""),
+        conversationId: convId,
+        isEscalation: true,
+      }).catch(() => {});
+    }
 
     escalatedCount++;
     socketHub.emit("conversation:escalated", {
@@ -2223,17 +3165,52 @@ export async function recordAssignedFirstResponse(params: {
     ? 1
     : Math.max(1, Math.round((respondedMs - assignedMs) / 1000));
 
-  await conv.execute({
-    sql: `UPDATE conversation_assignments
-          SET first_response_at = ?,
-              first_response_seconds = ?,
-              first_response_message_id = ?,
-              outcome = 'RESPONDED'
-          WHERE id = ?`,
-    args: [respondedAt, computedSecs, params.messageId, assignmentId],
-  });
+  // If the chat was queued to a team without a specific person (`to_staff_id IS NULL`),
+  // attribute the assignment & conversation directly to the real staff member who answered!
+  if (isHumanReply && !currentAssigneeId) {
+    await Promise.all([
+      conv.execute({
+        sql: `UPDATE conversation_assignments
+              SET to_staff_id = ?,
+                  to_staff_name = ?,
+                  first_response_at = ?,
+                  first_response_seconds = ?,
+                  first_response_message_id = ?,
+                  outcome = 'RESPONDED'
+              WHERE id = ?`,
+        args: [
+          params.responderId,
+          params.responderName,
+          respondedAt,
+          computedSecs,
+          params.messageId,
+          assignmentId,
+        ],
+      }),
+      conv.execute({
+        sql: `UPDATE conversations
+              SET assigned_staff_id = ?,
+                  assigned_staff_name = ?
+              WHERE id = ? AND (assigned_staff_id IS NULL OR assigned_staff_id = '')`,
+        args: [params.responderId, params.responderName, params.conversationId],
+      }),
+    ]);
+  } else {
+    await conv.execute({
+      sql: `UPDATE conversation_assignments
+            SET first_response_at = ?,
+                first_response_seconds = ?,
+                first_response_message_id = ?,
+                outcome = 'RESPONDED'
+            WHERE id = ?`,
+      args: [respondedAt, computedSecs, params.messageId, assignmentId],
+    });
+  }
 
   await patchAssignmentEventMessageMeta(assignmentId, {
+    ...(isHumanReply && !currentAssigneeId
+      ? { toStaffId: params.responderId, toStaffName: params.responderName }
+      : {}),
     firstResponseAt: respondedAt,
     firstResponseSeconds: computedSecs,
     firstResponderName: params.responderName,

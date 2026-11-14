@@ -26,12 +26,14 @@ import {
   CardListSkeleton,
   ElementErrorState,
   MetricStatCard,
+  SHORTLINK_PUBLIC_DOMAIN,
   StatCardsSkeleton,
   TableRowsSkeleton,
   WHATSAPP_PUBLIC_DOMAIN,
-  WHATSAPP_PUBLIC_ORIGIN,
+  WhatsAppFormattedText,
   WhatsAppLogoIcon,
   WhatsAppMessageTicks,
+  formatShortLinkUrl,
 } from "@cc/ui";
 
 type PacingMode = "SAFE_STEADY" | "EXTRA_CAREFUL" | "WARMED_FAST";
@@ -194,10 +196,6 @@ export default function MarketingAndLinksPage() {
 
   const [canManageTemplates, setCanManageTemplates] = useState<boolean>(false);
   const [canSendBroadcasts, setCanSendBroadcasts] = useState<boolean>(false);
-  const [rates, setRates] = useState({
-    marketingRateInr: 0.95,
-    otherRateInr: 0.3,
-  });
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
   const [lists, setLists] = useState<MarketingListItem[]>([]);
   const [broadcasts, setBroadcasts] = useState<BroadcastItem[]>([]);
@@ -295,7 +293,6 @@ export default function MarketingAndLinksPage() {
         }
         setCanManageTemplates(Boolean(data.canManageTemplates));
         setCanSendBroadcasts(Boolean(data.canSendBroadcasts));
-        setRates(data.rates || { marketingRateInr: 0.95, otherRateInr: 0.3 });
         const nextTemplates: TemplateItem[] = data.templates || [];
         const nextLists: MarketingListItem[] = data.lists || [];
         setTemplates(nextTemplates);
@@ -418,12 +415,7 @@ export default function MarketingAndLinksPage() {
   const selectedTpl =
     approvedTemplates.find((t) => t.id === bcTemplateId) ||
     templates.find((t) => t.id === bcTemplateId);
-  const estUnitRate =
-    selectedTpl?.category === "MARKETING"
-      ? rates.marketingRateInr
-      : rates.otherRateInr;
   const estCount = selectedList?.membersCount || 0;
-  const estTotalCost = (estCount * estUnitRate).toFixed(2);
   const estSeconds = estimateSafeQueueDuration(estCount, bcPacingMode);
 
   async function handleLaunchBroadcast(e: React.FormEvent) {
@@ -620,7 +612,7 @@ export default function MarketingAndLinksPage() {
     if (data.ok) {
       setLinkTitle("");
       setLinkCode("");
-      flashMessage(`Created ${WHATSAPP_PUBLIC_DOMAIN}/l/${data.link.code}`);
+      flashMessage(`Created ${formatShortLinkUrl(data.link.code)}`);
       await loadMarketingData(true);
     } else {
       flashMessage(data.error || "Could not create short link.", true);
@@ -628,7 +620,7 @@ export default function MarketingAndLinksPage() {
   }
 
   function copyShortLink(code: string) {
-    const url = `${WHATSAPP_PUBLIC_ORIGIN}/l/${code}`;
+    const url = formatShortLinkUrl(code);
     navigator.clipboard.writeText(url);
     setCopiedCode(code);
     setTimeout(() => setCopiedCode(""), 2000);
@@ -794,7 +786,7 @@ export default function MarketingAndLinksPage() {
           <MetricStatCard
             label="Approved Templates"
             value={String(approvedTemplates.length)}
-            subtext={`Marketing ₹${rates.marketingRateInr.toFixed(2)} • Utility ₹${rates.otherRateInr.toFixed(2)}`}
+            subtext="Ready for broadcasts & customer chats"
           />
           <MetricStatCard
             label="Saved Customer Lists"
@@ -1090,9 +1082,10 @@ export default function MarketingAndLinksPage() {
                       {selectedTpl.headerText}
                     </div>
                   )}
-                  <p className="text-neutral-800 whitespace-pre-wrap">
-                    {selectedTpl.bodyText}
-                  </p>
+                  <WhatsAppFormattedText
+                    text={selectedTpl.bodyText}
+                    className="text-neutral-800"
+                  />
                   {selectedTpl.footerText && (
                     <div className="text-[11px] text-neutral-500">
                       {selectedTpl.footerText}
@@ -1111,16 +1104,8 @@ export default function MarketingAndLinksPage() {
                     <span>{formatDurationLabel(estSeconds)}</span>
                   </span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-neutral-600">
-                    Max estimated charge ({estCount} × ₹{estUnitRate.toFixed(2)}):
-                  </span>
-                  <span className="text-sm font-semibold text-neutral-900">
-                    ₹{estTotalCost}
-                  </span>
-                </div>
                 <p className="text-[11px] text-neutral-500">
-                  Contacts who replied STOP or were messaged recently are skipped automatically and charged ₹0.00.
+                  Contacts who replied STOP or were messaged recently are skipped automatically.
                 </p>
               </div>
 
@@ -1225,8 +1210,8 @@ export default function MarketingAndLinksPage() {
                       </div>
 
                       <div className="text-right">
-                        <div className="text-sm font-semibold text-neutral-900">
-                          ₹{b.clientBilledInr.toFixed(2)}
+                        <div className="text-xs font-semibold text-neutral-800">
+                          {b.totalRecipients} contacts
                         </div>
                         <div className="text-[11px] text-neutral-500">
                           {new Date(b.createdAt).toLocaleDateString()}{" "}
@@ -1529,15 +1514,15 @@ export default function MarketingAndLinksPage() {
         </div>
       </div>
 
-      {/* SECTION 3: Product & Custom Short Links on whatsapp.ccapl.cc */}
+      {/* SECTION 3: Product & Custom Short Links on ccapl.cc */}
       <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-neutral-900">
-              Product &amp; Custom Short Links ({WHATSAPP_PUBLIC_DOMAIN}/l/...)
+              Product &amp; Custom Short Links ({SHORTLINK_PUBLIC_DOMAIN}/&lt;6-char&gt;)
             </h2>
             <p className="text-xs text-neutral-500 mt-0.5">
-              Short links are automatically created whenever products and machines are fetched from Classic Concepts and Classic Edge 53. You can also add custom links below.
+              Every product and machine automatically gets a 6-character {SHORTLINK_PUBLIC_DOMAIN} short link. Leave the 6-char ID blank below to auto-generate one, or enter an exact 6-character code (letters, numbers, -, @, +, $, =).
             </p>
           </div>
           <button
@@ -1573,9 +1558,10 @@ export default function MarketingAndLinksPage() {
           />
           <input
             type="text"
+            maxLength={6}
             value={linkCode}
             onChange={(e) => setLinkCode(e.target.value)}
-            placeholder="Short name (e.g. diwali)"
+            placeholder="Optional 6-char ID (auto)"
             className="rounded-md border border-neutral-300 px-3 py-2 font-mono"
           />
           <input
@@ -1642,7 +1628,7 @@ export default function MarketingAndLinksPage() {
               type="text"
               value={linkSearch}
               onChange={(e) => setLinkSearch(e.target.value)}
-              placeholder="Search product name, SKU, or /l/code..."
+              placeholder="Search product name, SKU, or 6-char ID..."
               className="w-full rounded-md border border-neutral-300 pl-8 pr-3 py-1.5 text-xs"
             />
           </div>
@@ -1697,7 +1683,7 @@ export default function MarketingAndLinksPage() {
                           : "Custom"}
                       </span>
                       <span className="font-mono text-xs text-blue-800 truncate">
-                        {WHATSAPP_PUBLIC_DOMAIN}/l/{lnk.code}
+                        {SHORTLINK_PUBLIC_DOMAIN}/{lnk.code}
                       </span>
                     </div>
                     <div className="text-[11px] text-neutral-500 truncate mt-1">
@@ -1723,7 +1709,7 @@ export default function MarketingAndLinksPage() {
                       )}
                     </button>
                     <a
-                      href={`/l/${lnk.code}`}
+                      href={`/${lnk.code}`}
                       target="_blank"
                       rel="noreferrer"
                       className="px-2.5 py-1.5 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-700"

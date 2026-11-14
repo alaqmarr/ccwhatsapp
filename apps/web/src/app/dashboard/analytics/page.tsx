@@ -21,16 +21,17 @@ import {
   ElementErrorState,
   StatCardsSkeleton,
   TableRowsSkeleton,
-  WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
   WhatsAppMessageTicks,
+  formatShortLinkUrl,
 } from "@cc/ui";
 
 interface AnalyticsResponse {
   ok: boolean;
   range: string;
   teamFilter: string;
-  pricingMode: "dev_actual_and_margin" | "client_set_pricing";
+  pricingMode: "dev_actual_and_margin" | "client_set_pricing" | "hidden";
+  canViewBilling?: boolean;
   generatedAt: string;
   teams: { id: string; name: string }[];
   kpis: {
@@ -72,7 +73,7 @@ interface AnalyticsResponse {
     ordersCount: number;
     ordersRevenueInr: number;
     paidOrdersRevenueInr: number;
-    clientBilledInr: number;
+    clientBilledInr?: number;
     actualMetaCostInr?: number;
     netMarginInr?: number;
   };
@@ -141,7 +142,7 @@ interface AnalyticsResponse {
   categories: { name: string; count: number }[];
   priorities: { name: string; count: number }[];
   segments: { name: string; count: number }[];
-  billingByCategory: Record<
+  billingByCategory?: Record<
     string,
     {
       count: number;
@@ -389,8 +390,6 @@ export default function AnalyticsDashboardPage() {
     );
   }, [data]);
 
-  const isDev = data?.pricingMode === "dev_actual_and_margin";
-
   return (
     <div className="w-full px-6 py-5 space-y-6 bg-neutral-50 text-neutral-900">
       {/* Top Header & Filter Controls */}
@@ -605,7 +604,7 @@ export default function AnalyticsDashboardPage() {
               </div>
             </div>
 
-            {/* 5. Message Volume & Free Chat Savings */}
+            {/* 5. Message Volume */}
             <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
               <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>Messages Sent & Received</span>
@@ -620,7 +619,7 @@ export default function AnalyticsDashboardPage() {
                   {data.kpis.outboundMessagesCount}
                 </span>
                 <span className="text-emerald-700 font-semibold">
-                  {data.kpis.freeStaffRepliesCount} Free staff replies
+                  {data.kpis.freeStaffRepliesCount} staff replies
                 </span>
               </div>
             </div>
@@ -660,35 +659,46 @@ export default function AnalyticsDashboardPage() {
               </div>
             </div>
 
-            {/* 8. Message Charges (Role-Isolated Dual Pricing!) */}
-            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
-              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
-                <span>
-                  {isDev ? "Billed vs Meta Cost (Dev)" : "Paid Message Charges"}
-                </span>
-                <IndianRupee className="w-4 h-4 text-slate-700" />
-              </div>
-              <div className="metric-value text-[28px] font-bold text-slate-900">
-                ₹{data.kpis.clientBilledInr.toFixed(2)}
-              </div>
-              {isDev ? (
+            {/* 8. Cost Breakdown (Superadmin/Dev only) or Broadcast & Link Reach (Staff) */}
+            {data.canViewBilling ? (
+              <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+                <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
+                  <span>Message Cost Breakdown</span>
+                  <IndianRupee className="w-4 h-4 text-slate-700" />
+                </div>
+                <div className="metric-value text-[28px] font-bold text-slate-900">
+                  ₹{(data.kpis.clientBilledInr ?? 0).toFixed(2)}
+                </div>
                 <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
-                  <span>
-                    Meta: ₹{(data.kpis.actualMetaCostInr ?? 0).toFixed(2)}
-                  </span>
-                  <span className="text-emerald-700 font-semibold">
-                    Margin: ₹{(data.kpis.netMarginInr ?? 0).toFixed(2)}
+                  <span>ACRIO + Templates</span>
+                  <Link
+                    href="/dashboard/pricing"
+                    className="text-[#008069] font-semibold hover:underline"
+                  >
+                    Open Cost Breakdown →
+                  </Link>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+                <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
+                  <span>Broadcasts & Short Links</span>
+                  <ExternalLink className="w-4 h-4 text-[#00a884]" />
+                </div>
+                <div className="metric-value text-[28px] font-bold text-slate-900">
+                  {data.topLinks.reduce((sum, l) => sum + l.clicksCount, 0)}{" "}
+                  <span className="font-sans text-xs font-medium tracking-normal text-slate-500">
+                    link clicks
                   </span>
                 </div>
-              ) : (
                 <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
-                  <span>ACRIO + Templates only</span>
+                  <span>{data.broadcastSummary.sent} broadcast msgs sent</span>
                   <span className="text-emerald-700 font-semibold">
-                    Regular chat: ₹0.00
+                    {data.kpis.templateMessagesCount} templates
                   </span>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
 
           {/* ROW 2: Daily Volume & First-Response Trend + 24-Hour IST Enquiry Heatmap */}
@@ -801,16 +811,15 @@ export default function AnalyticsDashboardPage() {
             </section>
           </div>
 
-          {/* ROW 3: Agent Assignment & First-Response Leaderboard */}
+          {/* ROW 3: Individual Person Assignment, Replies & Resolution Leaderboard */}
           <section className="bg-white rounded-lg border border-neutral-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-neutral-200 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-semibold text-neutral-900">
-                  Agent & System First-Response Leaderboard
+                  Individual Staff Performance &amp; First-Response Leaderboard
                 </h2>
                 <p className="text-xs text-neutral-500">
-                  Measures exact time from when a chat is assigned to an agent until
-                  their first WhatsApp reply.
+                  Counts assignments, replies sent, response speed, and resolved chats per individual person (kept separate from Team SLA rollups below).
                 </p>
               </div>
               <Link
@@ -826,8 +835,8 @@ export default function AnalyticsDashboardPage() {
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold">
-                    <th className="py-3 px-4">Agent / Handler</th>
-                    <th className="py-3 px-3">Department</th>
+                    <th className="py-3 px-4">Person / Handler</th>
+                    <th className="py-3 px-3">Role &amp; Team</th>
                     <th className="py-3 px-3 text-right">Assigned</th>
                     <th className="py-3 px-3 text-right">Responded</th>
                     <th className="py-3 px-3 text-right">Avg 1st Response</th>
@@ -835,6 +844,7 @@ export default function AnalyticsDashboardPage() {
                     <th className="py-3 px-3 text-right">Under 5m SLA</th>
                     <th className="py-3 px-3 text-right">Escalated</th>
                     <th className="py-3 px-3 text-right">Replies Sent</th>
+                    <th className="py-3 px-3 text-right">Resolved</th>
                     <th className="py-3 px-4 text-right">Live Open</th>
                   </tr>
                 </thead>
@@ -922,6 +932,9 @@ export default function AnalyticsDashboardPage() {
                       <td className="py-3 px-3 text-right font-medium text-neutral-800">
                         {ag.outboundRepliesSent}
                       </td>
+                      <td className="py-3 px-3 text-right font-semibold text-emerald-700">
+                        {ag.resolvedCount}
+                      </td>
                       <td className="py-3 px-4 text-right font-semibold text-neutral-900">
                         {ag.activeOpenChats}
                       </td>
@@ -993,11 +1006,11 @@ export default function AnalyticsDashboardPage() {
               </div>
             </section>
 
-            {/* Outbound WhatsApp Tick Funnel + Paid vs Free Breakdown */}
+            {/* Outbound WhatsApp Tick Funnel + Message Breakdown */}
             <section className="xl:col-span-5 bg-white rounded-lg border border-neutral-200 p-5 space-y-5">
               <div>
                 <h2 className="text-sm font-semibold text-neutral-900">
-                  Outbound WhatsApp Tick Funnel & Message Billing
+                  Outbound WhatsApp Delivery & Read Funnel
                 </h2>
                 <p className="text-xs text-neutral-500">
                   Live receipt status across {data.tickFunnel.totalOutbound} outbound
@@ -1050,36 +1063,85 @@ export default function AnalyticsDashboardPage() {
               </div>
 
               <div className="pt-2 border-t border-neutral-200 space-y-2">
-                <div className="text-xs font-semibold text-neutral-800">
-                  Billing Category Breakdown
-                </div>
-                <div className="space-y-1.5 text-xs">
-                  {Object.entries(data.billingByCategory).map(([cat, row]) => (
-                    <div
-                      key={cat}
-                      className="flex items-center justify-between py-1 px-2.5 rounded bg-neutral-50 border border-neutral-200/80"
-                    >
-                      <span className="font-medium text-neutral-800">
-                        {cat === "FREE_CHAT"
-                          ? "Staff Free Chat (24h Window)"
-                          : cat === "ACRIO"
-                          ? "System (ACRIO) Auto-Replies"
-                          : `${cat} Templates`}
+                {data.canViewBilling && data.billingByCategory ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-neutral-800">
+                        Cost Breakdown by Category
                       </span>
-                      <div className="flex items-center gap-3">
-                        <span className="text-neutral-500">{row.count} msgs</span>
-                        <strong className="text-neutral-900">
-                          ₹{row.clientBilledInr.toFixed(2)}
-                        </strong>
-                        {isDev && row.marginInr !== undefined && (
-                          <span className="text-emerald-700 font-semibold">
-                            (+₹{row.marginInr.toFixed(2)})
-                          </span>
-                        )}
-                      </div>
+                      <Link
+                        href="/dashboard/pricing"
+                        className="text-[11px] font-medium text-[#008069] hover:underline"
+                      >
+                        Full Cost Breakdown
+                      </Link>
                     </div>
-                  ))}
-                </div>
+                    <div className="space-y-1.5 text-xs">
+                      {Object.entries(data.billingByCategory).map(
+                        ([cat, row]) => (
+                          <div
+                            key={cat}
+                            className="flex items-center justify-between py-1 px-2.5 rounded bg-neutral-50 border border-neutral-200/80"
+                          >
+                            <span className="font-medium text-neutral-800">
+                              {cat === "FREE_CHAT"
+                                ? "Staff Chat Replies (24h Window)"
+                                : cat === "ACRIO"
+                                ? "System (ACRIO) Auto-Replies"
+                                : `${cat} Templates`}
+                            </span>
+                            <div className="flex items-center gap-3">
+                              <span className="text-neutral-500">
+                                {row.count} msgs
+                              </span>
+                              <strong className="text-neutral-900">
+                                ₹{row.clientBilledInr.toFixed(2)}
+                              </strong>
+                            </div>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-xs font-semibold text-neutral-800">
+                      Message Volume by Type
+                    </div>
+                    <div className="space-y-1.5 text-xs">
+                      {[
+                        {
+                          label: "Staff Chat Replies",
+                          count: data.kpis.freeStaffRepliesCount,
+                        },
+                        {
+                          label: "System (ACRIO) Auto-Replies",
+                          count: data.kpis.acrioRepliesCount,
+                        },
+                        {
+                          label: "Template Messages Sent",
+                          count: data.kpis.templateMessagesCount,
+                        },
+                        {
+                          label: "Private Team Notes",
+                          count: data.kpis.internalNotesCount,
+                        },
+                      ].map((row) => (
+                        <div
+                          key={row.label}
+                          className="flex items-center justify-between py-1 px-2.5 rounded bg-neutral-50 border border-neutral-200/80"
+                        >
+                          <span className="font-medium text-neutral-800">
+                            {row.label}
+                          </span>
+                          <strong className="text-neutral-900">
+                            {row.count}
+                          </strong>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             </section>
           </div>
@@ -1174,10 +1236,10 @@ export default function AnalyticsDashboardPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-sm font-semibold text-neutral-900">
-                    Short Links Clicks (/l/...)
+                    Short Links Clicks (ccapl.cc)
                   </h2>
                   <p className="text-xs text-neutral-500">
-                    Tracks customer clicks on catalog & quote links.
+                    Tracks customer clicks on 6-character catalog &amp; quote links.
                   </p>
                 </div>
                 <Link
@@ -1199,7 +1261,7 @@ export default function AnalyticsDashboardPage() {
                         {lnk.title}
                       </div>
                       <div className="text-[11px] font-mono text-[#008069] truncate">
-                        {WHATSAPP_PUBLIC_ORIGIN}/l/{lnk.code}
+                        {formatShortLinkUrl(lnk.code)}
                       </div>
                     </div>
                     <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 font-semibold shrink-0">
@@ -1368,7 +1430,7 @@ export default function AnalyticsDashboardPage() {
                           </td>
                           <td className="py-3 px-4 text-right">
                             <Link
-                              href={`/dashboard/inbox?c=${encodeURIComponent(
+                              href={`/dashboard/inbox?chat=${encodeURIComponent(
                                 log.conversationId
                               )}`}
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-neutral-300 bg-white hover:bg-neutral-50 text-[11px] font-medium text-neutral-800"

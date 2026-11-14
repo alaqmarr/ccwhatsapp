@@ -1,29 +1,38 @@
 import { NextResponse } from "next/server";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
-import { getPricingDashboardMode, hasPermission, isDevRole } from "@cc/rbac";
+import { canViewCostBreakdown, isDevRole } from "@cc/rbac";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 /**
- * STRICT ROLE-SEPARATED PRICING API:
- * - Client / Admin / Superadmin see ONLY Classic Concepts' set rates:
- *   ₹0.95 per Marketing message and ₹0.30 per all other messages (Utility, Authentication, Service).
- * - DEV sees BOTH the set client pricing AND actual Meta wholesale costs + net margin!
+ * STRICT ROLE-SEPARATED PRICING & PROFIT API:
+ * - Staff / Manager / Admin NEVER see message charges here (403).
+ * - Superadmin on `/dashboard/pricing` ("Cost Breakdown") sees ONLY Classic Concepts' set client charges:
+ *   ₹0.95 per Marketing message and ₹0.30 per ACRIO / Utility / Auth message.
+ * - DEV on `/dashboard/dev` (`?scope=dev`) sees actual Meta wholesale costs, net profit, and margin!
  */
-export async function GET() {
+export async function GET(req: Request) {
   const user = await getCurrentUser();
-  if (!user || !hasPermission(user.role, "billing:view_client_pricing", user.status)) {
+  if (!user || user.status !== "ACTIVE" || !canViewCostBreakdown(user.role)) {
     return NextResponse.json(
-      { ok: false, error: "Pricing dashboard requires Admin, Client, Superadmin, or Dev access." },
+      { ok: false, error: "Cost breakdown requires Superadmin or Dev access." },
+      { status: 403 }
+    );
+  }
+
+  const { searchParams } = new URL(req.url);
+  const requestedScope = searchParams.get("scope");
+  if (requestedScope === "dev" && !isDevRole(user.role)) {
+    return NextResponse.json(
+      { ok: false, error: "Dev profit & Meta wholesale analytics are reserved strictly for DEV." },
       { status: 403 }
     );
   }
 
   await ensureDatabasesBootstrapped();
   const bill = getRawLibSqlClient("billing_ops");
-  const mode = getPricingDashboardMode(user.role);
-  const isDev = mode === "dev_actual_and_margin";
+  const isDevProfitView = isDevRole(user.role) && requestedScope === "dev";
 
   const [cfgRes, summaryRes, recentRes] = await Promise.all([
     bill.execute(`SELECT * FROM pricing_config WHERE id = 'default' LIMIT 1`),
@@ -54,7 +63,7 @@ export async function GET() {
         String(r.category) === "MARKETING" ? clientMarketingRateInr : clientOtherRateInr,
       totalBilledInr: Number(Number(r.totalClientBilled ?? 0).toFixed(2)),
     };
-    if (!isDev) return base;
+    if (!isDevProfitView) return base;
     return {
       ...base,
       actualMetaCostInr: Number(Number(r.totalActualMetaCost ?? 0).toFixed(4)),
@@ -76,7 +85,7 @@ export async function GET() {
       staffName: String(r.staff_name),
       billedAt: String(r.billed_at),
     };
-    if (!isDev) return base;
+    if (!isDevProfitView) return base;
     return {
       ...base,
       actualMetaUnitCostInr: Number(r.actual_meta_unit_cost_inr ?? 0),
@@ -84,11 +93,12 @@ export async function GET() {
     };
   });
 
-  if (!isDev) {
-    // Zero actual Meta wholesale rates or margins ever leave the server for non-DEV roles!
+  if (!isDevProfitView) {
+    // Zero actual Meta wholesale rates or margins ever leave the server on Cost Breakdown!
     return NextResponse.json({
       ok: true,
       viewMode: "client_set_pricing",
+      viewerIsDev: isDevRole(user.role),
       currency: "INR",
       rates: {
         marketingRateInr: clientMarketingRateInr,

@@ -204,7 +204,30 @@ async function runBootstrapInternal(): Promise<void> {
     "write"
   );
 
-  // Non-destructive column upgrades for existing conversations.db
+  // Non-destructive column upgrades for existing conversations.db & core_auth.db
+  const extraAuthTables = [
+    `CREATE TABLE IF NOT EXISTS email_dispatch_logs (
+      id TEXT PRIMARY KEY,
+      recipient_email TEXT NOT NULL,
+      recipient_name TEXT NOT NULL DEFAULT '',
+      dispatch_type TEXT NOT NULL DEFAULT 'STAFF_ASSIGNMENT',
+      conversation_id TEXT,
+      subject TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'SENT',
+      transport_source TEXT NOT NULL DEFAULT 'SMTP',
+      error_message TEXT,
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_email_logs_created ON email_dispatch_logs (created_at DESC)`,
+  ];
+  for (const ddl of extraAuthTables) {
+    try {
+      await auth.execute(ddl);
+    } catch {
+      // Exists
+    }
+  }
+
   const extraConvColumns = [
     `ALTER TABLE conversations ADD COLUMN assigned_team_id TEXT`,
     `ALTER TABLE conversations ADD COLUMN assigned_team_name TEXT`,
@@ -212,6 +235,10 @@ async function runBootstrapInternal(): Promise<void> {
     `ALTER TABLE conversations ADD COLUMN waiting_since TEXT`,
     `ALTER TABLE conversations ADD COLUMN last_response_seconds INTEGER`,
     `ALTER TABLE conversations ADD COLUMN escalated_at TEXT`,
+    `ALTER TABLE conversations ADD COLUMN resolved_by_id TEXT`,
+    `ALTER TABLE messages ADD COLUMN sender_staff_id TEXT`,
+    `ALTER TABLE automations ADD COLUMN priority_order INTEGER NOT NULL DEFAULT 10`,
+    `ALTER TABLE team_members ADD COLUMN email_alerts_enabled INTEGER NOT NULL DEFAULT 1`,
   ];
   for (const ddl of extraConvColumns) {
     try {
@@ -347,6 +374,20 @@ async function runBootstrapInternal(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS idx_order_trackings_lookup ON order_trackings (lookup_key)`,
       `CREATE INDEX IF NOT EXISTS idx_order_trackings_phone ON order_trackings (customer_phone)`,
       `CREATE INDEX IF NOT EXISTS idx_order_trackings_updated ON order_trackings (updated_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS website_enquiry_sync_logs (
+        id TEXT PRIMARY KEY,
+        external_key TEXT NOT NULL UNIQUE,
+        brand TEXT NOT NULL,
+        customer_phone TEXT NOT NULL DEFAULT '',
+        customer_email TEXT NOT NULL DEFAULT '',
+        customer_name TEXT NOT NULL DEFAULT '',
+        conversation_id TEXT,
+        smart_reply_text TEXT DEFAULT '',
+        assigned_staff_name TEXT DEFAULT '',
+        whatsapp_dispatched INTEGER NOT NULL DEFAULT 0,
+        email_dispatched INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      )`,
     ],
     "write"
   );
@@ -448,6 +489,7 @@ async function runBootstrapInternal(): Promise<void> {
     `ALTER TABLE templates ADD COLUMN code_expiration_minutes INTEGER`,
     `ALTER TABLE templates ADD COLUMN created_by_name TEXT DEFAULT 'System'`,
     `ALTER TABLE templates ADD COLUMN updated_at TEXT`,
+    `ALTER TABLE templates ADD COLUMN flow_config_json TEXT NOT NULL DEFAULT '{}'`,
     `ALTER TABLE broadcasts ADD COLUMN pacing_mode TEXT NOT NULL DEFAULT 'SAFE_STEADY'`,
     `ALTER TABLE broadcasts ADD COLUMN delay_seconds INTEGER NOT NULL DEFAULT 4`,
     `ALTER TABLE broadcasts ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 25`,
@@ -1294,7 +1336,7 @@ async function seedInitialOperationalData(): Promise<void> {
             "Classic Concepts Support Desk",
             null,
             null,
-            "APPROVED",
+            shouldSeedDemoData ? "APPROVED" : "DRAFT",
             shouldSeedDemoData ? 64 : 0,
             isoNow,
           ],
@@ -1313,7 +1355,7 @@ async function seedInitialOperationalData(): Promise<void> {
             null,
             null,
             null,
-            "APPROVED",
+            shouldSeedDemoData ? "APPROVED" : "DRAFT",
             shouldSeedDemoData ? 19 : 0,
             isoNow,
           ],
@@ -1323,12 +1365,12 @@ async function seedInitialOperationalData(): Promise<void> {
     );
   }
 
-  // Always ensure the dynamic Order Tracking button Utility template is available
+  // Always ensure the dynamic Order Tracking button Utility template draft is available to submit to Meta
   await mkt.execute({
     sql: `INSERT OR IGNORE INTO templates (
       id, name, language, category, header_type, header_text, body_text, footer_text,
       cta_label, cta_url, buttons_json, variables_schema_json, approval_status, sent_count, created_at, updated_at
-    ) VALUES (?, ?, 'en', 'UTILITY', 'TEXT', ?, ?, ?, 'Track Order', 'https://track.ccapl.cc/{{1}}', ?, ?, 'APPROVED', 0, ?, ?)`,
+    ) VALUES (?, ?, 'en', 'UTILITY', 'TEXT', ?, ?, ?, 'Track Order', 'https://track.ccapl.cc/{{1}}', ?, ?, ?, 0, ?, ?)`,
     args: [
       "tpl_order_tracking_btn",
       "cc_order_tracking_dispatch",
@@ -1365,10 +1407,21 @@ async function seedInitialOperationalData(): Promise<void> {
           sampleValue: "Delhivery",
         },
       ]),
+      shouldSeedDemoData ? "APPROVED" : "DRAFT",
       isoNow,
       isoNow,
     ],
   });
+
+  // Strict Meta Template Policy: in live production (without demo seed), any local template that has NOT been synced/approved by Meta (no meta_template_id) must stay DRAFT until submitted & approved on Meta!
+  if (!shouldSeedDemoData && envMeta.hasLiveCredentials) {
+    await mkt.execute(`
+      UPDATE templates
+      SET approval_status = 'DRAFT'
+      WHERE approval_status = 'APPROVED'
+        AND (meta_template_id IS NULL OR TRIM(meta_template_id) = '')
+    `);
+  }
 
   if (shouldSeedDemoData && Number(existingTemplates.rows[0]?.cnt ?? 0) === 0) {
     await mkt.batch(
@@ -1683,6 +1736,46 @@ async function seedInitialOperationalData(): Promise<void> {
   await conv.execute(
     `UPDATE teams SET priority_rank = 1 WHERE id = 'team_sales' AND priority_rank > 1`
   );
+
+  // Auto-enroll any ACTIVE non-DEV staff user who is not yet assigned to any team into Sales Team (P0)
+  // so individual person assignment and individual analytics work out of the box!
+  const activeNonDevUsers = await auth.execute(
+    `SELECT id, name, email, department, role FROM users
+     WHERE status = 'ACTIVE' AND role NOT IN ('DEV', 'CLIENT')`
+  );
+  for (const u of activeNonDevUsers.rows) {
+    const uid = String(u.id);
+    const existingMembership = await conv.execute({
+      sql: `SELECT id FROM team_members WHERE staff_id = ? LIMIT 1`,
+      args: [uid],
+    });
+    if (existingMembership.rows.length === 0) {
+      const deptLower = String(u.department || "").toLowerCase();
+      const targetTeamId =
+        deptLower.includes("machine") || deptLower.includes("edge")
+          ? "team_ce53_machines"
+          : deptLower.includes("custom") || deptLower.includes("fab")
+          ? "team_custom_fab"
+          : deptLower.includes("dispatch") || deptLower.includes("order")
+          ? "team_support"
+          : "team_sales";
+      const tier = String(u.role) === "SUPERADMIN" ? "P2" : String(u.role) === "MANAGER" || String(u.role) === "ADMIN" ? "P1" : "P0";
+      await conv.execute({
+        sql: `INSERT OR IGNORE INTO team_members (
+          id, team_id, staff_id, staff_name, staff_email, tier, max_active_chats, is_available, email_alerts_enabled, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 15, 1, 1, ?)`,
+        args: [
+          `tm_auto_${uid}`,
+          targetTeamId,
+          uid,
+          String(u.name || ""),
+          String(u.email || ""),
+          tier,
+          isoNow,
+        ],
+      });
+    }
+  }
 
   // Enforce billing rule: migrate ACRIO rows to 'ACRIO' and purge any legacy 'SERVICE' charges from normal free chat
   await bill.execute(

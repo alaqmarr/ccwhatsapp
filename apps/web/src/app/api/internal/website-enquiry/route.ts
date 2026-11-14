@@ -1,0 +1,332 @@
+import crypto from "node:crypto";
+import { NextResponse } from "next/server";
+import { getCurrentUser } from "@/lib/session";
+import {
+  evaluateWebsiteEnquiryWithAi,
+  sendWhatsAppCloudMessage,
+} from "@cc/connections";
+import {
+  checkEcosystemBridgesHealth,
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+  normalizeWhatsAppPhone,
+  resolveEcosystemBridgeKey,
+  upsertOrderTracking,
+  upsertSyncedContact,
+  type ShipmentStatus,
+} from "@cc/database";
+import { socketHub } from "@cc/sockets";
+import {
+  recordDualPricingLedgerEntry,
+  smartAssignConversation,
+} from "@cc/workers";
+
+export const dynamic = "force-dynamic";
+
+function isAuthorizedBridgeCall(req: Request): boolean {
+  const key = req.headers.get("x-cc-bridge-key")?.trim() || "";
+  return Boolean(key && key === resolveEcosystemBridgeKey());
+}
+
+export async function GET(req: Request) {
+  const bridgeOk = isAuthorizedBridgeCall(req);
+  if (!bridgeOk) {
+    const user = await getCurrentUser();
+    if (!user || user.status !== "ACTIVE") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+  }
+
+  const health = await checkEcosystemBridgesHealth();
+  return NextResponse.json({ ok: true, health });
+}
+
+export async function POST(req: Request) {
+  if (!isAuthorizedBridgeCall(req)) {
+    return NextResponse.json(
+      { ok: false, error: "Invalid bridge key" },
+      { status: 401 }
+    );
+  }
+
+  await ensureDatabasesBootstrapped();
+  const body = await req.json().catch(() => ({}));
+  const eventType = String(body.type || "WEBSITE_ENQUIRY").toUpperCase();
+
+  // 1. Live Order Creation / Status Sync from classicconcepts (:3003) or classicedge (:3002)
+  if (eventType === "WEBSITE_ORDER") {
+    const orderNumber = String(body.orderNumber || body.orderId || "").trim();
+    if (!orderNumber) {
+      return NextResponse.json(
+        { ok: false, error: "orderNumber is required" },
+        { status: 400 }
+      );
+    }
+
+    const rawStatus = String(body.shipmentStatus || body.status || "ORDER_CONFIRMED").toUpperCase();
+    const mappedStatus: ShipmentStatus = /DELIVER/.test(rawStatus)
+      ? "DELIVERED"
+      : /OUT_FOR_DELIVERY/.test(rawStatus)
+      ? "OUT_FOR_DELIVERY"
+      : /IN_TRANSIT/.test(rawStatus)
+      ? "IN_TRANSIT"
+      : /DISPATCH|SHIP/.test(rawStatus)
+      ? "DISPATCHED"
+      : /READY/.test(rawStatus)
+      ? "READY_FOR_DISPATCH"
+      : /PROD|PROCESS|PAID/.test(rawStatus)
+      ? "IN_PRODUCTION"
+      : "ORDER_CONFIRMED";
+
+    const upserted = await upsertOrderTracking({
+      orderId: orderNumber,
+      brand:
+        body.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS",
+      customerName: String(body.customerName || ""),
+      customerPhone:
+        normalizeWhatsAppPhone(String(body.customerPhone || "")) ||
+        String(body.customerPhone || ""),
+      itemsSummary: String(body.itemsSummary || "Website Order"),
+      providerCode: String(body.providerCode || "WORKSHOP"),
+      providerName: String(body.providerName || "Workshop Dispatch"),
+      awbNumber: String(body.awbNumber || ""),
+      providerTrackingUrl: String(body.providerTrackingUrl || ""),
+      shipmentStatus: mappedStatus,
+      createdByName:
+        body.brand === "CLASSIC_EDGE_53"
+          ? "Classic Edge 53 (:3002)"
+          : "Classic Concepts (:3003)",
+    });
+
+    return NextResponse.json({
+      ok: upserted.ok,
+      tracking: upserted.tracking,
+      error: upserted.error,
+    });
+  }
+
+  // 2. Website Form Enquiry: Smart Claude Haiku 5.5 First Evaluation + Sales Team Routing
+  const brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" =
+    body.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS";
+  const customerName = String(body.customerName || "Customer").trim();
+  const rawPhone = String(body.customerPhone || "").trim();
+  const customerEmail = String(body.customerEmail || "").trim();
+  const productName = String(body.productName || "").trim();
+  const messageText = String(body.message || "").trim();
+  const externalId =
+    String(body.enquiryId || "").trim() ||
+    `ext_${crypto.randomUUID().slice(0, 8)}`;
+
+  if (!messageText) {
+    return NextResponse.json(
+      { ok: false, error: "Enquiry message is required." },
+      { status: 400 }
+    );
+  }
+
+  const aiEval = await evaluateWebsiteEnquiryWithAi({
+    brand,
+    customerName,
+    customerPhone: rawPhone,
+    customerEmail,
+    productName,
+    message: messageText,
+  });
+
+  const normalizedPhone = normalizeWhatsAppPhone(rawPhone);
+  const conv = getRawLibSqlClient("conversations");
+  const crm = getRawLibSqlClient("crm_orders");
+  const nowIso = new Date().toISOString();
+  let conversationId: string | null = null;
+  let whatsappDelivered = false;
+
+  if (normalizedPhone) {
+    const syncContact = await upsertSyncedContact({
+      phone: normalizedPhone,
+      name: customerName,
+      email: customerEmail || undefined,
+      source:
+        brand === "CLASSIC_EDGE_53"
+          ? "CLASSICEDGE53_FORM"
+          : "CLASSICCONCEPTS_FORM",
+      stage: "QUALIFIED",
+      acrioSegment: aiEval.smartCategory,
+      tags: [
+        brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts",
+        "Website Enquiry",
+      ],
+      lastContactedAt: nowIso,
+    });
+
+    const existingConv = await conv.execute({
+      sql: `SELECT id, window_expires_at FROM conversations WHERE customer_phone = ? LIMIT 1`,
+      args: [normalizedPhone],
+    });
+
+    const brandTag =
+      brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts";
+    const inboundDisplayBody = `[Website Enquiry - ${brandTag}]${productName ? `\nProduct: ${productName}` : ""}\n${messageText}`;
+
+    if (existingConv.rows[0]) {
+      conversationId = String(existingConv.rows[0].id);
+      await conv.execute({
+        sql: `UPDATE conversations
+              SET status = 'OPEN',
+                  customer_name = COALESCE(NULLIF(?, ''), customer_name),
+                  priority = ?,
+                  smart_category = ?,
+                  unread_count = unread_count + 1,
+                  last_message_preview = ?,
+                  last_message_at = ?,
+                  waiting_since = COALESCE(waiting_since, ?)
+              WHERE id = ?`,
+        args: [
+          customerName,
+          aiEval.priority,
+          aiEval.smartCategory,
+          inboundDisplayBody.slice(0, 140),
+          nowIso,
+          nowIso,
+          conversationId,
+        ],
+      });
+    } else {
+      conversationId = `conv_${crypto.randomUUID().slice(0, 8)}`;
+      await conv.execute({
+        sql: `INSERT INTO conversations (
+          id, customer_phone, customer_name, customer_id, status, priority, smart_category,
+          assigned_staff_id, assigned_staff_name, assigned_team_name, escalation_level,
+          unread_count, last_message_preview, last_message_at, waiting_since, window_expires_at,
+          tags_json, created_at
+        ) VALUES (?, ?, ?, ?, 'OPEN', ?, ?, 'ACRIO', 'ACRIO', 'System (ACRIO)', 'P0', 1, ?, ?, ?, NULL, ?, ?)`,
+        args: [
+          conversationId,
+          normalizedPhone,
+          customerName,
+          syncContact.id || null,
+          aiEval.priority,
+          aiEval.smartCategory,
+          inboundDisplayBody.slice(0, 140),
+          nowIso,
+          nowIso,
+          JSON.stringify([brandTag, "Website Form"]),
+          nowIso,
+        ],
+      });
+    }
+
+    // Record customer's website form enquiry in chat timeline
+    await conv.execute({
+      sql: `INSERT INTO messages (
+        id, conversation_id, direction, sender_type, sender_name, message_type,
+        billing_category, body, delivery_status, created_at
+      ) VALUES (?, ?, 'INBOUND', 'CUSTOMER', ?, 'TEXT', 'SERVICE', ?, 'DELIVERED', ?)`,
+      args: [
+        `msg_${crypto.randomUUID().slice(0, 10)}`,
+        conversationId,
+        customerName,
+        inboundDisplayBody,
+        nowIso,
+      ],
+    });
+
+    // Check if customer has an open 24h WhatsApp window; if open, send AI smart reply on WhatsApp too!
+    const winExp = existingConv.rows[0]?.window_expires_at
+      ? new Date(String(existingConv.rows[0].window_expires_at)).getTime()
+      : 0;
+    const isWindowOpen = winExp > Date.now();
+
+    if (isWindowOpen) {
+      const dispatch = await sendWhatsAppCloudMessage({
+        toPhone: normalizedPhone,
+        bodyText: aiEval.whatsappSummaryText,
+      });
+      whatsappDelivered = dispatch.ok;
+      const outMsgId = `msg_${crypto.randomUUID().slice(0, 10)}`;
+      await conv.execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, wa_message_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, delivery_status, created_at
+        ) VALUES (?, ?, ?, 'OUTBOUND', 'AUTOMATION', 'ACRIO Website Concierge', 'TEXT', 'ACRIO', ?, ?, ?)`,
+        args: [
+          outMsgId,
+          conversationId,
+          dispatch.waMessageId,
+          aiEval.whatsappSummaryText,
+          dispatch.deliveryStatus,
+          new Date(Date.now() + 250).toISOString(),
+        ],
+      });
+      if (dispatch.ok) {
+        await recordDualPricingLedgerEntry({
+          messageId: outMsgId,
+          conversationId,
+          customerPhone: normalizedPhone,
+          category: "ACRIO",
+          staffName: "ACRIO Website Concierge",
+        });
+      }
+    } else {
+      // Save AI evaluation + email-sent confirmation as an internal team note so Sales sees what AI already answered!
+      await conv.execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, delivery_status, created_at
+        ) VALUES (?, ?, 'INTERNAL', 'AUTOMATION', 'ACRIO Website Concierge', 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+        args: [
+          `msg_${crypto.randomUUID().slice(0, 10)}`,
+          conversationId,
+          `Smart AI First Reply prepared & emailed to ${customerEmail || customerName}:\n\n${aiEval.whatsappSummaryText}\n\n(Customer has not messaged on WhatsApp in the last 24h, so send an approved Meta template to start WhatsApp outreach.)`,
+          new Date(Date.now() + 250).toISOString(),
+        ],
+      });
+    }
+
+    // Route conversation to Sales Team (and trigger Staff Assignment Email Notification!)
+    await smartAssignConversation({
+      conversationId,
+      inboundText: inboundDisplayBody,
+      preferredTeamId: "team_sales",
+      startWaitingTimer: true,
+      triggeredByName: "Website Enquiry Router",
+      handoffReasonFromAcrio: `New ${brandTag} website enquiry evaluated by ACRIO AI and routed to Sales Team for follow-up.`,
+    });
+
+    socketHub.emit("message:new", { conversationId, source: "WEBSITE_ENQUIRY" });
+    socketHub.emit("conversation:assigned", { conversationId });
+  }
+
+  // Log website enquiry sync record
+  await crm
+    .execute({
+      sql: `INSERT OR REPLACE INTO website_enquiry_sync_logs (
+        id, external_key, brand, customer_name, customer_phone, customer_email,
+        enquiry_text, ai_reply_text, conversation_id, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        `wes_${crypto.randomUUID().slice(0, 10)}`,
+        `${brand}:${externalId}`,
+        brand,
+        customerName,
+        normalizedPhone || rawPhone,
+        customerEmail,
+        messageText,
+        aiEval.smartReplyText,
+        conversationId,
+        whatsappDelivered ? "REPLIED_WHATSAPP_AND_EMAIL" : "ROUTED_TO_SALES",
+        nowIso,
+      ],
+    })
+    .catch(() => {});
+
+  return NextResponse.json({
+    ok: true,
+    conversationId,
+    whatsappDelivered,
+    smartCategory: aiEval.smartCategory,
+    priority: aiEval.priority,
+    smartReplyText: aiEval.smartReplyText,
+    whatsappSummaryText: aiEval.whatsappSummaryText,
+    matchedItems: aiEval.matchedItems,
+  });
+}

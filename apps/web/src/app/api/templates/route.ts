@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import {
   buildMetaGraphTemplatePayload,
+  draftMetaCompliantTemplateWithAi,
   getCachedEcosystemCatalog,
   sendWhatsAppCloudMessage,
   submitTemplateToMetaCloud,
@@ -9,6 +10,7 @@ import {
   validateWhatsAppTemplateRules,
   type WhatsAppHeaderType,
   type WhatsAppTemplateButton,
+  type WhatsAppTemplateButtonFlowAction,
   type WhatsAppTemplateCategory,
   type WhatsAppTemplateDefinition,
   type WhatsAppTemplateLocation,
@@ -56,18 +58,20 @@ export async function GET() {
   await ensureDatabasesBootstrapped();
   const mkt = getRawLibSqlClient("marketing");
   const bill = getRawLibSqlClient("billing_ops");
+  const auth = getRawLibSqlClient("core_auth");
 
   const catalog = await getCachedEcosystemCatalog().catch(() => ({
     classicConceptsProducts: [],
     classicEdgeItems: [],
     allItems: [],
   }));
-  const [tplRes, pricingRes, customLinks] = await Promise.all([
+  const [tplRes, pricingRes, customLinks, teamsRes] = await Promise.all([
     mkt.execute(
       `SELECT * FROM templates ORDER BY COALESCE(updated_at, created_at) DESC`
     ),
     bill.execute(`SELECT * FROM pricing_config WHERE id = 'default' LIMIT 1`),
     listCustomAdminLinks(),
+    auth.execute(`SELECT id, name FROM teams ORDER BY name ASC`),
   ]);
 
   const pRow = (pricingRes.rows[0] || {}) as Record<string, unknown>;
@@ -156,6 +160,10 @@ export async function GET() {
     templates,
     customLinks,
     catalogMediaItems,
+    teams: teamsRes.rows.map((r) => ({
+      id: String(r.id),
+      name: String(r.name),
+    })),
   });
 }
 
@@ -182,6 +190,67 @@ export async function POST(req: Request) {
     const syncRes = await syncTemplatesFromMetaCloud();
     socketHub.emit("template:updated", { syncedCount: syncRes.syncedCount });
     return NextResponse.json(syncRes, { status: syncRes.ok ? 200 : 400 });
+  }
+
+  if (action === "ai_draft_template") {
+    const goal = String(body.goal || body.prompt || "").trim();
+    if (!goal) {
+      return NextResponse.json(
+        { ok: false, error: "Describe what this template should communicate." },
+        { status: 400 }
+      );
+    }
+    const category: WhatsAppTemplateCategory =
+      body.category === "UTILITY" || body.category === "AUTHENTICATION"
+        ? body.category
+        : "MARKETING";
+    const drafted = await draftMetaCompliantTemplateWithAi({
+      prompt: goal,
+      category,
+      brand:
+        body.brand === "CLASSIC_EDGE_53"
+          ? "CLASSIC_EDGE_53"
+          : "CLASSIC_CONCEPTS",
+    });
+    return NextResponse.json({ ok: true, draft: drafted });
+  }
+
+  if (action === "save_button_flows") {
+    const tplId = String(body.templateId || "").trim();
+    const srcRes = await mkt.execute({
+      sql: `SELECT buttons_json FROM templates WHERE id = ? LIMIT 1`,
+      args: [tplId],
+    });
+    if (!srcRes.rows[0]) {
+      return NextResponse.json(
+        { ok: false, error: "Template not found." },
+        { status: 404 }
+      );
+    }
+    const existingButtons = parseJsonSafe<WhatsAppTemplateButton[]>(
+      srcRes.rows[0].buttons_json,
+      []
+    );
+    const incomingFlows: Record<string, WhatsAppTemplateButtonFlowAction> =
+      body.flowsByButtonId && typeof body.flowsByButtonId === "object"
+        ? body.flowsByButtonId
+        : {};
+
+    const updatedButtons = existingButtons.map((btn) => ({
+      ...btn,
+      flowAction: incomingFlows[btn.id] ?? btn.flowAction,
+    }));
+
+    await mkt.execute({
+      sql: `UPDATE templates SET buttons_json = ?, updated_at = ? WHERE id = ?`,
+      args: [JSON.stringify(updatedButtons), nowIso, tplId],
+    });
+    socketHub.emit("template:updated", { templateId: tplId });
+    return NextResponse.json({
+      ok: true,
+      buttons: updatedButtons,
+      message: "Quick-reply button flow actions saved! Incoming button taps will execute these exact flows before AI.",
+    });
   }
 
   if (action === "save_draft" || action === "submit_to_meta") {
@@ -223,6 +292,10 @@ export async function POST(req: Request) {
           phoneNumber: b.phoneNumber ? String(b.phoneNumber).trim() : undefined,
           exampleCode: b.exampleCode ? String(b.exampleCode).trim() : undefined,
           otpType: b.otpType === "ONE_TAP" ? "ONE_TAP" : "COPY_CODE",
+          flowAction:
+            b.flowAction && typeof b.flowAction === "object"
+              ? (b.flowAction as WhatsAppTemplateButtonFlowAction)
+              : undefined,
         }))
       : [];
 
@@ -522,37 +595,6 @@ export async function POST(req: Request) {
     });
   }
 
-  if (action === "set_review_status") {
-    if (!isSuperAdminCapable(user.role)) {
-      return NextResponse.json(
-        { ok: false, error: "Only Dev or Superadmin can override review status." },
-        { status: 403 }
-      );
-    }
-    const tplId = String(body.templateId || "");
-    const nextStatus =
-      body.status === "REJECTED"
-        ? "REJECTED"
-        : body.status === "PENDING_APPROVAL"
-        ? "PENDING_APPROVAL"
-        : "APPROVED";
-    const reason =
-      nextStatus === "REJECTED"
-        ? String(body.rejectionReason || "Sample values or wording needed adjustment.")
-        : null;
-
-    await mkt.execute({
-      sql: `UPDATE templates
-            SET approval_status = ?,
-                rejection_reason = ?,
-                updated_at = ?
-            WHERE id = ?`,
-      args: [nextStatus, reason, nowIso, tplId],
-    });
-    socketHub.emit("template:updated", { templateId: tplId, status: nextStatus });
-    return NextResponse.json({ ok: true, approvalStatus: nextStatus });
-  }
-
   if (action === "delete_template") {
     const tplId = String(body.templateId || "");
     await mkt.execute({
@@ -583,6 +625,17 @@ export async function POST(req: Request) {
       );
     }
     const t = tplRes.rows[0] as Record<string, unknown>;
+    if (String(t.approval_status || "") !== "APPROVED") {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Only official Meta-APPROVED templates can be sent on WhatsApp (current status: ${String(
+            t.approval_status || "DRAFT"
+          )}). Submit this template to Meta for review first.`,
+        },
+        { status: 400 }
+      );
+    }
     const varSpecs = parseJsonSafe<WhatsAppTemplateVariableSpec[]>(
       t.variables_schema_json,
       []

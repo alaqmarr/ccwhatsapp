@@ -30,7 +30,7 @@ const ONBOARDING_MODULES: Array<{
     summary:
       "How team members join the WhatsApp desk and get approved.",
     points: [
-      "Every staff member registers with an active WhatsApp phone number and their @classiconcepts.in work email.",
+      "Every staff member registers with an active WhatsApp phone number and their email address.",
       "Once you enter the 6-digit email code, your account is sent to a Superadmin or Dev for approval.",
       "While you wait for approval, you can read through this guide so you know where everything is.",
     ],
@@ -90,16 +90,16 @@ const ONBOARDING_MODULES: Array<{
   },
   {
     id: "marketing_links",
-    title: "6. Customer Lists & Short Links (whatsapp.ccapl.cc)",
+    title: "6. Customer Lists & Short Links (ccapl.cc)",
     icon: Megaphone,
     summary:
-      "Creating targeted broadcast lists with ACRIO and sharing clean short links.",
+      "Creating targeted broadcast lists with ACRIO and sharing clean 6-character short links.",
     points: [
       "In 'Broadcasts & Short Links', type who you want to reach in plain English (for example, 'Hotels and banquets') and ACRIO will gather matching contacts.",
-      "Create clean short links like https://whatsapp.ccapl.cc/l/stage-podiums for catalogs, quotes, or payment pages.",
-      "Every click on a short link is counted so you know how many customers opened it.",
+      "Every product and custom destination gets an ultra-short link like https://ccapl.cc/p0d@9A for catalogs, quotes, or payment pages.",
+      "Every click on a ccapl.cc short link is counted so you know how many customers opened it.",
     ],
-    tip: "Short links look much cleaner inside a WhatsApp message than long website addresses.",
+    tip: "Short ccapl.cc links look much cleaner inside a WhatsApp message than long website addresses.",
   },
   {
     id: "pricing_categories",
@@ -112,7 +112,7 @@ const ONBOARDING_MODULES: Array<{
       "ACRIO automated replies and Utility or Verification template messages cost ₹0.30 per message.",
       "Marketing template messages (promotions, festival offers, and catalog broadcasts) cost ₹0.95 per message.",
     ],
-    tip: "You can check exact monthly ACRIO and template message counts anytime under 'Message Charges'.",
+    tip: "Superadmins can review exact monthly ACRIO and template message costs under 'Cost Breakdown'.",
   },
 ];
 

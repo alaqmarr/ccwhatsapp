@@ -2,7 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  cleanDisplayProductName,
   ensureDatabasesBootstrapped,
+  generateSixCharShortCode,
   getRawLibSqlClient,
   resolveMonorepoRoot,
 } from "@cc/database";
@@ -58,16 +60,6 @@ export async function createCustomAdminLink(params: {
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
 
-  const slugCode = (
-    params.code?.trim() ||
-    params.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 28) ||
-    `link-${crypto.randomUUID().slice(0, 6)}`
-  ).toLowerCase();
-
   if (!params.targetUrl.trim().startsWith("http") && !params.targetUrl.trim().startsWith("/")) {
     return {
       ok: false,
@@ -75,14 +67,48 @@ export async function createCustomAdminLink(params: {
     };
   }
 
-  const existing = await conv.execute({
-    sql: `SELECT id FROM custom_links WHERE code = ? LIMIT 1`,
-    args: [slugCode],
-  });
-  const finalCode =
-    existing.rows.length > 0
-      ? `${slugCode}-${crypto.randomUUID().slice(0, 4)}`
-      : slugCode;
+  const rawRequested = (params.code || "").trim().replace(/^\/+/, "");
+  let finalCode = "";
+
+  if (rawRequested) {
+    // Allow numbers, mixed-case letters, and URL-safe special characters (- _ @ + $ = ! ~ .)
+    const sanitized = rawRequested
+      .replace(/[\s/?#"'<>\\`^*]/g, "")
+      .slice(0, 6);
+    if (!sanitized) {
+      return {
+        ok: false,
+        error: "Short ID must use URL-safe characters (up to 6 characters).",
+      };
+    }
+    const existing = await conv.execute({
+      sql: `SELECT id FROM custom_links WHERE LOWER(code) = LOWER(?) LIMIT 1`,
+      args: [sanitized],
+    });
+    if (existing.rows.length > 0) {
+      return {
+        ok: false,
+        error: `Short ID "${sanitized}" is already in use. Leave blank for an instant 6-character ID or pick another.`,
+      };
+    }
+    finalCode = sanitized;
+  } else {
+    // Generate a unique 6-character URL-safe short ID (A-Z, a-z, 0-9, -, @, +, $, =)
+    for (let attempt = 0; attempt < 25; attempt++) {
+      const candidate = generateSixCharShortCode();
+      const existing = await conv.execute({
+        sql: `SELECT id FROM custom_links WHERE LOWER(code) = LOWER(?) LIMIT 1`,
+        args: [candidate],
+      });
+      if (existing.rows.length === 0) {
+        finalCode = candidate;
+        break;
+      }
+    }
+    if (!finalCode) {
+      finalCode = generateSixCharShortCode(`${Date.now()}-${Math.random()}`);
+    }
+  }
 
   const id = `lnk_${crypto.randomUUID().slice(0, 8)}`;
   const now = new Date().toISOString();
@@ -94,7 +120,7 @@ export async function createCustomAdminLink(params: {
     args: [
       id,
       finalCode,
-      params.title.trim(),
+      cleanDisplayProductName(params.title.trim()),
       params.targetUrl.trim(),
       params.linkType || "CUSTOM_ADMIN",
       params.productSlug || null,
@@ -122,12 +148,24 @@ export async function resolveAndTrackCustomLink(
 ): Promise<CustomAdminLinkItem | null> {
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
-  const cleanCode = code.trim().toLowerCase();
+  let decoded = String(code || "").trim();
+  try {
+    decoded = decodeURIComponent(decoded).trim();
+  } catch {
+    // Keep raw
+  }
+  if (!decoded) return null;
 
-  const res = await conv.execute({
-    sql: `SELECT * FROM custom_links WHERE LOWER(code) = ? LIMIT 1`,
-    args: [cleanCode],
+  let res = await conv.execute({
+    sql: `SELECT * FROM custom_links WHERE code = ? LIMIT 1`,
+    args: [decoded],
   });
+  if (!res.rows[0]) {
+    res = await conv.execute({
+      sql: `SELECT * FROM custom_links WHERE LOWER(code) = LOWER(?) LIMIT 1`,
+      args: [decoded],
+    });
+  }
 
   if (!res.rows[0]) return null;
   const item = mapLinkRow(res.rows[0] as Record<string, unknown>);

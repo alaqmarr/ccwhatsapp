@@ -7,6 +7,7 @@ import {
   type OrderTrackingRecord,
 } from "@cc/database";
 import { getCachedEcosystemCatalog } from "@cc/connections";
+import { canAssignToDev, type UserRole } from "@cc/rbac";
 import {
   getWhatsAppCacheSummary,
   listCustomAdminLinks,
@@ -225,6 +226,7 @@ export interface ConversationDetailBundle {
 export interface InitialInboxPayload {
   currentUserId: string;
   currentUserName: string;
+  currentUserRole: UserRole;
   serverNowMs: number;
   threads: ConversationSummary[];
   initialSelectedId: string | null;
@@ -421,6 +423,7 @@ export async function getConversationDetailServer(
 export async function getInitialInboxPayload(params: {
   userId: string;
   userName: string;
+  userRole: UserRole;
   selectedConversationId?: string;
 }): Promise<InitialInboxPayload> {
   await ensureDatabasesBootstrapped();
@@ -530,12 +533,20 @@ export async function getInitialInboxPayload(params: {
     p1WaitMinutes: Number(t.p1_wait_minutes ?? 12),
   }));
 
-  const staffList: StaffOption[] = staffRes.rows.map((s) => ({
-    id: String(s.id),
-    name: String(s.name),
-    role: String(s.role),
-    department: String(s.department || "Operations"),
-  }));
+  const allowDevAssign = canAssignToDev(params.userRole);
+  const staffList: StaffOption[] = staffRes.rows
+    .filter(
+      (s) =>
+        String(s.role) !== "DEV" ||
+        allowDevAssign ||
+        String(s.id) === params.userId
+    )
+    .map((s) => ({
+      id: String(s.id),
+      name: String(s.name),
+      role: String(s.role),
+      department: String(s.department || "Operations"),
+    }));
 
   const templates: ApprovedTemplateOption[] = templatesRes.rows.map((tpl) => {
     const rawCat = String(tpl.category || "UTILITY");
@@ -569,6 +580,7 @@ export async function getInitialInboxPayload(params: {
   return {
     currentUserId: params.userId,
     currentUserName: params.userName,
+    currentUserRole: params.userRole,
     serverNowMs: Date.now(),
     threads,
     initialSelectedId: preferredId,
@@ -597,7 +609,7 @@ export async function getInitialTeamsPayload(canManage: boolean) {
       auth.execute(
         `SELECT id, name, email, whatsapp_number, role, department
          FROM users
-         WHERE status = 'ACTIVE' AND role != 'CLIENT'
+         WHERE status = 'ACTIVE' AND role NOT IN ('CLIENT', 'DEV')
          ORDER BY name ASC`
       ),
       conv.execute(

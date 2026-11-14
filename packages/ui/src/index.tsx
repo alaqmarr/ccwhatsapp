@@ -3,9 +3,16 @@ import type { AccountStatus, UserRole } from "@cc/rbac";
 
 export const WHATSAPP_PUBLIC_DOMAIN = "whatsapp.ccapl.cc";
 export const WHATSAPP_PUBLIC_ORIGIN = "https://whatsapp.ccapl.cc";
+export const SHORTLINK_PUBLIC_DOMAIN = "ccapl.cc";
+export const SHORTLINK_PUBLIC_ORIGIN = "https://ccapl.cc";
 export const TRACKING_PUBLIC_DOMAIN = "track.ccapl.cc";
 export const TRACKING_PUBLIC_ORIGIN = "https://track.ccapl.cc";
 export const TRACKING_SECONDARY_DOMAIN = "track.ccapl.in";
+
+export function formatShortLinkUrl(code: string): string {
+  const clean = String(code || "").trim().replace(/^\/+/, "");
+  return `${SHORTLINK_PUBLIC_ORIGIN}/${clean}`;
+}
 
 export interface ShippingProviderOption {
   code: string;
@@ -660,5 +667,255 @@ export function WhatsAppMessageTicks({
       </svg>
       {showLabel && <span className="leading-none">{label}</span>}
     </span>
+  );
+}
+
+// ============================================================================
+// WHATSAPP RICH MESSAGE FORMATTER (*bold*, _italic_, ~strike~, `code`, \n, URLs)
+// ============================================================================
+
+export function stripWhatsAppFormatting(text: string): string {
+  if (!text) return "";
+  return String(text)
+    .replace(/\r\n/g, "\n")
+    .replace(/\\n/g, " ")
+    .replace(/```([\s\S]*?)```/g, "$1")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/(?<![a-zA-Z0-9])\*([^\s*\n](?:[^*\n]*[^\s*\n])?)\*(?![a-zA-Z0-9])/g, "$1")
+    .replace(/(?<![a-zA-Z0-9])_([^\s_\n](?:[^_\n]*[^\s_\n])?)_(?![a-zA-Z0-9])/g, "$1")
+    .replace(/(?<![a-zA-Z0-9])~([^\s~\n](?:[^~\n]*[^\s~\n])?)~(?![a-zA-Z0-9])/g, "$1")
+    .replace(/\s*\n+\s*/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function renderWhatsAppInline(
+  input: string,
+  keyPrefix: string,
+  depth = 0
+): React.ReactNode[] {
+  if (!input) return [];
+  if (depth > 2) return [input];
+
+  const nodes: React.ReactNode[] = [];
+  const tokenRegex =
+    /(`[^`\n]+`)|(https?:\/\/[^\s<]+)|(\*\*[^*\n]+\*\*)|((?<![a-zA-Z0-9])\*[^\s*\n](?:[^*\n]*[^\s*\n])?\*(?![a-zA-Z0-9]))|((?<![a-zA-Z0-9])_[^\s_\n](?:[^_\n]*[^\s_\n])?_(?![a-zA-Z0-9]))|((?<![a-zA-Z0-9])~[^\s~\n](?:[^~\n]*[^\s~\n])?~(?![a-zA-Z0-9]))/g;
+
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+  let tokenCount = 0;
+
+  while ((match = tokenRegex.exec(input)) !== null) {
+    const start = match.index;
+    const raw = match[0];
+
+    if (start > lastIdx) {
+      nodes.push(input.slice(lastIdx, start));
+    }
+
+    const k = `${keyPrefix}_t${tokenCount++}`;
+
+    if (match[1]) {
+      // Inline `code`
+      nodes.push(
+        <code
+          key={k}
+          className="px-1 py-0.5 rounded bg-black/[0.06] font-mono text-[0.9em] text-gray-900"
+        >
+          {raw.slice(1, -1)}
+        </code>
+      );
+      lastIdx = start + raw.length;
+    } else if (match[2]) {
+      // URL — trim trailing punctuation cleanly
+      let cleanUrl = raw;
+      let trailing = "";
+      while (/[.,;:!?)]$/.test(cleanUrl)) {
+        if (
+          cleanUrl.endsWith(")") &&
+          (cleanUrl.match(/\(/g) || []).length >=
+            (cleanUrl.match(/\)/g) || []).length
+        ) {
+          break;
+        }
+        trailing = cleanUrl.slice(-1) + trailing;
+        cleanUrl = cleanUrl.slice(0, -1);
+      }
+      nodes.push(
+        <a
+          key={k}
+          href={cleanUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="text-[#027eb5] hover:underline break-all font-medium"
+        >
+          {cleanUrl}
+        </a>
+      );
+      if (trailing) nodes.push(trailing);
+      lastIdx = start + raw.length;
+    } else if (match[3]) {
+      // **bold** fallback
+      const inner = raw.slice(2, -2);
+      nodes.push(
+        <strong key={k} className="font-semibold text-gray-950">
+          {renderWhatsAppInline(inner, k, depth + 1)}
+        </strong>
+      );
+      lastIdx = start + raw.length;
+    } else if (match[4]) {
+      // WhatsApp *bold*
+      const inner = raw.slice(1, -1);
+      nodes.push(
+        <strong key={k} className="font-semibold text-gray-950">
+          {renderWhatsAppInline(inner, k, depth + 1)}
+        </strong>
+      );
+      lastIdx = start + raw.length;
+    } else if (match[5]) {
+      // WhatsApp _italic_
+      const inner = raw.slice(1, -1);
+      nodes.push(
+        <em key={k} className="italic">
+          {renderWhatsAppInline(inner, k, depth + 1)}
+        </em>
+      );
+      lastIdx = start + raw.length;
+    } else if (match[6]) {
+      // WhatsApp ~strikethrough~
+      const inner = raw.slice(1, -1);
+      nodes.push(
+        <del key={k} className="line-through opacity-80">
+          {renderWhatsAppInline(inner, k, depth + 1)}
+        </del>
+      );
+      lastIdx = start + raw.length;
+    } else {
+      nodes.push(raw);
+      lastIdx = start + raw.length;
+    }
+  }
+
+  if (lastIdx < input.length) {
+    nodes.push(input.slice(lastIdx));
+  }
+
+  return nodes;
+}
+
+export function WhatsAppFormattedText({
+  text,
+  className = "",
+}: {
+  text: string;
+  className?: string;
+}) {
+  if (!text) return null;
+
+  const normalized = String(text)
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\\n/g, "\n");
+
+  // Split by fenced ```code blocks``` first
+  const segments = normalized.split(/(```[\s\S]*?```)/g);
+
+  return (
+    <div className={`whitespace-pre-wrap break-words leading-[1.48] ${className}`}>
+      {segments.map((seg, segIdx) => {
+        if (seg.startsWith("```") && seg.endsWith("```") && seg.length >= 6) {
+          const codeBody = seg.slice(3, -3).replace(/^\n+|\n+$/g, "");
+          return (
+            <pre
+              key={`cb_${segIdx}`}
+              className="my-1.5 p-2 rounded-md bg-black/[0.06] font-mono text-[12px] leading-relaxed overflow-x-auto whitespace-pre-wrap"
+            >
+              {codeBody}
+            </pre>
+          );
+        }
+
+        const lines = seg.split("\n");
+        return (
+          <React.Fragment key={`seg_${segIdx}`}>
+            {lines.map((line, lineIdx) => {
+              const isLastLine = lineIdx === lines.length - 1;
+              const trimmed = line.trimStart();
+
+              // Empty line -> clean paragraph spacing
+              if (line.trim() === "") {
+                return !isLastLine ? (
+                  <div key={`br_${segIdx}_${lineIdx}`} className="h-2" />
+                ) : null;
+              }
+
+              // Blockquote (> text)
+              if (/^>\s+/.test(trimmed)) {
+                const quoteText = trimmed.replace(/^>\s+/, "");
+                return (
+                  <div
+                    key={`q_${segIdx}_${lineIdx}`}
+                    className="my-0.5 pl-2.5 border-l-2 border-emerald-600/50 text-gray-700"
+                  >
+                    {renderWhatsAppInline(quoteText, `q_${segIdx}_${lineIdx}`)}
+                  </div>
+                );
+              }
+
+              // Bullet list (• text, - text, or * text with space)
+              const bulletMatch = trimmed.match(/^(?:[•●▪-]\s+|\*\s+)(.+)$/);
+              if (bulletMatch) {
+                return (
+                  <div
+                    key={`ul_${segIdx}_${lineIdx}`}
+                    className="flex items-start gap-1.5 my-0.5"
+                  >
+                    <span className="select-none text-current opacity-75 shrink-0 leading-[1.48]">
+                      •
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      {renderWhatsAppInline(
+                        bulletMatch[1],
+                        `ul_${segIdx}_${lineIdx}`
+                      )}
+                    </span>
+                  </div>
+                );
+              }
+
+              // Numbered list (1. text)
+              const numMatch = trimmed.match(/^(\d{1,2}[.)])\s+(.+)$/);
+              if (numMatch) {
+                return (
+                  <div
+                    key={`ol_${segIdx}_${lineIdx}`}
+                    className="flex items-start gap-1.5 my-0.5"
+                  >
+                    <span className="font-semibold shrink-0 leading-[1.48]">
+                      {numMatch[1]}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      {renderWhatsAppInline(
+                        numMatch[2],
+                        `ol_${segIdx}_${lineIdx}`
+                      )}
+                    </span>
+                  </div>
+                );
+              }
+
+              return (
+                <React.Fragment key={`ln_${segIdx}_${lineIdx}`}>
+                  {renderWhatsAppInline(line, `ln_${segIdx}_${lineIdx}`)}
+                  {!isLastLine && lines[lineIdx + 1]?.trim() !== "" && "\n"}
+                </React.Fragment>
+              );
+            })}
+          </React.Fragment>
+        );
+      })}
+    </div>
   );
 }

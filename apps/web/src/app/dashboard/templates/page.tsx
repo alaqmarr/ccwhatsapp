@@ -18,8 +18,10 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Trash2,
   Video,
+  Workflow,
   X,
 } from "lucide-react";
 import {
@@ -27,16 +29,40 @@ import {
   ClassicConceptsMark,
   ElementErrorState,
   MetricStatCard,
+  SHORTLINK_PUBLIC_DOMAIN,
+  SHORTLINK_PUBLIC_ORIGIN,
   StatCardsSkeleton,
   TRACKING_PUBLIC_ORIGIN,
   TableRowsSkeleton,
-  WHATSAPP_PUBLIC_ORIGIN,
+  WhatsAppFormattedText,
   WhatsAppLogoIcon,
   WhatsAppMessageTicks,
+  formatShortLinkUrl,
+  stripWhatsAppFormatting,
 } from "@cc/ui";
 
 type HeaderType = "NONE" | "TEXT" | "IMAGE" | "VIDEO" | "DOCUMENT" | "LOCATION";
 type TemplateCategory = "MARKETING" | "UTILITY" | "AUTHENTICATION";
+type ButtonFlowActionType =
+  | "NONE"
+  | "AUTO_REPLY"
+  | "ASSIGN_TEAM"
+  | "SEND_ORDER_TRACKING"
+  | "SEND_APPROVED_TEMPLATE"
+  | "OPT_OUT_DND"
+  | "SMART_AI_WITH_GUARD";
+
+interface ButtonFlowAction {
+  actionType: ButtonFlowActionType;
+  replyText?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  teamId?: string;
+  templateName?: string;
+  smartCategory?: string;
+  priority?: "URGENT" | "HIGH" | "NORMAL";
+  aiInstruction?: string;
+}
 
 interface TemplateButton {
   id: string;
@@ -47,6 +73,7 @@ interface TemplateButton {
   exampleSuffix?: string;
   phoneNumber?: string;
   exampleCode?: string;
+  flowAction?: ButtonFlowAction;
 }
 
 interface VariableSpec {
@@ -119,41 +146,6 @@ const LANGUAGE_OPTIONS = [
   { code: "mr", label: "Marathi (mr)" },
 ];
 
-function formatWhatsAppRichText(raw: string): React.ReactNode[] {
-  // Simple safe formatter for *bold*, _italic_, ~strike~, `code`
-  const lines = raw.split("\n");
-  return lines.map((line, lIdx) => {
-    const tokens = line.split(/(\*[^*]+\*|_[^_]+_|~[^~]+~|`[^`]+`)/g);
-    return (
-      <React.Fragment key={lIdx}>
-        {tokens.map((tok, tIdx) => {
-          if (tok.startsWith("*") && tok.endsWith("*") && tok.length > 2) {
-            return <strong key={tIdx}>{tok.slice(1, -1)}</strong>;
-          }
-          if (tok.startsWith("_") && tok.endsWith("_") && tok.length > 2) {
-            return <em key={tIdx}>{tok.slice(1, -1)}</em>;
-          }
-          if (tok.startsWith("~") && tok.endsWith("~") && tok.length > 2) {
-            return <s key={tIdx}>{tok.slice(1, -1)}</s>;
-          }
-          if (tok.startsWith("`") && tok.endsWith("`") && tok.length > 2) {
-            return (
-              <code
-                key={tIdx}
-                className="px-1 py-0.5 rounded bg-black/5 font-mono text-[12px]"
-              >
-                {tok.slice(1, -1)}
-              </code>
-            );
-          }
-          return <React.Fragment key={tIdx}>{tok}</React.Fragment>;
-        })}
-        {lIdx < lines.length - 1 && <br />}
-      </React.Fragment>
-    );
-  });
-}
-
 function slugifyName(val: string): string {
   return val
     .toLowerCase()
@@ -167,17 +159,28 @@ export default function TemplatesStudioPage() {
   const [loadError, setLoadError] = useState<string>("");
   const [canManage, setCanManage] = useState<boolean>(false);
   const [isDev, setIsDev] = useState<boolean>(false);
-  const [isSuperAdmin, setIsSuperAdmin] = useState<boolean>(false);
-  const [rates, setRates] = useState({ marketingRateInr: 0.95, otherRateInr: 0.3 });
 
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
   const [customLinks, setCustomLinks] = useState<ShortLinkOption[]>([]);
   const [catalogMedia, setCatalogMedia] = useState<CatalogMediaOption[]>([]);
+  const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
 
   const [banner, setBanner] = useState<string>("");
   const [actionError, setActionError] = useState<string>("");
   const [syncingMeta, setSyncingMeta] = useState<boolean>(false);
-  const [savingAction, setSavingAction] = useState<"" | "DRAFT" | "SUBMIT">("");
+  const [savingAction, setSavingAction] = useState<
+    "" | "DRAFT" | "SUBMIT" | "FLOWS"
+  >("");
+
+  // Meta AI Compliant Template Drafter (claude-haiku-5-5)
+  const [aiGoal, setAiGoal] = useState<string>(
+    "Follow up with hotel buyers on acrylic stage podiums with quick buttons for price list and talking to sales"
+  );
+  const [aiBrand, setAiBrand] = useState<"CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53">(
+    "CLASSIC_CONCEPTS"
+  );
+  const [draftingAi, setDraftingAi] = useState<boolean>(false);
+  const [aiComplianceNotes, setAiComplianceNotes] = useState<string[]>([]);
 
   // Library filters
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -205,7 +208,7 @@ export default function TemplatesStudioPage() {
   });
 
   const [bodyText, setBodyText] = useState<string>(
-    "Hello {{1}}, explore our crystal-clear acrylic stage podiums, mementos, and custom tabletop stands made at Classic Concepts."
+    "Hello {{1}}, explore our clear acrylic stage podiums, mementos, and custom tabletop stands made at Classic Concepts."
   );
   const [footerText, setFooterText] = useState<string>(
     "Classic Concepts • Reply STOP to opt out"
@@ -215,13 +218,19 @@ export default function TemplatesStudioPage() {
       id: "btn_1",
       type: "URL",
       text: "View Collection",
-      url: `${WHATSAPP_PUBLIC_ORIGIN}/l/stage-podiums`,
+      url: `${SHORTLINK_PUBLIC_ORIGIN}/podium`,
       urlType: "STATIC",
     },
     {
       id: "btn_2",
       type: "QUICK_REPLY",
       text: "Talk to Sales Team",
+      flowAction: {
+        actionType: "ASSIGN_TEAM",
+        teamId: "team_sales",
+        replyText:
+          "Connecting you with our *Sales Team* right away. A specialist will reply here shortly.",
+      },
     },
   ]);
   const [variablesSchema, setVariablesSchema] = useState<VariableSpec[]>([
@@ -260,11 +269,14 @@ export default function TemplatesStudioPage() {
       }
       setCanManage(Boolean(data.canManage));
       setIsDev(Boolean(data.isDev));
-      setIsSuperAdmin(Boolean(data.isSuperAdmin));
-      setRates(data.rates || { marketingRateInr: 0.95, otherRateInr: 0.3 });
       setTemplates(data.templates || []);
       setCustomLinks(data.customLinks || []);
       setCatalogMedia(data.catalogMediaItems || []);
+      setTeams(
+        Array.isArray(data.teams) && data.teams.length > 0
+          ? data.teams
+          : [{ id: "team_sales", name: "Sales Team" }]
+      );
     } catch {
       setLoadError("Network error while loading WhatsApp templates.");
     } finally {
@@ -346,7 +358,7 @@ export default function TemplatesStudioPage() {
       setHeaderType("TEXT");
       setHeaderText("Clear Acrylic Podiums & Menu Stands");
       setBodyText(
-        "Hello {{1}}, check out our latest crystal-clear banquet podiums and tabletop menu holders crafted at Classic Concepts for hotels and convention halls."
+        "Hello {{1}}, check out our latest clear banquet podiums and tabletop menu holders made at Classic Concepts for hotels and convention halls."
       );
       setFooterText("Classic Concepts • Reply STOP to opt out");
       setButtons([
@@ -354,11 +366,28 @@ export default function TemplatesStudioPage() {
           id: "b1",
           type: "URL",
           text: "View Hotel Catalog",
-          url: `${WHATSAPP_PUBLIC_ORIGIN}/l/stage-podiums`,
+          url: customLinks[0]
+            ? formatShortLinkUrl(customLinks[0].code)
+            : `${SHORTLINK_PUBLIC_ORIGIN}/podium`,
           urlType: "STATIC",
         },
-        { id: "b2", type: "QUICK_REPLY", text: "Talk to Sales Team" },
-        { id: "b3", type: "QUICK_REPLY", text: "STOP" },
+        {
+          id: "b2",
+          type: "QUICK_REPLY",
+          text: "Talk to Sales Team",
+          flowAction: {
+            actionType: "ASSIGN_TEAM",
+            teamId: "team_sales",
+            replyText:
+              "Connecting you with our *Sales Team* right away. A specialist will reply here shortly.",
+          },
+        },
+        {
+          id: "b3",
+          type: "QUICK_REPLY",
+          text: "STOP",
+          flowAction: { actionType: "OPT_OUT_DND" },
+        },
       ]);
     } else if (preset === "CE53_MACHINE") {
       setName("ce53_acrylic_machines_quote");
@@ -393,11 +422,16 @@ export default function TemplatesStudioPage() {
       setHeaderType("TEXT");
       setHeaderText("Order Status Update");
       setBodyText(
-        "Hello {{1}}, your Classic Concepts order *{{2}}* is now *{{3}}*. Reply to this message anytime if you need transport details."
+        "Hello {{1}}, your Classic Concepts order *{{2}}* is now *{{3}}*. Tap below for live tracking or reply anytime if you need transport details."
       );
       setFooterText("Classic Concepts Dispatch Desk");
       setButtons([
-        { id: "b1", type: "QUICK_REPLY", text: "Share LR / Tracking" },
+        {
+          id: "b1",
+          type: "QUICK_REPLY",
+          text: "Share LR / Tracking",
+          flowAction: { actionType: "SEND_ORDER_TRACKING" },
+        },
       ]);
     } else if (preset === "PAYMENT_QUOTE") {
       setName("cc_quote_approval_link");
@@ -413,10 +447,21 @@ export default function TemplatesStudioPage() {
           id: "b1",
           type: "URL",
           text: "Open Quote Link",
-          url: `${WHATSAPP_PUBLIC_ORIGIN}/l/pune-guard-quote`,
+          url: `${SHORTLINK_PUBLIC_ORIGIN}/quote1`,
           urlType: "STATIC",
         },
-        { id: "b2", type: "QUICK_REPLY", text: "Confirm Order" },
+        {
+          id: "b2",
+          type: "QUICK_REPLY",
+          text: "Confirm Order",
+          flowAction: {
+            actionType: "ASSIGN_TEAM",
+            teamId: "team_sales",
+            priority: "HIGH",
+            replyText:
+              "Thank you for confirming! Our *Sales & Dispatch Team* has been notified to lock in your order.",
+          },
+        },
       ]);
     } else if (preset === "OTP_CODE") {
       setName("cc_verification_otp");
@@ -537,7 +582,7 @@ export default function TemplatesStudioPage() {
           text: "Open Link",
           url:
             customLinks[0]
-              ? `${WHATSAPP_PUBLIC_ORIGIN}/l/${customLinks[0].code}`
+              ? formatShortLinkUrl(customLinks[0].code)
               : "https://www.classicconcepts.in",
           urlType: "STATIC",
         },
@@ -569,6 +614,12 @@ export default function TemplatesStudioPage() {
           id,
           type: "QUICK_REPLY",
           text: "Talk to Sales Team",
+          flowAction: {
+            actionType: "ASSIGN_TEAM",
+            teamId: teams[0]?.id || "team_sales",
+            replyText:
+              "Connecting you with our *Sales Team* right away. A specialist will reply here shortly.",
+          },
         },
       ]);
     }
@@ -817,27 +868,91 @@ export default function TemplatesStudioPage() {
     await loadTemplatesData();
   }
 
-  async function handleDevReviewStatus(
-    tpl: TemplateRecord,
-    status: "APPROVED" | "REJECTED"
-  ) {
-    const res = await fetch("/api/templates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "set_review_status",
-        templateId: tpl.id,
-        status,
-        rejectionReason:
-          status === "REJECTED"
-            ? "Sample variable values did not match message context."
-            : undefined,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (data.ok) {
-      notifySuccess(`Marked "${tpl.name}" as ${status}.`);
+  async function handleDraftWithMetaAi() {
+    if (!aiGoal.trim()) {
+      setActionError("Describe what you want this template to say first.");
+      return;
+    }
+    setDraftingAi(true);
+    setActionError("");
+    setAiComplianceNotes([]);
+    try {
+      const res = await fetch("/api/templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "ai_draft_template",
+          goal: aiGoal.trim(),
+          category,
+          brand: aiBrand,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.draft) {
+        setActionError(data.error || "Could not draft template right now.");
+        return;
+      }
+      const d = data.draft;
+      setEditingId("");
+      setName(slugifyName(d.name || "cc_template_draft"));
+      if (d.category) setCategory(d.category);
+      setHeaderType(d.headerType || "TEXT");
+      setHeaderText(d.headerText || "");
+      setBodyText(d.bodyText || "");
+      setFooterText(d.footerText || "");
+      if (Array.isArray(d.buttons) && d.buttons.length > 0) {
+        setButtons(d.buttons);
+      }
+      if (Array.isArray(d.variablesSchema) && d.variablesSchema.length > 0) {
+        setVariablesSchema(d.variablesSchema);
+      }
+      if (Array.isArray(d.complianceNotes)) {
+        setAiComplianceNotes(d.complianceNotes);
+      }
+      notifySuccess(
+        "Drafted Meta-compliant template with Quick Reply button flows pre-mapped. Review and submit to Meta when ready."
+      );
+    } catch {
+      setActionError("Network error while drafting template.");
+    } finally {
+      setDraftingAi(false);
+    }
+  }
+
+  async function handleSaveButtonFlowsOnly() {
+    if (!editingId) return;
+    setSavingAction("FLOWS");
+    setActionError("");
+    try {
+      const flowsByButtonId: Record<string, ButtonFlowAction | undefined> = {};
+      for (const b of buttons) {
+        if (b.type === "QUICK_REPLY") {
+          flowsByButtonId[b.id] = b.flowAction || { actionType: "NONE" };
+        }
+      }
+      const res = await fetch("/api/templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_button_flows",
+          templateId: editingId,
+          flowsByButtonId,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        setActionError(data.error || "Could not save button flow mappings.");
+        return;
+      }
+      notifySuccess(
+        data.message ||
+          "Quick-reply button flows saved without altering Meta approval status."
+      );
       await loadTemplatesData();
+    } catch {
+      setActionError("Network error while saving button flow mappings.");
+    } finally {
+      setSavingAction("");
     }
   }
 
@@ -892,8 +1007,10 @@ export default function TemplatesStudioPage() {
     (t) =>
       t.approvalStatus === "DRAFT" || t.approvalStatus === "PENDING_APPROVAL"
   ).length;
-  const unitPrice =
-    category === "MARKETING" ? rates.marketingRateInr : rates.otherRateInr;
+  const totalSentCount = templates.reduce(
+    (sum, t) => sum + (t.sentCount || 0),
+    0
+  );
 
   return (
     <div ref={editorTopRef} className="w-full px-6 py-5 space-y-6">
@@ -982,9 +1099,9 @@ export default function TemplatesStudioPage() {
             subtext="Saved drafts or awaiting Meta review"
           />
           <MetricStatCard
-            label="Template Message Rates"
-            value={`₹${rates.marketingRateInr.toFixed(2)} / ₹${rates.otherRateInr.toFixed(2)}`}
-            subtext="Marketing ₹0.95 • Utility & OTP ₹0.30"
+            label="Messages Sent via Templates"
+            value={String(totalSentCount)}
+            subtext="Across Customer Chats & Broadcasts"
           />
         </div>
       )}
@@ -1020,6 +1137,59 @@ export default function TemplatesStudioPage() {
                   >
                     Exit Edit Mode (Save as New)
                   </button>
+                )}
+              </div>
+
+              {/* Meta AI Compliant Template Drafter (claude-haiku-5-5) */}
+              <div className="p-3.5 rounded-lg bg-emerald-50/60 border border-emerald-200 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 font-semibold text-emerald-950">
+                    <Sparkles className="w-4 h-4 text-[#008069]" />
+                    <span>Meta-Compliant Template Drafter (AI + Auto Flow Mapping)</span>
+                  </div>
+                  <select
+                    value={aiBrand}
+                    onChange={(e) =>
+                      setAiBrand(
+                        e.target.value as "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53"
+                      )
+                    }
+                    className="rounded border border-emerald-300 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-800"
+                  >
+                    <option value="CLASSIC_CONCEPTS">
+                      Brand: Classic Concepts (Acrylic Products)
+                    </option>
+                    <option value="CLASSIC_EDGE_53">
+                      Brand: Classic Edge 53 (Machines &amp; Tools)
+                    </option>
+                  </select>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={aiGoal}
+                    onChange={(e) => setAiGoal(e.target.value)}
+                    placeholder="Describe your message goal (e.g. Order ready for pickup with Track Order and Call Desk buttons)..."
+                    className="flex-1 rounded-md border border-emerald-300 bg-white px-3 py-2 text-xs"
+                  />
+                  <button
+                    type="button"
+                    disabled={draftingAi}
+                    onClick={handleDraftWithMetaAi}
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-md bg-[#008069] hover:bg-[#006b57] text-white font-semibold cursor-pointer disabled:opacity-60 shrink-0"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>
+                      {draftingAi ? "Drafting..." : "Draft Compliant Template"}
+                    </span>
+                  </button>
+                </div>
+                {aiComplianceNotes.length > 0 && (
+                  <ul className="text-[11px] text-emerald-900 space-y-0.5 pl-4 list-disc">
+                    {aiComplianceNotes.map((note, idx) => (
+                      <li key={idx}>{note}</li>
+                    ))}
+                  </ul>
                 )}
               </div>
 
@@ -1068,7 +1238,7 @@ export default function TemplatesStudioPage() {
 
                 <div>
                   <label className="block font-medium text-neutral-700 mb-1">
-                    Message Category & Rate
+                    Message Category
                   </label>
                   <select
                     value={category}
@@ -1077,14 +1247,10 @@ export default function TemplatesStudioPage() {
                     }
                     className="w-full rounded-md border border-neutral-300 px-3 py-2 bg-white"
                   >
-                    <option value="MARKETING">
-                      Marketing / Offers (₹{rates.marketingRateInr.toFixed(2)})
-                    </option>
-                    <option value="UTILITY">
-                      Utility / Order Updates (₹{rates.otherRateInr.toFixed(2)})
-                    </option>
+                    <option value="MARKETING">Marketing / Offers</option>
+                    <option value="UTILITY">Utility / Order Updates</option>
                     <option value="AUTHENTICATION">
-                      Authentication / OTP Code (₹{rates.otherRateInr.toFixed(2)})
+                      Authentication / OTP Code
                     </option>
                   </select>
                 </div>
@@ -1572,7 +1738,7 @@ export default function TemplatesStudioPage() {
                                     )
                                   );
                                 }}
-                                placeholder="https://whatsapp.ccapl.cc/l/stage-podiums"
+                                placeholder="https://ccapl.cc/podium"
                                 className="sm:col-span-7 rounded border border-neutral-300 bg-white px-2.5 py-1.5 font-mono"
                               />
                               <div className="sm:col-span-12 flex flex-wrap items-center justify-between gap-2 pt-0.5">
@@ -1630,7 +1796,7 @@ export default function TemplatesStudioPage() {
                                           b.id === btn.id
                                             ? {
                                                 ...b,
-                                                url: `${WHATSAPP_PUBLIC_ORIGIN}/l/${chosen}`,
+                                                url: formatShortLinkUrl(chosen),
                                               }
                                             : b
                                         )
@@ -1639,17 +1805,70 @@ export default function TemplatesStudioPage() {
                                     className="rounded border border-neutral-300 bg-white px-2 py-1 text-[11px]"
                                   >
                                     <option value="">
-                                      Insert short link (/l/...)...
+                                      Insert short link ({SHORTLINK_PUBLIC_DOMAIN}/...)...
                                     </option>
                                     {customLinks.map((lnk) => (
                                       <option key={lnk.id} value={lnk.code}>
-                                        /l/{lnk.code} ({lnk.title})
+                                        {SHORTLINK_PUBLIC_DOMAIN}/{lnk.code} ({lnk.title})
                                       </option>
                                     ))}
                                   </select>
                                 )}
                               </div>
                             </>
+                          )}
+
+                          {btn.type === "QUICK_REPLY" && (
+                            <div className="sm:col-span-7 flex items-center gap-2">
+                              <Workflow className="w-3.5 h-3.5 text-[#008069] shrink-0" />
+                              <select
+                                value={btn.flowAction?.actionType || "AUTO_REPLY"}
+                                onChange={(e) => {
+                                  const nextAction = e.target
+                                    .value as ButtonFlowActionType;
+                                  setButtons((prev) =>
+                                    prev.map((b) =>
+                                      b.id === btn.id
+                                        ? {
+                                            ...b,
+                                            flowAction: {
+                                              ...(b.flowAction || {}),
+                                              actionType: nextAction,
+                                              teamId:
+                                                b.flowAction?.teamId ||
+                                                teams[0]?.id ||
+                                                "team_sales",
+                                            },
+                                          }
+                                        : b
+                                    )
+                                  );
+                                }}
+                                className="w-full rounded border border-emerald-300 bg-emerald-50/70 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-950"
+                              >
+                                <option value="AUTO_REPLY">
+                                  On Tap: Send Instant Auto-Reply (0 AI Credits)
+                                </option>
+                                <option value="ASSIGN_TEAM">
+                                  On Tap: Route Chat to Team + Email Staff Alert
+                                </option>
+                                <option value="SEND_ORDER_TRACKING">
+                                  On Tap: Live Order Status Lookup (3 Websites)
+                                </option>
+                                <option value="SEND_APPROVED_TEMPLATE">
+                                  On Tap: Send Follow-Up Approved Template
+                                </option>
+                                <option value="OPT_OUT_DND">
+                                  On Tap: Unsubscribe / Mark DND (STOP)
+                                </option>
+                                <option value="SMART_AI_WITH_GUARD">
+                                  On Tap: Guarded Single-Shot AI Reply
+                                </option>
+                                <option value="NONE">
+                                  On Tap: No Mapped Flow (Standard Inbox Rules)
+                                </option>
+                              </select>
+                            </div>
                           )}
 
                           {btn.type === "PHONE_NUMBER" && (
@@ -1691,6 +1910,208 @@ export default function TemplatesStudioPage() {
                             />
                           )}
                         </div>
+
+                        {/* Quick-Reply Flow Action Configuration Box */}
+                        {btn.type === "QUICK_REPLY" &&
+                          (btn.flowAction?.actionType || "AUTO_REPLY") !== "NONE" && (
+                            <div className="p-2.5 rounded border border-emerald-200 bg-white space-y-2 text-[11px]">
+                              {(btn.flowAction?.actionType || "AUTO_REPLY") ===
+                                "AUTO_REPLY" && (
+                                <div>
+                                  <label className="block font-medium text-neutral-700 mb-1">
+                                    Exact WhatsApp Reply Sent Immediately When Customer Taps &ldquo;{btn.text || "Button"}&rdquo;:
+                                  </label>
+                                  <textarea
+                                    rows={2}
+                                    value={btn.flowAction?.replyText || ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setButtons((prev) =>
+                                        prev.map((b) =>
+                                          b.id === btn.id
+                                            ? {
+                                                ...b,
+                                                flowAction: {
+                                                  ...(b.flowAction || {
+                                                    actionType: "AUTO_REPLY",
+                                                  }),
+                                                  replyText: val,
+                                                },
+                                              }
+                                            : b
+                                        )
+                                      );
+                                    }}
+                                    placeholder={`Here is our catalog & price guide: ${SHORTLINK_PUBLIC_ORIGIN}/podium\nShare your required quantity for bulk rates!`}
+                                    className="w-full rounded border border-neutral-300 px-2.5 py-1.5"
+                                  />
+                                </div>
+                              )}
+
+                              {btn.flowAction?.actionType === "ASSIGN_TEAM" && (
+                                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                                  <div className="sm:col-span-5">
+                                    <label className="block font-medium text-neutral-700 mb-1">
+                                      Assign to Team (Sends Staff Email Alert)
+                                    </label>
+                                    <select
+                                      value={
+                                        btn.flowAction?.teamId ||
+                                        teams[0]?.id ||
+                                        "team_sales"
+                                      }
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setButtons((prev) =>
+                                          prev.map((b) =>
+                                            b.id === btn.id
+                                              ? {
+                                                  ...b,
+                                                  flowAction: {
+                                                    ...(b.flowAction || {
+                                                      actionType: "ASSIGN_TEAM",
+                                                    }),
+                                                    teamId: val,
+                                                  },
+                                                }
+                                              : b
+                                          )
+                                        );
+                                      }}
+                                      className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5"
+                                    >
+                                      {teams.map((tm) => (
+                                        <option key={tm.id} value={tm.id}>
+                                          {tm.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div className="sm:col-span-7">
+                                    <label className="block font-medium text-neutral-700 mb-1">
+                                      Instant Confirmation Message to Customer
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={btn.flowAction?.replyText || ""}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setButtons((prev) =>
+                                          prev.map((b) =>
+                                            b.id === btn.id
+                                              ? {
+                                                  ...b,
+                                                  flowAction: {
+                                                    ...(b.flowAction || {
+                                                      actionType: "ASSIGN_TEAM",
+                                                    }),
+                                                    replyText: val,
+                                                  },
+                                                }
+                                              : b
+                                          )
+                                        );
+                                      }}
+                                      placeholder="Connecting you to our *Sales Team* right away."
+                                      className="w-full rounded border border-neutral-300 px-2.5 py-1.5"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+
+                              {btn.flowAction?.actionType ===
+                                "SEND_APPROVED_TEMPLATE" && (
+                                <div>
+                                  <label className="block font-medium text-neutral-700 mb-1">
+                                    Select Meta-APPROVED Follow-Up Template
+                                  </label>
+                                  <select
+                                    value={btn.flowAction?.templateName || ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setButtons((prev) =>
+                                        prev.map((b) =>
+                                          b.id === btn.id
+                                            ? {
+                                                ...b,
+                                                flowAction: {
+                                                  ...(b.flowAction || {
+                                                    actionType:
+                                                      "SEND_APPROVED_TEMPLATE",
+                                                  }),
+                                                  templateName: val,
+                                                },
+                                              }
+                                            : b
+                                        )
+                                      );
+                                    }}
+                                    className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5"
+                                  >
+                                    <option value="">
+                                      Pick an Approved Template...
+                                    </option>
+                                    {templates
+                                      .filter(
+                                        (tp) => tp.approvalStatus === "APPROVED"
+                                      )
+                                      .map((tp) => (
+                                        <option key={tp.id} value={tp.name}>
+                                          {tp.name} ({tp.category})
+                                        </option>
+                                      ))}
+                                  </select>
+                                </div>
+                              )}
+
+                              {btn.flowAction?.actionType ===
+                                "SMART_AI_WITH_GUARD" && (
+                                <div>
+                                  <label className="block font-medium text-neutral-700 mb-1">
+                                    Strict Guarded AI Instruction (1 Short Reply Only):
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={btn.flowAction?.aiInstruction || ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setButtons((prev) =>
+                                        prev.map((b) =>
+                                          b.id === btn.id
+                                            ? {
+                                                ...b,
+                                                flowAction: {
+                                                  ...(b.flowAction || {
+                                                    actionType:
+                                                      "SMART_AI_WITH_GUARD",
+                                                  }),
+                                                  aiInstruction: val,
+                                                },
+                                              }
+                                            : b
+                                        )
+                                      );
+                                    }}
+                                    placeholder="Share top 3 matching podium shortlinks and ask for quantity & delivery city."
+                                    className="w-full rounded border border-neutral-300 px-2.5 py-1.5"
+                                  />
+                                </div>
+                              )}
+
+                              {btn.flowAction?.actionType ===
+                                "SEND_ORDER_TRACKING" && (
+                                <p className="text-emerald-800">
+                                  Automatically looks up the customer&apos;s latest order across Classic Concepts (:3003), Classic Edge 53 (:3002), and WhatsApp CRM (:3007) and sends a live <strong>track.ccapl.cc</strong> status card without invoking AI.
+                                </p>
+                              )}
+
+                              {btn.flowAction?.actionType === "OPT_OUT_DND" && (
+                                <p className="text-emerald-800">
+                                  Marks the customer opted-out of marketing broadcasts immediately and sends a polite confirmation without invoking AI.
+                                </p>
+                              )}
+                            </div>
+                          )}
                       </div>
                     ))}
                   </div>
@@ -1725,11 +2146,28 @@ export default function TemplatesStudioPage() {
 
               {/* Save Draft vs Submit for Approval */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-neutral-200">
-                <span className="text-xs text-neutral-600">
-                  Cost when sent: <strong>₹{unitPrice.toFixed(2)}</strong> per message
+                <span className="text-xs text-neutral-500">
+                  Supports *bold*, _italic_, ~strike~, and {"{{1}}"} variables
                 </span>
 
                 <div className="flex flex-wrap gap-2">
+                  {editingId &&
+                    buttons.some((b) => b.type === "QUICK_REPLY") && (
+                      <button
+                        type="button"
+                        disabled={savingAction !== ""}
+                        onClick={handleSaveButtonFlowsOnly}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-md border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 font-semibold text-emerald-950 cursor-pointer disabled:opacity-50"
+                        title="Updates button click actions immediately without changing Meta approval status"
+                      >
+                        <Workflow className="w-3.5 h-3.5 text-[#008069]" />
+                        <span>
+                          {savingAction === "FLOWS"
+                            ? "Saving Flows..."
+                            : "Save Button Flows Only"}
+                        </span>
+                      </button>
+                    )}
                   <button
                     type="button"
                     disabled={savingAction !== ""}
@@ -1751,8 +2189,8 @@ export default function TemplatesStudioPage() {
                       {savingAction === "SUBMIT"
                         ? "Submitting..."
                         : editingId
-                        ? "Update & Submit to WhatsApp"
-                        : "Submit for WhatsApp Approval"}
+                        ? "Update & Submit to Meta"
+                        : "Submit for Meta Approval"}
                     </span>
                   </button>
                 </div>
@@ -1849,7 +2287,7 @@ export default function TemplatesStudioPage() {
                         </div>
                       </div>
                       <span className="px-2 py-0.5 rounded bg-white/15 text-[10px]">
-                        ₹{unitPrice.toFixed(2)}/msg
+                        {category}
                       </span>
                     </div>
 
@@ -1923,9 +2361,10 @@ export default function TemplatesStudioPage() {
                               </div>
                             )}
 
-                          <div className="text-[13px] text-[#111b21] leading-snug break-words">
-                            {formatWhatsAppRichText(previewBodyRendered)}
-                          </div>
+                          <WhatsAppFormattedText
+                            text={previewBodyRendered}
+                            className="text-[13px] text-[#111b21] leading-snug"
+                          />
 
                           {footerText.trim() && (
                             <div className="text-[11px] text-[#667781] pt-1">
@@ -2051,7 +2490,7 @@ export default function TemplatesStudioPage() {
               <thead>
                 <tr className="border-b border-neutral-200 text-neutral-500">
                   <th className="py-2.5 pr-3 font-medium">Template & Preview</th>
-                  <th className="py-2.5 px-3 font-medium">Category & Rate</th>
+                  <th className="py-2.5 px-3 font-medium">Category</th>
                   <th className="py-2.5 px-3 font-medium">Header & Buttons</th>
                   <th className="py-2.5 px-3 font-medium">Status</th>
                   <th className="py-2.5 px-3 font-medium">Sent</th>
@@ -2060,10 +2499,6 @@ export default function TemplatesStudioPage() {
               </thead>
               <tbody className="divide-y divide-neutral-200">
                 {filteredTemplates.map((t) => {
-                  const rate =
-                    t.category === "MARKETING"
-                      ? rates.marketingRateInr
-                      : rates.otherRateInr;
                   return (
                     <tr key={t.id} className="hover:bg-neutral-50/70">
                       <td className="py-3 pr-3 max-w-md">
@@ -2076,7 +2511,7 @@ export default function TemplatesStudioPage() {
                           </span>
                         </div>
                         <p className="text-neutral-600 line-clamp-2 mt-0.5">
-                          {t.bodyText}
+                          {stripWhatsAppFormatting(t.bodyText)}
                         </p>
                         {t.rejectionReason && (
                           <p className="text-[11px] text-red-700 mt-1">
@@ -2089,9 +2524,6 @@ export default function TemplatesStudioPage() {
                         <div className="font-medium text-neutral-900">
                           {t.category}
                         </div>
-                        <div className="text-neutral-500 font-mono">
-                          ₹{rate.toFixed(2)}/msg
-                        </div>
                       </td>
 
                       <td className="py-3 px-3 text-neutral-600 whitespace-nowrap">
@@ -2100,6 +2532,24 @@ export default function TemplatesStudioPage() {
                           {t.buttons.length}{" "}
                           {t.buttons.length === 1 ? "button" : "buttons"}
                         </div>
+                        {t.buttons.some(
+                          (b) =>
+                            b.type === "QUICK_REPLY" &&
+                            b.flowAction &&
+                            b.flowAction.actionType !== "NONE"
+                        ) && (
+                          <div className="text-[10.5px] font-semibold text-[#008069] mt-0.5">
+                            {
+                              t.buttons.filter(
+                                (b) =>
+                                  b.type === "QUICK_REPLY" &&
+                                  b.flowAction &&
+                                  b.flowAction.actionType !== "NONE"
+                              ).length
+                            }{" "}
+                            button flow mapped
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 px-3 whitespace-nowrap">
@@ -2115,7 +2565,7 @@ export default function TemplatesStudioPage() {
                           }`}
                         >
                           {t.approvalStatus === "PENDING_APPROVAL"
-                            ? "Pending Review"
+                            ? "Pending Meta Review"
                             : t.approvalStatus}
                         </span>
                       </td>
@@ -2133,16 +2583,22 @@ export default function TemplatesStudioPage() {
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-neutral-300 bg-white hover:bg-neutral-100 text-neutral-800 font-medium cursor-pointer"
                             >
                               <Edit3 className="w-3 h-3" />
-                              <span>Edit</span>
+                              <span>Edit / Map Flows</span>
                             </button>
 
                             <button
                               type="button"
+                              disabled={t.approvalStatus !== "APPROVED"}
+                              title={
+                                t.approvalStatus === "APPROVED"
+                                  ? "Send live test using Meta-approved template"
+                                  : "Submit to Meta & sync approval before sending"
+                              }
                               onClick={() => {
                                 setTestModalTpl(t);
                                 setTestSendError("");
                               }}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-medium cursor-pointer"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                               <WhatsAppLogoIcon size={11} />
                               <span>Test</span>
@@ -2180,20 +2636,6 @@ export default function TemplatesStudioPage() {
                                 )}
                               </button>
                             )}
-
-                            {isSuperAdmin &&
-                              t.approvalStatus !== "APPROVED" && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleDevReviewStatus(t, "APPROVED")
-                                  }
-                                  className="px-2 py-1 rounded bg-neutral-900 text-white text-[11px] font-medium cursor-pointer"
-                                  title="Mark Approved"
-                                >
-                                  Approve
-                                </button>
-                              )}
 
                             <button
                               type="button"

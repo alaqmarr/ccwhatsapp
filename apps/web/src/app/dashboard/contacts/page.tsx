@@ -1550,7 +1550,7 @@ export default function ContactsDatabasePage() {
                           )}
                           {c.windowOpen && (
                             <div className="text-[10.5px] font-semibold text-[#008069] mt-0.5">
-                              24h Free Chat Open
+                              24h Chat Window Open
                             </div>
                           )}
                         </td>

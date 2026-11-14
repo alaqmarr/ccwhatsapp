@@ -9,8 +9,16 @@ import {
   loadAllClassicConceptsProducts,
   loadAllClassicEdgeItems,
   resolveBackupDirectory,
+  resolveClassicConceptsInternalUrl,
+  resolveClassicEdgeInternalUrl,
+  resolveEcosystemBridgeKey,
   resolveEnvMetaWhatsAppConfig,
+  resolveMainWebsiteDbPath,
+  resolvePublicShortLinkOrigin,
+  resolvePublicTrackingOrigin,
   resolveSharedAnthropicApiKey,
+  resolveWhatsAppWebAppOrigin,
+  cleanDisplayProductName,
   searchEcosystemItems,
   snapshotAllDatabasesToFolder,
   type MainWebsiteProduct,
@@ -22,20 +30,113 @@ import {
 } from "@cc/storage";
 
 const LOCKED_CLAUDE_MODEL = "claude-haiku-5-5" as const;
+const WIRE_FALLBACK_CLAUDE_MODEL = "claude-haiku-4-5-20251001" as const;
 
-function sanitizePlainEnglish(text: string): string {
-  return text
+export async function callClaudeHaikuMessages(params: {
+  apiKey: string;
+  system: string;
+  messages: { role: "user" | "assistant"; content: string }[];
+  maxTokens?: number;
+  temperature?: number;
+  timeoutMs?: number;
+}): Promise<string | null> {
+  if (!params.apiKey) return null;
+  const sendWithModel = async (modelId: string) =>
+    fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": params.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: modelId,
+        max_tokens: params.maxTokens ?? 480,
+        temperature: params.temperature ?? 0.25,
+        system: params.system,
+        messages: params.messages,
+      }),
+      signal: AbortSignal.timeout(params.timeoutMs ?? 11000),
+    });
+
+  let res = await sendWithModel(LOCKED_CLAUDE_MODEL);
+  if (!res.ok && res.status === 404) {
+    res = await sendWithModel(WIRE_FALLBACK_CLAUDE_MODEL);
+  }
+  if (!res.ok) return null;
+  const json: any = await res.json().catch(() => null);
+  const text = json?.content?.[0]?.text;
+  return typeof text === "string" && text.trim() ? text.trim() : null;
+}
+
+export function formatWhatsAppOutboundText(text: string): string {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1: $2")
+    .replace(/^#{1,6}\s+(.+)$/gm, "*$1*")
+    .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")
+    .replace(/__([^_\n]+)__/g, "_$1_")
+    .replace(/~~([^~\n]+)~~/g, "~$1~")
     .replace(/\u2014/g, ", ")
     .replace(/\s+\u2013\s+/g, ", ")
     .replace(/--+/g, ", ")
     .replace(/\bbespoke\b/gi, "custom-made")
     .replace(/\bmeticulous(?:ly)?\b/gi, "careful")
     .replace(/\bseamless(?:ly)?\b/gi, "smooth")
+    .replace(/\bunparalleled\b/gi, "top")
+    .replace(/\bstate-of-the-art\b/gi, "modern")
+    .replace(/\bcutting-edge\b/gi, "modern")
+    .replace(/\boptical-grade\b/gi, "crystal-clear")
+    .replace(/\bconsultative\b/gi, "helpful")
+    .replace(/\bdelve\b/gi, "check")
+    .replace(/\belevate\b/gi, "improve")
+    .replace(/\brobust\b/gi, "strong")
     .replace(/\butilize\b/gi, "use")
     .replace(/\bleverage\b/gi, "use")
-    .replace(/\bstate-of-the-art\b/gi, "modern")
-    .replace(/\s{2,}/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function sanitizePlainEnglish(text: string): string {
+  return formatWhatsAppOutboundText(text);
+}
+
+export function stripRepeatedGreeting(
+  reply: string,
+  alreadyGreeted: boolean,
+  customerName?: string
+): string {
+  let out = reply.trim();
+  if (!alreadyGreeted || !out) return out;
+
+  const rawFirst = (customerName || "")
+    .split(/[\s(]/)[0]
+    ?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const greetingPatterns: RegExp[] = [
+    new RegExp(
+      `^(?:\\*?_?)?(?:hi|hello|hey|dear|namaste|good\\s+(?:morning|afternoon|evening))(?:\\s+${rawFirst || "[a-z]+"})?(?:\\s+(?:ji|sir|ma'am|madam|there))?(?:\\*?_?)?[!,.\\s]*\\n*`,
+      "i"
+    ),
+    /^(?:hi|hello|hey|namaste)\s+[a-z]+(?:\s+(?:ji|sir|ma'am|madam))?[!,.:\s]+\n*/i,
+    /^(?:hi|hello|hey)[!,.:\s]+\n*/i,
+  ];
+
+  for (const rx of greetingPatterns) {
+    if (rx.test(out)) {
+      const stripped = out.replace(rx, "").trim();
+      if (stripped.length >= 12) {
+        out = stripped.charAt(0).toUpperCase() + stripped.slice(1);
+      }
+      break;
+    }
+  }
+  return out;
 }
 
 // ============================================================================
@@ -61,6 +162,27 @@ export interface WhatsAppTemplateLocation {
   longitude: number;
 }
 
+export type TemplateButtonFlowActionType =
+  | "NONE"
+  | "AUTO_REPLY"
+  | "ASSIGN_TEAM"
+  | "SEND_ORDER_TRACKING"
+  | "SEND_APPROVED_TEMPLATE"
+  | "OPT_OUT_DND"
+  | "SMART_AI_WITH_GUARD";
+
+export interface WhatsAppTemplateButtonFlowAction {
+  actionType: TemplateButtonFlowActionType;
+  replyText?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  teamId?: string;
+  templateName?: string;
+  smartCategory?: string;
+  priority?: "URGENT" | "HIGH" | "NORMAL";
+  aiInstruction?: string;
+}
+
 export interface WhatsAppTemplateButton {
   id: string;
   type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER" | "COPY_CODE" | "OTP";
@@ -71,6 +193,7 @@ export interface WhatsAppTemplateButton {
   phoneNumber?: string;
   exampleCode?: string;
   otpType?: "COPY_CODE" | "ONE_TAP";
+  flowAction?: WhatsAppTemplateButtonFlowAction;
 }
 
 export interface WhatsAppTemplateVariableSpec {
@@ -173,6 +296,9 @@ export async function sendWhatsAppCloudMessage(params: {
   const phoneNumberId = String(cfg.phoneNumberId || "").trim();
   const accessToken = String(cfg.systemUserAccessToken || "").trim();
   const recipientDigits = params.toPhone.replace(/\D/g, "");
+  const formattedBody = params.templateName
+    ? params.bodyText
+    : formatWhatsAppOutboundText(params.bodyText);
 
   if (!recipientDigits || recipientDigits.length < 10) {
     return {
@@ -228,7 +354,7 @@ export async function sendWhatsAppCloudMessage(params: {
             type: "interactive",
             interactive: {
               type: "cta_url",
-              body: { text: params.bodyText },
+              body: { text: formattedBody },
               ...(params.ctaButton?.footerText
                 ? { footer: { text: params.ctaButton.footerText.slice(0, 60) } }
                 : {}),
@@ -247,7 +373,7 @@ export async function sendWhatsAppCloudMessage(params: {
             to: recipientDigits,
             ...contextField,
             type: "text",
-            text: { preview_url: true, body: params.bodyText },
+            text: { preview_url: true, body: formattedBody },
           };
 
       let res = await fetch(
@@ -265,9 +391,9 @@ export async function sendWhatsAppCloudMessage(params: {
 
       let data: any = await res.json().catch(() => ({}));
       if (!res.ok && hasInteractiveCta && res.status === 400) {
-        const fallbackBody = params.bodyText.includes(ctaUrl)
-          ? params.bodyText
-          : `${params.bodyText}\n\n${ctaLabel}: ${ctaUrl}`;
+        const fallbackBody = formattedBody.includes(ctaUrl)
+          ? formattedBody
+          : `${formattedBody}\n\n*${ctaLabel}:* ${ctaUrl}`;
         res = await fetch(
           `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
           {
@@ -647,7 +773,7 @@ export async function submitTemplateToMetaCloud(
   ok: boolean;
   mode: "LIVE_META_CLOUD" | "SANDBOX_SIMULATOR";
   metaTemplateId: string;
-  approvalStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED";
+  approvalStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED" | "DRAFT";
   message: string;
   error?: string;
 }> {
@@ -719,7 +845,7 @@ export async function submitTemplateToMetaCloud(
         message:
           mappedStatus === "APPROVED"
             ? "Template approved immediately by Meta!"
-            : "Submitted to Meta for review. Approval usually takes a few minutes.",
+            : "Submitted to Meta for review. Only Meta-approved templates can be sent.",
       };
     } catch (err: any) {
       return {
@@ -733,14 +859,21 @@ export async function submitTemplateToMetaCloud(
     }
   }
 
-  // Sandbox Simulator Mode: validates full Meta schema & approves ready for immediate testing
+  // Strict Meta-Approved Enforcement: never fake local "APPROVED" unless explicit test/demo flag is enabled
+  const allowDemoApproval =
+    process.env.SEED_DEMO_DATA === "1" ||
+    process.env.WHATSAPP_ALLOW_SANDBOX_TEMPLATE_APPROVAL === "1";
+
   return {
     ok: true,
     mode: "SANDBOX_SIMULATOR",
-    metaTemplateId: `sim_tpl_${crypto.randomBytes(5).toString("hex")}`,
-    approvalStatus: "APPROVED",
-    message:
-      "Validated all WhatsApp template rules and marked Approved (Sandbox mode; connect live WABA ID in Facebook Setup to submit directly to Meta).",
+    metaTemplateId: allowDemoApproval
+      ? `sim_tpl_${crypto.randomBytes(5).toString("hex")}`
+      : "",
+    approvalStatus: allowDemoApproval ? "APPROVED" : "DRAFT",
+    message: allowDemoApproval
+      ? "Validated template rules in demo sandbox."
+      : "Template saved as a verified Draft (with button flows). Connect your live Meta WABA ID & System Access Token in Facebook Setup to submit for official Meta approval before sending.",
   };
 }
 
@@ -803,44 +936,40 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
             ? String(item.rejected_reason)
             : null;
 
+        const comps: any[] = Array.isArray(item.components)
+          ? item.components
+          : [];
+        const headerComp = comps.find((c) => c.type === "HEADER");
+        const bodyComp = comps.find((c) => c.type === "BODY");
+        const footerComp = comps.find((c) => c.type === "FOOTER");
+        const btnComp = comps.find((c) => c.type === "BUTTONS");
+
         const existing = await mkt.execute({
-          sql: `SELECT id FROM templates WHERE name = ? LIMIT 1`,
+          sql: `SELECT id, buttons_json FROM templates WHERE name = ? LIMIT 1`,
           args: [name],
         });
 
-        if (existing.rows[0]) {
-          await mkt.execute({
-            sql: `UPDATE templates
-                  SET meta_template_id = ?,
-                      approval_status = ?,
-                      meta_quality_score = ?,
-                      rejection_reason = ?,
-                      updated_at = ?
-                  WHERE id = ?`,
-            args: [
-              metaId,
-              approvalStatus,
-              quality,
-              rejReason,
-              nowIso,
-              String(existing.rows[0].id),
-            ],
-          });
-          synced++;
-        } else {
-          const comps: any[] = Array.isArray(item.components)
-            ? item.components
-            : [];
-          const headerComp = comps.find((c) => c.type === "HEADER");
-          const bodyComp = comps.find((c) => c.type === "BODY");
-          const footerComp = comps.find((c) => c.type === "FOOTER");
-          const btnComp = comps.find((c) => c.type === "BUTTONS");
+        let prevButtons: WhatsAppTemplateButton[] = [];
+        if (existing.rows[0]?.buttons_json) {
+          try {
+            const parsed = JSON.parse(String(existing.rows[0].buttons_json));
+            if (Array.isArray(parsed)) prevButtons = parsed;
+          } catch {
+            prevButtons = [];
+          }
+        }
 
-          const buttons: WhatsAppTemplateButton[] = Array.isArray(
-            btnComp?.buttons
-          )
-            ? btnComp.buttons.map((b: any, idx: number) => ({
-                id: `btn_meta_${idx}`,
+        const buttons: WhatsAppTemplateButton[] = Array.isArray(
+          btnComp?.buttons
+        )
+          ? btnComp.buttons.map((b: any, idx: number) => {
+              const btnText = String(b.text || "Open");
+              const prevMatch = prevButtons.find(
+                (pb) =>
+                  pb.text.trim().toLowerCase() === btnText.trim().toLowerCase()
+              );
+              return {
+                id: prevMatch?.id || `btn_meta_${idx}`,
                 type:
                   b.type === "URL"
                     ? "URL"
@@ -849,14 +978,40 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
                     : b.type === "COPY_CODE"
                     ? "COPY_CODE"
                     : "QUICK_REPLY",
-                text: String(b.text || "Open"),
-                url: b.url ? String(b.url) : undefined,
+                text: btnText,
+                url: b.url ? String(b.url) : prevMatch?.url,
                 phoneNumber: b.phone_number
                   ? String(b.phone_number)
-                  : undefined,
-              }))
-            : [];
+                  : prevMatch?.phoneNumber,
+                flowAction: prevMatch?.flowAction,
+              };
+            })
+          : prevButtons;
 
+        if (existing.rows[0]) {
+          await mkt.execute({
+            sql: `UPDATE templates
+                  SET meta_template_id = ?,
+                      approval_status = ?,
+                      meta_quality_score = ?,
+                      rejection_reason = ?,
+                      body_text = COALESCE(?, body_text),
+                      buttons_json = ?,
+                      updated_at = ?
+                  WHERE id = ?`,
+            args: [
+              metaId,
+              approvalStatus,
+              quality,
+              rejReason,
+              bodyComp?.text ? String(bodyComp.text) : null,
+              JSON.stringify(buttons),
+              nowIso,
+              String(existing.rows[0].id),
+            ],
+          });
+          synced++;
+        } else {
           const firstUrlBtn = buttons.find((b) => b.type === "URL");
           await mkt.execute({
             sql: `INSERT INTO templates (
@@ -893,7 +1048,7 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
         ok: true,
         mode: "LIVE_META_CLOUD",
         syncedCount: synced,
-        message: `Synced ${synced} WhatsApp templates from Meta.`,
+        message: `Synced ${synced} official WhatsApp templates from Meta (preserving button flow mappings).`,
       };
     } catch (err: any) {
       return {
@@ -968,13 +1123,13 @@ export async function getCachedEcosystemCatalog(): Promise<{
 }> {
   const [classicConceptsProducts, classicEdgeItems] = await Promise.all([
     rememberWhatsAppCache(
-      "ecosystem:cc-products:v2",
+      "ecosystem:cc-products:v3",
       ["cc-products"],
       3600,
       () => loadAllClassicConceptsProducts()
     ),
     rememberWhatsAppCache(
-      "ecosystem:ce53-items:v2",
+      "ecosystem:ce53-items:v3",
       ["ce53-machines"],
       3600,
       () => loadAllClassicEdgeItems()
@@ -986,6 +1141,101 @@ export async function getCachedEcosystemCatalog(): Promise<{
     classicEdgeItems,
     allItems: [...classicConceptsProducts, ...classicEdgeItems],
   };
+}
+
+/**
+ * Formats matched products/machines into a clean, grouped, numbered list using ultra-short
+ * `https://ccapl.cc/<6-char-id>` links — never stuffing raw SEO titles into sentences.
+ */
+export function buildGroupedProductShortLinksSection(params: {
+  allItems: MainWebsiteProduct[];
+  matchedItems: MainWebsiteProduct[];
+  smartCategory: string;
+}): string {
+  const { allItems, matchedItems, smartCategory } = params;
+  if (matchedItems.length === 0) return "";
+
+  const usedKeys = new Set<string>();
+  const keyOf = (it: MainWebsiteProduct) => `${it.brand}:${it.slug || it.id}`;
+
+  const isCustomisableItem = (it: MainWebsiteProduct) =>
+    /custom|sheet|box|cover|frame|stand|award|memento|plaque|logo|cut/i.test(
+      `${it.name} ${it.categoryName} ${it.description || ""}`
+    );
+
+  const primaryLabel =
+    smartCategory === "Podiums & Stage"
+      ? "Premium Products (Podiums & Stage)"
+      : smartCategory === "Awards & Trophies"
+      ? "Ready Awards & Trophies"
+      : smartCategory === "Hotel & Banquet"
+      ? "Hotel & Display Stands"
+      : smartCategory === "Acrylic Machines (CE53)"
+      ? "Classic Edge 53 Machines"
+      : smartCategory === "Custom Fabrication"
+      ? "Matching Acrylic Options"
+      : matchedItems[0]?.categoryName
+      ? cleanDisplayProductName(matchedItems[0].categoryName)
+      : "Matching Products";
+
+  const primaryGroup: MainWebsiteProduct[] = [];
+  for (const item of matchedItems) {
+    if (primaryGroup.length >= 3) break;
+    const k = keyOf(item);
+    if (!usedKeys.has(k)) {
+      usedKeys.add(k);
+      primaryGroup.push(item);
+    }
+  }
+
+  const secondaryLabel =
+    smartCategory === "Acrylic Machines (CE53)"
+      ? "Machine Tools & Consumables"
+      : "Customisable Products";
+
+  const secondaryCandidates = [
+    ...matchedItems.slice(primaryGroup.length),
+    ...allItems.filter((it) => {
+      if (usedKeys.has(keyOf(it))) return false;
+      if (smartCategory === "Acrylic Machines (CE53)") {
+        return it.brand === "CLASSIC_EDGE_53";
+      }
+      return it.brand === "CLASSIC_CONCEPTS" && isCustomisableItem(it);
+    }),
+  ];
+
+  const secondaryGroup: MainWebsiteProduct[] = [];
+  for (const item of secondaryCandidates) {
+    if (secondaryGroup.length >= 3) break;
+    const k = keyOf(item);
+    if (!usedKeys.has(k)) {
+      usedKeys.add(k);
+      secondaryGroup.push(item);
+    }
+  }
+
+  const formatLine = (it: MainWebsiteProduct, idx: number) => {
+    const cleanTitle = cleanDisplayProductName(it.name);
+    const priceTag =
+      typeof it.basePrice === "number" && it.basePrice > 0
+        ? ` (Rs ${it.basePrice.toLocaleString("en-IN")})`
+        : "";
+    const link = it.shortUrl || it.url;
+    return `${idx + 1}. ${cleanTitle}${priceTag} - ${link}`;
+  };
+
+  const blocks: string[] = [
+    "I found a few products that match your description:",
+    `*${primaryLabel}:*\n${primaryGroup.map(formatLine).join("\n")}`,
+  ];
+
+  if (secondaryGroup.length > 0) {
+    blocks.push(
+      `*${secondaryLabel}:*\n${secondaryGroup.map(formatLine).join("\n")}`
+    );
+  }
+
+  return blocks.join("\n\n");
 }
 
 export async function syncEcosystemRedisCache(): Promise<{
@@ -1016,6 +1266,9 @@ export async function runAcrioChatCopilot(params: {
   const customerMessages = params.recentMessages.filter(
     (m) => m.direction === "INBOUND" || m.direction === "OUTBOUND"
   );
+  const alreadyGreeted = customerMessages.some(
+    (m) => m.direction === "OUTBOUND"
+  );
   const lastInbound =
     [...customerMessages]
       .reverse()
@@ -1023,9 +1276,19 @@ export async function runAcrioChatCopilot(params: {
     customerMessages[customerMessages.length - 1]?.body ||
     "";
 
-  const lower = lastInbound.toLowerCase();
+  const recentInboundContext = customerMessages
+    .filter((m) => m.direction === "INBOUND")
+    .slice(-3)
+    .map((m) => m.body)
+    .join(" ");
+
+  const lower = `${recentInboundContext} ${lastInbound}`.toLowerCase();
   const { allItems } = await getCachedEcosystemCatalog();
-  const catalog = searchEcosystemItems(allItems, lastInbound, 4);
+  const primaryMatches = searchEcosystemItems(allItems, lastInbound, 4);
+  const catalog =
+    primaryMatches.length > 0
+      ? primaryMatches
+      : searchEcosystemItems(allItems, recentInboundContext, 4);
 
   // Smart intent & category classification across Classic Concepts + Classic Edge 53
   let smartCategory = "General Enquiry";
@@ -1051,6 +1314,7 @@ export async function runAcrioChatCopilot(params: {
   }
 
   const firstName = params.customerName.split(/[\s(]/)[0] || "there";
+  const greetPrefix = alreadyGreeted ? "" : `Hi ${firstName},\n\n`;
   const topProduct = catalog[0];
 
   const mappedRecommendations: AcrioRecommendedItem[] = catalog.map((c) => ({
@@ -1069,42 +1333,56 @@ export async function runAcrioChatCopilot(params: {
 
   // Zero Anthropic AI calls here to save AI credits — AI is strictly reserved for
   // runAcrioAutonomousTurn when a chat is assigned to System (ACRIO)!
+  const groupedPreview = buildGroupedProductShortLinksSection({
+    allItems,
+    matchedItems: catalog,
+    smartCategory,
+  });
+
   const localReplies: string[] = [];
   if (smartCategory === "Acrylic Machines (CE53)") {
     localReplies.push(
-      topProduct
-        ? `Hello ${firstName}! For acrylic fabrication, check our ${topProduct.name}${topProduct.sku ? ` (${topProduct.sku})` : ""} from Classic Edge 53: ${topProduct.shortUrl || topProduct.url}`
-        : `Hello ${firstName}! Tell us the sheet thickness and working width you need and our Classic Edge 53 machine specialist will share the right model and brochure.`,
-      `Hi ${firstName}, would you like the specification sheet, live demo video, and landed quotation for this machine?`,
-      `Hello ${firstName}, we also stock genuine diamond cutters, heaters, and machine consumables ready for dispatch. Let us know your city for delivery details.`
+      groupedPreview
+        ? `${greetPrefix}${groupedPreview}\n\nWhat *sheet thickness* and *working width* are you working with?`
+        : `${greetPrefix}Please share the *sheet thickness* and *working width* you need, and I will suggest the right Classic Edge 53 machine models and brochure.`,
+      `${greetPrefix}Would you like me to share the *spec sheet*, *demo video*, and *landed price* for your city?`,
+      `${greetPrefix}We also keep genuine *diamond cutters*, *heaters*, and machine consumables ready in stock. Share your city and required size so we can check dispatch.`
     );
   } else if (smartCategory === "Podiums & Stage") {
     localReplies.push(
-      `Hi ${firstName}! Yes, we have wide-top clear stage podiums ready and can add your front logo before dispatch. Shall I share our ready models and sizes?`,
-      `Hello ${firstName}, here is our podium collection link: ${topProduct?.shortUrl || "https://whatsapp.ccapl.cc/l/stage-podiums"}. Let us know your preferred height or logo file and we will confirm delivery.`,
-      `Hi ${firstName}, our team checked stock availability. Share your event date and delivery city so we can reserve it right away.`
+      groupedPreview
+        ? `${greetPrefix}${groupedPreview}\n\nLet us know your *event date*, *preferred height*, or if you want your *front logo* added before dispatch.`
+        : `${greetPrefix}Yes, we have wide-top clear *stage podiums* ready and can add your front logo before dispatch.\n\nShall I share our ready models and sizes?`,
+      `${greetPrefix}Share your *event date* and *delivery city* so we can check ready stock and dispatch timing right away.`,
+      topProduct
+        ? `${greetPrefix}Our *${cleanDisplayProductName(topProduct.name)}* is ready for logo customization:\n${topProduct.shortUrl || topProduct.url}\n\nWould you like a layout preview with your logo?`
+        : `${greetPrefix}Please share your logo file and delivery pincode so we can confirm total cost and timeline.`
     );
   } else if (smartCategory === "Awards & Trophies") {
     localReplies.push(
-      `Hello ${firstName}! For student and event awards, we have clear acrylic mementos and plaques within your budget, including logo printing: ${topProduct?.shortUrl || "https://whatsapp.ccapl.cc/l/student-awards"}`,
-      `Hi ${firstName}, please share the total quantity and event date, plus your logo file, so we can send 3 matching trophy designs with bulk pricing.`,
+      groupedPreview
+        ? `${greetPrefix}${groupedPreview}\n\nRoughly *how many pieces* do you need, and what is your *event date*?`
+        : `${greetPrefix}For ceremonies and events, we make clear *acrylic awards and plaques* with custom logo and recipient name printing.`,
+      `${greetPrefix}Please share:\n• *Quantity needed*\n• *Event date*\n• *Your logo file*\n\nWe will send matching trophy options with bulk pricing.`,
       topProduct
-        ? `Hello ${firstName}, our ${topProduct.name}${topProduct.basePrice ? ` (Rs ${topProduct.basePrice})` : ""} is very popular for ceremonies (${topProduct.shortUrl || topProduct.url}). Would you like a sample layout with your logo?`
-        : `Hello ${firstName}, we can print your institution logo and student names on clear acrylic awards. What quantity do you need?`
+        ? `${greetPrefix}Our *${cleanDisplayProductName(topProduct.name)}*${topProduct.basePrice ? ` (*Rs ${topProduct.basePrice}*)` : ""} is a popular choice:\n${topProduct.shortUrl || topProduct.url}\n\nWould you like a sample layout with your logo?`
+        : `${greetPrefix}We can print your logo and recipient names cleanly on clear acrylic awards. Roughly how many pieces do you need?`
     );
   } else if (smartCategory === "Custom Fabrication") {
     localReplies.push(
-      `Hello ${firstName}! Please share the exact length, width, height, and thickness in mm (or a rough sketch) and our production desk will send a quote.`,
-      `Hi ${firstName}, thank you for confirming! Once the advance is received, we will share the final size sheet for your approval before making it.`,
-      `Hello ${firstName}, we make clear acrylic covers and boxes to exact measurements. Let us know how many pieces you need.`
+      groupedPreview
+        ? `${greetPrefix}${groupedPreview}\n\nFor custom sizes, share your *length x width x height*, *thickness in mm*, and *quantity* so we can calculate the exact quote.`
+        : `${greetPrefix}Please share the approximate *length x width x height*, *thickness in mm*, and *quantity* (or even a quick photo/sketch), and we will work out the exact quote.`,
+      `${greetPrefix}Once confirmed, we share a clear size layout for your approval before cutting and bending begins.`,
+      `${greetPrefix}We custom-make clear acrylic covers, boxes, stands, and displays to exact sizes. What will you be placing inside or displaying on it?`
     );
   } else {
     localReplies.push(
-      `Hello ${firstName}! Thank you for messaging Classic Concepts. Tell us the product, machine, size, or quantity you need and I will share the closest options right away.`,
-      topProduct
-        ? `Hi ${firstName}, based on your message, take a look at ${topProduct.name}: ${topProduct.shortUrl || topProduct.url}`
-        : `Hi ${firstName}, here is our main catalog link: https://whatsapp.ccapl.cc/l/stage-podiums. Let me know if you need acrylic products or Classic Edge 53 machines!`,
-      `Hi ${firstName}, I am checking this with our team and will update you shortly.`
+      groupedPreview
+        ? `${greetPrefix}${groupedPreview}\n\nLet me know which option fits best, or share the size and quantity you have in mind.`
+        : `${greetPrefix}Tell us a little about what you want to display, build, or solve, and I will suggest the best acrylic product or Classic Edge 53 machine options right away.`,
+      `${greetPrefix}Do you need *ready acrylic products* (podiums, stands, awards, custom boxes) or *Classic Edge 53 machines & tools*? Share a few details and we will help you pick the right option.`,
+      `${greetPrefix}I am checking this for you now and will share the exact details shortly.`
     );
   }
 
@@ -1112,9 +1390,11 @@ export async function runAcrioChatCopilot(params: {
     engineLabel: "ACRIO",
     smartCategory,
     priority,
-    suggestedReplies: localReplies.map(sanitizePlainEnglish),
+    suggestedReplies: localReplies.map((r) =>
+      stripRepeatedGreeting(formatWhatsAppOutboundText(r), alreadyGreeted, params.customerName)
+    ),
     recommendedProducts: mappedRecommendations,
-    resolutionDraft: sanitizePlainEnglish(
+    resolutionDraft: formatWhatsAppOutboundText(
       `Shared ${smartCategory.toLowerCase()} options and pricing details with ${params.customerName}, and updated customer follow-up notes.`
     ),
   };
@@ -1131,148 +1411,259 @@ export interface AcrioAutonomousTurnResult {
 /**
  * Autonomous ACRIO Backend Handler:
  * Every new/reopened customer chat is initially assigned to ACRIO.
- * - Answers product & machine queries automatically from the Redis-cached
- *   Classic Concepts (`classicconcepts.in`) & Classic Edge 53 (`classicedge53.com`) catalogs.
- * - If the customer asks to speak to support/staff OR ACRIO cannot resolve the query on its own,
- *   flags `needsHumanHandoff = true` so the worker connects the chat to our Sales Team (P0 -> P1 -> P2).
+ * - Maintains natural multi-turn continuity across messages without repeating "Hi {Name}".
+ * - Diagnoses vague customer problems, suggests practical acrylic or machine solutions,
+ *   and asks natural clarifying questions instead of abruptly ending the chat.
+ * - Formats replies cleanly for WhatsApp (*bold*, _italic_, bullet points, line breaks).
+ * - Hands off to Sales Team ONLY when requested by customer, for complaints/order disputes/specific order checks,
+ *   or when final custom specs/bulk quote approval is ready for a human salesperson.
  */
 export async function runAcrioAutonomousTurn(params: {
   customerName: string;
   inboundText: string;
-  recentMessages?: { direction: string; body: string }[];
+  recentMessages?: { direction: string; senderType?: string; body: string }[];
+  hasAlreadyGreeted?: boolean;
 }): Promise<AcrioAutonomousTurnResult> {
   const rawText = params.inboundText.trim();
   const lower = rawText.toLowerCase();
   const firstName = params.customerName.split(/[\s(]/)[0] || "there";
 
+  const history = (params.recentMessages || []).filter(
+    (m) =>
+      (m.direction === "INBOUND" || m.direction === "OUTBOUND") &&
+      Boolean(String(m.body || "").trim())
+  );
+
+  const alreadyGreeted =
+    Boolean(params.hasAlreadyGreeted) ||
+    history.some((m) => m.direction === "OUTBOUND");
+
+  // Build rolling context from recent inbound messages so short follow-ups ("price?", "need 5", "what about thicker?") keep full context
+  const recentInboundWindow = [
+    ...history
+      .filter((m) => m.direction === "INBOUND")
+      .slice(-4)
+      .map((m) => m.body),
+    rawText,
+  ].join(" ");
+  const contextLower = recentInboundWindow.toLowerCase();
+
   // 1. Explicit request to talk to human support / sales staff
   const explicitSupportRequest =
-    /\b(support|human|agent|staff|person|representative|executive|manager|sales\s*team|talk\s*to|speak\s*to|speak\s*with|connect\s*me|call\s*me|real\s*person|someone)\b/i.test(
+    /\b(talk\s*to\s*(?:team|human|person|agent|staff|sales|someone)|speak\s*(?:to|with)\s*(?:team|human|person|agent|staff|sales|someone)|connect\s*me|human\s*agent|real\s*person|sales\s*executive|call\s*me|please\s*call|need\s*a\s*call|manager)\b/i.test(
       lower
     );
 
-  // 2. Complex / sensitive cases where ACRIO should hand off directly to Sales Team
+  // 2. Sensitive / complaint / CAD file / refund cases where immediate human help is genuinely best
   const unresolvableByBot =
-    /\b(complaint|damaged|broken|wrong\s*item|refund|cancel|dispute|negotiate|final\s*discount|drawing\s*attached|cad|dxf|urgent\s*callback|gst\s*mismatch|payment\s*stuck)\b/i.test(
+    /\b(complaint|damaged|cracked\s*on\s*delivery|broken\s*item|wrong\s*item|refund|cancel\s*my\s*order|dispute|drawing\s*attached|cad\s*file|dxf\s*file|gst\s*mismatch|payment\s*stuck|payment\s*failed)\b/i.test(
+      lower
+    );
+
+  // Specific existing order ID lookup (e.g. CC-1042, CE-209, #4512)
+  const mentionsSpecificOrderNumber =
+    /\b(?:order\s*(?:id|no|number|#)?\s*[:#-]?\s*[a-z0-9-]*\d{3,}|cc-\d+|ce-\d+|track\s+my\s+order)\b/i.test(
       lower
     );
 
   const { allItems } = await getCachedEcosystemCatalog();
-  const matches = searchEcosystemItems(allItems, rawText, 3);
-  const top = matches[0];
+  const directMatches = searchEcosystemItems(allItems, rawText, 8);
+  const contextMatches =
+    directMatches.length >= 6
+      ? directMatches
+      : [
+          ...directMatches,
+          ...searchEcosystemItems(allItems, recentInboundWindow, 8).filter(
+            (item) => !directMatches.some((d) => d.slug === item.slug && d.brand === item.brand)
+          ),
+        ].slice(0, 8);
+  const top = contextMatches[0];
 
   let smartCategory = "General Enquiry";
   let priority: "URGENT" | "HIGH" | "NORMAL" = "NORMAL";
 
-  if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|classic edge|consumable|blade|cutter/i.test(lower)) {
+  if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|classic edge|consumable|blade|cutter|flame|buffing|cloudy\s*edge|rough\s*edge/i.test(contextLower)) {
     smartCategory = "Acrylic Machines (CE53)";
     priority = "HIGH";
-  } else if (/podium|lectern|pulpit|stage|auditorium|conference/i.test(lower)) {
+  } else if (/podium|lectern|pulpit|stage|auditorium|conference/i.test(contextLower)) {
     smartCategory = "Podiums & Stage";
     priority = /friday|urgent|tomorrow|today/i.test(lower) ? "URGENT" : "HIGH";
-  } else if (/trophy|trophies|memento|award|student|convocation|plaque/i.test(lower)) {
+  } else if (/trophy|trophies|memento|award|student|convocation|plaque/i.test(contextLower)) {
     smartCategory = "Awards & Trophies";
-  } else if (/hotel|banquet|menu|qr|resort|hospitality/i.test(lower)) {
+  } else if (/hotel|banquet|menu|qr|resort|hospitality|tent\s*card|table\s*stand|sign\s*holder/i.test(contextLower)) {
     smartCategory = "Hotel & Banquet";
     priority = "HIGH";
-  } else if (/cover|guard|enclosure|custom|mm|inch/i.test(lower)) {
+  } else if (/cover|guard|enclosure|box|case|display\s*stand|riser|custom|mm|inch/i.test(contextLower)) {
     smartCategory = "Custom Fabrication";
     priority = "HIGH";
-  } else if (/order|dispatch|delivery|invoice|advance|payment/i.test(lower)) {
+  } else if (/order|dispatch|delivery|tracking|courier|invoice|advance|payment/i.test(contextLower)) {
     smartCategory = "Order & Delivery";
   }
 
   if (explicitSupportRequest) {
+    const reply = alreadyGreeted
+      ? `Sure, I am connecting you to our *Sales Team* right away. A team member will pick up this chat from here and help you shortly.`
+      : `Hi ${firstName}! Connecting you to our *Sales Team* right away. A team member will reply to you here shortly.`;
     return {
       needsHumanHandoff: true,
       handoffReason: `Customer asked to speak with our team ("${rawText.slice(0, 120)}").`,
-      customerReply: sanitizePlainEnglish(
-        `Hi ${firstName}! Connecting you to our Sales Team right away. A team member will reply to you here shortly.`
-      ),
+      customerReply: formatWhatsAppOutboundText(reply),
       smartCategory,
       priority: "HIGH",
     };
   }
 
   if (unresolvableByBot) {
+    const reply = alreadyGreeted
+      ? `I have flagged this directly for our *Sales & Support Team* so a senior team member can check it personally and resolve it for you right away.`
+      : `Hi ${firstName}, I am connecting your chat directly to our *Sales & Support Team* so they can check this personally and help you right away.`;
     return {
       needsHumanHandoff: true,
       handoffReason: `Query needs personal assistance from Sales Team ("${rawText.slice(0, 120)}").`,
-      customerReply: sanitizePlainEnglish(
-        `Hi ${firstName}, I am connecting your chat directly to our Sales Team so they can check this personally and help you right away.`
-      ),
+      customerReply: formatWhatsAppOutboundText(reply),
       smartCategory,
       priority: "URGENT",
     };
   }
 
-  // 3. Try Claude Haiku 5.5 when Customer/Client Anthropic API key is configured
+  if (mentionsSpecificOrderNumber) {
+    const trackOrigin = resolvePublicTrackingOrigin();
+    const reply = alreadyGreeted
+      ? `You can check live courier status anytime on our tracking portal:\n${trackOrigin}\n\nI am also connecting our *Sales Team* here so they can verify your dispatch details personally.`
+      : `Hi ${firstName}, you can check live courier status anytime here:\n${trackOrigin}\n\nI am also connecting our *Sales Team* so they can check your order status personally.`;
+    return {
+      needsHumanHandoff: true,
+      handoffReason: `Customer asked about a specific order ("${rawText.slice(0, 120)}").`,
+      customerReply: formatWhatsAppOutboundText(reply),
+      smartCategory: "Order & Delivery",
+      priority: "HIGH",
+    };
+  }
+
+  const prebuiltGroupedBlock = buildGroupedProductShortLinksSection({
+    allItems,
+    matchedItems: contextMatches,
+    smartCategory,
+  });
+
+  // 3. Multi-turn Claude Haiku 5.5 Diagnostic & Conversational Assistant
   const { apiKey } = await resolveSharedAnthropicApiKey("client");
   if (apiKey) {
     try {
-      const historyLines = (params.recentMessages || [])
-        .filter((m) => m.direction === "INBOUND" || m.direction === "OUTBOUND")
-        .slice(-5)
-        .map((m) => `${m.direction}: ${m.body}`)
-        .join("\n");
+      // Build true alternating user/assistant turns from history so Claude maintains real conversation memory
+      const trimmedHistory = history.slice(-14);
+      const lastInHistory = trimmedHistory[trimmedHistory.length - 1];
+      const historyWithoutDuplicateCurrent =
+        lastInHistory &&
+        lastInHistory.direction === "INBOUND" &&
+        lastInHistory.body.trim() === rawText
+          ? trimmedHistory.slice(0, -1)
+          : trimmedHistory;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: LOCKED_CLAUDE_MODEL,
-          max_tokens: 380,
-          temperature: 0.2,
-          system: `You are ACRIO, the automated WhatsApp assistant for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic machines & consumables: classicedge53.com).
-Rules:
-1. Write in simple, warm, everyday layman English. Zero em-dashes ("—"), zero "--", zero robotic buzzwords. Never mention 16,000 sq ft boilerplate unless asked.
-2. Answer directly using the matching products/machines provided. Share the exact product/machine link when relevant.
-3. Set "needsHumanHandoff": true ONLY if the customer asks to talk to a human/support/salesperson, OR if the question cannot be answered from our catalog/machines (for example custom quote approval, order tracking check, complaint, or unclear special request).
-4. If "needsHumanHandoff" is false, end briefly by letting them know they can reply "talk to team" anytime if they want a team member.
+      const claudeMessages: { role: "user" | "assistant"; content: string }[] = [];
+      for (const msg of historyWithoutDuplicateCurrent) {
+        const role: "user" | "assistant" =
+          msg.direction === "INBOUND" ? "user" : "assistant";
+        const body = String(msg.body || "").trim();
+        if (!body) continue;
+        const prev = claudeMessages[claudeMessages.length - 1];
+        if (prev && prev.role === role) {
+          prev.content = `${prev.content}\n${body}`;
+        } else {
+          claudeMessages.push({ role, content: body });
+        }
+      }
+
+      // Anthropic requires the first message to be role === "user"
+      while (claudeMessages.length > 0 && claudeMessages[0].role !== "user") {
+        claudeMessages.shift();
+      }
+
+      const catalogContext = prebuiltGroupedBlock
+        ? `Ready-Formatted Grouped Short-Link List (use these exact clean short titles & https://ccapl.cc/... shortlinks when sharing products!):\n${prebuiltGroupedBlock}`
+        : "- Ready catalog covers: acrylic stage podiums, awards & trophies, hotel/restaurant QR & menu stands, retail display risers, custom clear acrylic boxes/covers (classicconcepts.in), plus acrylic bending heaters, diamond edge polishers, routers, laser machines & blades/consumables (classicedge53.com).";
+
+      const latestPromptPayload = `[Context for ACRIO - do not repeat raw labels to customer]
+Customer Name: ${params.customerName}
+Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Continue naturally from the conversation above.)" : `NO (First reply: you may greet "${firstName}" warmly once, briefly.)`}
+${catalogContext}
+
+Customer's new message:
+${rawText}`;
+
+      const lastTurn = claudeMessages[claudeMessages.length - 1];
+      if (lastTurn && lastTurn.role === "user") {
+        lastTurn.content = `${lastTurn.content}\n\n${latestPromptPayload}`;
+      } else {
+        claudeMessages.push({ role: "user", content: latestPromptPayload });
+      }
+
+      const text = await callClaudeHaikuMessages({
+        apiKey,
+        maxTokens: 540,
+        temperature: 0.3,
+        timeoutMs: 11000,
+        system: `You are ACRIO, the helpful WhatsApp product & fabrication specialist for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic fabrication machines & tools: classicedge53.com).
+
+CORE CONVERSATION & PRODUCT SHARING RULES:
+1. NEVER repeat "Hi ${firstName}", "Hello", or any greeting if Already Greeted Earlier is YES. Talk like a real, attentive human continuing the same WhatsApp chat naturally.
+2. NEVER dump a long raw SEO product title mid-sentence, and NEVER share just 1 single lonely link!
+   When recommending products or machines, ALWAYS present a clean, grouped, numbered short-link list using the exact https://ccapl.cc/<6-char-id> links provided in context, formatted like:
+
+   I found a few products that match your description:
+
+   *<Relevant Category Name>:*
+   1. <Short Clean Product Name> - https://ccapl.cc/<id>
+   2. <Short Clean Product Name> - https://ccapl.cc/<id>
+   3. <Short Clean Product Name> - https://ccapl.cc/<id>
+
+   *Customisable Products:*
+   1. <Short Clean Product Name> - https://ccapl.cc/<id>
+   2. <Short Clean Product Name> - https://ccapl.cc/<id>
+
+   Then ask 1-2 short, natural follow-up questions (such as size, thickness, or quantity needed).
+3. DO NOT end the chat or hand off to a human just because the customer's message is short, vague, or describes a problem!
+   - If they describe a fabrication issue (cloudy/white cut edges -> diamond edge polishing; cracking/bubbles when bending -> controlled strip heaters; yellowing/scratches -> cast clear acrylic), explain the practical solution in plain everyday English and include the grouped matching options.
+4. Set "needsHumanHandoff": true ONLY when:
+   - The customer explicitly asks to speak to a person/team/call, OR
+   - They have a damaged delivery, refund/payment issue, or specific existing order check, OR
+   - They have ALREADY shared final custom dimensions + quantity (or confirmed a bulk order) and now need a formal Sales quotation/proforma invoice.
+5. WHATSAPP FORMATTING & PLAIN LANGUAGE RULES:
+   - Use single asterisks *like this* for bold category headers or key points (NEVER double **asterisks**, NEVER [markdown](links)).
+   - Simple, warm, everyday layman English. Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
+   - NEVER add a robotic "or reply talk to team anytime" footer!
+
 Return ONLY valid JSON:
 {
   "needsHumanHandoff": false,
   "handoffReason": "",
   "smartCategory": "Podiums & Stage | Awards & Trophies | Hotel & Banquet | Acrylic Machines (CE53) | Custom Fabrication | Order & Delivery | General Enquiry",
   "priority": "URGENT | HIGH | NORMAL",
-  "customerReply": "Your short WhatsApp reply"
+  "customerReply": "Your WhatsApp-formatted reply with \\n line breaks, grouped numbered shortlinks, and *bold* headers"
 }`,
-          messages: [
-            {
-              role: "user",
-              content: `Customer: ${params.customerName}
-Matching catalog & machine items:
-${matches.map((c) => `- [${c.brandLabel} ${c.itemType}] ${c.name}${c.sku ? ` (${c.sku})` : ""}${c.basePrice ? ` Rs ${c.basePrice}` : ""} -> ${c.shortUrl || c.url}`).join("\n")}
-Recent chat:
-${historyLines}
-Latest customer message: ${rawText}`,
-            },
-          ],
-        }),
-        signal: AbortSignal.timeout(9000),
+        messages: claudeMessages,
       });
 
-      if (response.ok) {
-        const json: any = await response.json();
-        const text = json?.content?.[0]?.text || "";
+      if (text) {
         const s = text.indexOf("{");
         const e = text.lastIndexOf("}");
         if (s !== -1 && e > s) {
           const parsed = JSON.parse(text.slice(s, e + 1));
           if (typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
             const handoff = Boolean(parsed.needsHumanHandoff);
+            const cleanedReply = stripRepeatedGreeting(
+              formatWhatsAppOutboundText(parsed.customerReply),
+              alreadyGreeted,
+              params.customerName
+            );
             return {
               needsHumanHandoff: handoff,
               handoffReason:
                 parsed.handoffReason ||
                 (handoff
-                  ? `ACRIO could not resolve fully and connected customer to Sales Team.`
+                  ? `Customer ready for Sales Team follow-up ("${rawText.slice(0, 100)}").`
                   : ""),
-              customerReply: sanitizePlainEnglish(parsed.customerReply),
+              customerReply: cleanedReply,
               smartCategory: parsed.smartCategory || smartCategory,
               priority: parsed.priority || priority,
             };
@@ -1280,62 +1671,113 @@ Latest customer message: ${rawText}`,
         }
       }
     } catch {
-      // Fall back to deterministic catalog/machine answer engine below
+      // Fall back to conversational diagnostic engine below
     }
   }
 
-  // 4. Deterministic Backend ACRIO Resolution Engine (when offline or no API key yet)
+  // 4. Conversational & Diagnostic Fallback Engine (when offline or no API key)
+  const greetOnce = alreadyGreeted ? "" : `Hi ${firstName}! `;
+
   if (/^(hi|hello|hey|good\s*morning|good\s*afternoon|good\s*evening|namaste)\W*$/i.test(rawText)) {
+    const reply = alreadyGreeted
+      ? `Tell me what you are looking to display, make, or solve today:\n• *Acrylic Podiums, Awards & Display Stands*\n• *Custom-Size Acrylic Boxes & Covers*\n• *Classic Edge 53 Acrylic Machines & Tools*\n\nShare a few details and I will suggest the best options!`
+      : `Hello ${firstName}! Welcome to *Classic Concepts* & *Classic Edge 53*.\n\nHow can I help you today?\n• *Stage Podiums, Trophies & Display Stands*\n• *Custom-Size Acrylic Boxes & Machine Covers*\n• *Acrylic Bending, Polishing & Cutting Machines*\n\nTell me what you have in mind!`;
     return {
       needsHumanHandoff: false,
       handoffReason: "",
-      customerReply: sanitizePlainEnglish(
-        `Hello ${firstName}! Welcome to Classic Concepts (ACRIO Assistant). Are you looking for acrylic podiums, awards, stands, custom boxes, or Classic Edge 53 machines? Tell me what you need, or reply "talk to team" anytime to speak with our Sales Team.`
-      ),
+      customerReply: formatWhatsAppOutboundText(reply),
       smartCategory,
       priority: "NORMAL",
     };
   }
 
-  // Order tracking or custom dimension pricing requires human Sales Team verification
-  if (smartCategory === "Order & Delivery" || /\b(\d+\s*(?:mm|cm|inch|ft)\s*x\s*\d+)\b/i.test(lower)) {
+  // Common acrylic / fabrication problem diagnosis (cloudy edges, bending cracks, glue marks, etc.)
+  if (/\b(cloudy|white\s*edge|rough\s*edge|dull\s*edge|polish\s*problem|flame|burn|bubble|crack|bend\s*issue|warping|scratch|yellow)\b/i.test(lower)) {
+    const issueSolutions: string[] = [];
+    if (/cloudy|white|rough|dull|polish/i.test(lower)) {
+      issueSolutions.push(
+        `• *Cloudy or rough cut edges:* A *Diamond Edge Polishing Machine* gives a crystal-clear flat edge in one pass without flame stress marks (which often cause micro-cracks when solvent glue is applied later).`
+      );
+    }
+    if (/crack|bubble|bend|warp/i.test(lower)) {
+      issueSolutions.push(
+        `• *Bubbles or cracking while bending:* Usually caused by heating too fast or too close. Using a temperature-controlled *Acrylic Bending Heater* with even top-and-bottom heating for sheets 5mm and thicker solves this cleanly.`
+      );
+    }
+    if (issueSolutions.length === 0) {
+      issueSolutions.push(
+        `• Using *cast clear acrylic* instead of extruded sheet prevents yellowing, melting burrs, and hairline cracks during fabrication.`
+      );
+    }
+    const machineBlock = prebuiltGroupedBlock
+      ? `\n\n${prebuiltGroupedBlock}`
+      : top
+      ? `\n\nMatching option:\n1. ${cleanDisplayProductName(top.name)} - ${top.shortUrl || top.url}`
+      : "";
+    const reply = `${greetOnce}Here is what usually causes that and how to fix it:\n\n${issueSolutions.join("\n\n")}${machineBlock}\n\nWhat *sheet thickness* are you working with, and are you cutting by laser or router?`;
     return {
-      needsHumanHandoff: true,
-      handoffReason: `ACRIO needs human verification for ${smartCategory.toLowerCase()} ("${rawText.slice(0, 110)}").`,
-      customerReply: sanitizePlainEnglish(
-        `Hi ${firstName}! I have noted your details and connected your chat to our Sales Team so they can check exact pricing and schedule for you right away.`
+      needsHumanHandoff: false,
+      handoffReason: "",
+      customerReply: stripRepeatedGreeting(
+        formatWhatsAppOutboundText(reply),
+        alreadyGreeted,
+        params.customerName
       ),
-      smartCategory,
+      smartCategory: "Acrylic Machines (CE53)",
       priority: "HIGH",
     };
   }
 
-  if (smartCategory === "Acrylic Machines (CE53)" && top) {
+  // Confirmed exact 3D measurements + quantity -> connect to Sales Team for exact custom fabrication quote
+  if (
+    /\b(\d+\s*(?:mm|cm|inch|in|ft)\s*x\s*\d+\s*(?:mm|cm|inch|in|ft)?\s*x\s*\d+)\b/i.test(lower) &&
+    /\b(\d+\s*(?:pcs|pieces|nos|units|qty)|quote|price)\b/i.test(contextLower)
+  ) {
+    const reply = `${greetOnce}Got your custom size details! I am connecting our *Sales Team* right now so they can calculate sheet thickness, exact fabrication cost, and dispatch time for you.`;
+    return {
+      needsHumanHandoff: true,
+      handoffReason: `Customer shared custom dimensions for Sales quotation ("${rawText.slice(0, 110)}").`,
+      customerReply: stripRepeatedGreeting(
+        formatWhatsAppOutboundText(reply),
+        alreadyGreeted,
+        params.customerName
+      ),
+      smartCategory: "Custom Fabrication",
+      priority: "HIGH",
+    };
+  }
+
+  if (smartCategory === "Acrylic Machines (CE53)" && top && prebuiltGroupedBlock) {
+    const reply = `${greetOnce}${prebuiltGroupedBlock}\n\nWhat *maximum sheet thickness* and *working width* do you handle most often? I can help narrow down the right model.`;
     return {
       needsHumanHandoff: false,
       handoffReason: "",
-      customerReply: sanitizePlainEnglish(
-        `Hi ${firstName}! Here is our matching Classic Edge 53 machine: ${top.name}${top.sku ? ` (${top.sku})` : ""} (${top.shortUrl || top.url}). Share your sheet thickness or city for a quote, or reply "talk to team" to connect with our Sales Team.`
+      customerReply: stripRepeatedGreeting(
+        formatWhatsAppOutboundText(reply),
+        alreadyGreeted,
+        params.customerName
       ),
       smartCategory,
       priority,
     };
   }
 
-  if (top && (smartCategory !== "General Enquiry" || matches.length > 0)) {
-    // Check if the query actually matched any meaningful keyword in our catalog; if completely unrelated/unclear, hand off to Sales Team!
-    const hasCatalogMatch = matches.some((item) => {
-      const words = lower.split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+  if (top && prebuiltGroupedBlock) {
+    const words = contextLower.split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+    const hasCatalogMatch = contextMatches.some((item) => {
       const hay = `${item.name} ${item.categoryName} ${item.sku || ""} ${item.description || ""}`.toLowerCase();
       return words.some((w) => hay.includes(w));
     });
 
     if (hasCatalogMatch) {
+      const reply = `${greetOnce}${prebuiltGroupedBlock}\n\nRoughly *how many pieces* do you need, and do you want *custom logo printing* or a specific size?`;
       return {
         needsHumanHandoff: false,
         handoffReason: "",
-        customerReply: sanitizePlainEnglish(
-          `Hi ${firstName}! Take a look at our ${top.name}${top.basePrice ? ` (Rs ${top.basePrice})` : ""}: ${top.shortUrl || top.url}. Let me know the quantity or size you need, or reply "talk to team" anytime to speak with our Sales Team.`
+        customerReply: stripRepeatedGreeting(
+          formatWhatsAppOutboundText(reply),
+          alreadyGreeted,
+          params.customerName
         ),
         smartCategory,
         priority,
@@ -1343,12 +1785,16 @@ Latest customer message: ${rawText}`,
     }
   }
 
-  // If ACRIO cannot match the query confidently -> connect to Sales Team automatically!
+  // Vague / open-ended message -> DO NOT end chat! Ask helpful clarifying questions to understand their problem or goal.
+  const exploratoryReply = `${greetOnce}I would love to help figure out the best option for you.\n\nCould you share a little more about what you need?\n• *Display or Event Product:* podium, trophy/award, menu/QR stand, retail riser, or protective acrylic box\n• *Custom Size Job:* share what item goes inside and rough size\n• *Fabrication Machine / Issue:* cutting, bending, diamond polishing, or edge finishing\n\nEven a short description of your use case works!`;
+
   return {
-    needsHumanHandoff: true,
-    handoffReason: `ACRIO could not match a standard catalog answer for "${rawText.slice(0, 110)}". Connected to Sales Team.`,
-    customerReply: sanitizePlainEnglish(
-      `Hi ${firstName}! Thank you for your message. I am connecting you to our Sales Team right now so a team member can help you with this.`
+    needsHumanHandoff: false,
+    handoffReason: "",
+    customerReply: stripRepeatedGreeting(
+      formatWhatsAppOutboundText(exploratoryReply),
+      alreadyGreeted,
+      params.customerName
     ),
     smartCategory,
     priority: "NORMAL",
@@ -1429,36 +1875,26 @@ export async function buildAcrioSmartMarketingSegment(prompt: string): Promise<{
   const { apiKey: adminApiKey } = await resolveSharedAnthropicApiKey("admin");
   if (adminApiKey && prompt.trim().length > 6 && all.length > 0) {
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": adminApiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: LOCKED_CLAUDE_MODEL,
-          max_tokens: 220,
-          temperature: 0.1,
-          system: `You are ACRIO Admin Assistant for Classic Concepts. Write in plain everyday English (zero em-dashes, zero buzzwords). Given a marketing list prompt and CRM contacts, pick matching contact IDs and return ONLY valid JSON: {"suggestedName": "Short Clear List Name", "matchedIds": ["id1"], "explanation": "Short plain explanation"}`,
-          messages: [
-            {
-              role: "user",
-              content: `Prompt: ${prompt.trim()}\nOpted-in contacts:\n${all
-                .slice(0, 40)
-                .map(
-                  (c) =>
-                    `${c.id} | ${c.name} | ${c.organizationType || ""} | ${c.acrioSegment} | Rs ${c.lifetimeValueInr}`
-                )
-                .join("\n")}`,
-            },
-          ],
-        }),
-        signal: AbortSignal.timeout(6500),
+      const text = await callClaudeHaikuMessages({
+        apiKey: adminApiKey,
+        maxTokens: 220,
+        temperature: 0.1,
+        timeoutMs: 6500,
+        system: `You are ACRIO Admin Assistant for Classic Concepts. Write in plain everyday English (zero em-dashes, zero buzzwords). Given a marketing list prompt and CRM contacts, pick matching contact IDs and return ONLY valid JSON: {"suggestedName": "Short Clear List Name", "matchedIds": ["id1"], "explanation": "Short plain explanation"}`,
+        messages: [
+          {
+            role: "user",
+            content: `Prompt: ${prompt.trim()}\nOpted-in contacts:\n${all
+              .slice(0, 40)
+              .map(
+                (c) =>
+                  `${c.id} | ${c.name} | ${c.organizationType || ""} | ${c.acrioSegment} | Rs ${c.lifetimeValueInr}`
+              )
+              .join("\n")}`,
+          },
+        ],
       });
-      if (response.ok) {
-        const json: any = await response.json();
-        const text = json?.content?.[0]?.text || "";
+      if (text) {
         const s = text.indexOf("{");
         const e = text.lastIndexOf("}");
         if (s !== -1 && e > s) {
@@ -1766,37 +2202,1008 @@ export async function executeMultiDatabaseBackup(
 }
 
 // ============================================================================
-// 4. STAFF EMAIL OTP DELIVERY CONNECTOR
+// 4. META-COMPLIANT AI TEMPLATE DRAFTER + GUARDED BUTTON AI + WEBSITE ENQUIRY AI
 // ============================================================================
+export async function draftMetaCompliantTemplateWithAi(params: {
+  prompt: string;
+  category?: WhatsAppTemplateCategory;
+  brand?: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+}): Promise<{
+  name: string;
+  category: WhatsAppTemplateCategory;
+  headerType: WhatsAppHeaderType;
+  headerText: string;
+  bodyText: string;
+  footerText: string;
+  variablesSchema: WhatsAppTemplateVariableSpec[];
+  buttons: WhatsAppTemplateButton[];
+  complianceNotes: string[];
+}> {
+  const category: WhatsAppTemplateCategory =
+    params.category === "UTILITY" || params.category === "AUTHENTICATION"
+      ? params.category
+      : "MARKETING";
+  const brand =
+    params.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS";
+  const brandName =
+    brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts";
+  const shortOrigin = resolvePublicShortLinkOrigin();
+
+  const { allItems } = await getCachedEcosystemCatalog();
+  const matches = searchEcosystemItems(allItems, params.prompt || brandName, 3);
+  const topLink =
+    matches[0]?.shortUrl ||
+    (brand === "CLASSIC_EDGE_53"
+      ? `${shortOrigin}/ce53mc`
+      : `${shortOrigin}/podium`);
+
+  const adminKeyInfo = await resolveSharedAnthropicApiKey("admin");
+  const clientKeyInfo = await resolveSharedAnthropicApiKey("client");
+  const apiKey = adminKeyInfo.apiKey || clientKeyInfo.apiKey;
+
+  if (apiKey) {
+    try {
+      const text = await callClaudeHaikuMessages({
+        apiKey,
+        maxTokens: 520,
+        temperature: 0.2,
+        timeoutMs: 9500,
+        system: `You design Meta WhatsApp Cloud API compliant templates for ${brandName}.
+STRICT META APPROVAL RULES:
+1. Template name: lowercase letters, numbers, underscores only (e.g. podium_quote_followup_2026).
+2. Body text MUST NOT start or end with a {{variable}} and MUST NOT place {{1}} {{2}} side by side.
+3. Number variables sequentially starting at {{1}}. Keep body concise (under 420 chars), plain everyday English, zero em-dashes ("—"), zero "--", zero AI buzzwords.
+4. For MARKETING: include polite opt-out footer ("Reply STOP to opt out"). For UTILITY: strictly transactional/service wording with zero promotional hype so Meta approves it as Utility.
+5. Include 2 or 3 useful QUICK_REPLY buttons (<= 22 chars each) and map each button to a deterministic flowAction ("AUTO_REPLY", "ASSIGN_TEAM", "SEND_ORDER_TRACKING", or "OPT_OUT_DND") so AI never hijacks button clicks!
+
+Return ONLY valid JSON:
+{
+  "name": "snake_case_template_name",
+  "category": "${category}",
+  "headerText": "Short Header <= 55 chars",
+  "bodyText": "Hello {{1}}, ... thank you.",
+  "footerText": "${category === "MARKETING" ? `${brandName} • Reply STOP to opt out` : brandName}",
+  "variablesSchema": [
+    { "index": 1, "label": "Customer First Name", "sourceField": "customer.firstName", "sampleValue": "Rahul" }
+  ],
+  "buttons": [
+    {
+      "type": "QUICK_REPLY",
+      "text": "Get Price List",
+      "flowAction": {
+        "actionType": "AUTO_REPLY",
+        "replyText": "Here is the catalog & price guide: ${topLink}\\n\\nShare your required quantity if you need bulk pricing!"
+      }
+    },
+    {
+      "type": "QUICK_REPLY",
+      "text": "Talk to Sales",
+      "flowAction": {
+        "actionType": "ASSIGN_TEAM",
+        "teamId": "team_sales",
+        "replyText": "Connecting you with our *Sales Team* right away. A specialist will reply here shortly."
+      }
+    }
+  ]
+}`,
+        messages: [
+          {
+            role: "user",
+            content: `Goal: ${params.prompt.trim()}\nCategory: ${category}\nBrand: ${brandName}\nRelevant link if needed: ${topLink}`,
+          },
+        ],
+      });
+
+      if (text) {
+        const s = text.indexOf("{");
+        const e = text.lastIndexOf("}");
+        if (s !== -1 && e > s) {
+          const parsed = JSON.parse(text.slice(s, e + 1));
+          const rawName = String(parsed.name || "cc_template_2026")
+            .toLowerCase()
+            .replace(/[^a-z0-9_]+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .slice(0, 64);
+          let cleanBody = formatWhatsAppOutboundText(
+            String(parsed.bodyText || "")
+          );
+          if (/^\{\{\d+\}\}/.test(cleanBody)) cleanBody = `Hello ${cleanBody}`;
+          if (/\{\{\d+\}\}$/.test(cleanBody)) cleanBody = `${cleanBody}.`;
+
+          const varNums = Array.from(
+            new Set(
+              Array.from(cleanBody.matchAll(/\{\{(\d+)\}\}/g)).map((m) =>
+                Number(m[1])
+              )
+            )
+          ).sort((a, b) => a - b);
+
+          const rawVars: any[] = Array.isArray(parsed.variablesSchema)
+            ? parsed.variablesSchema
+            : [];
+          const variablesSchema: WhatsAppTemplateVariableSpec[] = varNums.map(
+            (num) => {
+              const found = rawVars.find((v) => Number(v.index) === num);
+              return {
+                index: num,
+                label: String(found?.label || `Variable ${num}`),
+                sourceField: (found?.sourceField || "customer.firstName") as any,
+                sampleValue: String(
+                  found?.sampleValue || (num === 1 ? "Rahul" : "CC-2026")
+                ),
+              };
+            }
+          );
+
+          const rawBtns: any[] = Array.isArray(parsed.buttons)
+            ? parsed.buttons
+            : [];
+          const buttons: WhatsAppTemplateButton[] = rawBtns
+            .slice(0, 4)
+            .map((b, i) => ({
+              id: `btn_ai_${i}_${Date.now().toString(36)}`,
+              type: b.type === "URL" ? "URL" : "QUICK_REPLY",
+              text: sanitizePlainEnglish(String(b.text || "Learn More")).slice(
+                0,
+                24
+              ),
+              url: b.type === "URL" ? String(b.url || topLink) : undefined,
+              flowAction:
+                b.type !== "URL" && b.flowAction
+                  ? {
+                      actionType: b.flowAction.actionType || "AUTO_REPLY",
+                      replyText: b.flowAction.replyText
+                        ? formatWhatsAppOutboundText(
+                            String(b.flowAction.replyText)
+                          )
+                        : undefined,
+                      teamId: b.flowAction.teamId || "team_sales",
+                      smartCategory: b.flowAction.smartCategory || undefined,
+                      priority: b.flowAction.priority || "HIGH",
+                    }
+                  : undefined,
+            }));
+
+          return {
+            name: rawName || `cc_${category.toLowerCase()}_draft`,
+            category,
+            headerType: parsed.headerText ? "TEXT" : "NONE",
+            headerText: sanitizePlainEnglish(
+              String(parsed.headerText || "")
+            ).slice(0, 58),
+            bodyText: cleanBody,
+            footerText: sanitizePlainEnglish(
+              String(
+                parsed.footerText ||
+                  (category === "MARKETING"
+                    ? `${brandName} • Reply STOP to opt out`
+                    : brandName)
+              )
+            ).slice(0, 58),
+            variablesSchema,
+            buttons,
+            complianceNotes: [
+              "Variables verified sequential with sample values for Meta review.",
+              "Quick Reply buttons pre-mapped to deterministic Flow Actions so AI credits are protected.",
+            ],
+          };
+        }
+      }
+    } catch {
+      // Fall back to deterministic compliant draft below
+    }
+  }
+
+  const slugBase =
+    params.prompt
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 36) || "customer_update";
+
+  const isUtility = category === "UTILITY";
+  return {
+    name: `${brand === "CLASSIC_EDGE_53" ? "ce53" : "cc"}_${slugBase}`,
+    category,
+    headerType: "TEXT",
+    headerText: isUtility
+      ? `${brandName} Enquiry Update`
+      : `${brandName} Product Options`,
+    bodyText: isUtility
+      ? `Hello {{1}}, we have reviewed your request with ${brandName} (Ref {{2}}). Tap an option below to view details or connect directly with our team.`
+      : `Hello {{1}}, thank you for checking ${brandName}. Explore our ready range here: ${topLink}\n\nTap a button below for pricing or to speak with our Sales Team.`,
+    footerText: isUtility
+      ? brandName
+      : `${brandName} • Reply STOP to opt out`,
+    variablesSchema: isUtility
+      ? [
+          {
+            index: 1,
+            label: "Customer First Name",
+            sourceField: "customer.firstName",
+            sampleValue: "Rahul",
+          },
+          {
+            index: 2,
+            label: "Order or Reference ID",
+            sourceField: "order.latestNumber",
+            sampleValue: "CC-2026",
+          },
+        ]
+      : [
+          {
+            index: 1,
+            label: "Customer First Name",
+            sourceField: "customer.firstName",
+            sampleValue: "Rahul",
+          },
+        ],
+    buttons: [
+      {
+        id: "btn_qr_1",
+        type: "QUICK_REPLY",
+        text: isUtility ? "Track Order" : "Share Price List",
+        flowAction: isUtility
+          ? { actionType: "SEND_ORDER_TRACKING" }
+          : {
+              actionType: "AUTO_REPLY",
+              replyText: `Here is the direct link to view models and specifications:\n${topLink}\n\nLet us know the quantity you need!`,
+            },
+      },
+      {
+        id: "btn_qr_2",
+        type: "QUICK_REPLY",
+        text: "Talk to Sales",
+        flowAction: {
+          actionType: "ASSIGN_TEAM",
+          teamId: "team_sales",
+          replyText:
+            "Connecting you to our *Sales Team* right away. A specialist will reply here shortly.",
+        },
+      },
+      ...(isUtility
+        ? []
+        : ([
+            {
+              id: "btn_qr_3",
+              type: "QUICK_REPLY",
+              text: "Stop Offers",
+              flowAction: { actionType: "OPT_OUT_DND" },
+            },
+          ] as WhatsAppTemplateButton[])),
+    ],
+    complianceNotes: [
+      "Follows strict Meta Utility/Marketing rules (no leading/trailing variables, sequential placeholders).",
+      "Quick Reply buttons pre-mapped to Flow Manager actions.",
+    ],
+  };
+}
+
+export async function runGuardedButtonFlowAiReply(params: {
+  customerName: string;
+  buttonText: string;
+  aiInstruction: string;
+}): Promise<string> {
+  const firstName = params.customerName.split(/[\s(]/)[0] || "there";
+  const { allItems } = await getCachedEcosystemCatalog();
+  const matches = searchEcosystemItems(
+    allItems,
+    `${params.buttonText} ${params.aiInstruction}`,
+    3
+  );
+  const catalogLines = matches
+    .map(
+      (m) =>
+        `- ${m.name}${m.basePrice ? ` (Rs ${m.basePrice})` : ""}: ${m.shortUrl || m.url}`
+    )
+    .join("\n");
+
+  const { apiKey } = await resolveSharedAnthropicApiKey("client");
+  if (apiKey) {
+    const out = await callClaudeHaikuMessages({
+      apiKey,
+      maxTokens: 200,
+      temperature: 0.2,
+      timeoutMs: 7000,
+      system: `You are ACRIO for Classic Concepts & Classic Edge 53. Reply strictly to the button action below in under 75 words using simple everyday English, WhatsApp *bold* formatting, and zero em-dashes or buzzwords.`,
+      messages: [
+        {
+          role: "user",
+          content: `Customer: ${firstName}\nClicked Template Button: "${params.buttonText}"\nButton Action Instruction: ${params.aiInstruction}\nCatalog links:\n${catalogLines}`,
+        },
+      ],
+    });
+    if (out) return formatWhatsAppOutboundText(out);
+  }
+
+  const top = matches[0];
+  return formatWhatsAppOutboundText(
+    `Thanks for selecting *${params.buttonText}*!${top ? `\n\nTake a look at *${top.name}*:\n${top.shortUrl || top.url}` : ""}\n\nShare your required quantity or size and we will help right away.`
+  );
+}
+
+export interface EvaluatedWebsiteEnquiryResult {
+  smartReplyText: string;
+  whatsappSummaryText: string;
+  smartCategory: string;
+  priority: "URGENT" | "HIGH" | "NORMAL";
+  recommendedTeamId: string;
+  matchedItems: {
+    name: string;
+    brandLabel: string;
+    shortUrl: string;
+    priceInr: number | null;
+  }[];
+}
+
+export async function evaluateWebsiteEnquiryWithAi(params: {
+  brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  customerName: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  message: string;
+  productName?: string;
+  sourcePage?: string;
+}): Promise<EvaluatedWebsiteEnquiryResult> {
+  const firstName = params.customerName.split(/[\s(]/)[0] || "there";
+  const combinedQuery = `${params.productName || ""} ${params.message || ""}`.trim();
+  const lower = combinedQuery.toLowerCase();
+
+  const { allItems } = await getCachedEcosystemCatalog();
+  const matches = searchEcosystemItems(allItems, combinedQuery, 3);
+
+  let smartCategory =
+    params.brand === "CLASSIC_EDGE_53"
+      ? "Acrylic Machines (CE53)"
+      : "General Enquiry";
+  let priority: "URGENT" | "HIGH" | "NORMAL" = "HIGH";
+
+  if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|blade|cutter/i.test(lower)) {
+    smartCategory = "Acrylic Machines (CE53)";
+    priority = "HIGH";
+  } else if (/podium|lectern|pulpit|stage|auditorium/i.test(lower)) {
+    smartCategory = "Podiums & Stage";
+    priority = /urgent|tomorrow|friday|today|week/i.test(lower) ? "URGENT" : "HIGH";
+  } else if (/trophy|trophies|memento|award|plaque/i.test(lower)) {
+    smartCategory = "Awards & Trophies";
+  } else if (/hotel|banquet|menu|qr|resort|table\s*stand/i.test(lower)) {
+    smartCategory = "Hotel & Banquet";
+  } else if (/cover|guard|enclosure|box|custom|mm|inch/i.test(lower)) {
+    smartCategory = "Custom Fabrication";
+  }
+
+  const brandName =
+    params.brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts";
+
+  const matchedItems = matches.map((m) => ({
+    name: cleanDisplayProductName(m.name),
+    brandLabel: m.brandLabel,
+    shortUrl: m.shortUrl || m.url,
+    priceInr: m.basePrice,
+  }));
+
+  const groupedEnquiryBlock = buildGroupedProductShortLinksSection({
+    allItems,
+    matchedItems: matches,
+    smartCategory,
+  });
+
+  const clientKey = await resolveSharedAnthropicApiKey("client");
+  const adminKey = await resolveSharedAnthropicApiKey("admin");
+  const apiKey = clientKey.apiKey || adminKey.apiKey;
+
+  if (apiKey) {
+    try {
+      const text = await callClaudeHaikuMessages({
+        apiKey,
+        maxTokens: 480,
+        temperature: 0.25,
+        timeoutMs: 9000,
+        system: `You handle new website form enquiries for ${brandName} (Classic Concepts acrylic products & Classic Edge 53 acrylic machines).
+Your job is to give the customer a genuinely helpful, specific first answer right away before our Sales Team follows up!
+RULES:
+1. Address "${firstName}" warmly in simple, clear, everyday English.
+2. Directly answer what they asked about, and when sharing matching products, format them cleanly as a grouped numbered list using the exact https://ccapl.cc/<id> shortlinks provided (never dump raw long titles mid-sentence).
+3. Ask 1-2 practical details (like required quantity, delivery city, sheet thickness, or custom size) so our Sales Team can send the final quote immediately.
+4. Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
+Return ONLY valid JSON:
+{
+  "smartCategory": "${smartCategory}",
+  "priority": "${priority}",
+  "smartReplyText": "Email-friendly plain text reply with clear paragraphs and numbered product links",
+  "whatsappSummaryText": "Concise WhatsApp-formatted (*bold* + grouped numbered shortlinks) version of the same helpful reply"
+}`,
+        messages: [
+          {
+            role: "user",
+            content: `Brand: ${brandName}\nCustomer: ${params.customerName}\nProduct Selected: ${params.productName ? cleanDisplayProductName(params.productName) : "General"}\nCustomer Enquiry: ${params.message}\n${groupedEnquiryBlock || "Standard custom fabrication & machine range"}`,
+          },
+        ],
+      });
+
+      if (text) {
+        const s = text.indexOf("{");
+        const e = text.lastIndexOf("}");
+        if (s !== -1 && e > s) {
+          const parsed = JSON.parse(text.slice(s, e + 1));
+          if (parsed.smartReplyText) {
+            const cleanEmailText = sanitizePlainEnglish(
+              String(parsed.smartReplyText)
+            ).replace(/\*/g, "");
+            const cleanWaText = formatWhatsAppOutboundText(
+              String(parsed.whatsappSummaryText || parsed.smartReplyText)
+            );
+            return {
+              smartReplyText: cleanEmailText,
+              whatsappSummaryText: cleanWaText,
+              smartCategory: parsed.smartCategory || smartCategory,
+              priority: parsed.priority || priority,
+              recommendedTeamId: "team_sales",
+              matchedItems,
+            };
+          }
+        }
+      }
+    } catch {
+      // Fallback below
+    }
+  }
+
+  const cleanSelectedProd = params.productName
+    ? cleanDisplayProductName(params.productName)
+    : "";
+  const fallbackWa = formatWhatsAppOutboundText(
+    `Hi ${firstName}! Thank you for your enquiry on *${brandName}*${cleanSelectedProd ? ` regarding *${cleanSelectedProd}*` : ""}.\n\n${
+      groupedEnquiryBlock ? `${groupedEnquiryBlock}\n\n` : ""
+    }To prepare your exact quotation and dispatch timeline, please share:\n• *Quantity needed*\n• *Delivery city / pincode*${
+      params.brand === "CLASSIC_EDGE_53"
+        ? "\n• *Max acrylic sheet thickness you work with*"
+        : "\n• *Any custom size or logo printing needed*"
+    }\n\nOur *Sales Team* has also received your enquiry and is ready to assist you.`
+  );
+
+  return {
+    smartReplyText: fallbackWa.replace(/\*/g, ""),
+    whatsappSummaryText: fallbackWa,
+    smartCategory,
+    priority,
+    recommendedTeamId: "team_sales",
+    matchedItems,
+  };
+}
+
+// ============================================================================
+// 5. UNIVERSAL ECOSYSTEM SMTP & STAFF ASSIGNMENT EMAIL DISPATCHER
+// ============================================================================
+export interface SmtpResolvedConfig {
+  configured: boolean;
+  source:
+    | "whatsapp_db"
+    | "whatsapp_env"
+    | "classicconcepts_db"
+    | "bridge_3003"
+    | "bridge_3002"
+    | "none";
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+  from: string;
+}
+
+async function resolveDirectSmtpCredentials(): Promise<SmtpResolvedConfig> {
+  await ensureDatabasesBootstrapped();
+  const auth = getRawLibSqlClient("core_auth");
+
+  // 1. Check WhatsApp setup_state ('smtp_config')
+  try {
+    const cfgRes = await auth.execute(
+      `SELECT value_json FROM setup_state WHERE key = 'smtp_config' LIMIT 1`
+    );
+    if (cfgRes.rows[0]?.value_json) {
+      const parsed = JSON.parse(String(cfgRes.rows[0].value_json));
+      if (parsed?.host && parsed?.user && parsed?.pass) {
+        return {
+          configured: true,
+          source: "whatsapp_db",
+          host: String(parsed.host).trim(),
+          port: Number(parsed.port || 587),
+          user: String(parsed.user).trim(),
+          pass: String(parsed.pass).trim(),
+          from:
+            String(parsed.from || "").trim() ||
+            `"Classic Concepts WhatsApp Desk" <${String(parsed.user).trim()}>`,
+        };
+      }
+    }
+  } catch {
+    // Non-blocking
+  }
+
+  // 2. Check ccwhatsapp environment variables
+  const envHost = (process.env.SMTP_HOST || "").trim();
+  const envUser = (process.env.SMTP_USER || "").trim();
+  const envPass = (process.env.SMTP_PASS || "").trim();
+  if (envHost && envUser && envPass) {
+    return {
+      configured: true,
+      source: "whatsapp_env",
+      host: envHost,
+      port: Number(process.env.SMTP_PORT || 587),
+      user: envUser,
+      pass: envPass,
+      from:
+        (process.env.SMTP_FROM || "").trim() ||
+        `"Classic Concepts WhatsApp Desk" <${envUser}>`,
+    };
+  }
+
+  // 3. Check sibling classicconcepts/dev.db SiteSetting SMTP credentials
+  try {
+    const mainDbPath = resolveMainWebsiteDbPath();
+    if (mainDbPath && fs.existsSync(mainDbPath)) {
+      const { createClient } = await import("@libsql/client");
+      const normalized = mainDbPath.replace(/\\/g, "/");
+      const url = normalized.startsWith("/")
+        ? `file:${normalized}`
+        : `file:///${normalized}`;
+      const ccClient = createClient({ url });
+      const sRes = await ccClient.execute(
+        `SELECT smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom FROM SiteSetting LIMIT 1`
+      );
+      const r = sRes.rows[0];
+      if (r?.smtpHost && r?.smtpUser && r?.smtpPass) {
+        return {
+          configured: true,
+          source: "classicconcepts_db",
+          host: String(r.smtpHost).trim(),
+          port: Number(r.smtpPort || 587),
+          user: String(r.smtpUser).trim(),
+          pass: String(r.smtpPass).trim(),
+          from:
+            String(r.smtpFrom || "").trim() ||
+            `"Classic Concepts WhatsApp Desk" <${String(r.smtpUser).trim()}>`,
+        };
+      }
+    }
+  } catch {
+    // Non-blocking
+  }
+
+  return {
+    configured: false,
+    source: "none",
+    host: "",
+    port: 587,
+    user: "",
+    pass: "",
+    from: "",
+  };
+}
+
+export async function getSmtpConfigSummary(): Promise<{
+  configured: boolean;
+  source: string;
+  host: string;
+  port: number;
+  userMasked: string;
+  from: string;
+}> {
+  const direct = await resolveDirectSmtpCredentials();
+  if (direct.configured) {
+    const u = direct.user;
+    const masked =
+      u.length > 5 ? `${u.slice(0, 3)}***${u.slice(u.indexOf("@"))}` : u;
+    return {
+      configured: true,
+      source: direct.source,
+      host: direct.host,
+      port: direct.port,
+      userMasked: masked,
+      from: direct.from,
+    };
+  }
+
+  // Probe :3003 / :3002 bridges to see if relay SMTP is active
+  const key = resolveEcosystemBridgeKey();
+  for (const candidate of [
+    { url: resolveClassicConceptsInternalUrl(), label: "bridge_3003" },
+    { url: resolveClassicEdgeInternalUrl(), label: "bridge_3002" },
+  ]) {
+    try {
+      const res = await fetch(`${candidate.url}/api/internal/bridge?action=health`, {
+        headers: { "x-cc-bridge-key": key },
+        signal: AbortSignal.timeout(1800),
+      });
+      if (res.ok) {
+        const json: any = await res.json().catch(() => ({}));
+        if (json?.smtpConfigured) {
+          return {
+            configured: true,
+            source: candidate.label,
+            host: `${candidate.url} (Shared Ecosystem SMTP Relay)`,
+            port: 587,
+            userMasked: "Connected via Website SMTP",
+            from: "Classic Concepts Ecosystem Mailer",
+          };
+        }
+      }
+    } catch {
+      // Ignore offline bridge
+    }
+  }
+
+  return {
+    configured: false,
+    source: "none",
+    host: "",
+    port: 587,
+    userMasked: "",
+    from: "",
+  };
+}
+
+export async function saveSmtpConfig(params: {
+  host: string;
+  port: number;
+  user: string;
+  pass?: string;
+  from?: string;
+}): Promise<void> {
+  await ensureDatabasesBootstrapped();
+  const auth = getRawLibSqlClient("core_auth");
+  const prevRes = await auth.execute(
+    `SELECT value_json FROM setup_state WHERE key = 'smtp_config' LIMIT 1`
+  );
+  let prevPass = "";
+  if (prevRes.rows[0]?.value_json) {
+    try {
+      prevPass = String(
+        JSON.parse(String(prevRes.rows[0].value_json))?.pass || ""
+      );
+    } catch {
+      prevPass = "";
+    }
+  }
+  const finalPass = params.pass?.trim() ? params.pass.trim() : prevPass;
+  const nowIso = new Date().toISOString();
+  await auth.execute({
+    sql: `INSERT INTO setup_state (key, value_json, updated_at)
+          VALUES ('smtp_config', ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+    args: [
+      JSON.stringify({
+        host: params.host.trim(),
+        port: Number(params.port || 587),
+        user: params.user.trim(),
+        pass: finalPass,
+        from: (params.from || "").trim(),
+      }),
+      nowIso,
+    ],
+  });
+}
+
+export async function dispatchSystemEmail(params: {
+  to: string;
+  recipientName?: string;
+  subject: string;
+  text: string;
+  html?: string;
+  replyTo?: string;
+  dispatchType:
+    | "STAFF_ASSIGNMENT"
+    | "STAFF_ESCALATION"
+    | "STAFF_OTP"
+    | "WEBSITE_ENQUIRY_REPLY"
+    | "SMTP_TEST";
+  conversationId?: string | null;
+}): Promise<{ ok: boolean; via: string; error?: string }> {
+  await ensureDatabasesBootstrapped();
+  const auth = getRawLibSqlClient("core_auth");
+  const cleanTo = String(params.to || "").trim();
+  const nowIso = new Date().toISOString();
+
+  const logAttempt = async (
+    status: "SENT" | "QUEUED_NO_SMTP" | "FAILED",
+    via: string,
+    errText?: string
+  ) => {
+    await auth
+      .execute({
+        sql: `INSERT INTO email_dispatch_logs (
+          id, dispatch_type, recipient_email, recipient_name, subject, conversation_id, status, error_message, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          `emlog_${crypto.randomUUID().slice(0, 10)}`,
+          params.dispatchType,
+          cleanTo || "unknown",
+          params.recipientName || null,
+          `${params.subject} [${via}]`.slice(0, 200),
+          params.conversationId || null,
+          status,
+          errText || null,
+          nowIso,
+        ],
+      })
+      .catch(() => {});
+  };
+
+  if (!cleanTo || !cleanTo.includes("@")) {
+    await logAttempt("FAILED", "validation", "Missing valid recipient email.");
+    return { ok: false, via: "none", error: "Missing valid recipient email." };
+  }
+
+  // 1. Direct Nodemailer transport if credentials available
+  const direct = await resolveDirectSmtpCredentials();
+  if (direct.configured) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: direct.host,
+        port: direct.port,
+        secure: direct.port === 465,
+        auth: { user: direct.user, pass: direct.pass },
+      });
+      await transporter.sendMail({
+        from: direct.from,
+        to: cleanTo,
+        ...(params.replyTo ? { replyTo: params.replyTo } : {}),
+        subject: params.subject,
+        text: params.text,
+        ...(params.html ? { html: params.html } : {}),
+      });
+      await logAttempt("SENT", direct.source);
+      return { ok: true, via: direct.source };
+    } catch (err: any) {
+      // Fall through to HTTP bridge relays before giving up
+      const directErr = err?.message || "Direct SMTP failed";
+      // Try bridge relays next
+      const bridgeRes = await relayEmailViaEcosystemBridges(params);
+      if (bridgeRes.ok) {
+        await logAttempt("SENT", bridgeRes.via);
+        return bridgeRes;
+      }
+      await logAttempt("FAILED", direct.source, directErr);
+      return { ok: false, via: direct.source, error: directErr };
+    }
+  }
+
+  // 2. Relay via Classic Concepts (:3003) or Classic Edge (:3002) internal SMTP bridge
+  const bridgeRes = await relayEmailViaEcosystemBridges(params);
+  if (bridgeRes.ok) {
+    await logAttempt("SENT", bridgeRes.via);
+    return bridgeRes;
+  }
+
+  await logAttempt(
+    "QUEUED_NO_SMTP",
+    "none",
+    bridgeRes.error || "SMTP credentials not configured yet."
+  );
+  return {
+    ok: false,
+    via: "none",
+    error:
+      bridgeRes.error ||
+      "SMTP is not configured yet. Add SMTP credentials in Teams -> Email Notifications or .env.production.",
+  };
+}
+
+async function relayEmailViaEcosystemBridges(params: {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  replyTo?: string;
+}): Promise<{ ok: boolean; via: string; error?: string }> {
+  const key = resolveEcosystemBridgeKey();
+  const targets = [
+    { url: resolveClassicConceptsInternalUrl(), via: "bridge_3003" },
+    { url: resolveClassicEdgeInternalUrl(), via: "bridge_3002" },
+  ];
+
+  for (const t of targets) {
+    try {
+      const res = await fetch(`${t.url}/api/internal/bridge`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-cc-bridge-key": key,
+        },
+        body: JSON.stringify({
+          action: "send_smtp_mail",
+          to: params.to,
+          subject: params.subject,
+          text: params.text,
+          html: params.html,
+          replyTo: params.replyTo,
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const json: any = await res.json().catch(() => ({}));
+        if (json?.ok) {
+          return { ok: true, via: t.via };
+        }
+      }
+    } catch {
+      // Try next bridge
+    }
+  }
+  return { ok: false, via: "none", error: "No active SMTP relay found on :3003 or :3002." };
+}
+
+export async function listRecentEmailDispatchLogs(limit = 30): Promise<
+  {
+    id: string;
+    dispatchType: string;
+    recipientEmail: string;
+    recipientName: string;
+    subject: string;
+    conversationId: string | null;
+    status: string;
+    errorMessage: string | null;
+    createdAt: string;
+  }[]
+> {
+  await ensureDatabasesBootstrapped();
+  const auth = getRawLibSqlClient("core_auth");
+  const safeLimit = Math.min(100, Math.max(1, limit));
+  const res = await auth
+    .execute(
+      `SELECT * FROM email_dispatch_logs ORDER BY created_at DESC LIMIT ${safeLimit}`
+    )
+    .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+  return res.rows.map((r) => ({
+    id: String(r.id),
+    dispatchType: String(r.dispatch_type || ""),
+    recipientEmail: String(r.recipient_email || ""),
+    recipientName: String(r.recipient_name || ""),
+    subject: String(r.subject || ""),
+    conversationId: r.conversation_id ? String(r.conversation_id) : null,
+    status: String(r.status || ""),
+    errorMessage: r.error_message ? String(r.error_message) : null,
+    createdAt: String(r.created_at || ""),
+  }));
+}
+
+export async function sendStaffAssignmentEmailNotification(params: {
+  staffId?: string | null;
+  staffEmail?: string | null;
+  staffName: string;
+  customerName: string;
+  customerPhone: string;
+  smartCategory?: string;
+  priority?: string;
+  escalationLevel?: string;
+  teamName?: string;
+  reason?: string;
+  latestMessage?: string;
+  conversationId: string;
+  isEscalation?: boolean;
+}): Promise<{ ok: boolean; via: string; error?: string }> {
+  await ensureDatabasesBootstrapped();
+  const auth = getRawLibSqlClient("core_auth");
+  const conv = getRawLibSqlClient("conversations");
+
+  let targetEmail = (params.staffEmail || "").trim();
+  if (!targetEmail && params.staffId && params.staffId !== "ACRIO") {
+    const uRes = await auth.execute({
+      sql: `SELECT email, status FROM users WHERE id = ? LIMIT 1`,
+      args: [params.staffId],
+    });
+    const uRow = uRes.rows[0];
+    if (!uRow || String(uRow.status) !== "ACTIVE") {
+      return { ok: false, via: "none", error: "Staff member is not active." };
+    }
+    targetEmail = String(uRow.email || "").trim();
+
+    // Respect per-member email_alerts_enabled flag if present
+    const tmRes = await conv
+      .execute({
+        sql: `SELECT email_alerts_enabled FROM team_members WHERE staff_id = ? LIMIT 1`,
+        args: [params.staffId],
+      })
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    if (
+      tmRes.rows[0] &&
+      tmRes.rows[0].email_alerts_enabled !== undefined &&
+      Number(tmRes.rows[0].email_alerts_enabled) === 0
+    ) {
+      return { ok: false, via: "disabled_by_preference" };
+    }
+  }
+
+  if (!targetEmail) {
+    return { ok: false, via: "none", error: "No staff email found." };
+  }
+
+  const appOrigin = resolveWhatsAppWebAppOrigin();
+  const openChatUrl = `${appOrigin}/dashboard/inbox?chat=${encodeURIComponent(
+    params.conversationId
+  )}`;
+  const badge = params.isEscalation
+    ? `[ESCALATED ${params.escalationLevel || "P1"}]`
+    : `[${params.priority || "NEW"} CHAT ASSIGNED]`;
+
+  const subject = `${badge} ${params.customerName} (${params.customerPhone}) - Classic Concepts WhatsApp`;
+  const latestPreview = (params.latestMessage || "Customer waiting for your reply.")
+    .slice(0, 420);
+
+  const text = [
+    `Hello ${params.staffName},`,
+    ``,
+    params.isEscalation
+      ? `A WhatsApp customer chat has been escalated to you (${params.escalationLevel || "P1"} in ${params.teamName || "Sales Team"}).`
+      : `A WhatsApp customer chat has been assigned to you (${params.teamName || "Sales Team"} - ${params.escalationLevel || "P0"}).`,
+    ``,
+    `Customer: ${params.customerName} (${params.customerPhone})`,
+    `Category: ${params.smartCategory || "General Enquiry"} | Priority: ${params.priority || "NORMAL"}`,
+    params.reason ? `Assignment Note: ${params.reason}` : "",
+    ``,
+    `Latest Customer Message:`,
+    `"${latestPreview}"`,
+    ``,
+    `Open Chat Directly:`,
+    openChatUrl,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background: #ffffff;">
+      <div style="background: ${params.isEscalation ? "#b45309" : "#075e54"}; color: #ffffff; padding: 16px 20px;">
+        <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.9;">
+          ${params.isEscalation ? `Wait-Time Escalation (${params.escalationLevel || "P1"})` : `WhatsApp Chat Assigned (${params.teamName || "Sales Team"})`}
+        </div>
+        <div style="font-size: 18px; font-weight: 700; margin-top: 4px;">
+          ${params.customerName} <span style="font-weight: 400; font-size: 14px;">(${params.customerPhone})</span>
+        </div>
+      </div>
+      <div style="padding: 20px; color: #1e293b; font-size: 14px; line-height: 1.55;">
+        <p style="margin: 0 0 12px;">Hello <strong>${params.staffName}</strong>,</p>
+        <p style="margin: 0 0 14px;">
+          ${params.reason || "This customer conversation is now assigned to you and waiting for a response."}
+        </p>
+        <div style="background: #f8fafc; border-left: 4px solid #10b981; padding: 12px 14px; border-radius: 6px; margin-bottom: 16px;">
+          <div style="font-size: 11px; color: #64748b; font-weight: 600; margin-bottom: 4px;">
+            ${params.smartCategory || "General Enquiry"} • Priority: ${params.priority || "NORMAL"}
+          </div>
+          <div style="white-space: pre-wrap; color: #0f172a;">${latestPreview.replace(/</g, "&lt;")}</div>
+        </div>
+        <a href="${openChatUrl}" style="display: inline-block; background: #10b981; color: #ffffff; font-weight: 600; text-decoration: none; padding: 11px 20px; border-radius: 8px;">
+          Open Chat in WhatsApp Inbox
+        </a>
+      </div>
+    </div>
+  `;
+
+  return dispatchSystemEmail({
+    to: targetEmail,
+    recipientName: params.staffName,
+    subject,
+    text,
+    html,
+    dispatchType: params.isEscalation ? "STAFF_ESCALATION" : "STAFF_ASSIGNMENT",
+    conversationId: params.conversationId,
+  });
+}
+
 export async function sendStaffVerificationEmail(params: {
   email: string;
   staffName: string;
   otpCode: string;
 }): Promise<{ deliveredViaSmtp: boolean; devPreviewCode?: string }> {
-  const host = process.env.SMTP_HOST?.trim();
-  const user = process.env.SMTP_USER?.trim();
-  const pass = process.env.SMTP_PASS?.trim();
+  const res = await dispatchSystemEmail({
+    to: params.email,
+    recipientName: params.staffName,
+    subject: `${params.otpCode} is your Classic Concepts Staff Verification Code`,
+    text: `Hello ${params.staffName},\n\nYour 6-digit email verification code for Classic Concepts WhatsApp Staff Hub is: ${params.otpCode}\n\nThis code is valid for 15 minutes. Once verified, your account will be sent to a Superadmin/Dev for final activation.\n`,
+    dispatchType: "STAFF_OTP",
+  });
 
-  if (host && user && pass) {
-    try {
-      const transporter = nodemailer.createTransport({
-        host,
-        port: Number(process.env.SMTP_PORT || 587),
-        secure: Number(process.env.SMTP_PORT || 587) === 465,
-        auth: { user, pass },
-      });
-
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM || `"Classic Concepts WhatsApp Hub" <${user}>`,
-        to: params.email,
-        subject: `${params.otpCode} is your Classic Concepts Staff Verification Code`,
-        text: `Hello ${params.staffName},\n\nYour 6-digit email verification code for Classic Concepts WhatsApp Staff Hub is: ${params.otpCode}\n\nThis code is valid for 15 minutes. Once verified, your account will be sent to a Superadmin/Dev for final activation.\n`,
-      });
-      return { deliveredViaSmtp: true };
-    } catch {
-      return { deliveredViaSmtp: false, devPreviewCode: params.otpCode };
-    }
+  if (res.ok) {
+    return { deliveredViaSmtp: true };
   }
-
   return { deliveredViaSmtp: false, devPreviewCode: params.otpCode };
 }

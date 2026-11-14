@@ -10,10 +10,12 @@ import {
   type ShipmentStatus,
 } from "@cc/database";
 import {
+  formatWhatsAppOutboundText,
   getCachedEcosystemCatalog,
+  sendStaffAssignmentEmailNotification,
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
-import { hasPermission } from "@cc/rbac";
+import { canAssignToDev, hasPermission, isDevRole } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
 import { listCustomAdminLinks, rememberWhatsAppCache } from "@cc/storage";
 import {
@@ -330,6 +332,24 @@ export async function POST(
 
     const templateName = body.templateName ? String(body.templateName).trim() : undefined;
     const isTemplate = body.messageType === "TEMPLATE" || Boolean(templateName);
+    if (isTemplate && templateName) {
+      const mkt = getRawLibSqlClient("marketing");
+      const tplCheck = await mkt.execute({
+        sql: `SELECT approval_status FROM templates WHERE name = ? LIMIT 1`,
+        args: [templateName],
+      });
+      if (tplCheck.rows[0] && String(tplCheck.rows[0].approval_status) !== "APPROVED") {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: `Only official Meta-APPROVED templates can be sent on WhatsApp ("${templateName}" is ${String(
+              tplCheck.rows[0].approval_status
+            )}).`,
+          },
+          { status: 400 }
+        );
+      }
+    }
     const templateBillingCategory: BillingMessageCategory =
       body.billingCategory === "MARKETING"
         ? "MARKETING"
@@ -389,22 +409,28 @@ export async function POST(
 
     const wasAcrioOrUnassigned =
       !cRow.assigned_staff_id || String(cRow.assigned_staff_id) === "ACRIO";
+    const shouldAutoAssignSender =
+      wasAcrioOrUnassigned ||
+      (isDevRole(user.role) && String(cRow.assigned_staff_id || "") !== user.id);
+    const storedBody = isTemplate ? text : formatWhatsAppOutboundText(text);
+    const previewBody = storedBody.replace(/\s*\n+\s*/g, " ").slice(0, 140);
 
     const msgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
     await conv.batch(
       [
         {
           sql: `INSERT INTO messages (
-            id, conversation_id, direction, sender_type, sender_name, message_type,
+            id, conversation_id, direction, sender_type, sender_staff_id, sender_name, message_type,
             billing_category, body, template_name, metadata_json, wa_message_id, delivery_status, created_at
-          ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args: [
             msgId,
             id,
+            user.id,
             user.name,
             isTemplate ? "TEMPLATE" : "TEXT",
             isTemplate ? templateBillingCategory : "FREE_CHAT",
-            text,
+            storedBody,
             templateName || null,
             metadataJson,
             sendRes.waMessageId,
@@ -419,7 +445,7 @@ export async function POST(
                     assigned_staff_name = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_name END,
                     assigned_team_id = CASE WHEN ? = 1 THEN COALESCE(assigned_team_id, 'team_sales') ELSE assigned_team_id END,
                     assigned_team_name = CASE
-                      WHEN ? = 1 AND assigned_team_id IS NULL THEN 'Sales Team'
+                      WHEN ? = 1 AND (assigned_team_id IS NULL OR assigned_team_name = 'System (ACRIO)') THEN 'Sales Team'
                       ELSE assigned_team_name
                     END,
                     waiting_since = NULL,
@@ -429,14 +455,14 @@ export async function POST(
                     last_message_at = ?
                 WHERE id = ?`,
           args: [
-            wasAcrioOrUnassigned ? 1 : 0,
+            shouldAutoAssignSender ? 1 : 0,
             user.id,
-            wasAcrioOrUnassigned ? 1 : 0,
+            shouldAutoAssignSender ? 1 : 0,
             user.name,
-            wasAcrioOrUnassigned ? 1 : 0,
-            wasAcrioOrUnassigned ? 1 : 0,
+            shouldAutoAssignSender ? 1 : 0,
+            shouldAutoAssignSender ? 1 : 0,
             responseSeconds,
-            text.slice(0, 140),
+            previewBody,
             nowIso,
             id,
           ],
@@ -444,6 +470,29 @@ export async function POST(
       ],
       "write"
     );
+
+    if (shouldAutoAssignSender) {
+      await logConversationAssignment({
+        conversationId: id,
+        customerPhone,
+        customerName: String(cRow.customer_name || ""),
+        fromStaffId: cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : "ACRIO",
+        fromStaffName: cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : "ACRIO",
+        fromTeamName: cRow.assigned_team_name ? String(cRow.assigned_team_name) : "System (ACRIO)",
+        toStaffId: user.id,
+        toStaffName: user.name,
+        toTeamId: cRow.assigned_team_id ? String(cRow.assigned_team_id) : "team_sales",
+        toTeamName:
+          cRow.assigned_team_name && String(cRow.assigned_team_name) !== "System (ACRIO)"
+            ? String(cRow.assigned_team_name)
+            : "Sales Team",
+        escalationLevel: "P0",
+        assignmentSource: "STAFF_TAKEOVER",
+        assignedByName: user.name,
+        reason: `${user.name} replied in chat and took ownership`,
+        assignedAt: nowIso,
+      }).catch(() => {});
+    }
 
     const firstRespTrack = await recordAssignedFirstResponse({
       conversationId: id,
@@ -656,7 +705,33 @@ export async function POST(
   // 4. Manual Team / Agent / Escalation Tier Assignment
   if (action === "assign_staff") {
     const staffId = body.staffId ? String(body.staffId) : user.id;
-    const staffName = body.staffName ? String(body.staffName) : user.name;
+    let staffName = body.staffName ? String(body.staffName) : user.name;
+
+    if (staffId && staffId !== "ACRIO") {
+      const auth = getRawLibSqlClient("core_auth");
+      const targetUserRes = await auth.execute({
+        sql: `SELECT id, name, role, status FROM users WHERE id = ? LIMIT 1`,
+        args: [staffId],
+      });
+      const targetUser = targetUserRes.rows[0] as Record<string, unknown> | undefined;
+      if (targetUser) {
+        staffName = String(targetUser.name || staffName);
+        if (
+          String(targetUser.role) === "DEV" &&
+          staffId !== user.id &&
+          !canAssignToDev(user.role)
+        ) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error:
+                "Only Managers and Superadmins can assign a chat to a Dev account.",
+            },
+            { status: 403 }
+          );
+        }
+      }
+    }
     const teamId =
       body.teamId !== undefined
         ? body.teamId
@@ -729,6 +804,22 @@ export async function POST(
       assignedAt: nowIso,
     });
 
+    if (staffId && staffId !== "ACRIO" && staffId !== user.id) {
+      sendStaffAssignmentEmailNotification({
+        staffId,
+        staffName,
+        customerName: String(cRow.customer_name || customerPhone),
+        customerPhone,
+        smartCategory: String(cRow.smart_category || "General Enquiry"),
+        priority: String(cRow.priority || "NORMAL"),
+        escalationLevel,
+        teamName: teamName || "Sales Team",
+        reason: `Assigned to you by ${user.name}`,
+        latestMessage: String(cRow.last_message_preview || ""),
+        conversationId: id,
+      }).catch(() => {});
+    }
+
     socketHub.emit("conversation:assigned", {
       conversationId: id,
       staffName,
@@ -750,10 +841,11 @@ export async function POST(
                 escalation_level = 'P0',
                 smart_category = ?,
                 resolution_summary = ?,
+                resolved_by_id = ?,
                 resolved_by_name = ?,
                 resolved_at = ?
             WHERE id = ?`,
-      args: [nextCategory, summary, user.name, nowIso, id],
+      args: [nextCategory, summary, user.id, user.name, nowIso, id],
     });
 
     await closeActiveAssignmentOnResolve(id, nowIso);
@@ -988,6 +1080,9 @@ export async function POST(
 
     const wasAcrioOrUnassigned =
       !cRow.assigned_staff_id || String(cRow.assigned_staff_id) === "ACRIO";
+    const shouldAutoAssignSender =
+      wasAcrioOrUnassigned ||
+      (isDevRole(user.role) && String(cRow.assigned_staff_id || "") !== user.id);
 
     const msgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
     await conv.batch(
@@ -1015,7 +1110,7 @@ export async function POST(
                     assigned_staff_name = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_name END,
                     assigned_team_id = CASE WHEN ? = 1 THEN COALESCE(assigned_team_id, 'team_sales') ELSE assigned_team_id END,
                     assigned_team_name = CASE
-                      WHEN ? = 1 AND assigned_team_id IS NULL THEN 'Sales Team'
+                      WHEN ? = 1 AND (assigned_team_id IS NULL OR assigned_team_name = 'System (ACRIO)') THEN 'Sales Team'
                       ELSE assigned_team_name
                     END,
                     waiting_since = NULL,
@@ -1025,14 +1120,14 @@ export async function POST(
                     last_message_at = ?
                 WHERE id = ?`,
           args: [
-            wasAcrioOrUnassigned ? 1 : 0,
+            shouldAutoAssignSender ? 1 : 0,
             user.id,
-            wasAcrioOrUnassigned ? 1 : 0,
+            shouldAutoAssignSender ? 1 : 0,
             user.name,
-            wasAcrioOrUnassigned ? 1 : 0,
-            wasAcrioOrUnassigned ? 1 : 0,
+            shouldAutoAssignSender ? 1 : 0,
+            shouldAutoAssignSender ? 1 : 0,
             responseSeconds,
-            `[${buttonLabel}] ${messageBody}`.slice(0, 140),
+            `[${buttonLabel}] ${messageBody}`.replace(/\s*\n+\s*/g, " ").slice(0, 140),
             nowIso,
             id,
           ],

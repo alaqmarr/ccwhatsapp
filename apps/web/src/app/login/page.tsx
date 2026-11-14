@@ -67,9 +67,6 @@ export default function LoginPage() {
           <Link href="/register" className="text-slate-700 hover:text-slate-950">
             Create staff account
           </Link>
-          <Link href="/setup" className="text-slate-500 hover:text-slate-900">
-            Developer setup
-          </Link>
         </div>
       </header>
 
@@ -80,7 +77,7 @@ export default function LoginPage() {
               Staff & Admin Sign In
             </h1>
             <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
-              Sign in with your @classiconcepts.in email address.
+              Sign in with your registered email address and password.
             </p>
           </div>
 
@@ -93,14 +90,14 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-neutral-700 mb-1">
-                Work Email
+                Email Address
               </label>
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@classiconcepts.in"
+                placeholder="you@example.com"
                 className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm focus:border-neutral-900 focus:outline-none"
               />
             </div>

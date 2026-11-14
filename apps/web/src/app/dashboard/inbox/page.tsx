@@ -23,6 +23,7 @@ export default async function InboxPage({
   const initialData = await getInitialInboxPayload({
     userId: user.id,
     userName: user.name,
+    userRole: user.role,
     selectedConversationId: sp?.chat,
   });
 

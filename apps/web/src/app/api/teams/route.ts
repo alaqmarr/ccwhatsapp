@@ -1,6 +1,16 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  dispatchSystemEmail,
+  getSmtpConfigSummary,
+  listRecentEmailDispatchLogs,
+  saveSmtpConfig,
+} from "@cc/connections";
+import {
+  checkEcosystemBridgesHealth,
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+} from "@cc/database";
 import { hasPermission } from "@cc/rbac";
 import { checkAndEscalateWaitingChats } from "@cc/workers";
 import { getCurrentUser } from "@/lib/session";
@@ -10,7 +20,10 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const user = await getCurrentUser();
   if (!user || !hasPermission(user.role, "inbox:view", user.status)) {
-    return NextResponse.json({ ok: false, error: "Active staff access required." }, { status: 403 });
+    return NextResponse.json(
+      { ok: false, error: "Active staff access required." },
+      { status: 403 }
+    );
   }
 
   await ensureDatabasesBootstrapped();
@@ -18,14 +31,26 @@ export async function GET() {
 
   const conv = getRawLibSqlClient("conversations");
   const auth = getRawLibSqlClient("core_auth");
+  const canManage = ["DEV", "SUPERADMIN", "ADMIN", "MANAGER"].includes(user.role);
 
-  const [teamsRes, membersRes, activeStaffRes, openLoadRes, waitingRes] = await Promise.all([
+  const [
+    teamsRes,
+    membersRes,
+    activeStaffRes,
+    openLoadRes,
+    waitingRes,
+    smtpSummary,
+    emailLogs,
+    ecosystemHealth,
+  ] = await Promise.all([
     conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, created_at ASC`),
-    conv.execute(`SELECT * FROM team_members ORDER BY CASE tier WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, staff_name ASC`),
+    conv.execute(
+      `SELECT * FROM team_members ORDER BY CASE tier WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, staff_name ASC`
+    ),
     auth.execute(
       `SELECT id, name, email, whatsapp_number, role, department
        FROM users
-       WHERE status = 'ACTIVE' AND role != 'CLIENT'
+       WHERE status = 'ACTIVE' AND role NOT IN ('CLIENT', 'DEV')
        ORDER BY name ASC`
     ),
     conv.execute(
@@ -40,6 +65,9 @@ export async function GET() {
        WHERE status != 'RESOLVED' AND waiting_since IS NOT NULL
        GROUP BY assigned_team_id`
     ),
+    canManage ? getSmtpConfigSummary() : Promise.resolve(null),
+    canManage ? listRecentEmailDispatchLogs(25) : Promise.resolve([]),
+    checkEcosystemBridgesHealth(),
   ]);
 
   const loadMap = new Map<string, number>();
@@ -63,6 +91,7 @@ export async function GET() {
     tier: String(m.tier || "P0") as "P0" | "P1" | "P2",
     maxActiveChats: Number(m.max_active_chats ?? 15),
     isAvailable: Number(m.is_available ?? 1) === 1,
+    emailAlertsEnabled: Number(m.email_alerts_enabled ?? 1) === 1,
     activeOpenChats: loadMap.get(String(m.staff_id)) ?? 0,
   }));
 
@@ -97,14 +126,24 @@ export async function GET() {
     ok: true,
     teams,
     activeStaff,
-    canManage: ["DEV", "SUPERADMIN", "ADMIN"].includes(user.role),
+    canManage,
+    smtpSummary,
+    emailLogs,
+    ecosystemHealth,
   });
 }
 
 export async function POST(req: Request) {
   const user = await getCurrentUser();
-  if (!user || user.status !== "ACTIVE" || !["DEV", "SUPERADMIN", "ADMIN"].includes(user.role)) {
-    return NextResponse.json({ ok: false, error: "Admin access required to manage teams." }, { status: 403 });
+  if (
+    !user ||
+    user.status !== "ACTIVE" ||
+    !["DEV", "SUPERADMIN", "ADMIN", "MANAGER"].includes(user.role)
+  ) {
+    return NextResponse.json(
+      { ok: false, error: "Manager or Admin access required to manage teams." },
+      { status: 403 }
+    );
   }
 
   await ensureDatabasesBootstrapped();
@@ -117,7 +156,10 @@ export async function POST(req: Request) {
   if (action === "create_team") {
     const name = String(body.name || "").trim();
     if (!name) {
-      return NextResponse.json({ ok: false, error: "Please enter a team name." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Please enter a team name." },
+        { status: 400 }
+      );
     }
     const id = `team_${crypto.randomUUID().slice(0, 8)}`;
     await conv.execute({
@@ -144,7 +186,10 @@ export async function POST(req: Request) {
   if (action === "update_team") {
     const teamId = String(body.teamId || "");
     if (!teamId) {
-      return NextResponse.json({ ok: false, error: "Missing team ID." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Missing team ID." },
+        { status: 400 }
+      );
     }
     await conv.execute({
       sql: `UPDATE teams
@@ -161,11 +206,23 @@ export async function POST(req: Request) {
         body.name !== undefined ? String(body.name).trim() : null,
         body.description !== undefined ? String(body.description).trim() : null,
         body.brandScope !== undefined ? String(body.brandScope) : null,
-        body.routingKeywords !== undefined ? String(body.routingKeywords).trim() : null,
-        body.priorityRank !== undefined ? Math.max(1, Number(body.priorityRank)) : null,
-        body.p0WaitMinutes !== undefined ? Math.max(1, Number(body.p0WaitMinutes)) : null,
-        body.p1WaitMinutes !== undefined ? Math.max(2, Number(body.p1WaitMinutes)) : null,
-        body.autoAssignEnabled !== undefined ? (body.autoAssignEnabled ? 1 : 0) : null,
+        body.routingKeywords !== undefined
+          ? String(body.routingKeywords).trim()
+          : null,
+        body.priorityRank !== undefined
+          ? Math.max(1, Number(body.priorityRank))
+          : null,
+        body.p0WaitMinutes !== undefined
+          ? Math.max(1, Number(body.p0WaitMinutes))
+          : null,
+        body.p1WaitMinutes !== undefined
+          ? Math.max(2, Number(body.p1WaitMinutes))
+          : null,
+        body.autoAssignEnabled !== undefined
+          ? body.autoAssignEnabled
+            ? 1
+            : 0
+          : null,
         teamId,
       ],
     });
@@ -187,19 +244,30 @@ export async function POST(req: Request) {
   if (action === "add_member") {
     const teamId = String(body.teamId || "");
     const staffId = String(body.staffId || "");
-    const tier =
-      body.tier === "P1" || body.tier === "P2" ? body.tier : "P0";
+    const tier = body.tier === "P1" || body.tier === "P2" ? body.tier : "P0";
 
     const uRes = await auth.execute({
-      sql: `SELECT id, name, email FROM users WHERE id = ? LIMIT 1`,
+      sql: `SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1`,
       args: [staffId],
     });
     const staffRow = uRes.rows[0];
     if (!staffRow || !teamId) {
-      return NextResponse.json({ ok: false, error: "Select a valid team and staff member." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Select a valid team and staff member." },
+        { status: 400 }
+      );
+    }
+    if (String(staffRow.role) === "DEV") {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Dev accounts cannot be placed in automated round-robin pools. Managers and Superadmins can assign a chat to Dev manually, or Dev can step into any chat directly.",
+        },
+        { status: 403 }
+      );
     }
 
-    // Remove existing membership in the same team so we cleanly update their P0/P1/P2 tier
     await conv.execute({
       sql: `DELETE FROM team_members WHERE team_id = ? AND staff_id = ?`,
       args: [teamId, staffId],
@@ -207,8 +275,8 @@ export async function POST(req: Request) {
 
     await conv.execute({
       sql: `INSERT INTO team_members (
-        id, team_id, staff_id, staff_name, staff_email, tier, max_active_chats, is_available, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        id, team_id, staff_id, staff_name, staff_email, tier, max_active_chats, is_available, email_alerts_enabled, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`,
       args: [
         `tm_${crypto.randomUUID().slice(0, 8)}`,
         teamId,
@@ -233,6 +301,37 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true });
   }
 
+  if (action === "toggle_member_email_alerts") {
+    const memberId = String(body.memberId || "");
+    const enabled = body.emailAlertsEnabled ? 1 : 0;
+    await conv.execute({
+      sql: `UPDATE team_members SET email_alerts_enabled = ? WHERE id = ?`,
+      args: [enabled, memberId],
+    });
+    return NextResponse.json({ ok: true });
+  }
+
+  if (action === "update_member_capacity") {
+    const memberId = String(body.memberId || "");
+    const maxActiveChats = Math.min(100, Math.max(1, Number(body.maxActiveChats || 15)));
+    const tier =
+      body.tier === "P0" || body.tier === "P1" || body.tier === "P2"
+        ? body.tier
+        : undefined;
+    if (tier) {
+      await conv.execute({
+        sql: `UPDATE team_members SET max_active_chats = ?, tier = ? WHERE id = ?`,
+        args: [maxActiveChats, tier, memberId],
+      });
+    } else {
+      await conv.execute({
+        sql: `UPDATE team_members SET max_active_chats = ? WHERE id = ?`,
+        args: [maxActiveChats, memberId],
+      });
+    }
+    return NextResponse.json({ ok: true });
+  }
+
   if (action === "remove_member") {
     const memberId = String(body.memberId || "");
     await conv.execute({
@@ -247,5 +346,60 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, escalated });
   }
 
-  return NextResponse.json({ ok: false, error: "Unsupported team action." }, { status: 400 });
+  if (action === "save_smtp_config") {
+    if (!["DEV", "SUPERADMIN"].includes(user.role)) {
+      return NextResponse.json(
+        { ok: false, error: "Only Superadmin or Dev can modify SMTP server credentials." },
+        { status: 403 }
+      );
+    }
+    const host = String(body.host || "").trim();
+    const smtpUser = String(body.user || "").trim();
+    if (!host || !smtpUser) {
+      return NextResponse.json(
+        { ok: false, error: "SMTP Host and Username are required." },
+        { status: 400 }
+      );
+    }
+    await saveSmtpConfig({
+      host,
+      port: Number(body.port || 587),
+      user: smtpUser,
+      pass: body.pass ? String(body.pass) : undefined,
+      from: body.from ? String(body.from) : undefined,
+    });
+    const summary = await getSmtpConfigSummary();
+    return NextResponse.json({
+      ok: true,
+      smtpSummary: summary,
+      message: "SMTP dispatch credentials saved.",
+    });
+  }
+
+  if (action === "send_test_email") {
+    const targetEmail = String(body.toEmail || user.email || "").trim();
+    const res = await dispatchSystemEmail({
+      to: targetEmail,
+      recipientName: user.name,
+      subject: "[Test Dispatch] Classic Concepts WhatsApp Assignment Mailer",
+      text: `Hello ${user.name},\n\nThis is a live test email from your Classic Concepts WhatsApp Staff Hub (:3007).\nWhenever a chat is assigned or escalated to a team member, they receive an instant email alert with a 1-click Inbox button.\n`,
+      dispatchType: "SMTP_TEST",
+    });
+    return NextResponse.json(
+      {
+        ok: res.ok,
+        via: res.via,
+        error: res.error,
+        message: res.ok
+          ? `Test email delivered to ${targetEmail} (via ${res.via}).`
+          : res.error || "Could not send test email.",
+      },
+      { status: res.ok ? 200 : 400 }
+    );
+  }
+
+  return NextResponse.json(
+    { ok: false, error: "Unsupported team action." },
+    { status: 400 }
+  );
 }

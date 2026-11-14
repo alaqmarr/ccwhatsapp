@@ -60,8 +60,8 @@ export default function SetupPage() {
 
   // Dev account form
   const [name, setName] = useState("Platform Developer");
-  const [email, setEmail] = useState("dev@classiconcepts.in");
-  const [whatsappNumber, setWhatsappNumber] = useState("+917337222876");
+  const [email, setEmail] = useState("");
+  const [whatsappNumber, setWhatsappNumber] = useState("+91");
   const [password, setPassword] = useState("");
 
   // Facebook WhatsApp Business form

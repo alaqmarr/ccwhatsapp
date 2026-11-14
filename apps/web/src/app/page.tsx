@@ -14,7 +14,7 @@ export default async function HomePage() {
     redirect("/login");
   }
 
-  if (user.status !== "ACTIVE" || !user.onboardingCompletedAt) {
+  if (user.status !== "ACTIVE") {
     redirect("/onboarding");
   }
 

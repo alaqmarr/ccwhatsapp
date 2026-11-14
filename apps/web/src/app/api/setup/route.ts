@@ -33,13 +33,25 @@ export async function GET() {
             : "",
         };
 
+  const safeAiKeys =
+    !setup.hasDevAccount || isDev
+      ? aiKeys
+      : {
+          clientConnected: aiKeys.clientConnected,
+          clientMasked: "",
+          clientSource: aiKeys.clientSource,
+          adminConnected: aiKeys.adminConnected,
+          adminMasked: "",
+          adminSource: aiKeys.adminSource,
+        };
+
   return NextResponse.json({
     hasDevAccount: setup.hasDevAccount,
     allFacebookStepsDone: setup.allFacebookStepsDone,
     facebookConfig: safeFacebookConfig,
     aiConnected: aiKeys.clientConnected || aiKeys.adminConnected,
-    aiMaskedKey: aiKeys.clientMasked,
-    aiKeys,
+    aiMaskedKey: !setup.hasDevAccount || isDev ? aiKeys.clientMasked : "",
+    aiKeys: safeAiKeys,
     currentUser: user,
   });
 }

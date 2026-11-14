@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
-import { getPricingDashboardMode, hasPermission } from "@cc/rbac";
+import { canViewCostBreakdown, hasPermission, isDevRole } from "@cc/rbac";
 import { checkAndEscalateWaitingChats } from "@cc/workers";
 import { getCurrentUser } from "@/lib/session";
 
@@ -114,7 +114,7 @@ export async function GET(req: Request) {
   ] = await Promise.all([
     conv.execute(`SELECT * FROM conversations ORDER BY last_message_at DESC`),
     conv.execute(
-      `SELECT id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, delivery_status, created_at
+      `SELECT id, conversation_id, direction, sender_type, sender_staff_id, sender_name, message_type, billing_category, delivery_status, created_at
        FROM messages
        WHERE created_at >= ?
        ORDER BY created_at ASC`,
@@ -170,8 +170,20 @@ export async function GET(req: Request) {
     ),
   ]);
 
-  const pricingMode = getPricingDashboardMode(user.role);
-  const isDevPricing = pricingMode === "dev_actual_and_margin";
+  const requestedScope = searchParams.get("scope");
+  if (requestedScope === "dev" && !isDevRole(user.role)) {
+    return NextResponse.json(
+      { ok: false, error: "Dev profit & cost analytics reserved strictly for DEV." },
+      { status: 403 }
+    );
+  }
+  const canViewBilling = canViewCostBreakdown(user.role);
+  const isDevPricing = isDevRole(user.role) && requestedScope === "dev";
+  const pricingMode = isDevPricing
+    ? "dev_actual_and_margin"
+    : canViewBilling
+    ? "client_set_pricing"
+    : "hidden";
 
   // Map conversations for quick team filtering
   const convTeamMap = new Map<string, string | null>();
@@ -208,10 +220,20 @@ export async function GET(req: Request) {
   let waitingP2Count = 0;
   let acrioLiveChatsCount = 0;
 
+  const userIdByLowerName = new Map<string, string>();
+  const teamNamesLower = new Set<string>();
+  for (const u of usersRes.rows) {
+    userIdByLowerName.set(String(u.name || "").trim().toLowerCase(), String(u.id));
+  }
+  for (const t of teamsRes.rows) {
+    teamNamesLower.add(String(t.name || "").trim().toLowerCase());
+  }
+
   const categoryCounts = new Map<string, number>();
   const priorityCounts = new Map<string, number>();
   const openLoadByStaff = new Map<string, number>();
   const resolvedByStaffName = new Map<string, number>();
+  const resolvedByStaffId = new Map<string, number>();
 
   for (const c of allConvs) {
     const st = String(c.status || "OPEN");
@@ -219,9 +241,15 @@ export async function GET(req: Request) {
     const esc = String(c.escalation_level || "P0");
     if (st === "RESOLVED") {
       resolvedChatsCount++;
-      if (c.resolved_by_name) {
-        const rName = String(c.resolved_by_name);
+      const explicitResId = c.resolved_by_id ? String(c.resolved_by_id) : "";
+      const rName = c.resolved_by_name ? String(c.resolved_by_name).trim() : "";
+      if (rName) {
         resolvedByStaffName.set(rName, (resolvedByStaffName.get(rName) || 0) + 1);
+      }
+      const mappedUid =
+        explicitResId || (rName ? userIdByLowerName.get(rName.toLowerCase()) || "" : "");
+      if (mappedUid) {
+        resolvedByStaffId.set(mappedUid, (resolvedByStaffId.get(mappedUid) || 0) + 1);
       }
     } else {
       if (st === "ASSIGNED") assignedChatsCount++;
@@ -331,6 +359,7 @@ export async function GET(req: Request) {
   }));
 
   const staffOutboundRepliesByName = new Map<string, number>();
+  const staffOutboundRepliesById = new Map<string, number>();
 
   for (const m of filteredMsgs) {
     const dir = String(m.direction);
@@ -356,11 +385,22 @@ export async function GET(req: Request) {
         freeStaffRepliesCount++;
       }
 
-      const sName = String(m.sender_name || "");
+      const sName = String(m.sender_name || "").trim();
+      const sStaffId = m.sender_staff_id
+        ? String(m.sender_staff_id)
+        : sName
+        ? userIdByLowerName.get(sName.toLowerCase()) || ""
+        : "";
       if (sName) {
         staffOutboundRepliesByName.set(
           sName,
           (staffOutboundRepliesByName.get(sName) || 0) + 1
+        );
+      }
+      if (sStaffId) {
+        staffOutboundRepliesById.set(
+          sStaffId,
+          (staffOutboundRepliesById.get(sStaffId) || 0) + 1
         );
       }
 
@@ -507,12 +547,23 @@ export async function GET(req: Request) {
   }
 
   for (const a of filteredAssignments) {
-    const sid = a.to_staff_id ? String(a.to_staff_id) : "UNASSIGNED";
-    const sName = String(a.to_staff_name || "Staff");
+    const rawSid = a.to_staff_id ? String(a.to_staff_id) : "";
+    const sName = String(a.to_staff_name || "").trim();
+    const sid =
+      rawSid ||
+      (sName && !teamNamesLower.has(sName.toLowerCase())
+        ? userIdByLowerName.get(sName.toLowerCase()) || ""
+        : "");
+
+    // Never count team queues ("Sales Team" / "UNASSIGNED") as an individual person!
+    if (!sid || sid === "UNASSIGNED" || teamNamesLower.has(sName.toLowerCase())) {
+      continue;
+    }
+
     if (!agentStatsMap.has(sid)) {
       agentStatsMap.set(sid, {
         staffId: sid,
-        staffName: sName,
+        staffName: sName || "Team Member",
         role: sid === "ACRIO" ? "SYSTEM_AI" : "STAFF",
         department: String(a.to_team_name || "Sales Team"),
         isSystem: sid === "ACRIO",
@@ -559,10 +610,14 @@ export async function GET(req: Request) {
           : 0;
       const repliesSent = ag.isSystem
         ? acrioRepliesCount
-        : staffOutboundRepliesByName.get(ag.staffName) || 0;
+        : staffOutboundRepliesById.get(ag.staffId) ??
+          staffOutboundRepliesByName.get(ag.staffName) ??
+          0;
       const resolvedCount = ag.isSystem
         ? resolvedByStaffName.get("ACRIO Smart Resolution") || 0
-        : resolvedByStaffName.get(ag.staffName) || 0;
+        : resolvedByStaffId.get(ag.staffId) ??
+          resolvedByStaffName.get(ag.staffName) ??
+          0;
 
       return {
         staffId: ag.staffId,
@@ -820,6 +875,7 @@ export async function GET(req: Request) {
     range,
     teamFilter,
     pricingMode,
+    canViewBilling,
     generatedAt: new Date().toISOString(),
     teams: teamsRes.rows.map((t) => ({
       id: String(t.id),
@@ -866,7 +922,9 @@ export async function GET(req: Request) {
       ordersCount: ordersRes.rows.length,
       ordersRevenueInr: Number(ordersRevenueInr.toFixed(2)),
       paidOrdersRevenueInr: Number(paidOrdersRevenueInr.toFixed(2)),
-      clientBilledInr: Number(totalClientBilledInr.toFixed(2)),
+      ...(canViewBilling
+        ? { clientBilledInr: Number(totalClientBilledInr.toFixed(2)) }
+        : {}),
       ...(isDevPricing
         ? {
             actualMetaCostInr: Number(totalActualMetaCostInr.toFixed(4)),
@@ -893,7 +951,7 @@ export async function GET(req: Request) {
     segments: Array.from(segmentCounts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count),
-    billingByCategory,
+    ...(canViewBilling ? { billingByCategory } : {}),
     broadcastSummary: {
       campaignsCount: broadcastsRes.rows.length,
       totalRecipients: bcTotalRecipients,

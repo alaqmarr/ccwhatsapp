@@ -3,13 +3,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  ArrowLeft,
   BarChart3,
   Check,
+  CheckSquare,
   Clock,
   Copy,
   CornerUpLeft,
   ExternalLink,
   FileText,
+  Info,
   Link2,
   Lock,
   PanelRightClose,
@@ -24,7 +27,9 @@ import {
   UserCheck,
   Users,
   X,
+  Zap,
 } from "lucide-react";
+import { canAssignToDev } from "@cc/rbac";
 import {
   CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE,
   ChatMessagesSkeleton,
@@ -32,11 +37,14 @@ import {
   ElementErrorState,
   RightDrawerSkeleton,
   SHIPPING_PROVIDER_OPTIONS,
+  SHORTLINK_PUBLIC_DOMAIN,
   TRACKING_PUBLIC_ORIGIN,
-  WHATSAPP_PUBLIC_ORIGIN,
+  WhatsAppFormattedText,
   WhatsAppLogoIcon,
   WhatsAppMessageTicks,
   buildClientProviderTrackingUrl,
+  formatShortLinkUrl,
+  stripWhatsAppFormatting,
 } from "@cc/ui";
 import type {
   ApprovedTemplateOption,
@@ -170,6 +178,44 @@ function formatDateTimeShort(iso: string | null | undefined): string {
   });
 }
 
+const CANNED_QUICK_REPLIES = [
+  {
+    cmd: "/welcome",
+    title: "Warm Welcome",
+    body: "Hello! Thank you for reaching out to Classic Concepts. Please share the product, size, and quantity you need so we can send pricing right away.",
+  },
+  {
+    cmd: "/podiums",
+    title: "Acrylic Podiums Info",
+    body: "We make clear, frosted, and LED-lit acrylic podiums in standard and custom heights, with logo engraving and safe wooden crate shipping across India. How many podiums do you need?",
+  },
+  {
+    cmd: "/awards",
+    title: "Awards & Mementos",
+    body: "We make custom acrylic awards, plaques, and corporate mementos with UV printing or laser engraving. Share your event date, quantity, and logo to get design options.",
+  },
+  {
+    cmd: "/machines",
+    title: "Classic Edge 53 Machines",
+    body: "We supply Classic Edge 53 diamond polishing machines, flame polishers, acrylic benders, and genuine diamond tools across India. Which sheet thickness and daily volume are you working with?",
+  },
+  {
+    cmd: "/custom",
+    title: "Custom Size Quote",
+    body: "Sure, we make custom sizes and thicknesses in our Hyderabad workshop. Please share the length x width x height, thickness (mm), and quantity needed.",
+  },
+  {
+    cmd: "/track",
+    title: "Order Tracking Portal",
+    body: `You can check live dispatch and courier tracking anytime at ${TRACKING_PUBLIC_ORIGIN}. You can also reply here with your order number and I will pull the latest update.`,
+  },
+  {
+    cmd: "/gst",
+    title: "GST Billing & Dispatch",
+    body: "Yes, we provide a full GST tax invoice on all orders. Kindly share your company GSTIN, billing address, and delivery pincode to prepare the proforma invoice.",
+  },
+] as const;
+
 function getInitials(name: string): string {
   const parts = name
     .trim()
@@ -192,6 +238,10 @@ export function InboxClient({
   const [detail, setDetail] = useState<ConversationDetailBundle | null>(
     initialData.initialDetail
   );
+  const [mobilePane, setMobilePane] = useState<"LIST" | "CHAT" | "INFO">("LIST");
+  const [bulkMode, setBulkMode] = useState<boolean>(false);
+  const [selectedThreadIds, setSelectedThreadIds] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState<boolean>(false);
 
   // Per-conversation client memory cache so switching threads NEVER flashes blank!
   const detailCacheRef = useRef<Map<string, ConversationDetailBundle>>(new Map());
@@ -284,6 +334,7 @@ export function InboxClient({
   const [simDirection, setSimDirection] = useState<"INBOUND" | "OUTBOUND">(
     "INBOUND"
   );
+  const [simButtonPayload, setSimButtonPayload] = useState<string>("");
 
   // Add order inline state
   const [newOrderItems, setNewOrderItems] = useState<string>("");
@@ -315,6 +366,20 @@ export function InboxClient({
     setReplyingTo(null);
     setHighlightedMsgId(null);
   }, [selectedId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const chatParam = new URLSearchParams(window.location.search).get("chat");
+    if (chatParam) {
+      setMobilePane("CHAT");
+      if (chatParam !== selectedIdRef.current) {
+        setSelectedId(chatParam);
+        selectedIdRef.current = chatParam;
+        void fetchAndCacheDetail(chatParam, true);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -436,6 +501,7 @@ export function InboxClient({
 
   // Select conversation handler (zero flash on cached, element skeleton on uncached!)
   function handleSelectConversation(convId: string) {
+    setMobilePane("CHAT");
     if (convId === selectedId && (detail || syncingThread)) return;
     setSelectedId(convId);
     selectedIdRef.current = convId;
@@ -914,7 +980,7 @@ export function InboxClient({
             replyTo: activeReplyRef || undefined,
           }),
         });
-        showToast("Internal team note saved (Free).");
+        showToast("Internal team note saved.");
       } else if (composerMode === "TEMPLATE" && activeTemplate) {
         const res = await fetch(`/api/conversations/${currentConvId}`, {
           method: "POST",
@@ -940,9 +1006,7 @@ export function InboxClient({
           String(data.deliveryStatus || "SENT"),
           data.waMessageId ? String(data.waMessageId) : null
         );
-        const rateLabel =
-          activeTemplate.category === "MARKETING" ? "₹0.95" : "₹0.30";
-        showToast(`Template sent (${rateLabel}).`);
+        showToast("Template sent.");
         setComposerMode("REPLY");
       } else {
         const res = await fetch(`/api/conversations/${currentConvId}`, {
@@ -1091,7 +1155,7 @@ export function InboxClient({
         }`
       );
     } else {
-      await fetch(`/api/conversations/${selectedId}`, {
+      const res = await fetch(`/api/conversations/${selectedId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1103,6 +1167,11 @@ export function InboxClient({
           escalationLevel: assignTier,
         }),
       });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.ok) {
+        showToast(out.error || "Could not assign chat.");
+        return;
+      }
       showToast(`Assigned to ${chosenStaff?.name || "teammate"} (${assignTier})`);
     }
 
@@ -1183,6 +1252,74 @@ export function InboxClient({
     await fetchAndCacheDetail(selectedId, false);
   }
 
+  function toggleBulkSelectThread(convId: string, ev?: React.MouseEvent) {
+    if (ev) ev.stopPropagation();
+    setSelectedThreadIds((prev) =>
+      prev.includes(convId)
+        ? prev.filter((id) => id !== convId)
+        : [...prev, convId]
+    );
+  }
+
+  async function handleBulkResolveSelected() {
+    if (selectedThreadIds.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const res = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "bulk_resolve",
+          conversationIds: selectedThreadIds,
+          resolutionSummary: "Resolved via bulk inbox action.",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        showToast(`Resolved ${selectedThreadIds.length} chat(s).`);
+        setSelectedThreadIds([]);
+        setBulkMode(false);
+        await refreshThreadsSilently(false);
+        if (selectedId) await fetchAndCacheDetail(selectedId, false);
+      } else {
+        showToast(data.error || "Could not bulk resolve chats.");
+      }
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function handleBulkAssignToMe() {
+    if (selectedThreadIds.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const res = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "bulk_assign",
+          conversationIds: selectedThreadIds,
+          staffId: initialData.currentUserId,
+          staffName: initialData.currentUserName,
+          teamId: "team_sales",
+          teamName: "Sales Team",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        showToast(`Assigned ${selectedThreadIds.length} chat(s) to you.`);
+        setSelectedThreadIds([]);
+        setBulkMode(false);
+        await refreshThreadsSilently(false);
+        if (selectedId) await fetchAndCacheDetail(selectedId, false);
+      } else {
+        showToast(data.error || "Could not bulk assign chats.");
+      }
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function handleSimulateOrNewChat(e: React.FormEvent) {
     e.preventDefault();
     const res = await fetch("/api/conversations", {
@@ -1194,24 +1331,44 @@ export function InboxClient({
         organizationType: simOrg,
         messageText: simText,
         direction: simDirection,
+        buttonPayload:
+          simDirection === "INBOUND" && simButtonPayload.trim()
+            ? simButtonPayload.trim()
+            : undefined,
+        buttonText:
+          simDirection === "INBOUND" && simButtonPayload.trim()
+            ? simText.trim()
+            : undefined,
       }),
     });
     const data = await res.json().catch(() => ({}));
     if (data.ok && data.conversationId) {
       setShowNewChatModal(false);
+      setSimButtonPayload("");
       setSelectedId(data.conversationId);
       selectedIdRef.current = data.conversationId;
+      setMobilePane("CHAT");
       await Promise.all([
         refreshThreadsSilently(),
         fetchAndCacheDetail(data.conversationId, true),
       ]);
       showToast(
         simDirection === "INBOUND"
-          ? "Customer message received and handled by ACRIO."
-          : "New WhatsApp chat started (Free)."
+          ? "Customer message received and processed."
+          : "New WhatsApp chat started."
       );
     }
   }
+
+  const matchingQuickReplies = useMemo(() => {
+    if (composerMode !== "REPLY" || !replyText.startsWith("/")) return [];
+    const q = replyText.trim().toLowerCase();
+    return CANNED_QUICK_REPLIES.filter(
+      (item) =>
+        item.cmd.startsWith(q) ||
+        item.title.toLowerCase().includes(q.slice(1))
+    );
+  }, [composerMode, replyText]);
 
   function appendToComposer(snippet: string) {
     if (composerMode === "NOTE") setComposerMode("REPLY");
@@ -1219,7 +1376,7 @@ export function InboxClient({
   }
 
   return (
-    <div className="h-[calc(100dvh)] lg:h-full w-full flex overflow-hidden bg-[#f0f2f5] select-text">
+    <div className="h-[calc(100dvh-52px)] lg:h-full w-full flex overflow-hidden bg-[#f0f2f5] select-text">
       {/* Toast Notification */}
       {toast && (
         <div className="fixed bottom-5 right-5 z-50 px-3.5 py-2 rounded-lg bg-neutral-900 text-white text-xs font-medium shadow-lg">
@@ -1230,7 +1387,11 @@ export function InboxClient({
       {/* ===================================================================== */}
       {/* 1. LEFT WHATSAPP SIDEBAR: CHATS, ACRIO VS STAFF FILTERS, WAIT BADGES */}
       {/* ===================================================================== */}
-      <div className="w-[340px] xl:w-[375px] shrink-0 border-r border-[#d1d7db] flex flex-col bg-white">
+      <div
+        className={`${
+          mobilePane === "LIST" ? "flex w-full" : "hidden"
+        } lg:flex lg:w-[340px] xl:w-[375px] shrink-0 border-r border-[#d1d7db] flex-col bg-white relative`}
+      >
         {/* WhatsApp Web Style Top Bar */}
         <div className="h-[58px] px-3.5 bg-[#f0f2f5] border-b border-[#d1d7db] flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
@@ -1359,6 +1520,21 @@ export function InboxClient({
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={() => {
+                setBulkMode((prev) => !prev);
+                setSelectedThreadIds([]);
+              }}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap cursor-pointer inline-flex items-center gap-1 transition-colors ${
+                bulkMode
+                  ? "bg-neutral-900 text-white"
+                  : "bg-[#f0f2f5] text-[#54656f] hover:bg-[#e9edef]"
+              }`}
+            >
+              <CheckSquare className="w-3 h-3" />
+              <span>{bulkMode ? "Done" : "Bulk"}</span>
+            </button>
           </div>
         </div>
 
@@ -1382,6 +1558,7 @@ export function InboxClient({
           ) : (
             filteredThreads.map((t) => {
               const active = t.id === selectedId;
+              const isBulkChecked = selectedThreadIds.includes(t.id);
               const isAcrio = t.assignedStaffId === "ACRIO";
               const waitObj =
                 t.status !== "RESOLVED" && !isAcrio
@@ -1393,11 +1570,27 @@ export function InboxClient({
                 <button
                   key={t.id}
                   type="button"
-                  onClick={() => handleSelectConversation(t.id)}
+                  onClick={() =>
+                    bulkMode
+                      ? toggleBulkSelectThread(t.id)
+                      : handleSelectConversation(t.id)
+                  }
                   className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors cursor-pointer ${
                     active ? "bg-[#f0f2f5]" : "hover:bg-[#f5f6f6]"
                   }`}
                 >
+                  {bulkMode && (
+                    <span
+                      onClick={(ev) => toggleBulkSelectThread(t.id, ev)}
+                      className={`mt-3 w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                        isBulkChecked
+                          ? "bg-[#00a884] border-[#00a884] text-white"
+                          : "bg-white border-neutral-400"
+                      }`}
+                    >
+                      {isBulkChecked && <Check className="w-3 h-3" />}
+                    </span>
+                  )}
                   {/* Customer Avatar Circle */}
                   <div
                     className={`w-11 h-11 rounded-full shrink-0 flex items-center justify-center text-xs font-semibold relative ${
@@ -1442,7 +1635,7 @@ export function InboxClient({
                           />
                         )}
                         <span className="truncate">
-                          {t.lastMessagePreview || t.customerPhone}
+                          {stripWhatsAppFormatting(t.lastMessagePreview) || t.customerPhone}
                         </span>
                       </p>
                       {t.unreadCount > 0 && (
@@ -1510,12 +1703,42 @@ export function InboxClient({
             })
           )}
         </div>
+
+        {bulkMode && selectedThreadIds.length > 0 && (
+          <div className="border-t border-[#d1d7db] bg-neutral-900 text-white px-3 py-2.5 flex items-center justify-between gap-2 shrink-0">
+            <span className="text-xs font-semibold">
+              {selectedThreadIds.length} selected
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={handleBulkAssignToMe}
+                className="px-2.5 py-1 rounded bg-white/15 hover:bg-white/25 text-[11px] font-medium cursor-pointer disabled:opacity-50"
+              >
+                Assign to Me
+              </button>
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={handleBulkResolveSelected}
+                className="px-2.5 py-1 rounded bg-[#00a884] hover:bg-[#008f6f] text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+              >
+                Resolve
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ===================================================================== */}
       {/* 2. CENTER WHATSAPP CONVERSATION STREAM + CLASSIC CONCEPTS WALLPAPER  */}
       {/* ===================================================================== */}
-      <div className="flex-1 min-w-0 flex flex-col bg-[#efeae2]">
+      <div
+        className={`${
+          mobilePane === "CHAT" ? "flex w-full" : "hidden"
+        } lg:flex flex-1 min-w-0 flex-col bg-[#efeae2]`}
+      >
         {!activeConv ? (
           <div
             style={CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE}
@@ -1551,8 +1774,16 @@ export function InboxClient({
         ) : (
           <>
             {/* Top WhatsApp Chat Header */}
-            <div className="min-h-[58px] px-4 py-2 bg-[#f0f2f5] border-b border-[#d1d7db] flex flex-wrap items-center justify-between gap-3 shrink-0">
-              <div className="flex items-center gap-3 min-w-0">
+            <div className="min-h-[58px] px-3 sm:px-4 py-2 bg-[#f0f2f5] border-b border-[#d1d7db] flex flex-wrap items-center justify-between gap-2.5 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setMobilePane("LIST")}
+                  aria-label="Back to chats list"
+                  className="lg:hidden p-1.5 -ml-1 rounded-md bg-white border border-[#d1d7db] text-[#111b21] hover:bg-neutral-50 cursor-pointer shrink-0"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
                 <div className="w-10 h-10 rounded-full bg-[#dfe5e7] text-[#3b4a54] flex items-center justify-center text-xs font-bold shrink-0 relative">
                   {getInitials(activeConv.customerName)}
                   <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#25d366] text-white flex items-center justify-center ring-2 ring-[#f0f2f5]">
@@ -1738,13 +1969,23 @@ export function InboxClient({
 
                 <button
                   type="button"
+                  onClick={() => setMobilePane("INFO")}
+                  title="Customer Details & Orders"
+                  className="lg:hidden inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-xs font-medium text-[#3b4a54] cursor-pointer"
+                >
+                  <Info className="w-3.5 h-3.5 text-[#00a884]" />
+                  <span>Details</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => setShowRightDrawer((p) => !p)}
                   title={
                     showRightDrawer
                       ? "Hide Customer Panel"
                       : "Show Customer Panel"
                   }
-                  className="p-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-[#54656f] cursor-pointer"
+                  className="hidden lg:inline-flex p-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-[#54656f] cursor-pointer"
                 >
                   {showRightDrawer ? (
                     <PanelRightClose className="w-4 h-4" />
@@ -1758,28 +1999,16 @@ export function InboxClient({
             {/* WhatsApp Chat Wallpaper + Message Stream (NEVER flashes empty!) */}
             <div
               style={CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE}
-              className="flex-1 overflow-y-auto px-5 py-4 space-y-2.5"
+              className="flex-1 overflow-y-auto px-3.5 sm:px-5 py-4 space-y-2.5"
             >
-              {/* Top WhatsApp Security/Context Pill */}
+              {/* Top WhatsApp Security/Context Pill (zero cost/free mentions for staff) */}
               <div className="flex justify-center pb-1">
                 <div className="px-3 py-1 rounded-md bg-[#fff5c4] border border-[#f2df8d] text-[11px] text-[#54656f] shadow-2xs text-center max-w-xl">
                   <strong>ACRIO</strong> runs only when a chat is assigned to{" "}
-                  <strong>System</strong> (when a customer starts a chat or an agent
-                  assigns to System). On staff-assigned chats, ACRIO is off to save AI
-                  credits & bills, and staff replies are <strong>Free (₹0.00)</strong>.
+                  <strong>System</strong>. Once a chat is assigned to a team
+                  member, ACRIO stays paused until assigned back to System.
                 </div>
               </div>
-
-              {activeConv.status === "RESOLVED" && activeConv.resolutionSummary && (
-                <div className="mx-auto max-w-xl p-3 rounded-lg bg-emerald-50/95 border border-emerald-200 text-xs text-emerald-950 shadow-2xs">
-                  <div className="font-semibold">
-                    Resolved by {activeConv.resolvedByName || "Staff"}
-                  </div>
-                  <p className="mt-0.5 text-emerald-900">
-                    {activeConv.resolutionSummary}
-                  </p>
-                </div>
-              )}
 
               {messages.map((m) => {
                 if (m.messageType === "ASSIGNMENT_EVENT") {
@@ -1951,13 +2180,14 @@ export function InboxClient({
                               {quotedReply.senderName}
                             </div>
                             <div className="text-[12px] text-amber-900/85 line-clamp-2 leading-snug">
-                              {quotedReply.body}
+                              {stripWhatsAppFormatting(quotedReply.body)}
                             </div>
                           </button>
                         )}
-                        <p className="text-[13px] whitespace-pre-wrap leading-relaxed">
-                          {m.body}
-                        </p>
+                        <WhatsAppFormattedText
+                          text={m.body}
+                          className="text-[13px] leading-relaxed"
+                        />
                       </div>
                     </div>
                   );
@@ -2004,15 +2234,12 @@ export function InboxClient({
                         <div className="flex items-center gap-1">
                           {isAcrioBubble && (
                             <span className="px-1.5 py-0.2 rounded bg-white/80 text-indigo-800 text-[10px] font-medium">
-                              ACRIO • ₹0.30
+                              ACRIO
                             </span>
                           )}
                           {isTemplateBubble && (
                             <span className="px-1.5 py-0.2 rounded bg-white/80 text-[#54656f] text-[10px] font-medium">
-                              Template •{" "}
-                              {m.billingCategory === "MARKETING"
-                                ? "₹0.95"
-                                : "₹0.30"}
+                              Template
                             </span>
                           )}
                           <button
@@ -2062,14 +2289,15 @@ export function InboxClient({
                             {quotedReply.senderName}
                           </div>
                           <div className="text-[12px] text-[#54656f] line-clamp-2 leading-snug">
-                            {quotedReply.body}
+                            {stripWhatsAppFormatting(quotedReply.body)}
                           </div>
                         </button>
                       )}
 
-                      <p className="text-[14px] whitespace-pre-wrap leading-[1.52] tracking-[-0.006em]">
-                        {m.body}
-                      </p>
+                      <WhatsAppFormattedText
+                        text={m.body}
+                        className="text-[14px] leading-[1.52] tracking-[-0.006em]"
+                      />
 
                       {ctaButton && (
                         <div className="mt-2 pt-2 border-t border-black/10 space-y-1.5">
@@ -2138,7 +2366,118 @@ export function InboxClient({
                 );
               })}
 
+              {/* Chronological Bottom Resolution Event Card (so users never scroll up to see resolution!) */}
+              {activeConv.status === "RESOLVED" && (
+                <div className="mx-auto max-w-xl p-3 rounded-lg bg-emerald-50/95 border border-emerald-300 text-xs text-emerald-950 shadow-2xs flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-semibold flex items-center gap-1.5">
+                      <Check className="w-3.5 h-3.5 text-emerald-700" />
+                      <span>
+                        Resolved by {activeConv.resolvedByName || "Staff"}
+                      </span>
+                    </div>
+                    {activeConv.resolutionSummary && (
+                      <p className="mt-0.5 text-emerald-900">
+                        {activeConv.resolutionSummary}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleReopen}
+                    className="px-2.5 py-1 rounded bg-white border border-emerald-300 hover:bg-emerald-100 text-[11px] font-semibold text-emerald-900 cursor-pointer shrink-0"
+                  >
+                    Reopen
+                  </button>
+                </div>
+              )}
+
               <div ref={messagesEndRef} />
+            </div>
+
+            {/* Sticky Bottom Live Chat Status & Ownership Bar (always visible right above composer!) */}
+            <div
+              className={`px-3.5 sm:px-4 py-1.5 border-t text-xs flex flex-wrap items-center justify-between gap-2 shrink-0 ${
+                activeConv.status === "RESOLVED"
+                  ? "bg-emerald-50 border-emerald-200 text-emerald-950"
+                  : isAcrioHandling
+                  ? "bg-indigo-50/90 border-indigo-200 text-indigo-950"
+                  : "bg-white border-[#d1d7db] text-[#111b21]"
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                {activeConv.status === "RESOLVED" ? (
+                  <>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10.5px] font-semibold">
+                      <Check className="w-3 h-3" />
+                      <span>Resolved</span>
+                    </span>
+                    <span className="font-medium truncate">
+                      Closed by {activeConv.resolvedByName || "Staff"}
+                      {activeConv.resolutionSummary
+                        ? ` • ${activeConv.resolutionSummary}`
+                        : ""}
+                    </span>
+                  </>
+                ) : isAcrioHandling ? (
+                  <>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[10.5px] font-semibold">
+                      <Sparkles className="w-3 h-3" />
+                      <span>System (ACRIO)</span>
+                    </span>
+                    <span className="text-[11.5px] text-indigo-900 truncate">
+                      Answering automatically • Send a reply or Take Over anytime
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#e7fce3] text-[#008069] border border-[#b7ebaf] text-[10.5px] font-semibold">
+                      <UserCheck className="w-3 h-3" />
+                      <span>
+                        {activeConv.assignedStaffName || "Unassigned"} •{" "}
+                        {activeConv.assignedTeamName || "Sales Team"} (
+                        {activeConv.escalationLevel || "P0"})
+                      </span>
+                    </span>
+                    {activeWait && (
+                      <span className="text-[11px] font-semibold text-amber-800">
+                        Waiting {activeWait.text}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {activeConv.status === "RESOLVED" ? (
+                  <button
+                    type="button"
+                    onClick={handleReopen}
+                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-white border border-emerald-300 hover:bg-emerald-100 text-[11px] font-semibold text-emerald-900 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reopen Chat</span>
+                  </button>
+                ) : isAcrioHandling ? (
+                  <button
+                    type="button"
+                    onClick={handleTakeOverFromAcrio}
+                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold cursor-pointer"
+                  >
+                    <UserCheck className="w-3 h-3" />
+                    <span>Take Over</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowResolveModal(true)}
+                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold cursor-pointer"
+                  >
+                    <Check className="w-3 h-3" />
+                    <span>Resolve</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Dynamic Order Tracking Button (track.ccapl.cc/{id}) + Quick Short Links Bar */}
@@ -2380,7 +2719,7 @@ export function InboxClient({
                           <span>
                             {sendingTrackBtn
                               ? "Sending..."
-                              : "Send Track Button in Chat (Free)"}
+                              : "Send Track Button in Chat"}
                           </span>
                         </button>
                       </div>
@@ -2428,7 +2767,7 @@ export function InboxClient({
                         type="text"
                         value={shortLinkQuery}
                         onChange={(e) => setShortLinkQuery(e.target.value)}
-                        placeholder="Search Classic Concepts or Classic Edge 53 product, SKU, or /l/code..."
+                        placeholder="Search Classic Concepts or Classic Edge 53 product, SKU, or ccapl.cc code..."
                         className="w-full rounded-md border border-[#d1d7db] pl-8 pr-3 py-1.5 text-xs text-[#111b21] focus:outline-none focus:border-[#00a884]"
                       />
                     </div>
@@ -2459,9 +2798,7 @@ export function InboxClient({
                             key={lnk.id}
                             type="button"
                             onClick={() => {
-                              appendToComposer(
-                                `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
-                              );
+                              appendToComposer(formatShortLinkUrl(lnk.code));
                               setShowShortLinksPicker(false);
                               composerInputRef.current?.focus();
                             }}
@@ -2471,7 +2808,7 @@ export function InboxClient({
                               {lnk.title}
                             </span>
                             <span className="font-mono text-[11px] text-[#008069] shrink-0">
-                              /l/{lnk.code}
+                              {SHORTLINK_PUBLIC_DOMAIN}/{lnk.code}
                             </span>
                           </button>
                         ))}
@@ -2513,15 +2850,15 @@ export function InboxClient({
                           key={lnk.id}
                           type="button"
                           onClick={() =>
-                            appendToComposer(
-                              `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
-                            )
+                            appendToComposer(formatShortLinkUrl(lnk.code))
                           }
                           title={lnk.title}
                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-neutral-100 border border-[#d1d7db] text-[11px] text-[#3b4a54] cursor-pointer whitespace-nowrap"
                         >
                           <Link2 className="w-3 h-3 text-[#00a884]" />
-                          <span>/l/{lnk.code}</span>
+                          <span className="font-mono">
+                            {SHORTLINK_PUBLIC_DOMAIN}/{lnk.code}
+                          </span>
                         </button>
                       ))}
                       <button
@@ -2541,7 +2878,7 @@ export function InboxClient({
               </div>
             )}
 
-            {/* WhatsApp Bottom Composer: Free Chat vs Paid Template vs Free Internal Note */}
+            {/* WhatsApp Bottom Composer: Chat Reply vs Template vs Internal Note */}
             <form
               onSubmit={handleComposerSubmit}
               className={`px-4 py-2.5 border-t border-[#d1d7db] space-y-2 shrink-0 ${
@@ -2564,7 +2901,7 @@ export function InboxClient({
                     }`}
                   >
                     <WhatsAppLogoIcon size={12} />
-                    <span>WhatsApp Reply (Free)</span>
+                    <span>WhatsApp Reply</span>
                   </button>
 
                   <button
@@ -2595,13 +2932,13 @@ export function InboxClient({
                     }`}
                   >
                     <StickyNote className="w-3 h-3" />
-                    <span>Internal Note (Free)</span>
+                    <span>Internal Note</span>
                   </button>
                 </div>
 
                 {composerMode === "REPLY" && (
-                  <span className="text-[11px] text-[#008069] font-medium">
-                    ₹0.00 • Free inside 24h chat window
+                  <span className="text-[11px] text-[#54656f] font-medium hidden sm:inline">
+                    Type <strong>/</strong> for quick replies • *bold*, _italic_ • Shift+Enter for new line
                   </span>
                 )}
 
@@ -2621,25 +2958,21 @@ export function InboxClient({
                         <option key={tpl.id} value={tpl.id}>
                           {tpl.name} (
                           {tpl.category === "MARKETING"
-                            ? "Marketing • ₹0.95"
-                            : "Utility/Auth • ₹0.30"}
+                            ? "Marketing"
+                            : tpl.category === "AUTHENTICATION"
+                            ? "Auth"
+                            : "Utility"}
                           )
                         </option>
                       ))}
                     </select>
-                    <span className="text-[11px] font-semibold text-neutral-800">
-                      Charge:{" "}
-                      {activeTemplate?.category === "MARKETING"
-                        ? "₹0.95"
-                        : "₹0.30"}
-                    </span>
                   </div>
                 )}
 
                 {composerMode === "NOTE" && (
                   <span className="text-[11px] text-amber-900 font-medium inline-flex items-center gap-1">
                     <Lock className="w-3 h-3" />
-                    <span>Visible only to our staff • ₹0.00 Free</span>
+                    <span>Private note visible only to our staff</span>
                   </span>
                 )}
               </div>
@@ -2691,7 +3024,7 @@ export function InboxClient({
                       </span>
                     </div>
                     <p className="mt-0.5 text-[12px] text-[#54656f] line-clamp-2 leading-snug">
-                      {replyingTo.body}
+                      {stripWhatsAppFormatting(replyingTo.body)}
                     </p>
                   </button>
                   <button
@@ -2703,6 +3036,38 @@ export function InboxClient({
                   >
                     <X className="w-4 h-4" />
                   </button>
+                </div>
+              )}
+
+              {matchingQuickReplies.length > 0 && (
+                <div className="rounded-lg bg-white border border-[#d1d7db] shadow-md p-1.5 space-y-1 max-h-44 overflow-y-auto">
+                  <div className="px-2 py-0.5 text-[10.5px] font-semibold text-[#54656f] flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-[#00a884]" />
+                    <span>Quick Replies (click to insert)</span>
+                  </div>
+                  {matchingQuickReplies.map((qr) => (
+                    <button
+                      key={qr.cmd}
+                      type="button"
+                      onClick={() => {
+                        setReplyText(qr.body);
+                        composerInputRef.current?.focus();
+                      }}
+                      className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#f0f2f5] flex items-start justify-between gap-3 cursor-pointer"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-[#111b21]">
+                          <span className="font-mono text-[#008069] mr-1.5">
+                            {qr.cmd}
+                          </span>
+                          {qr.title}
+                        </div>
+                        <p className="text-[11px] text-[#54656f] truncate">
+                          {qr.body}
+                        </p>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
 
@@ -2728,7 +3093,7 @@ export function InboxClient({
                       ? "Write a private note for Sales or Fabrication teammates (for example, 'Quote ₹14,500 if ordering 4 podiums')..."
                       : composerMode === "TEMPLATE"
                       ? "Review template message before sending to customer..."
-                      : "Type a free WhatsApp reply (Enter to send, Shift+Enter for new line)..."
+                      : "Type a WhatsApp reply (Enter to send, Shift+Enter for new line)..."
                   }
                   className={`flex-1 rounded-lg px-3.5 py-2 text-sm text-[#111b21] resize-none focus:outline-none border ${
                     composerMode === "NOTE"
@@ -2755,18 +3120,12 @@ export function InboxClient({
                   ) : composerMode === "TEMPLATE" ? (
                     <>
                       <WhatsAppLogoIcon size={14} />
-                      <span>
-                        Send (
-                        {activeTemplate?.category === "MARKETING"
-                          ? "₹0.95"
-                          : "₹0.30"}
-                        )
-                      </span>
+                      <span>Send Template</span>
                     </>
                   ) : (
                     <>
                       <WhatsAppLogoIcon size={14} />
-                      <span>Send Free</span>
+                      <span>Send</span>
                     </>
                   )}
                 </button>
@@ -2779,9 +3138,27 @@ export function InboxClient({
       {/* ===================================================================== */}
       {/* 3. RIGHT DRAWER: CUSTOMER DETAILS, ORDERS, TEAM NOTES, WEB ENQUIRIES  */}
       {/* ===================================================================== */}
-      {showRightDrawer && (
-        <div className="w-[330px] xl:w-[360px] shrink-0 border-l border-[#d1d7db] bg-white flex flex-col">
-          <div className="grid grid-cols-4 border-b border-[#e9edef] text-[11px] font-semibold shrink-0 bg-[#f0f2f5]">
+      <div
+        className={`${
+          mobilePane === "INFO" ? "flex w-full" : "hidden"
+        } ${
+          showRightDrawer ? "lg:flex" : "lg:hidden"
+        } lg:w-[330px] xl:w-[360px] shrink-0 border-l border-[#d1d7db] bg-white flex-col`}
+      >
+        <div className="lg:hidden h-[50px] px-3.5 bg-[#f0f2f5] border-b border-[#d1d7db] flex items-center justify-between shrink-0">
+          <button
+            type="button"
+            onClick={() => setMobilePane("CHAT")}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#111b21] cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Chat</span>
+          </button>
+          <span className="text-xs font-semibold text-[#54656f] truncate max-w-[180px]">
+            {activeConv?.customerName || "Customer Details"}
+          </span>
+        </div>
+        <div className="grid grid-cols-4 border-b border-[#e9edef] text-[11px] font-semibold shrink-0 bg-[#f0f2f5]">
             {(
               [
                 { key: "PROFILE", label: "Details" },
@@ -3032,7 +3409,7 @@ export function InboxClient({
                 >
                   <div className="text-xs font-semibold text-amber-950 flex items-center gap-1.5">
                     <Lock className="w-3.5 h-3.5 text-amber-700" />
-                    <span>Add Internal Team Note (Free)</span>
+                    <span>Add Internal Team Note</span>
                   </div>
                   <textarea
                     rows={2}
@@ -3070,9 +3447,10 @@ export function InboxClient({
                             })}
                           </span>
                         </div>
-                        <p className="text-xs text-amber-950 whitespace-pre-wrap">
-                          {n.body}
-                        </p>
+                        <WhatsAppFormattedText
+                          text={n.body}
+                          className="text-xs text-amber-950"
+                        />
                       </div>
                     ))}
                   </div>
@@ -3231,8 +3609,7 @@ export function InboxClient({
               </div>
             )}
           </div>
-        </div>
-      )}
+      </div>
 
       {/* ===================================================================== */}
       {/* MODAL 1: ASSIGN TEAM & ESCALATION TIER (P0 -> P1 -> P2)               */}
@@ -3257,7 +3634,7 @@ export function InboxClient({
             </div>
 
             <p className="text-xs text-neutral-600">
-              Sales Team is our default handoff team (ACRIO stays off on staff-assigned chats to save AI credits & charges). Choose <strong>System (ACRIO)</strong> under Assignee only if you want ACRIO to answer incoming customer messages automatically.
+              Sales Team is our default handoff team (ACRIO stays off on staff-assigned chats so your teammate handles the customer directly). Choose <strong>System (ACRIO)</strong> under Assignee only if you want ACRIO to answer incoming customer messages automatically.
             </p>
 
             <div>
@@ -3308,11 +3685,18 @@ export function InboxClient({
                 >
                   <option value="">Auto-pick least busy in team</option>
                   <option value="ACRIO">System (ACRIO)</option>
-                  {staffList.map((st) => (
-                    <option key={st.id} value={st.id}>
-                      {st.name}
-                    </option>
-                  ))}
+                  {staffList
+                    .filter(
+                      (st) =>
+                        st.role !== "DEV" ||
+                        canAssignToDev(initialData.currentUserRole)
+                    )
+                    .map((st) => (
+                      <option key={st.id} value={st.id}>
+                        {st.name}
+                        {st.role === "DEV" ? " (Dev)" : ""}
+                      </option>
+                    ))}
                 </select>
               </div>
             </div>
@@ -3480,9 +3864,21 @@ export function InboxClient({
                 className="w-full rounded-md border border-neutral-300 p-2.5 text-xs"
               />
               {simDirection === "INBOUND" && (
-                <p className="text-[11px] text-neutral-500 mt-1">
-                  ACRIO will reply automatically using Classic Concepts & Classic Edge 53 catalogs, or hand off to Sales Team if the customer asks for staff.
-                </p>
+                <div className="mt-2.5 space-y-1.5">
+                  <label className="block text-[11px] font-medium text-neutral-700">
+                    Optional: Simulate Template Quick-Reply Button Payload
+                  </label>
+                  <input
+                    type="text"
+                    value={simButtonPayload}
+                    onChange={(e) => setSimButtonPayload(e.target.value)}
+                    placeholder="e.g. TALK_TO_SALES or TRACK_MY_ORDER (leave blank for normal text)"
+                    className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs font-mono"
+                  />
+                  <p className="text-[11px] text-neutral-500">
+                    Tests the 5-stage pipeline: Opt-Out, Template Button Flow, Order ID Lookup, Auto-Reply Rules, then ACRIO AI.
+                  </p>
+                </div>
               )}
             </div>
 

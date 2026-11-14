@@ -59,6 +59,7 @@ export async function POST(req: Request) {
 
   const conv = getRawLibSqlClient("conversations");
   const crm = getRawLibSqlClient("crm_orders");
+  const mkt = getRawLibSqlClient("marketing");
   const nowIso = new Date().toISOString();
   const windowExp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
@@ -67,6 +68,42 @@ export async function POST(req: Request) {
       const val = change?.value || {};
       const contacts = val?.contacts || [];
 
+      // 0. Live Meta Template Approval / Rejection Webhook Updates
+      if (change?.field === "message_template_status_update") {
+        const eventRaw = String(val?.event || "").toUpperCase();
+        const metaTplId = String(val?.message_template_id || "").trim();
+        const metaTplName = String(val?.message_template_name || "").trim();
+        const reason = val?.reason && String(val.reason) !== "NONE" ? String(val.reason) : null;
+        const mappedStatus =
+          eventRaw === "APPROVED"
+            ? "APPROVED"
+            : eventRaw === "REJECTED" || eventRaw === "DISABLED"
+            ? "REJECTED"
+            : eventRaw === "PAUSED"
+            ? "PAUSED"
+            : "PENDING_APPROVAL";
+
+        if (metaTplId || metaTplName) {
+          await mkt
+            .execute({
+              sql: `UPDATE templates
+                    SET approval_status = ?,
+                        rejection_reason = ?,
+                        meta_template_id = COALESCE(NULLIF(?, ''), meta_template_id),
+                        updated_at = ?
+                    WHERE meta_template_id = ? OR LOWER(name) = LOWER(?)`,
+              args: [mappedStatus, reason, metaTplId, nowIso, metaTplId, metaTplName],
+            })
+            .catch(() => {});
+          socketHub.emit("template:updated", {
+            metaTemplateId: metaTplId,
+            name: metaTplName,
+            status: mappedStatus,
+          });
+        }
+        continue;
+      }
+
       // 1. Inbound customer messages (initial assignment is ALWAYS ACRIO)
       for (const msg of val?.messages || []) {
         const fromDigits = String(msg?.from || "").replace(/\D/g, "");
@@ -74,11 +111,25 @@ export async function POST(req: Request) {
         const e164 = `+${fromDigits}`;
         const contactName =
           String(contacts[0]?.profile?.name || "").trim() || e164;
-        const textBody =
-          msg?.text?.body ||
+        const buttonText =
           msg?.button?.text ||
           msg?.interactive?.button_reply?.title ||
           msg?.interactive?.list_reply?.title ||
+          "";
+        const buttonPayload =
+          msg?.button?.payload ||
+          msg?.interactive?.button_reply?.id ||
+          msg?.interactive?.list_reply?.id ||
+          "";
+        const isButtonClick = Boolean(
+          msg?.type === "button" ||
+            msg?.type === "interactive" ||
+            buttonText ||
+            buttonPayload
+        );
+        const textBody =
+          msg?.text?.body ||
+          buttonText ||
           "[Media / Attachment]";
 
         const existingCust = await crm.execute({
@@ -234,6 +285,10 @@ export async function POST(req: Request) {
           customerPhone: e164,
           inboundText: String(textBody),
           isNewConversation: isNew || prevStatus === "RESOLVED",
+          isButtonClick,
+          buttonPayload: buttonPayload ? String(buttonPayload) : undefined,
+          buttonText: buttonText ? String(buttonText) : undefined,
+          replyToWaMessageId: contextWaId || undefined,
         });
 
         socketHub.emit("message:new", { conversationId: convId, customerName: contactName });
