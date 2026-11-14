@@ -154,6 +154,11 @@ export async function sendWhatsAppCloudMessage(params: {
   languageCode?: string;
   templateComponents?: Record<string, unknown>[];
   replyToWaMessageId?: string;
+  ctaButton?: {
+    label: string;
+    url: string;
+    footerText?: string;
+  };
   simulateAsyncDelivery?: boolean;
   forceSandbox?: boolean;
 }): Promise<OutboundWhatsAppSendResult> {
@@ -193,6 +198,13 @@ export async function sendWhatsAppCloudMessage(params: {
         ? { context: { message_id: validReplyWaId } }
         : {};
 
+      const ctaUrl = String(params.ctaButton?.url || "").trim();
+      const ctaLabel = String(params.ctaButton?.label || "Track Order")
+        .trim()
+        .slice(0, 20);
+      const hasInteractiveCta =
+        !params.templateName && /^https?:\/\//i.test(ctaUrl) && Boolean(ctaLabel);
+
       const payload = params.templateName
         ? {
             messaging_product: "whatsapp",
@@ -207,6 +219,28 @@ export async function sendWhatsAppCloudMessage(params: {
                 : {}),
             },
           }
+        : hasInteractiveCta
+        ? {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: recipientDigits,
+            ...contextField,
+            type: "interactive",
+            interactive: {
+              type: "cta_url",
+              body: { text: params.bodyText },
+              ...(params.ctaButton?.footerText
+                ? { footer: { text: params.ctaButton.footerText.slice(0, 60) } }
+                : {}),
+              action: {
+                name: "cta_url",
+                parameters: {
+                  display_text: ctaLabel,
+                  url: ctaUrl,
+                },
+              },
+            },
+          }
         : {
             messaging_product: "whatsapp",
             recipient_type: "individual",
@@ -216,7 +250,7 @@ export async function sendWhatsAppCloudMessage(params: {
             text: { preview_url: true, body: params.bodyText },
           };
 
-      const res = await fetch(
+      let res = await fetch(
         `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
         {
           method: "POST",
@@ -229,7 +263,32 @@ export async function sendWhatsAppCloudMessage(params: {
         }
       );
 
-      const data: any = await res.json().catch(() => ({}));
+      let data: any = await res.json().catch(() => ({}));
+      if (!res.ok && hasInteractiveCta && res.status === 400) {
+        const fallbackBody = params.bodyText.includes(ctaUrl)
+          ? params.bodyText
+          : `${params.bodyText}\n\n${ctaLabel}: ${ctaUrl}`;
+        res = await fetch(
+          `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: recipientDigits,
+              ...contextField,
+              type: "text",
+              text: { preview_url: true, body: fallbackBody },
+            }),
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        data = await res.json().catch(() => ({}));
+      }
       if (!res.ok) {
         const metaCode = Number(data?.error?.code || 0) || undefined;
         const isSpamOrRate =

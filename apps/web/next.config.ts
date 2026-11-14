@@ -43,7 +43,11 @@ function loadRootEnvFiles() {
 loadRootEnvFiles();
 
 const nextConfig: NextConfig = {
-  allowedDevOrigins: ["whatsapp.ccapl.cc"],
+  allowedDevOrigins: [
+    "whatsapp.ccapl.cc",
+    "track.ccapl.cc",
+    "track.ccapl.in",
+  ],
   transpilePackages: [
     "@cc/auth",
     "@cc/connections",

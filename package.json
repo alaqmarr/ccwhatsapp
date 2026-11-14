@@ -12,6 +12,7 @@
     "build": "npm --workspace @cc/web run build",
     "start": "npm --workspace @cc/web run start -- -p 3007",
     "typecheck": "npm --workspace @cc/web run typecheck",
+    "db:reset": "bash reset-db.sh",
     "pm2:start": "pm2 start ecosystem.config.cjs --update-env"
   },
   "dependencies": {

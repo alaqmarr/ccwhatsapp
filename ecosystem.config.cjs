@@ -77,6 +77,8 @@ module.exports = {
         NODE_ENV: "production",
         PORT: String(port),
         CCWHATSAPP_ROOT: __dirname,
+        TRACKING_PUBLIC_ORIGIN: dotEnv.TRACKING_PUBLIC_ORIGIN || "https://track.ccapl.cc",
+        SEED_DEMO_DATA: dotEnv.SEED_DEMO_DATA || "0",
         REDIS_URL: redisUrl,
         REDIS_MAXMEMORY_BYTES: String(redisMaxBytes),
       },

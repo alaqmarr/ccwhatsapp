@@ -186,6 +186,29 @@ export const customerRelationsTable = sqliteTable("customer_relations", {
   occurredAt: text("occurred_at").notNull(),
 });
 
+export const orderTrackingsTable = sqliteTable("order_trackings", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().unique(),
+  lookupKey: text("lookup_key").notNull().unique(),
+  brand: text("brand").notNull().default("CLASSIC_CONCEPTS"), // CLASSIC_CONCEPTS | CLASSIC_EDGE_53
+  customerName: text("customer_name").notNull().default(""),
+  customerPhone: text("customer_phone").notNull().default(""),
+  conversationId: text("conversation_id"),
+  itemsSummary: text("items_summary").notNull().default(""),
+  providerCode: text("provider_code").notNull().default("DELHIVERY"),
+  providerName: text("provider_name").notNull().default("Delhivery"),
+  awbNumber: text("awb_number").notNull().default(""),
+  providerTrackingUrl: text("provider_tracking_url").notNull().default(""),
+  shipmentStatus: text("shipment_status").notNull().default("DISPATCHED"),
+  estimatedDelivery: text("estimated_delivery").default(""),
+  notes: text("notes").default(""),
+  lookupsCount: integer("lookups_count").notNull().default(0),
+  lastLookedUpAt: text("last_looked_up_at"),
+  createdByName: text("created_by_name").notNull().default("System"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 // ============================================================================
 // 4. MARKETING.DB — Templates, ACRIO Marketing Lists & Broadcast Campaigns
 // ============================================================================

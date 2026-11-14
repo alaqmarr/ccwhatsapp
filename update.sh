@@ -53,7 +53,7 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   git stash push -m "pre-update-$(date +%Y%m%d_%H%M%S)" || true
 fi
 git pull --ff-only || git pull
-chmod +x setup.sh update.sh 2>/dev/null || true
+chmod +x setup.sh update.sh reset-db.sh 2>/dev/null || true
 
 # 2. Install workspace dependencies (auto-recovers from ENOTEMPTY)
 echo "[2/7] Installing dependencies..."

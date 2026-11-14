@@ -6,6 +6,10 @@ import {
 
 let bootstrapPromise: Promise<void> | null = null;
 
+export function resetBootstrapCache(): void {
+  bootstrapPromise = null;
+}
+
 export async function ensureDatabasesBootstrapped(): Promise<void> {
   if (!bootstrapPromise) {
     bootstrapPromise = runBootstrapInternal().catch((err) => {
@@ -318,6 +322,31 @@ async function runBootstrapInternal(): Promise<void> {
         handled_by TEXT NOT NULL,
         occurred_at TEXT NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS order_trackings (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL UNIQUE,
+        lookup_key TEXT NOT NULL UNIQUE,
+        brand TEXT NOT NULL DEFAULT 'CLASSIC_CONCEPTS',
+        customer_name TEXT NOT NULL DEFAULT '',
+        customer_phone TEXT NOT NULL DEFAULT '',
+        conversation_id TEXT,
+        items_summary TEXT NOT NULL DEFAULT '',
+        provider_code TEXT NOT NULL DEFAULT 'DELHIVERY',
+        provider_name TEXT NOT NULL DEFAULT 'Delhivery',
+        awb_number TEXT NOT NULL DEFAULT '',
+        provider_tracking_url TEXT NOT NULL DEFAULT '',
+        shipment_status TEXT NOT NULL DEFAULT 'DISPATCHED',
+        estimated_delivery TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        lookups_count INTEGER NOT NULL DEFAULT 0,
+        last_looked_up_at TEXT,
+        created_by_name TEXT NOT NULL DEFAULT 'System',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_order_trackings_lookup ON order_trackings (lookup_key)`,
+      `CREATE INDEX IF NOT EXISTS idx_order_trackings_phone ON order_trackings (customer_phone)`,
+      `CREATE INDEX IF NOT EXISTS idx_order_trackings_updated ON order_trackings (updated_at DESC)`,
     ],
     "write"
   );
@@ -691,9 +720,11 @@ async function seedInitialOperationalData(): Promise<void> {
     }
   }
 
-  // Seed realistic CRM customers, orders & past relations if empty
+  const shouldSeedDemoData = process.env.SEED_DEMO_DATA === "1";
+
+  // Seed realistic CRM customers, orders & past relations ONLY when SEED_DEMO_DATA=1
   const existingCustomers = await crm.execute(`SELECT COUNT(*) as cnt FROM customers`);
-  if (Number(existingCustomers.rows[0]?.cnt ?? 0) === 0) {
+  if (shouldSeedDemoData && Number(existingCustomers.rows[0]?.cnt ?? 0) === 0) {
     await crm.batch(
       [
         {
@@ -905,9 +936,9 @@ async function seedInitialOperationalData(): Promise<void> {
     );
   }
 
-  // Seed Conversations, Messages, Automations & Custom Admin Links
+  // Seed demo Conversations, Messages, Automations & Custom Admin Links ONLY when SEED_DEMO_DATA=1
   const existingConvs = await conv.execute(`SELECT COUNT(*) as cnt FROM conversations`);
-  if (Number(existingConvs.rows[0]?.cnt ?? 0) === 0) {
+  if (shouldSeedDemoData && Number(existingConvs.rows[0]?.cnt ?? 0) === 0) {
     await conv.batch(
       [
         {
@@ -1202,49 +1233,53 @@ async function seedInitialOperationalData(): Promise<void> {
     );
   }
 
-  // Seed Templates, ACRIO Marketing Lists & Sample Broadcast + Billing Ledger
+  // Ensure starter Utility/Auth templates exist (0 fake sent_count in production; demo lists/broadcasts/ledger only when SEED_DEMO_DATA=1)
   const existingTemplates = await mkt.execute(`SELECT COUNT(*) as cnt FROM templates`);
   if (Number(existingTemplates.rows[0]?.cnt ?? 0) === 0) {
     await mkt.batch(
       [
-        {
-          sql: `INSERT INTO templates (
-            id, name, language, category, header_text, body_text, footer_text, cta_label, cta_url, approval_status, sent_count, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [
-            "tpl_hospitality_showcase",
-            "hospitality_podium_menu_2026",
-            "en",
-            "MARKETING",
-            "New Clear Podiums & Menu Stands for Hotels",
-            "Hello {{1}}, explore our latest crystal-clear banquet podiums and tabletop menu holders crafted for hotels and convention halls.",
-            "Classic Concepts • Reply STOP to opt out",
-            "View Hotel Collection",
-            "https://whatsapp.ccapl.cc/l/stage-podiums",
-            "APPROVED",
-            120,
-            isoNow,
-          ],
-        },
-        {
-          sql: `INSERT INTO templates (
-            id, name, language, category, header_text, body_text, footer_text, cta_label, cta_url, approval_status, sent_count, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [
-            "tpl_college_awards",
-            "convocation_awards_season",
-            "en",
-            "MARKETING",
-            "Student Trophies & Auditorium Podiums",
-            "Hello {{1}}, planning an upcoming college event or convocation? Check our ready-to-print acrylic trophies, plaques, and stage podiums.",
-            "Classic Concepts • Since 2008",
-            "See Award Options",
-            "https://whatsapp.ccapl.cc/l/student-awards",
-            "APPROVED",
-            85,
-            isoNow,
-          ],
-        },
+        ...(shouldSeedDemoData
+          ? [
+              {
+                sql: `INSERT INTO templates (
+                  id, name, language, category, header_text, body_text, footer_text, cta_label, cta_url, approval_status, sent_count, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                args: [
+                  "tpl_hospitality_showcase",
+                  "hospitality_podium_menu_2026",
+                  "en",
+                  "MARKETING",
+                  "New Clear Podiums & Menu Stands for Hotels",
+                  "Hello {{1}}, explore our latest crystal-clear banquet podiums and tabletop menu holders crafted for hotels and convention halls.",
+                  "Classic Concepts • Reply STOP to opt out",
+                  "View Hotel Collection",
+                  "https://whatsapp.ccapl.cc/l/stage-podiums",
+                  "APPROVED",
+                  120,
+                  isoNow,
+                ],
+              },
+              {
+                sql: `INSERT INTO templates (
+                  id, name, language, category, header_text, body_text, footer_text, cta_label, cta_url, approval_status, sent_count, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                args: [
+                  "tpl_college_awards",
+                  "convocation_awards_season",
+                  "en",
+                  "MARKETING",
+                  "Student Trophies & Auditorium Podiums",
+                  "Hello {{1}}, planning an upcoming college event or convocation? Check our ready-to-print acrylic trophies, plaques, and stage podiums.",
+                  "Classic Concepts • Since 2008",
+                  "See Award Options",
+                  "https://whatsapp.ccapl.cc/l/student-awards",
+                  "APPROVED",
+                  85,
+                  isoNow,
+                ],
+              },
+            ]
+          : []),
         {
           sql: `INSERT INTO templates (
             id, name, language, category, header_text, body_text, footer_text, cta_label, cta_url, approval_status, sent_count, created_at
@@ -1260,7 +1295,7 @@ async function seedInitialOperationalData(): Promise<void> {
             null,
             null,
             "APPROVED",
-            64,
+            shouldSeedDemoData ? 64 : 0,
             isoNow,
           ],
         },
@@ -1279,14 +1314,63 @@ async function seedInitialOperationalData(): Promise<void> {
             null,
             null,
             "APPROVED",
-            19,
+            shouldSeedDemoData ? 19 : 0,
             isoNow,
           ],
         },
       ],
       "write"
     );
+  }
 
+  // Always ensure the dynamic Order Tracking button Utility template is available
+  await mkt.execute({
+    sql: `INSERT OR IGNORE INTO templates (
+      id, name, language, category, header_type, header_text, body_text, footer_text,
+      cta_label, cta_url, buttons_json, variables_schema_json, approval_status, sent_count, created_at, updated_at
+    ) VALUES (?, ?, 'en', 'UTILITY', 'TEXT', ?, ?, ?, 'Track Order', 'https://track.ccapl.cc/{{1}}', ?, ?, 'APPROVED', 0, ?, ?)`,
+    args: [
+      "tpl_order_tracking_btn",
+      "cc_order_tracking_dispatch",
+      "Order Dispatched",
+      "Hello {{1}}, your order {{2}} has been dispatched via {{3}}. Tap Track Order below to check live delivery status.",
+      "Classic Concepts & Classic Edge 53",
+      JSON.stringify([
+        {
+          id: "btn_track_dyn_1",
+          type: "URL",
+          text: "Track Order",
+          url: "https://track.ccapl.cc/{{1}}",
+          urlType: "DYNAMIC",
+          exampleSuffix: "CC-2026-1089",
+        },
+      ]),
+      JSON.stringify([
+        {
+          index: 1,
+          label: "Customer First Name",
+          sourceField: "customer.firstName",
+          sampleValue: "Customer",
+        },
+        {
+          index: 2,
+          label: "Order ID",
+          sourceField: "order.latestNumber",
+          sampleValue: "CC-2026-1089",
+        },
+        {
+          index: 3,
+          label: "Courier Partner",
+          sourceField: "custom",
+          sampleValue: "Delhivery",
+        },
+      ]),
+      isoNow,
+      isoNow,
+    ],
+  });
+
+  if (shouldSeedDemoData && Number(existingTemplates.rows[0]?.cnt ?? 0) === 0) {
     await mkt.batch(
       [
         {
@@ -1357,9 +1441,9 @@ async function seedInitialOperationalData(): Promise<void> {
     });
   }
 
-  // Seed representative Message Billing Ledger rows so both Dev and Admin/Client Pricing Dashboards show live figures immediately
+  // Seed representative Message Billing Ledger rows ONLY when SEED_DEMO_DATA=1
   const existingLedger = await bill.execute(`SELECT COUNT(*) as cnt FROM message_billing_ledger`);
-  if (Number(existingLedger.rows[0]?.cnt ?? 0) === 0) {
+  if (shouldSeedDemoData && Number(existingLedger.rows[0]?.cnt ?? 0) === 0) {
     const sampleRows: {
       id: string;
       cat: "MARKETING" | "UTILITY" | "AUTHENTICATION" | "ACRIO";
@@ -1397,77 +1481,9 @@ async function seedInitialOperationalData(): Promise<void> {
     }
   }
 
-  // Seed default Teams + P0 -> P1 -> P2 Responder Tiers if none exist yet
+  // Seed default Teams structure if none exist yet (demo staff accounts ONLY when SEED_DEMO_DATA=1)
   const existingTeams = await conv.execute(`SELECT COUNT(*) as cnt FROM teams`);
   if (Number(existingTeams.rows[0]?.cnt ?? 0) === 0) {
-    // Ensure we have realistic active staff members so P0 -> P1 -> P2 escalation has distinct people
-    const activeUsersRes = await auth.execute(
-      `SELECT id, name, email, role FROM users WHERE status = 'ACTIVE' ORDER BY created_at ASC`
-    );
-    const ensureDemoStaff = [
-      {
-        id: "usr_sales_p0",
-        name: "Rohan Kulkarni",
-        email: "rohan.kulkarni@classiconcepts.in",
-        phone: "+919848022101",
-        role: "STAFF",
-        dept: "Sales Team",
-      },
-      {
-        id: "usr_sales_p1",
-        name: "Ananya Deshmukh",
-        email: "ananya.deshmukh@classiconcepts.in",
-        phone: "+919848022102",
-        role: "ADMIN",
-        dept: "Senior Sales & Hospitality",
-      },
-      {
-        id: "usr_ce53_p0",
-        name: "Karthik Nair",
-        email: "karthik.nair@classiconcepts.in",
-        phone: "+919848022103",
-        role: "STAFF",
-        dept: "Classic Edge 53 Machines",
-      },
-    ];
-    for (const st of ensureDemoStaff) {
-      const check = await auth.execute({
-        sql: `SELECT id FROM users WHERE email = ? LIMIT 1`,
-        args: [st.email],
-      });
-      if (check.rows.length === 0) {
-        await auth.execute({
-          sql: `INSERT INTO users (
-            id, name, email, whatsapp_number, password_hash, role, status,
-            department, email_verified_at, onboarding_completed_at, approved_by_name, approved_at, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 'System', ?, ?)`,
-          args: [
-            st.id,
-            st.name,
-            st.email,
-            st.phone,
-            "$2b$10$CwTycUXWue0Thq9StjUM0uJ8h0R6V5G7y1p2zK6X8n4vZ1Q8m9W2a",
-            st.role,
-            st.dept,
-            isoNow,
-            isoNow,
-            isoNow,
-            isoNow,
-          ],
-        });
-      }
-    }
-
-    const refreshedUsers = await auth.execute(
-      `SELECT id, name, email, role FROM users WHERE status = 'ACTIVE' ORDER BY created_at ASC`
-    );
-    const activePool = refreshedUsers.rows.length > 0 ? refreshedUsers.rows : activeUsersRes.rows;
-    const findByEmail = (em: string) =>
-      activePool.find((u) => String(u.email) === em) || activePool[0];
-    const leadUser =
-      activePool.find((u) => String(u.role) === "DEV" || String(u.role) === "SUPERADMIN") ||
-      activePool[0];
-
     await conv.batch(
       [
         {
@@ -1542,97 +1558,116 @@ async function seedInitialOperationalData(): Promise<void> {
       "write"
     );
 
-    const p0Sales = findByEmail("rohan.kulkarni@classiconcepts.in");
-    const p1Sales = findByEmail("ananya.deshmukh@classiconcepts.in");
-    const p0Machines = findByEmail("karthik.nair@classiconcepts.in");
+    if (shouldSeedDemoData) {
+      const activeUsersRes = await auth.execute(
+        `SELECT id, name, email, role FROM users WHERE status = 'ACTIVE' ORDER BY created_at ASC`
+      );
+      const ensureDemoStaff = [
+        {
+          id: "usr_sales_p0",
+          name: "Rohan Kulkarni",
+          email: "rohan.kulkarni@classiconcepts.in",
+          phone: "+919848022101",
+          role: "STAFF",
+          dept: "Sales Team",
+        },
+        {
+          id: "usr_sales_p1",
+          name: "Ananya Deshmukh",
+          email: "ananya.deshmukh@classiconcepts.in",
+          phone: "+919848022102",
+          role: "ADMIN",
+          dept: "Senior Sales & Hospitality",
+        },
+        {
+          id: "usr_ce53_p0",
+          name: "Karthik Nair",
+          email: "karthik.nair@classiconcepts.in",
+          phone: "+919848022103",
+          role: "STAFF",
+          dept: "Classic Edge 53 Machines",
+        },
+      ];
+      for (const st of ensureDemoStaff) {
+        const check = await auth.execute({
+          sql: `SELECT id FROM users WHERE email = ? LIMIT 1`,
+          args: [st.email],
+        });
+        if (check.rows.length === 0) {
+          await auth.execute({
+            sql: `INSERT INTO users (
+              id, name, email, whatsapp_number, password_hash, role, status,
+              department, email_verified_at, onboarding_completed_at, approved_by_name, approved_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 'System', ?, ?)`,
+            args: [
+              st.id,
+              st.name,
+              st.email,
+              st.phone,
+              "$2b$10$CwTycUXWue0Thq9StjUM0uJ8h0R6V5G7y1p2zK6X8n4vZ1Q8m9W2a",
+              st.role,
+              st.dept,
+              isoNow,
+              isoNow,
+              isoNow,
+              isoNow,
+            ],
+          });
+        }
+      }
 
-    const memberSeeds: {
-      id: string;
-      teamId: string;
-      user: Record<string, unknown> | undefined;
-      tier: "P0" | "P1" | "P2";
-    }[] = [
-      { id: "tm_sales_p0", teamId: "team_sales", user: p0Sales, tier: "P0" },
-      { id: "tm_sales_p1", teamId: "team_sales", user: p1Sales, tier: "P1" },
-      { id: "tm_sales_p2", teamId: "team_sales", user: leadUser, tier: "P2" },
-      { id: "tm_ce53_p0", teamId: "team_ce53_machines", user: p0Machines, tier: "P0" },
-      { id: "tm_ce53_p1", teamId: "team_ce53_machines", user: p1Sales, tier: "P1" },
-      { id: "tm_ce53_p2", teamId: "team_ce53_machines", user: leadUser, tier: "P2" },
-      { id: "tm_fab_p0", teamId: "team_custom_fab", user: p1Sales, tier: "P0" },
-      { id: "tm_fab_p1", teamId: "team_custom_fab", user: p0Sales, tier: "P1" },
-      { id: "tm_fab_p2", teamId: "team_custom_fab", user: leadUser, tier: "P2" },
-      { id: "tm_sup_p0", teamId: "team_support", user: p0Sales, tier: "P0" },
-      { id: "tm_sup_p1", teamId: "team_support", user: p1Sales, tier: "P1" },
-    ];
+      const refreshedUsers = await auth.execute(
+        `SELECT id, name, email, role FROM users WHERE status = 'ACTIVE' ORDER BY created_at ASC`
+      );
+      const activePool =
+        refreshedUsers.rows.length > 0 ? refreshedUsers.rows : activeUsersRes.rows;
+      const findByEmail = (em: string) =>
+        activePool.find((u) => String(u.email) === em) || activePool[0];
+      const leadUser =
+        activePool.find(
+          (u) => String(u.role) === "DEV" || String(u.role) === "SUPERADMIN"
+        ) || activePool[0];
 
-    for (const ms of memberSeeds) {
-      if (!ms.user) continue;
-      await conv.execute({
-        sql: `INSERT INTO team_members (
-          id, team_id, staff_id, staff_name, staff_email, tier, max_active_chats, is_available, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 15, 1, ?)`,
-        args: [
-          ms.id,
-          ms.teamId,
-          String(ms.user.id),
-          String(ms.user.name),
-          String(ms.user.email || ""),
-          ms.tier,
-          isoNow,
-        ],
-      });
-    }
+      const p0Sales = findByEmail("rohan.kulkarni@classiconcepts.in");
+      const p1Sales = findByEmail("ananya.deshmukh@classiconcepts.in");
+      const p0Machines = findByEmail("karthik.nair@classiconcepts.in");
 
-    // Set all open conversations to ACRIO first, then show 1 live Sales Team handoff example
-    const twoMinsAgo = new Date(now.getTime() - 2 * 60 * 1000).toISOString();
-    await conv.execute({
-      sql: `UPDATE conversations
-            SET assigned_staff_id = 'ACRIO',
-                assigned_staff_name = 'ACRIO',
-                assigned_team_id = NULL,
-                assigned_team_name = 'ACRIO Assistant',
-                escalation_level = 'P0',
-                waiting_since = NULL
-            WHERE status != 'RESOLVED' AND assigned_staff_id IS NULL`,
-      args: [],
-    });
+      const memberSeeds: {
+        id: string;
+        teamId: string;
+        user: Record<string, unknown> | undefined;
+        tier: "P0" | "P1" | "P2";
+      }[] = [
+        { id: "tm_sales_p0", teamId: "team_sales", user: p0Sales, tier: "P0" },
+        { id: "tm_sales_p1", teamId: "team_sales", user: p1Sales, tier: "P1" },
+        { id: "tm_sales_p2", teamId: "team_sales", user: leadUser, tier: "P2" },
+        { id: "tm_ce53_p0", teamId: "team_ce53_machines", user: p0Machines, tier: "P0" },
+        { id: "tm_ce53_p1", teamId: "team_ce53_machines", user: p1Sales, tier: "P1" },
+        { id: "tm_ce53_p2", teamId: "team_ce53_machines", user: leadUser, tier: "P2" },
+        { id: "tm_fab_p0", teamId: "team_custom_fab", user: p1Sales, tier: "P0" },
+        { id: "tm_fab_p1", teamId: "team_custom_fab", user: p0Sales, tier: "P1" },
+        { id: "tm_fab_p2", teamId: "team_custom_fab", user: leadUser, tier: "P2" },
+        { id: "tm_sup_p0", teamId: "team_support", user: p0Sales, tier: "P0" },
+        { id: "tm_sup_p1", teamId: "team_support", user: p1Sales, tier: "P1" },
+      ];
 
-    const firstOpen = await conv.execute(
-      `SELECT id FROM conversations WHERE status != 'RESOLVED' ORDER BY last_message_at DESC LIMIT 1`
-    );
-    if (firstOpen.rows[0]?.id) {
-      const targetId = String(firstOpen.rows[0].id);
-      await conv.execute({
-        sql: `UPDATE conversations
-              SET status = 'ASSIGNED',
-                  assigned_team_id = 'team_sales',
-                  assigned_team_name = 'Sales Team',
-                  assigned_staff_id = ?,
-                  assigned_staff_name = ?,
-                  escalation_level = 'P0',
-                  waiting_since = ?
-              WHERE id = ?`,
-        args: [
-          p0Sales ? String(p0Sales.id) : null,
-          p0Sales ? String(p0Sales.name) : null,
-          twoMinsAgo,
-          targetId,
-        ],
-      });
-
-      await conv.execute({
-        sql: `INSERT INTO messages (
-          id, conversation_id, direction, sender_type, sender_name, message_type,
-          billing_category, body, delivery_status, created_at
-        ) VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
-        args: [
-          "msg_note_seed_1",
-          targetId,
-          "ACRIO Handover",
-          "Customer asked to confirm urgent Friday delivery & front logo print. Connected from ACRIO to Sales Team (P0).",
-          twoMinsAgo,
-        ],
-      });
+      for (const ms of memberSeeds) {
+        if (!ms.user) continue;
+        await conv.execute({
+          sql: `INSERT INTO team_members (
+            id, team_id, staff_id, staff_name, staff_email, tier, max_active_chats, is_available, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 15, 1, ?)`,
+          args: [
+            ms.id,
+            ms.teamId,
+            String(ms.user.id),
+            String(ms.user.name),
+            String(ms.user.email || ""),
+            ms.tier,
+            isoNow,
+          ],
+        });
+      }
     }
   }
 

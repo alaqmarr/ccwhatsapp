@@ -6,6 +6,7 @@ import {
   BarChart3,
   Check,
   Clock,
+  Copy,
   CornerUpLeft,
   ExternalLink,
   FileText,
@@ -19,6 +20,7 @@ import {
   Search,
   Sparkles,
   StickyNote,
+  Truck,
   UserCheck,
   Users,
   X,
@@ -29,9 +31,12 @@ import {
   ClassicConceptsMark,
   ElementErrorState,
   RightDrawerSkeleton,
+  SHIPPING_PROVIDER_OPTIONS,
+  TRACKING_PUBLIC_ORIGIN,
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
   WhatsAppMessageTicks,
+  buildClientProviderTrackingUrl,
 } from "@cc/ui";
 import type {
   ApprovedTemplateOption,
@@ -43,6 +48,32 @@ import type {
   StaffOption,
   TeamOption,
 } from "@/lib/inbox-server-data";
+
+interface MessageCtaButton {
+  label: string;
+  url: string;
+  footerText?: string | null;
+  orderId?: string | null;
+  providerName?: string | null;
+  awbNumber?: string | null;
+}
+
+function extractCtaButton(m: ChatMessage): MessageCtaButton | null {
+  const raw = m.metadata?.ctaButton;
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const label = String(obj.label || "").trim();
+  const url = String(obj.url || "").trim();
+  if (!label || !url) return null;
+  return {
+    label,
+    url,
+    footerText: obj.footerText ? String(obj.footerText) : null,
+    orderId: obj.orderId ? String(obj.orderId) : null,
+    providerName: obj.providerName ? String(obj.providerName) : null,
+    awbNumber: obj.awbNumber ? String(obj.awbNumber) : null,
+  };
+}
 
 function extractQuotedReply(m: ChatMessage): QuotedMessageRef | null {
   const raw = m.metadata?.replyTo;
@@ -208,6 +239,22 @@ export function InboxClient({
   const [shortLinkBrandFilter, setShortLinkBrandFilter] = useState<
     "ALL" | "CC" | "CE53"
   >("ALL");
+
+  // Dynamic track.ccapl.cc/{id} interactive WhatsApp button popover state
+  const [showTrackPopover, setShowTrackPopover] = useState<boolean>(false);
+  const [trackOrderId, setTrackOrderId] = useState<string>("");
+  const [trackBrand, setTrackBrand] = useState<
+    "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53"
+  >("CLASSIC_CONCEPTS");
+  const [trackProviderKey, setTrackProviderKey] =
+    useState<string>("DELHIVERY");
+  const [trackAwbNumber, setTrackAwbNumber] = useState<string>("");
+  const [trackProviderUrl, setTrackProviderUrl] = useState<string>("");
+  const [trackButtonLabel, setTrackButtonLabel] =
+    useState<string>("Track Order");
+  const [trackMessageText, setTrackMessageText] = useState<string>("");
+  const [sendingTrackBtn, setSendingTrackBtn] = useState<boolean>(false);
+
   const [showRightDrawer, setShowRightDrawer] = useState<boolean>(true);
   const [toast, setToast] = useState<string>("");
 
@@ -347,6 +394,7 @@ export function InboxClient({
             assignments: data.assignments || [],
             customer: data.customer || null,
             orders: data.orders || [],
+            orderTrackings: data.orderTrackings || [],
             relations: data.relations || [],
             websiteEnquiries: data.websiteEnquiries || [],
             acrio: data.acrio || null,
@@ -617,6 +665,102 @@ export function InboxClient({
     highlightTimeoutRef.current = setTimeout(() => {
       setHighlightedMsgId((prev) => (prev === targetId ? null : prev));
     }, 1800);
+  }
+
+  function openTrackPopoverForOrder(prefill?: {
+    orderId?: string;
+    itemsSummary?: string;
+    brand?: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  }) {
+    setShowShortLinksPicker(false);
+    const existingList = detail?.orderTrackings || [];
+    const chosenOrderId =
+      prefill?.orderId ||
+      detail?.orders[0]?.orderNumber ||
+      existingList[0]?.orderId ||
+      "";
+    const matchedTracking = existingList.find(
+      (t) =>
+        t.orderId.toUpperCase() === chosenOrderId.trim().toUpperCase()
+    );
+    const inferredBrand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" =
+      matchedTracking?.brand ||
+      prefill?.brand ||
+      (chosenOrderId.toUpperCase().startsWith("CE")
+        ? "CLASSIC_EDGE_53"
+        : "CLASSIC_CONCEPTS");
+    const nextProvider = matchedTracking?.providerCode || "DELHIVERY";
+    const nextAwb = matchedTracking?.awbNumber || "";
+    const nextUrl =
+      matchedTracking?.providerTrackingUrl ||
+      buildClientProviderTrackingUrl(nextProvider, nextAwb || chosenOrderId);
+
+    setTrackOrderId(chosenOrderId);
+    setTrackBrand(inferredBrand);
+    setTrackProviderKey(nextProvider);
+    setTrackAwbNumber(nextAwb);
+    setTrackProviderUrl(nextUrl);
+    setTrackButtonLabel("Track Order");
+    setTrackMessageText("");
+    setShowTrackPopover(true);
+  }
+
+  async function handleSendOrderTracking(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedId || !detail) return;
+    const cleanOrderId = trackOrderId.trim();
+    if (!cleanOrderId) {
+      showToast("Please enter an Order ID first.");
+      return;
+    }
+
+    const matchedOrder = detail.orders.find(
+      (o) => o.orderNumber.toUpperCase() === cleanOrderId.toUpperCase()
+    );
+    const computedProviderUrl =
+      trackProviderUrl.trim() ||
+      buildClientProviderTrackingUrl(
+        trackProviderKey,
+        trackAwbNumber.trim() || cleanOrderId
+      );
+
+    setSendingTrackBtn(true);
+    try {
+      const res = await fetch(`/api/conversations/${selectedId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send_order_tracking",
+          orderId: cleanOrderId,
+          brand: trackBrand,
+          providerCode: trackProviderKey,
+          awbNumber: trackAwbNumber.trim(),
+          providerTrackingUrl: computedProviderUrl,
+          shipmentStatus: computedProviderUrl ? "DISPATCHED" : "IN_PRODUCTION",
+          itemsSummary: matchedOrder?.itemsSummary || undefined,
+          buttonLabel: trackButtonLabel.trim() || "Track Order",
+          text: trackMessageText.trim() || undefined,
+          replyToMessageId: replyingTo?.messageId || undefined,
+          replyTo: replyingTo || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        showToast(data.error || "Could not send tracking button.");
+        return;
+      }
+      setShowTrackPopover(false);
+      setReplyingTo(null);
+      showToast(
+        `Sent Track Order button (${data.tracking?.publicTrackingUrl || `${TRACKING_PUBLIC_ORIGIN}/${cleanOrderId}`}).`
+      );
+      await fetchAndCacheDetail(selectedId, false);
+      void refreshThreadsSilently(false);
+    } catch {
+      showToast("Network error while sending tracking button.");
+    } finally {
+      setSendingTrackBtn(false);
+    }
   }
 
   async function handleComposerSubmit(e: React.FormEvent) {
@@ -1770,6 +1914,7 @@ export function InboxClient({
                   m.messageType === "INTERNAL_NOTE";
                 const isOutbound = m.direction === "OUTBOUND";
                 const quotedReply = extractQuotedReply(m);
+                const ctaButton = extractCtaButton(m);
                 const isHighlighted = highlightedMsgId === m.id;
 
                 if (isInternalNote) {
@@ -1926,6 +2071,53 @@ export function InboxClient({
                         {m.body}
                       </p>
 
+                      {ctaButton && (
+                        <div className="mt-2 pt-2 border-t border-black/10 space-y-1.5">
+                          {(ctaButton.orderId || ctaButton.providerName) && (
+                            <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] text-[#54656f]">
+                              {ctaButton.orderId && (
+                                <span className="font-mono font-semibold text-[#111b21]">
+                                  Order #{ctaButton.orderId}
+                                </span>
+                              )}
+                              {ctaButton.providerName && (
+                                <span className="px-1.5 py-0.5 rounded bg-white/80 text-[#008069] font-medium">
+                                  {ctaButton.providerName}
+                                  {ctaButton.awbNumber
+                                    ? ` • AWB ${ctaButton.awbNumber}`
+                                    : ""}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-1.5">
+                            <a
+                              href={ctaButton.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md bg-white/95 hover:bg-white border border-[#00a884]/35 text-[#008069] text-xs font-semibold shadow-2xs transition"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>{ctaButton.label}</span>
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard?.writeText(ctaButton.url);
+                                showToast(`Copied ${ctaButton.url}`);
+                              }}
+                              title={`Copy ${ctaButton.url}`}
+                              className="p-1.5 rounded-md bg-white/90 hover:bg-white border border-black/10 text-[#54656f] hover:text-[#111b21] cursor-pointer"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <div className="text-[10.5px] font-mono text-[#54656f] truncate">
+                            {ctaButton.url}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="flex items-center justify-end gap-1.5 mt-1 text-[10.5px] tabular-nums text-[#667781]">
                         <span>
                           {new Date(m.createdAt).toLocaleTimeString([], {
@@ -1949,10 +2141,254 @@ export function InboxClient({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Zero-AI Quick Short Links Bar (/l/...) + Searchable Auto-Synced Product Links Picker */}
-            {detail && detail.customLinks.length > 0 && (
+            {/* Dynamic Order Tracking Button (track.ccapl.cc/{id}) + Quick Short Links Bar */}
+            {detail && (
               <div className="bg-[#f8f9fa] border-t border-[#d1d7db] px-4 py-1.5 shrink-0 relative">
-                {showShortLinksPicker && (
+                {showTrackPopover && (
+                  <form
+                    onSubmit={handleSendOrderTracking}
+                    className="absolute bottom-full left-4 right-4 mb-1.5 z-30 rounded-lg bg-white border border-[#d1d7db] shadow-xl p-3.5 space-y-2.5 max-w-xl"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-[#111b21]">
+                        <Truck className="w-4 h-4 text-[#00a884]" />
+                        <span>
+                          Create & Send Dynamic Order Track Button (track.ccapl.cc/{"{id}"})
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowTrackPopover(false)}
+                        className="p-1 rounded hover:bg-neutral-100 text-[#667781] cursor-pointer"
+                        aria-label="Close tracking button creator"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {detail.orders.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[11px] text-[#54656f]">
+                          Pick customer order:
+                        </span>
+                        {detail.orders.slice(0, 5).map((ord) => (
+                          <button
+                            key={ord.id}
+                            type="button"
+                            onClick={() =>
+                              openTrackPopoverForOrder({
+                                orderId: ord.orderNumber,
+                                itemsSummary: ord.itemsSummary,
+                              })
+                            }
+                            className={`px-2 py-0.5 rounded text-[11px] font-mono cursor-pointer border ${
+                              trackOrderId.trim().toUpperCase() ===
+                              ord.orderNumber.toUpperCase()
+                                ? "bg-[#00a884] text-white border-[#00a884]"
+                                : "bg-[#f0f2f5] text-[#111b21] border-[#d1d7db]"
+                            }`}
+                          >
+                            {ord.orderNumber}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#54656f] mb-0.5">
+                          Order ID *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={trackOrderId}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setTrackOrderId(val);
+                            if (val.trim().toUpperCase().startsWith("CE")) {
+                              setTrackBrand("CLASSIC_EDGE_53");
+                            }
+                            if (trackProviderKey !== "CUSTOM" && !trackAwbNumber.trim()) {
+                              setTrackProviderUrl(
+                                buildClientProviderTrackingUrl(
+                                  trackProviderKey,
+                                  val.trim()
+                                )
+                              );
+                            }
+                          }}
+                          placeholder="CC-2609 or CE53-1042"
+                          className="w-full rounded border border-[#d1d7db] px-2.5 py-1.5 text-xs font-mono text-[#111b21]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#54656f] mb-0.5">
+                          Store / Brand
+                        </label>
+                        <select
+                          value={trackBrand}
+                          onChange={(e) =>
+                            setTrackBrand(
+                              e.target.value as
+                                | "CLASSIC_CONCEPTS"
+                                | "CLASSIC_EDGE_53"
+                            )
+                          }
+                          className="w-full rounded border border-[#d1d7db] bg-white px-2 py-1.5 text-xs text-[#111b21]"
+                        >
+                          <option value="CLASSIC_CONCEPTS">
+                            Classic Concepts
+                          </option>
+                          <option value="CLASSIC_EDGE_53">
+                            Classic Edge 53
+                          </option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#54656f] mb-0.5">
+                          Courier Partner
+                        </label>
+                        <select
+                          value={trackProviderKey}
+                          onChange={(e) => {
+                            const nextProv = e.target.value;
+                            setTrackProviderKey(nextProv);
+                            if (nextProv !== "CUSTOM") {
+                              setTrackProviderUrl(
+                                buildClientProviderTrackingUrl(
+                                  nextProv,
+                                  trackAwbNumber.trim() || trackOrderId.trim()
+                                )
+                              );
+                            }
+                          }}
+                          className="w-full rounded border border-[#d1d7db] bg-white px-2 py-1.5 text-xs text-[#111b21]"
+                        >
+                          {SHIPPING_PROVIDER_OPTIONS.map((p) => (
+                            <option key={p.code} value={p.code}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#54656f] mb-0.5">
+                          AWB / LR Number
+                        </label>
+                        <input
+                          type="text"
+                          value={trackAwbNumber}
+                          onChange={(e) => {
+                            const awb = e.target.value;
+                            setTrackAwbNumber(awb);
+                            if (trackProviderKey !== "CUSTOM") {
+                              setTrackProviderUrl(
+                                buildClientProviderTrackingUrl(
+                                  trackProviderKey,
+                                  awb.trim() || trackOrderId.trim()
+                                )
+                              );
+                            }
+                          }}
+                          placeholder="Courier AWB or LR #"
+                          className="w-full rounded border border-[#d1d7db] px-2.5 py-1.5 text-xs font-mono text-[#111b21]"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-medium text-[#54656f] mb-0.5">
+                          Courier Redirect URL (customer lands here)
+                        </label>
+                        <input
+                          type="url"
+                          value={trackProviderUrl}
+                          onChange={(e) => setTrackProviderUrl(e.target.value)}
+                          placeholder="https://www.delhivery.com/track/package/..."
+                          className="w-full rounded border border-[#d1d7db] px-2.5 py-1.5 text-xs font-mono text-[#111b21]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#54656f] mb-0.5">
+                          WhatsApp Button Text
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={20}
+                          value={trackButtonLabel}
+                          onChange={(e) => setTrackButtonLabel(e.target.value)}
+                          placeholder="Track Order"
+                          className="w-full rounded border border-[#d1d7db] px-2.5 py-1.5 text-xs text-[#111b21]"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-medium text-[#54656f] mb-0.5">
+                          Optional Custom Message (blank uses clean default)
+                        </label>
+                        <input
+                          type="text"
+                          value={trackMessageText}
+                          onChange={(e) => setTrackMessageText(e.target.value)}
+                          placeholder="Your order has been dispatched. Tap Track Order below for live status."
+                          className="w-full rounded border border-[#d1d7db] px-2.5 py-1.5 text-xs text-[#111b21]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-[#f0f2f5]">
+                      <span className="text-[11px] font-mono text-[#008069] truncate">
+                        Button URL: {TRACKING_PUBLIC_ORIGIN}/
+                        {encodeURIComponent(
+                          trackOrderId.trim() || "{order-id}"
+                        )}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const idSlug = encodeURIComponent(
+                              trackOrderId.trim()
+                            );
+                            if (!idSlug) {
+                              showToast("Enter an Order ID first.");
+                              return;
+                            }
+                            appendToComposer(
+                              `${TRACKING_PUBLIC_ORIGIN}/${idSlug}`
+                            );
+                            setShowTrackPopover(false);
+                          }}
+                          className="px-2.5 py-1.5 rounded border border-[#d1d7db] bg-[#f8f9fa] hover:bg-neutral-100 text-[11px] font-medium text-[#3b4a54] cursor-pointer"
+                        >
+                          Insert Link Only
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={sendingTrackBtn || !trackOrderId.trim()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+                        >
+                          <Truck className="w-3.5 h-3.5" />
+                          <span>
+                            {sendingTrackBtn
+                              ? "Sending..."
+                              : "Send Track Button in Chat (Free)"}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                )}
+
+                {showShortLinksPicker && detail.customLinks.length > 0 && (
                   <div className="absolute bottom-full left-4 right-4 mb-1.5 z-30 rounded-lg bg-white border border-[#d1d7db] shadow-lg p-3 space-y-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-1 text-[11px]">
@@ -2044,35 +2480,63 @@ export function InboxClient({
                 )}
 
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-medium text-[#54656f] shrink-0">
-                    Quick Short Links:
-                  </span>
-                  <div className="flex items-center gap-1.5 overflow-x-auto">
-                    {detail.customLinks.slice(0, 4).map((lnk) => (
-                      <button
-                        key={lnk.id}
-                        type="button"
-                        onClick={() =>
-                          appendToComposer(
-                            `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
-                          )
-                        }
-                        title={lnk.title}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-neutral-100 border border-[#d1d7db] text-[11px] text-[#3b4a54] cursor-pointer whitespace-nowrap"
-                      >
-                        <Link2 className="w-3 h-3 text-[#00a884]" />
-                        <span>/l/{lnk.code}</span>
-                      </button>
-                    ))}
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => setShowShortLinksPicker((prev) => !prev)}
-                      className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#e7fce3] hover:bg-[#d9fdd3] border border-[#00a884]/35 text-[11px] font-semibold text-[#008069] cursor-pointer whitespace-nowrap"
+                      onClick={() => {
+                        if (showTrackPopover) {
+                          setShowTrackPopover(false);
+                        } else {
+                          openTrackPopoverForOrder();
+                        }
+                      }}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded border text-[11px] font-semibold cursor-pointer whitespace-nowrap ${
+                        showTrackPopover
+                          ? "bg-[#00a884] text-white border-[#00a884]"
+                          : "bg-white hover:bg-[#e7fce3] border-[#00a884]/45 text-[#008069]"
+                      }`}
                     >
-                      <Search className="w-3 h-3" />
-                      <span>All Products ({detail.customLinks.length})</span>
+                      <Truck className="w-3 h-3" />
+                      <span>Send Track Button (track.ccapl.cc)</span>
                     </button>
+                    {detail.customLinks.length > 0 && (
+                      <span className="text-[11px] font-medium text-[#54656f] hidden md:inline">
+                        Short Links:
+                      </span>
+                    )}
                   </div>
+
+                  {detail.customLinks.length > 0 && (
+                    <div className="flex items-center gap-1.5 overflow-x-auto">
+                      {detail.customLinks.slice(0, 3).map((lnk) => (
+                        <button
+                          key={lnk.id}
+                          type="button"
+                          onClick={() =>
+                            appendToComposer(
+                              `${WHATSAPP_PUBLIC_ORIGIN}/l/${lnk.code}`
+                            )
+                          }
+                          title={lnk.title}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-neutral-100 border border-[#d1d7db] text-[11px] text-[#3b4a54] cursor-pointer whitespace-nowrap"
+                        >
+                          <Link2 className="w-3 h-3 text-[#00a884]" />
+                          <span>/l/{lnk.code}</span>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowTrackPopover(false);
+                          setShowShortLinksPicker((prev) => !prev);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#e7fce3] hover:bg-[#d9fdd3] border border-[#00a884]/35 text-[11px] font-semibold text-[#008069] cursor-pointer whitespace-nowrap"
+                      >
+                        <Search className="w-3 h-3" />
+                        <span>All Products ({detail.customLinks.length})</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2494,30 +2958,69 @@ export function InboxClient({
                   </p>
                 ) : (
                   <div className="space-y-2.5">
-                    {detail.orders.map((o) => (
-                      <div
-                        key={o.id}
-                        className="p-3 rounded-lg border border-neutral-200 space-y-1.5"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-mono font-semibold text-neutral-900">
-                            {o.orderNumber}
-                          </span>
-                          <span className="text-xs font-semibold text-emerald-700">
-                            ₹{o.totalAmountInr.toLocaleString("en-IN")}
-                          </span>
+                    {detail.orders.map((o) => {
+                      const linkedTrack = (detail.orderTrackings || []).find(
+                        (t) =>
+                          t.orderId.toUpperCase() ===
+                          o.orderNumber.toUpperCase()
+                      );
+                      return (
+                        <div
+                          key={o.id}
+                          className="p-3 rounded-lg border border-neutral-200 space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-mono font-semibold text-neutral-900">
+                              {o.orderNumber}
+                            </span>
+                            <span className="text-xs font-semibold text-emerald-700">
+                              ₹{o.totalAmountInr.toLocaleString("en-IN")}
+                            </span>
+                          </div>
+                          <p className="text-xs text-neutral-700">
+                            {o.itemsSummary}
+                          </p>
+                          <div className="flex items-center justify-between text-[11px] text-neutral-500 pt-1">
+                            <span>Qty: {o.quantity}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-700 font-medium">
+                              {linkedTrack?.shipmentStatus ||
+                                o.fulfillmentStatus}
+                            </span>
+                          </div>
+                          {linkedTrack && (
+                            <div className="text-[10.5px] font-mono text-[#008069] truncate">
+                              {linkedTrack.providerName}
+                              {linkedTrack.awbNumber
+                                ? ` • AWB ${linkedTrack.awbNumber}`
+                                : ""}
+                            </div>
+                          )}
+                          <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-neutral-100">
+                            <a
+                              href={`${TRACKING_PUBLIC_ORIGIN}/${encodeURIComponent(o.orderNumber)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[11px] font-mono text-neutral-600 hover:text-[#008069] truncate"
+                            >
+                              track.ccapl.cc/{o.orderNumber}
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openTrackPopoverForOrder({
+                                  orderId: o.orderNumber,
+                                  itemsSummary: o.itemsSummary,
+                                })
+                              }
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#e7fce3] hover:bg-[#d9fdd3] text-[#008069] text-[11px] font-semibold cursor-pointer shrink-0"
+                            >
+                              <Truck className="w-3 h-3" />
+                              <span>Track Button</span>
+                            </button>
+                          </div>
                         </div>
-                        <p className="text-xs text-neutral-700">
-                          {o.itemsSummary}
-                        </p>
-                        <div className="flex items-center justify-between text-[11px] text-neutral-500 pt-1">
-                          <span>Qty: {o.quantity}</span>
-                          <span className="px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-700 font-medium">
-                            {o.fulfillmentStatus}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

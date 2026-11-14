@@ -2,7 +2,9 @@ import {
   ensureDatabasesBootstrapped,
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
+  listOrderTrackings,
   resolveSharedAnthropicApiKey,
+  type OrderTrackingRecord,
 } from "@cc/database";
 import { getCachedEcosystemCatalog } from "@cc/connections";
 import {
@@ -213,6 +215,7 @@ export interface ConversationDetailBundle {
   assignments?: ConversationAssignmentItem[];
   customer: CustomerProfile | null;
   orders: CustomerOrder[];
+  orderTrackings?: OrderTrackingRecord[];
   relations: CustomerRelation[];
   websiteEnquiries: WebsiteEnquiry[];
   acrio: AcrioCopilot | null;
@@ -255,29 +258,31 @@ export async function getConversationDetailServer(
   }
 
   await getCachedEcosystemCatalog().catch(() => null);
-  const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks] = await Promise.all([
-    conv.execute({
-      sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
-      args: [conversationId],
-    }),
-    conv.execute({
-      sql: `SELECT * FROM conversation_assignments WHERE conversation_id = ? ORDER BY assigned_at DESC`,
-      args: [conversationId],
-    }),
-    crm.execute({
-      sql: `SELECT * FROM customers WHERE phone = ? LIMIT 1`,
-      args: [customerPhone],
-    }),
-    crm.execute({
-      sql: `SELECT * FROM customer_orders WHERE customer_phone = ? ORDER BY ordered_at DESC`,
-      args: [customerPhone],
-    }),
-    crm.execute({
-      sql: `SELECT * FROM customer_relations WHERE customer_phone = ? ORDER BY occurred_at DESC`,
-      args: [customerPhone],
-    }),
-    listCustomAdminLinks(),
-  ]);
+  const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks, orderTrackings] =
+    await Promise.all([
+      conv.execute({
+        sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
+        args: [conversationId],
+      }),
+      conv.execute({
+        sql: `SELECT * FROM conversation_assignments WHERE conversation_id = ? ORDER BY assigned_at DESC`,
+        args: [conversationId],
+      }),
+      crm.execute({
+        sql: `SELECT * FROM customers WHERE phone = ? LIMIT 1`,
+        args: [customerPhone],
+      }),
+      crm.execute({
+        sql: `SELECT * FROM customer_orders WHERE customer_phone = ? ORDER BY ordered_at DESC`,
+        args: [customerPhone],
+      }),
+      crm.execute({
+        sql: `SELECT * FROM customer_relations WHERE customer_phone = ? ORDER BY occurred_at DESC`,
+        args: [customerPhone],
+      }),
+      listCustomAdminLinks(),
+      listOrderTrackings({ customerPhone }).catch(() => []),
+    ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
   const lookupKey = customerRow?.email ? String(customerRow.email) : customerPhone;
@@ -405,6 +410,7 @@ export async function getConversationDetailServer(
         }
       : null,
     orders,
+    orderTrackings,
     relations,
     websiteEnquiries,
     acrio,

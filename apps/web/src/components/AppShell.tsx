@@ -7,6 +7,7 @@ import {
   BarChart3,
   BookOpen,
   Contact2,
+  Truck,
   Users,
   Megaphone,
   FileText,
@@ -98,6 +99,12 @@ export function AppShell({
     {
       heading: "Campaigns & Flows",
       items: [
+        {
+          href: "/dashboard/tracking",
+          label: "Order Tracking",
+          icon: Truck,
+          visible: isActiveAccount && user.role !== "CLIENT",
+        },
         {
           href: "/dashboard/marketing",
           label: "Broadcast Queue & Links",

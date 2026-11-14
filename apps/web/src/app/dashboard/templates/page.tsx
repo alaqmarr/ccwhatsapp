@@ -28,6 +28,7 @@ import {
   ElementErrorState,
   MetricStatCard,
   StatCardsSkeleton,
+  TRACKING_PUBLIC_ORIGIN,
   TableRowsSkeleton,
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
@@ -1596,6 +1597,27 @@ export default function TemplatesStudioPage() {
                                     Dynamic Link Suffix (adds {"{{1}}"} at end)
                                   </option>
                                 </select>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setButtons((prev) =>
+                                      prev.map((b) =>
+                                        b.id === btn.id
+                                          ? {
+                                              ...b,
+                                              text: b.text || "Track Order",
+                                              urlType: "DYNAMIC",
+                                              url: `${TRACKING_PUBLIC_ORIGIN}/{{1}}`,
+                                            }
+                                          : b
+                                      )
+                                    );
+                                  }}
+                                  className="rounded border border-[#00a884]/45 bg-[#e7fce3] hover:bg-[#d9fdd3] px-2.5 py-1 text-[11px] font-semibold text-[#008069] cursor-pointer"
+                                >
+                                  Use Order Track (track.ccapl.cc/{"{{1}}"})
+                                </button>
 
                                 {customLinks.length > 0 && (
                                   <select

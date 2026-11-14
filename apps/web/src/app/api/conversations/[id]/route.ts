@@ -4,7 +4,10 @@ import {
   ensureDatabasesBootstrapped,
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
+  listOrderTrackings,
+  upsertOrderTracking,
   upsertSyncedContact,
+  type ShipmentStatus,
 } from "@cc/database";
 import {
   getCachedEcosystemCatalog,
@@ -62,7 +65,16 @@ export async function GET(
   });
 
   await getCachedEcosystemCatalog().catch(() => null);
-  const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks, teamsRes] = await Promise.all([
+  const [
+    msgRes,
+    assignRes,
+    custRes,
+    ordersRes,
+    relationsRes,
+    customLinks,
+    teamsRes,
+    orderTrackings,
+  ] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
       args: [id],
@@ -85,6 +97,7 @@ export async function GET(
     }),
     listCustomAdminLinks(),
     conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
+    listOrderTrackings({ customerPhone }).catch(() => []),
   ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
@@ -223,6 +236,7 @@ export async function GET(
         }
       : null,
     orders,
+    orderTrackings,
     relations,
     websiteEnquiries,
     acrio,
@@ -324,13 +338,40 @@ export async function POST(
         : "UTILITY";
 
     const replyMeta = await resolveQuotedReply();
-    const metadataJson = JSON.stringify(replyMeta ? { replyTo: replyMeta } : {});
+    const rawCta =
+      body.ctaButton && typeof body.ctaButton === "object"
+        ? (body.ctaButton as Record<string, unknown>)
+        : null;
+    const ctaButtonMeta =
+      rawCta && String(rawCta.url || "").trim()
+        ? {
+            label: String(rawCta.label || "Track Order").trim().slice(0, 20),
+            url: String(rawCta.url || "").trim(),
+            orderId: rawCta.orderId ? String(rawCta.orderId) : undefined,
+            providerName: rawCta.providerName
+              ? String(rawCta.providerName)
+              : undefined,
+            awbNumber: rawCta.awbNumber ? String(rawCta.awbNumber) : undefined,
+          }
+        : null;
+
+    const metaObj: Record<string, unknown> = {};
+    if (replyMeta) metaObj.replyTo = replyMeta;
+    if (ctaButtonMeta) metaObj.ctaButton = ctaButtonMeta;
+    const metadataJson = JSON.stringify(metaObj);
 
     const sendRes = await sendWhatsAppCloudMessage({
       toPhone: customerPhone,
       bodyText: text,
       templateName,
       replyToWaMessageId: replyMeta?.waMessageId || undefined,
+      ctaButton: ctaButtonMeta
+        ? {
+            label: ctaButtonMeta.label,
+            url: ctaButtonMeta.url,
+            footerText: "Classic Concepts & Classic Edge 53",
+          }
+        : undefined,
       simulateAsyncDelivery: true,
       forceSandbox: Boolean(body.forceSandbox),
     });
@@ -858,6 +899,189 @@ export async function POST(
       lastContactedAt: nowIso,
     }).catch(() => {});
     return NextResponse.json({ ok: true, orderNumber });
+  }
+
+  // Dynamically create/update track.ccapl.cc/{id} and optionally send interactive Track Order button in chat
+  if (action === "save_order_tracking" || action === "send_order_tracking") {
+    const upRes = await upsertOrderTracking({
+      orderId: String(body.orderId || ""),
+      brand: body.brand ? String(body.brand) : undefined,
+      customerName: String(body.customerName || cRow.customer_name || ""),
+      customerPhone,
+      conversationId: id,
+      itemsSummary: body.itemsSummary !== undefined ? String(body.itemsSummary) : undefined,
+      providerCode: body.providerCode ? String(body.providerCode) : undefined,
+      providerName: body.providerName ? String(body.providerName) : undefined,
+      awbNumber: body.awbNumber !== undefined ? String(body.awbNumber) : undefined,
+      providerTrackingUrl:
+        body.providerTrackingUrl !== undefined ? String(body.providerTrackingUrl) : undefined,
+      shipmentStatus: body.shipmentStatus
+        ? (String(body.shipmentStatus) as ShipmentStatus)
+        : "DISPATCHED",
+      estimatedDelivery:
+        body.estimatedDelivery !== undefined ? String(body.estimatedDelivery) : undefined,
+      notes: body.notes !== undefined ? String(body.notes) : undefined,
+      createdByName: user.name,
+    });
+
+    if (!upRes.ok || !upRes.tracking) {
+      return NextResponse.json(
+        { ok: false, error: upRes.error || "Could not create tracking link." },
+        { status: 400 }
+      );
+    }
+
+    const trk = upRes.tracking;
+
+    if (action === "save_order_tracking") {
+      return NextResponse.json({ ok: true, tracking: trk });
+    }
+
+    const buttonLabel = String(body.buttonLabel || "Track Order")
+      .trim()
+      .slice(0, 20) || "Track Order";
+    const firstName =
+      String(cRow.customer_name || "there")
+        .trim()
+        .split(/\s+/)[0] || "there";
+    const customText = String(body.text || "").trim();
+    const messageBody =
+      customText ||
+      `Hello ${firstName}, your ${trk.brandLabel} order ${trk.orderId} is dispatched${
+        trk.providerName ? ` via ${trk.providerName}` : ""
+      }${trk.awbNumber ? ` (AWB: ${trk.awbNumber})` : ""}. Tap the button below to track live delivery.`;
+
+    const replyMeta = await resolveQuotedReply();
+    const ctaButtonMeta = {
+      label: buttonLabel,
+      url: trk.publicTrackingUrl,
+      orderId: trk.orderId,
+      providerName: trk.providerName,
+      awbNumber: trk.awbNumber,
+    };
+    const metaObj: Record<string, unknown> = { ctaButton: ctaButtonMeta };
+    if (replyMeta) metaObj.replyTo = replyMeta;
+
+    const sendRes = await sendWhatsAppCloudMessage({
+      toPhone: customerPhone,
+      bodyText: messageBody,
+      replyToWaMessageId: replyMeta?.waMessageId || undefined,
+      ctaButton: {
+        label: buttonLabel,
+        url: trk.publicTrackingUrl,
+        footerText: `${trk.brandLabel} Dispatch`,
+      },
+      simulateAsyncDelivery: true,
+      forceSandbox: Boolean(body.forceSandbox),
+    });
+
+    let responseSeconds: number | null =
+      cRow.last_response_seconds !== null && cRow.last_response_seconds !== undefined
+        ? Number(cRow.last_response_seconds)
+        : null;
+    if (cRow.waiting_since) {
+      const waitStart = new Date(String(cRow.waiting_since)).getTime();
+      if (!Number.isNaN(waitStart)) {
+        responseSeconds = Math.max(1, Math.round((nowMs - waitStart) / 1000));
+      }
+    }
+
+    const wasAcrioOrUnassigned =
+      !cRow.assigned_staff_id || String(cRow.assigned_staff_id) === "ACRIO";
+
+    const msgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
+    await conv.batch(
+      [
+        {
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+          ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, 'CUSTOM_LINK', 'FREE_CHAT', ?, ?, ?, ?, ?)`,
+          args: [
+            msgId,
+            id,
+            user.name,
+            messageBody,
+            JSON.stringify(metaObj),
+            sendRes.waMessageId,
+            sendRes.deliveryStatus,
+            nowIso,
+          ],
+        },
+        {
+          sql: `UPDATE conversations
+                SET status = 'ASSIGNED',
+                    assigned_staff_id = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_id END,
+                    assigned_staff_name = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_name END,
+                    assigned_team_id = CASE WHEN ? = 1 THEN COALESCE(assigned_team_id, 'team_sales') ELSE assigned_team_id END,
+                    assigned_team_name = CASE
+                      WHEN ? = 1 AND assigned_team_id IS NULL THEN 'Sales Team'
+                      ELSE assigned_team_name
+                    END,
+                    waiting_since = NULL,
+                    last_response_seconds = ?,
+                    escalation_level = 'P0',
+                    last_message_preview = ?,
+                    last_message_at = ?
+                WHERE id = ?`,
+          args: [
+            wasAcrioOrUnassigned ? 1 : 0,
+            user.id,
+            wasAcrioOrUnassigned ? 1 : 0,
+            user.name,
+            wasAcrioOrUnassigned ? 1 : 0,
+            wasAcrioOrUnassigned ? 1 : 0,
+            responseSeconds,
+            `[${buttonLabel}] ${messageBody}`.slice(0, 140),
+            nowIso,
+            id,
+          ],
+        },
+      ],
+      "write"
+    );
+
+    await recordAssignedFirstResponse({
+      conversationId: id,
+      responderId: user.id,
+      responderName: user.name,
+      responderTeamId: cRow.assigned_team_id
+        ? String(cRow.assigned_team_id)
+        : "team_sales",
+      responderTeamName:
+        cRow.assigned_team_name &&
+        String(cRow.assigned_team_name) !== "System (ACRIO)"
+          ? String(cRow.assigned_team_name)
+          : "Sales Team",
+      messageId: msgId,
+      respondedAt: nowIso,
+      overrideWaitSeconds: responseSeconds,
+    }).catch(() => null);
+
+    if (sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR") {
+      scheduleSandboxDeliveryReceipt({
+        conversationId: id,
+        messageId: msgId,
+        waMessageId: sendRes.waMessageId,
+      });
+    }
+
+    socketHub.emit("message:new", {
+      conversationId: id,
+      senderName: user.name,
+      text: messageBody,
+    });
+
+    return NextResponse.json({
+      ok: sendRes.ok,
+      tracking: trk,
+      messageId: msgId,
+      waMessageId: sendRes.waMessageId,
+      deliveryStatus: sendRes.deliveryStatus,
+      mode: sendRes.mode,
+      ctaButton: ctaButtonMeta,
+      error: sendRes.error,
+    });
   }
 
   return NextResponse.json({ ok: false, error: "Unsupported action" }, { status: 400 });

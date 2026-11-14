@@ -150,7 +150,9 @@ export function resolveEnvMetaWhatsAppConfig(): EnvMetaWhatsAppConfig {
 }
 
 export function resolveDataDirectory(): string {
-  const dir = path.join(resolveMonorepoRoot(), "data");
+  const dir = process.env.DATABASE_DATA_DIR
+    ? path.resolve(process.env.DATABASE_DATA_DIR)
+    : path.join(resolveMonorepoRoot(), "data");
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -544,10 +546,672 @@ export interface MainWebsiteProduct {
 export function resolvePublicShortLinkOrigin(): string {
   const raw = (
     process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
     process.env.APP_BASE_URL ||
     "https://whatsapp.ccapl.cc"
   ).trim();
   return raw.replace(/\/+$/, "");
+}
+
+export function resolvePublicTrackingOrigin(): string {
+  const raw = (
+    process.env.TRACKING_PUBLIC_ORIGIN ||
+    process.env.NEXT_PUBLIC_TRACKING_ORIGIN ||
+    "https://track.ccapl.cc"
+  ).trim();
+  return raw.replace(/\/+$/, "");
+}
+
+export type OrderBrand = "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+
+export type ShipmentStatus =
+  | "ORDER_CONFIRMED"
+  | "IN_PRODUCTION"
+  | "READY_FOR_DISPATCH"
+  | "DISPATCHED"
+  | "IN_TRANSIT"
+  | "OUT_FOR_DELIVERY"
+  | "DELIVERED";
+
+export interface OrderTrackingRecord {
+  id: string;
+  orderId: string;
+  lookupKey: string;
+  brand: OrderBrand;
+  brandLabel: string;
+  customerName: string;
+  customerPhone: string;
+  conversationId: string | null;
+  itemsSummary: string;
+  providerCode: string;
+  providerName: string;
+  awbNumber: string;
+  providerTrackingUrl: string;
+  publicTrackingUrl: string;
+  shipmentStatus: ShipmentStatus;
+  estimatedDelivery: string;
+  notes: string;
+  lookupsCount: number;
+  lastLookedUpAt: string | null;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const SHIPPING_PROVIDERS: ReadonlyArray<{
+  code: string;
+  name: string;
+  urlTemplate: string;
+}> = [
+  {
+    code: "DELHIVERY",
+    name: "Delhivery",
+    urlTemplate: "https://www.delhivery.com/track/package/{awb}",
+  },
+  {
+    code: "BLUEDART",
+    name: "Blue Dart",
+    urlTemplate: "https://www.bluedart.com/tracking?trackFor=0&trackNo={awb}",
+  },
+  {
+    code: "SAFEEXPRESS",
+    name: "Safexpress",
+    urlTemplate: "https://www.safexpress.com/track?waybill={awb}",
+  },
+  {
+    code: "DTDC",
+    name: "DTDC",
+    urlTemplate: "https://www.dtdc.in/trace.asp?strCnno={awb}",
+  },
+  {
+    code: "VRL",
+    name: "VRL Logistics",
+    urlTemplate: "https://www.vrlgroup.in/track_consignment.aspx?lrno={awb}",
+  },
+  {
+    code: "TCIEXPRESS",
+    name: "TCI Express",
+    urlTemplate: "https://www.tciexpress.in/trackingdocket.asp?docketno={awb}",
+  },
+  {
+    code: "GATI",
+    name: "Gati KWE",
+    urlTemplate: "https://www.gati.com/track-by-docket/?dktno={awb}",
+  },
+  {
+    code: "TRACKON",
+    name: "Trackon",
+    urlTemplate: "https://trackon.in/Tracking/TrackConsignment?awb={awb}",
+  },
+  {
+    code: "SHIPROCKET",
+    name: "Shiprocket",
+    urlTemplate: "https://shiprocket.co/tracking/{awb}",
+  },
+  {
+    code: "DHL",
+    name: "DHL Express",
+    urlTemplate: "https://www.dhl.com/in-en/home/tracking.html?tracking-id={awb}",
+  },
+  {
+    code: "FEDEX",
+    name: "FedEx",
+    urlTemplate: "https://www.fedex.com/fedextrack/?trknbr={awb}",
+  },
+  {
+    code: "INDIAPOST",
+    name: "India Post",
+    urlTemplate:
+      "https://www.indiapost.gov.in/_layouts/15/dop.portal.tracking/trackconsignment.aspx",
+  },
+  {
+    code: "PORTER",
+    name: "Porter / Local Tempo",
+    urlTemplate: "",
+  },
+  {
+    code: "CUSTOM",
+    name: "Other Courier / Direct Link",
+    urlTemplate: "",
+  },
+];
+
+export function normalizeOrderLookupKey(raw: string): string {
+  return String(raw || "")
+    .trim()
+    .replace(/^#+/, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function stripOrderAlnum(raw: string): string {
+  return String(raw || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+export function sanitizeOrderDisplayId(raw: string): string {
+  return String(raw || "")
+    .trim()
+    .replace(/^#+/, "")
+    .replace(/\s+/g, "-")
+    .replace(/[^A-Za-z0-9_-]/g, "");
+}
+
+export function inferOrderBrand(
+  orderId: string,
+  explicitBrand?: string | null,
+  itemsHint?: string | null
+): OrderBrand {
+  if (explicitBrand === "CLASSIC_EDGE_53") return "CLASSIC_EDGE_53";
+  if (explicitBrand === "CLASSIC_CONCEPTS") return "CLASSIC_CONCEPTS";
+  const combined = `${orderId} ${itemsHint || ""}`.toUpperCase();
+  if (/^(CE53|CE-|YN-)|CLASSIC\s*EDGE|POLISHER|BENDER|MACHINE/.test(combined)) {
+    return "CLASSIC_EDGE_53";
+  }
+  return "CLASSIC_CONCEPTS";
+}
+
+export function buildProviderTrackingUrl(
+  providerCode: string,
+  awbNumber: string,
+  explicitProviderUrl?: string | null
+): { providerCode: string; providerName: string; providerTrackingUrl: string } {
+  const code = String(providerCode || "DELHIVERY").trim().toUpperCase();
+  const matched = SHIPPING_PROVIDERS.find((p) => p.code === code);
+  const providerName = matched ? matched.name : code === "CUSTOM" ? "Courier Partner" : code;
+  const cleanCustom = String(explicitProviderUrl || "").trim();
+  if (/^https?:\/\//i.test(cleanCustom)) {
+    return {
+      providerCode: matched ? matched.code : "CUSTOM",
+      providerName,
+      providerTrackingUrl: cleanCustom,
+    };
+  }
+  const cleanAwb = String(awbNumber || "").trim();
+  if (matched && matched.urlTemplate) {
+    if (!cleanAwb && matched.urlTemplate.includes("{awb}")) {
+      return {
+        providerCode: matched.code,
+        providerName: matched.name,
+        providerTrackingUrl: "",
+      };
+    }
+    return {
+      providerCode: matched.code,
+      providerName: matched.name,
+      providerTrackingUrl: matched.urlTemplate.replace(
+        "{awb}",
+        encodeURIComponent(cleanAwb)
+      ),
+    };
+  }
+  return {
+    providerCode: matched ? matched.code : "CUSTOM",
+    providerName,
+    providerTrackingUrl: "",
+  };
+}
+
+let trackingTableReady = false;
+async function ensureOrderTrackingTableExists() {
+  if (trackingTableReady) return;
+  const crm = getRawLibSqlClient("crm_orders");
+  await crm.execute("PRAGMA journal_mode = WAL;");
+  await crm.execute("PRAGMA busy_timeout = 5000;");
+  await crm.batch(
+    [
+      `CREATE TABLE IF NOT EXISTS order_trackings (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL UNIQUE,
+        lookup_key TEXT NOT NULL UNIQUE,
+        brand TEXT NOT NULL DEFAULT 'CLASSIC_CONCEPTS',
+        customer_name TEXT NOT NULL DEFAULT '',
+        customer_phone TEXT NOT NULL DEFAULT '',
+        conversation_id TEXT,
+        items_summary TEXT NOT NULL DEFAULT '',
+        provider_code TEXT NOT NULL DEFAULT 'DELHIVERY',
+        provider_name TEXT NOT NULL DEFAULT 'Delhivery',
+        awb_number TEXT NOT NULL DEFAULT '',
+        provider_tracking_url TEXT NOT NULL DEFAULT '',
+        shipment_status TEXT NOT NULL DEFAULT 'DISPATCHED',
+        estimated_delivery TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        lookups_count INTEGER NOT NULL DEFAULT 0,
+        last_looked_up_at TEXT,
+        created_by_name TEXT NOT NULL DEFAULT 'System',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_order_trackings_lookup ON order_trackings (lookup_key)`,
+      `CREATE INDEX IF NOT EXISTS idx_order_trackings_phone ON order_trackings (customer_phone)`,
+      `CREATE INDEX IF NOT EXISTS idx_order_trackings_updated ON order_trackings (updated_at DESC)`,
+    ],
+    "write"
+  );
+  trackingTableReady = true;
+}
+
+function mapOrderTrackingRow(row: Record<string, unknown>): OrderTrackingRecord {
+  const origin = resolvePublicTrackingOrigin();
+  const orderId = String(row.order_id || "");
+  const brand =
+    String(row.brand || "") === "CLASSIC_EDGE_53"
+      ? "CLASSIC_EDGE_53"
+      : "CLASSIC_CONCEPTS";
+  return {
+    id: String(row.id),
+    orderId,
+    lookupKey: String(row.lookup_key || normalizeOrderLookupKey(orderId)),
+    brand,
+    brandLabel: brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts",
+    customerName: String(row.customer_name || ""),
+    customerPhone: String(row.customer_phone || ""),
+    conversationId: row.conversation_id ? String(row.conversation_id) : null,
+    itemsSummary: String(row.items_summary || ""),
+    providerCode: String(row.provider_code || "DELHIVERY"),
+    providerName: String(row.provider_name || "Courier Partner"),
+    awbNumber: String(row.awb_number || ""),
+    providerTrackingUrl: String(row.provider_tracking_url || ""),
+    publicTrackingUrl: `${origin}/${encodeURIComponent(orderId)}`,
+    shipmentStatus: (String(row.shipment_status || "DISPATCHED") as ShipmentStatus),
+    estimatedDelivery: String(row.estimated_delivery || ""),
+    notes: String(row.notes || ""),
+    lookupsCount: Number(row.lookups_count ?? 0),
+    lastLookedUpAt: row.last_looked_up_at ? String(row.last_looked_up_at) : null,
+    createdByName: String(row.created_by_name || "System"),
+    createdAt: String(row.created_at || ""),
+    updatedAt: String(row.updated_at || ""),
+  };
+}
+
+export async function listOrderTrackings(filters?: {
+  brand?: string;
+  customerPhone?: string;
+  query?: string;
+  limit?: number;
+}): Promise<OrderTrackingRecord[]> {
+  await ensureOrderTrackingTableExists();
+  const crm = getRawLibSqlClient("crm_orders");
+  const where: string[] = [];
+  const args: (string | number)[] = [];
+
+  if (filters?.brand && filters.brand !== "ALL") {
+    where.push("brand = ?");
+    args.push(filters.brand);
+  }
+  if (filters?.customerPhone) {
+    where.push("customer_phone = ?");
+    args.push(filters.customerPhone.trim());
+  }
+  if (filters?.query?.trim()) {
+    const q = `%${filters.query.trim().toLowerCase()}%`;
+    where.push(
+      "(LOWER(order_id) LIKE ? OR LOWER(customer_name) LIKE ? OR LOWER(customer_phone) LIKE ? OR LOWER(awb_number) LIKE ? OR LOWER(provider_name) LIKE ? OR LOWER(items_summary) LIKE ?)"
+    );
+    args.push(q, q, q, q, q, q);
+  }
+
+  const limit = Math.min(500, Math.max(1, filters?.limit ?? 200));
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const res = await crm.execute({
+    sql: `SELECT * FROM order_trackings ${whereClause} ORDER BY updated_at DESC LIMIT ${limit}`,
+    args,
+  });
+  return res.rows.map((r) => mapOrderTrackingRow(r as Record<string, unknown>));
+}
+
+export async function upsertOrderTracking(params: {
+  orderId: string;
+  brand?: string;
+  customerName?: string;
+  customerPhone?: string;
+  conversationId?: string | null;
+  itemsSummary?: string;
+  providerCode?: string;
+  providerName?: string;
+  awbNumber?: string;
+  providerTrackingUrl?: string;
+  shipmentStatus?: ShipmentStatus;
+  estimatedDelivery?: string;
+  notes?: string;
+  createdByName?: string;
+}): Promise<{ ok: boolean; tracking?: OrderTrackingRecord; error?: string }> {
+  await ensureOrderTrackingTableExists();
+  const crm = getRawLibSqlClient("crm_orders");
+
+  const cleanOrderId = sanitizeOrderDisplayId(params.orderId);
+  const lookupKey = normalizeOrderLookupKey(cleanOrderId);
+  if (!cleanOrderId || !lookupKey) {
+    return {
+      ok: false,
+      error: "Please enter a valid Order ID (for example CC-2026-1089 or CE53-2026-401).",
+    };
+  }
+
+  const brand = inferOrderBrand(cleanOrderId, params.brand, params.itemsSummary);
+  const resolvedProvider = buildProviderTrackingUrl(
+    params.providerCode || "DELHIVERY",
+    params.awbNumber || "",
+    params.providerTrackingUrl
+  );
+  const finalProviderName =
+    params.providerName?.trim() || resolvedProvider.providerName;
+
+  const existingRes = await crm.execute({
+    sql: `SELECT * FROM order_trackings WHERE lookup_key = ? LIMIT 1`,
+    args: [lookupKey],
+  });
+  const nowIso = new Date().toISOString();
+
+  if (existingRes.rows[0]) {
+    const prev = existingRes.rows[0] as Record<string, unknown>;
+    const id = String(prev.id);
+    await crm.execute({
+      sql: `UPDATE order_trackings
+            SET order_id = ?,
+                brand = ?,
+                customer_name = ?,
+                customer_phone = ?,
+                conversation_id = COALESCE(?, conversation_id),
+                items_summary = ?,
+                provider_code = ?,
+                provider_name = ?,
+                awb_number = ?,
+                provider_tracking_url = ?,
+                shipment_status = ?,
+                estimated_delivery = ?,
+                notes = ?,
+                updated_at = ?
+            WHERE id = ?`,
+      args: [
+        cleanOrderId,
+        brand,
+        params.customerName !== undefined
+          ? params.customerName.trim()
+          : String(prev.customer_name || ""),
+        params.customerPhone !== undefined
+          ? params.customerPhone.trim()
+          : String(prev.customer_phone || ""),
+        params.conversationId || null,
+        params.itemsSummary !== undefined
+          ? params.itemsSummary.trim()
+          : String(prev.items_summary || ""),
+        resolvedProvider.providerCode,
+        finalProviderName,
+        params.awbNumber !== undefined
+          ? params.awbNumber.trim()
+          : String(prev.awb_number || ""),
+        resolvedProvider.providerTrackingUrl,
+        params.shipmentStatus ||
+          (String(prev.shipment_status || "DISPATCHED") as ShipmentStatus),
+        params.estimatedDelivery !== undefined
+          ? params.estimatedDelivery.trim()
+          : String(prev.estimated_delivery || ""),
+        params.notes !== undefined
+          ? params.notes.trim()
+          : String(prev.notes || ""),
+        nowIso,
+        id,
+      ],
+    });
+  } else {
+    const id = `trk_${Math.random().toString(36).slice(2, 10)}`;
+    await crm.execute({
+      sql: `INSERT INTO order_trackings (
+        id, order_id, lookup_key, brand, customer_name, customer_phone, conversation_id,
+        items_summary, provider_code, provider_name, awb_number, provider_tracking_url,
+        shipment_status, estimated_delivery, notes, lookups_count, created_by_name, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      args: [
+        id,
+        cleanOrderId,
+        lookupKey,
+        brand,
+        (params.customerName || "").trim(),
+        (params.customerPhone || "").trim(),
+        params.conversationId || null,
+        (params.itemsSummary || "").trim(),
+        resolvedProvider.providerCode,
+        finalProviderName,
+        (params.awbNumber || "").trim(),
+        resolvedProvider.providerTrackingUrl,
+        params.shipmentStatus || "DISPATCHED",
+        (params.estimatedDelivery || "").trim(),
+        (params.notes || "").trim(),
+        (params.createdByName || "Staff").trim(),
+        nowIso,
+        nowIso,
+      ],
+    });
+  }
+
+  // Also sync fulfillment_status onto customer_orders if matching order_number exists
+  const mappedFulfillment =
+    params.shipmentStatus === "DELIVERED"
+      ? "DELIVERED"
+      : params.shipmentStatus === "IN_PRODUCTION" ||
+        params.shipmentStatus === "ORDER_CONFIRMED"
+      ? "IN_PRODUCTION"
+      : "DISPATCHED";
+  await crm
+    .execute({
+      sql: `UPDATE customer_orders SET fulfillment_status = ? WHERE LOWER(order_number) = ?`,
+      args: [mappedFulfillment, cleanOrderId.toLowerCase()],
+    })
+    .catch(() => {});
+
+  const finalRes = await crm.execute({
+    sql: `SELECT * FROM order_trackings WHERE lookup_key = ? LIMIT 1`,
+    args: [lookupKey],
+  });
+  return {
+    ok: true,
+    tracking: finalRes.rows[0]
+      ? mapOrderTrackingRow(finalRes.rows[0] as Record<string, unknown>)
+      : undefined,
+  };
+}
+
+export async function deleteOrderTracking(idOrKey: string): Promise<boolean> {
+  await ensureOrderTrackingTableExists();
+  const crm = getRawLibSqlClient("crm_orders");
+  const clean = idOrKey.trim();
+  const res = await crm.execute({
+    sql: `DELETE FROM order_trackings WHERE id = ? OR lookup_key = ?`,
+    args: [clean, normalizeOrderLookupKey(clean)],
+  });
+  return Number(res.rowsAffected ?? 0) > 0;
+}
+
+export async function lookupOrderTracking(params: {
+  orderInput: string;
+  preferredBrand?: string;
+  incrementCounter?: boolean;
+}): Promise<OrderTrackingRecord | null> {
+  await ensureOrderTrackingTableExists();
+  const crm = getRawLibSqlClient("crm_orders");
+
+  let decoded = String(params.orderInput || "").trim();
+  try {
+    decoded = decodeURIComponent(decoded).trim();
+  } catch {
+    // Keep raw
+  }
+  const lookupKey = normalizeOrderLookupKey(decoded);
+  const alnumKey = stripOrderAlnum(decoded);
+  if (!lookupKey && !alnumKey) return null;
+
+  // 1. Check dedicated dynamic order_trackings table first
+  const exactRes = await crm.execute({
+    sql: `SELECT * FROM order_trackings WHERE lookup_key = ? OR LOWER(awb_number) = ? LIMIT 5`,
+    args: [lookupKey, decoded.toLowerCase()],
+  });
+
+  let matchedRow = exactRes.rows[0] as Record<string, unknown> | undefined;
+  if (!matchedRow && alnumKey.length >= 4) {
+    const allRes = await crm.execute(
+      `SELECT * FROM order_trackings ORDER BY updated_at DESC LIMIT 500`
+    );
+    matchedRow = allRes.rows.find((r) => {
+      const rAlnum = stripOrderAlnum(String(r.order_id || ""));
+      const rAwb = stripOrderAlnum(String(r.awb_number || ""));
+      return rAlnum === alnumKey || (rAwb.length >= 5 && rAwb === alnumKey);
+    }) as Record<string, unknown> | undefined;
+  }
+
+  if (matchedRow) {
+    if (params.incrementCounter !== false) {
+      const nowIso = new Date().toISOString();
+      await crm
+        .execute({
+          sql: `UPDATE order_trackings
+                SET lookups_count = lookups_count + 1,
+                    last_looked_up_at = ?
+                WHERE id = ?`,
+          args: [nowIso, String(matchedRow.id)],
+        })
+        .catch(() => {});
+      matchedRow = {
+        ...matchedRow,
+        lookups_count: Number(matchedRow.lookups_count ?? 0) + 1,
+        last_looked_up_at: nowIso,
+      };
+    }
+    return mapOrderTrackingRow(matchedRow);
+  }
+
+  // 2. Fallback to CRM customer_orders if order exists in workshop/CRM without courier AWB yet
+  const crmOrdersRes = await crm.execute(
+    `SELECT o.*, c.name as customer_name
+     FROM customer_orders o
+     LEFT JOIN customers c ON c.id = o.customer_id
+     ORDER BY o.ordered_at DESC
+     LIMIT 300`
+  );
+  const matchedCrmOrder = crmOrdersRes.rows.find((r) => {
+    const oNum = String(r.order_number || "");
+    return (
+      normalizeOrderLookupKey(oNum) === lookupKey ||
+      stripOrderAlnum(oNum) === alnumKey ||
+      String(r.id || "").toLowerCase() === decoded.toLowerCase()
+    );
+  }) as Record<string, unknown> | undefined;
+
+  if (matchedCrmOrder) {
+    const orderNum = String(matchedCrmOrder.order_number || decoded);
+    const items = String(matchedCrmOrder.items_summary || "");
+    const brand = inferOrderBrand(orderNum, params.preferredBrand, items);
+    const fStatus = String(matchedCrmOrder.fulfillment_status || "IN_PRODUCTION");
+    const shipmentStatus: ShipmentStatus =
+      fStatus === "DELIVERED"
+        ? "DELIVERED"
+        : fStatus === "DISPATCHED"
+        ? "DISPATCHED"
+        : fStatus === "DESIGN_PENDING"
+        ? "ORDER_CONFIRMED"
+        : "IN_PRODUCTION";
+    const maybeUrl = String(matchedCrmOrder.invoice_url || "").trim();
+    const isExternalProviderUrl =
+      /^https?:\/\//i.test(maybeUrl) &&
+      !/classicconcepts\.in|classicedge53\.com/i.test(maybeUrl);
+
+    return {
+      id: String(matchedCrmOrder.id),
+      orderId: orderNum,
+      lookupKey: normalizeOrderLookupKey(orderNum),
+      brand,
+      brandLabel: brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts",
+      customerName: String(matchedCrmOrder.customer_name || ""),
+      customerPhone: String(matchedCrmOrder.customer_phone || ""),
+      conversationId: null,
+      itemsSummary: items,
+      providerCode: "WORKSHOP",
+      providerName: isExternalProviderUrl ? "Courier Partner" : "Workshop Fulfillment",
+      awbNumber: "",
+      providerTrackingUrl: isExternalProviderUrl ? maybeUrl : "",
+      publicTrackingUrl: `${resolvePublicTrackingOrigin()}/${encodeURIComponent(orderNum)}`,
+      shipmentStatus,
+      estimatedDelivery: "",
+      notes: "",
+      lookupsCount: 1,
+      lastLookedUpAt: new Date().toISOString(),
+      createdByName: "CRM",
+      createdAt: String(matchedCrmOrder.ordered_at || ""),
+      updatedAt: String(matchedCrmOrder.ordered_at || ""),
+    };
+  }
+
+  // 3. Fallback to Classic Concepts website CartOrder table (dev.db) if present
+  const siteClient = getMainCatalogClient();
+  if (siteClient) {
+    try {
+      const cartRes = await siteClient.execute(
+        `SELECT id, name, phone, status, createdAt FROM CartOrder ORDER BY createdAt DESC LIMIT 200`
+      );
+      const foundCart = cartRes.rows.find((r: Record<string, unknown>) => {
+        const cid = String(r.id || "");
+        const short6 = cid.slice(-6).toLowerCase();
+        return (
+          cid.toLowerCase() === decoded.toLowerCase() ||
+          short6 === alnumKey ||
+          `cc${short6}` === alnumKey
+        );
+      });
+      if (foundCart) {
+        const cid = String(foundCart.id);
+        const itemsRes = await siteClient
+          .execute({
+            sql: `SELECT productName, quantity FROM CartOrderItem WHERE orderId = ?`,
+            args: [cid],
+          })
+          .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+        const summary = itemsRes.rows
+          .map(
+            (it: Record<string, unknown>) =>
+              `${Number(it.quantity ?? 1)}x ${String(it.productName || "Item")}`
+          )
+          .join(", ");
+        const st = String(foundCart.status || "Pending");
+        const shipmentStatus: ShipmentStatus =
+          st === "Completed"
+            ? "DELIVERED"
+            : st === "Processing"
+            ? "IN_PRODUCTION"
+            : "ORDER_CONFIRMED";
+        const displayId = cid.slice(-6).toUpperCase();
+        return {
+          id: cid,
+          orderId: displayId,
+          lookupKey: normalizeOrderLookupKey(displayId),
+          brand: "CLASSIC_CONCEPTS",
+          brandLabel: "Classic Concepts",
+          customerName: String(foundCart.name || ""),
+          customerPhone: String(foundCart.phone || ""),
+          conversationId: null,
+          itemsSummary: summary || "Website Cart Order",
+          providerCode: "WORKSHOP",
+          providerName: "Classic Concepts Dispatch",
+          awbNumber: "",
+          providerTrackingUrl: "",
+          publicTrackingUrl: `${resolvePublicTrackingOrigin()}/${displayId}`,
+          shipmentStatus,
+          estimatedDelivery: "",
+          notes: "",
+          lookupsCount: 1,
+          lastLookedUpAt: new Date().toISOString(),
+          createdByName: "Website",
+          createdAt: String(foundCart.createdAt || ""),
+          updatedAt: String(foundCart.createdAt || ""),
+        };
+      }
+    } catch {
+      // Ignore if CartOrder table doesn't exist
+    }
+  }
+
+  return null;
 }
 
 function toShortSlugPart(input: string): string {
