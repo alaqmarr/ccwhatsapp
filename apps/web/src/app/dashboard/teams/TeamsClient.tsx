@@ -13,6 +13,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { ElementErrorState } from "@cc/ui";
 
 interface TeamMemberItem {
   id: string;
@@ -78,6 +79,8 @@ export function TeamsClient({
 
   const [syncInfo, setSyncInfo] = useState<SyncInfo>(initialSyncInfo);
   const [syncing, setSyncing] = useState<boolean>(false);
+  const [reloadError, setReloadError] = useState<string>("");
+  const [reloading, setReloading] = useState<boolean>(false);
   const [showAiPanel, setShowAiPanel] = useState<boolean>(false);
   const [aiKeyInput, setAiKeyInput] = useState<string>("");
   const [savingAiKey, setSavingAiKey] = useState<boolean>(false);
@@ -103,20 +106,34 @@ export function TeamsClient({
   };
 
   const reloadSilently = useCallback(async () => {
-    const [tRes, cRes] = await Promise.all([
-      fetch("/api/teams", { cache: "no-store" }),
-      fetch("/api/cache/sync", { cache: "no-store" }),
-    ]);
-    const tData = await tRes.json().catch(() => ({}));
-    const cData = await cRes.json().catch(() => ({}));
+    setReloading(true);
+    setReloadError("");
+    try {
+      const [tRes, cRes] = await Promise.all([
+        fetch("/api/teams", { cache: "no-store" }),
+        fetch("/api/cache/sync", { cache: "no-store" }),
+      ]);
+      const tData = await tRes.json().catch(() => ({}));
+      const cData = await cRes.json().catch(() => ({}));
 
-    if (tData.ok) {
-      setTeams(tData.teams || []);
-      setActiveStaff(tData.activeStaff || []);
-      setCanManage(Boolean(tData.canManage));
-    }
-    if (cData.ok) {
-      setSyncInfo(cData);
+      if (tRes.ok && tData.ok) {
+        setTeams(tData.teams || []);
+        setActiveStaff(tData.activeStaff || []);
+        setCanManage(Boolean(tData.canManage));
+      } else {
+        setReloadError(
+          tData.error || "Could not refresh teams and escalation settings."
+        );
+      }
+      if (cRes.ok && cData.ok) {
+        setSyncInfo(cData);
+      }
+    } catch {
+      setReloadError(
+        "Network error while refreshing teams. Click Try Again."
+      );
+    } finally {
+      setReloading(false);
     }
   }, []);
 
@@ -417,6 +434,16 @@ export function TeamsClient({
         <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-medium px-4 py-2.5 rounded-md">
           {toast}
         </div>
+      )}
+
+      {reloadError && (
+        <ElementErrorState
+          compact
+          title="Could not refresh team escalation rules"
+          message={reloadError}
+          onRetry={() => reloadSilently()}
+          retrying={reloading}
+        />
       )}
 
       {/* ACRIO Initial Handling + Synced Catalog Banner */}

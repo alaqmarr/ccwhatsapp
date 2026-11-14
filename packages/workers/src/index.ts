@@ -126,8 +126,51 @@ export async function processInboundAutomations(params: {
   const rulesRes = await conv.execute(
     `SELECT * FROM automations WHERE is_enabled = 1`
   );
-  const lower = params.inboundText.toLowerCase();
+  const lower = params.inboundText.toLowerCase().trim();
   const nowIso = new Date().toISOString();
+
+  // Automatic WhatsApp Opt-Out Protection: if customer replies STOP / UNSUBSCRIBE, mark opted out immediately!
+  if (/^(stop|stop\s*promotions|stop\s*offers|unsubscribe|opt\s*out)\W*$/i.test(lower)) {
+    const crm = getRawLibSqlClient("crm_orders");
+    const mkt = getRawLibSqlClient("marketing");
+    await crm.execute({
+      sql: `UPDATE customers SET opt_in_marketing = 0, last_interaction_at = ? WHERE phone = ?`,
+      args: [nowIso, params.customerPhone],
+    });
+    await mkt.execute({
+      sql: `UPDATE broadcast_recipients
+            SET status = 'SKIPPED',
+                skip_or_error_reason = 'Customer replied STOP to opt out'
+            WHERE customer_phone = ? AND status = 'QUEUED'`,
+      args: [params.customerPhone],
+    });
+    const confirmBody =
+      "You have been removed from our promotional messages. You can still message us here anytime for orders or support.";
+    const sendRes = await sendWhatsAppCloudMessage({
+      toPhone: params.customerPhone,
+      bodyText: confirmBody,
+    });
+    await conv.execute({
+      sql: `INSERT INTO messages (
+        id, conversation_id, direction, sender_type, sender_name, message_type,
+        billing_category, body, wa_message_id, delivery_status, created_at
+      ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', 'Opt-Out Protection', 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+      args: [
+        `msg_optout_${crypto.randomUUID().slice(0, 8)}`,
+        params.conversationId,
+        confirmBody,
+        sendRes.waMessageId,
+        sendRes.deliveryStatus,
+        nowIso,
+      ],
+    });
+    socketHub.emit("message:new", {
+      conversationId: params.conversationId,
+      senderName: "Opt-Out Protection",
+      text: confirmBody,
+    });
+    return;
+  }
 
   for (const r of rulesRes.rows) {
     const triggerType = String(r.trigger_type);
@@ -743,88 +786,916 @@ export async function drainPendingWorkerJobs(): Promise<number> {
   return processed;
 }
 
-async function executeBroadcastJob(payload: Record<string, unknown>): Promise<void> {
-  const broadcastId = String(payload.broadcastId || "");
-  if (!broadcastId) return;
+export type BroadcastPacingMode =
+  | "SAFE_STEADY"
+  | "EXTRA_CAREFUL"
+  | "WARMED_FAST";
 
+export interface BroadcastQueueSafetySettings {
+  defaultPacingMode: BroadcastPacingMode;
+  delaySeconds: number;
+  batchSize: number;
+  batchPauseSeconds: number;
+  skipRecentHours: number;
+  dailyMarketingCap: number;
+  autoPauseOnConsecutiveFailures: number;
+  quietHoursEnabled: boolean;
+  sentTodayMarketingCount: number;
+}
+
+export async function getBroadcastQueueSettings(): Promise<BroadcastQueueSafetySettings> {
+  await ensureDatabasesBootstrapped();
   const mkt = getRawLibSqlClient("marketing");
-  const bcRes = await mkt.execute({
-    sql: `SELECT * FROM broadcasts WHERE id = ? LIMIT 1`,
-    args: [broadcastId],
-  });
-  if (!bcRes.rows[0]) return;
-  const bc = bcRes.rows[0] as Record<string, unknown>;
+  const { dateKey } = getCurrentIstDateAndTime();
+  const startOfDayIso = new Date(`${dateKey}T00:00:00+05:30`).toISOString();
 
-  const listRes = await mkt.execute({
-    sql: `SELECT * FROM marketing_lists WHERE id = ? LIMIT 1`,
-    args: [String(bc.list_id)],
-  });
-  const tplRes = await mkt.execute({
-    sql: `SELECT * FROM templates WHERE id = ? LIMIT 1`,
-    args: [String(bc.template_id)],
-  });
+  const [cfgRes, todayRes] = await Promise.all([
+    mkt.execute(
+      `SELECT * FROM broadcast_queue_settings WHERE id = 'default' LIMIT 1`
+    ),
+    mkt.execute({
+      sql: `SELECT COUNT(*) as cnt FROM broadcast_recipients r
+            JOIN broadcasts b ON b.id = r.broadcast_id
+            WHERE b.billing_category = 'MARKETING'
+              AND r.status IN ('SENT', 'DELIVERED', 'READ')
+              AND r.sent_at >= ?`,
+      args: [startOfDayIso],
+    }),
+  ]);
 
-  let phones: string[] = [];
-  try {
-    phones = JSON.parse(String(listRes.rows[0]?.member_phones_json || "[]"));
-  } catch {
-    phones = [];
-  }
+  const row = (cfgRes.rows[0] || {}) as Record<string, unknown>;
+  const modeRaw = String(row.default_pacing_mode || "SAFE_STEADY");
+  const defaultPacingMode: BroadcastPacingMode =
+    modeRaw === "EXTRA_CAREFUL" || modeRaw === "WARMED_FAST"
+      ? modeRaw
+      : "SAFE_STEADY";
 
-  const tplName = String(tplRes.rows[0]?.name || bc.template_name || "");
-  const tplBody = String(tplRes.rows[0]?.body_text || "Hello from Classic Concepts!");
-  const category = (String(bc.billing_category || "MARKETING") as BillingMessageCategory);
+  return {
+    defaultPacingMode,
+    delaySeconds: Math.max(1, Number(row.delay_seconds ?? 4)),
+    batchSize: Math.max(5, Number(row.batch_size ?? 25)),
+    batchPauseSeconds: Math.max(0, Number(row.batch_pause_seconds ?? 20)),
+    skipRecentHours: Math.max(0, Number(row.skip_recent_hours ?? 24)),
+    dailyMarketingCap: Math.max(10, Number(row.daily_marketing_cap ?? 250)),
+    autoPauseOnConsecutiveFailures: Math.max(
+      1,
+      Number(row.auto_pause_on_consecutive_failures ?? 3)
+    ),
+    quietHoursEnabled: Number(row.quiet_hours_enabled ?? 0) === 1,
+    sentTodayMarketingCount: Number(todayRes.rows[0]?.cnt ?? 0),
+  };
+}
 
-  let sent = 0;
-  let delivered = 0;
-  let totalClientBilled = 0;
-  let totalMetaCost = 0;
+export async function updateBroadcastQueueSettings(params: {
+  defaultPacingMode?: BroadcastPacingMode;
+  delaySeconds?: number;
+  batchSize?: number;
+  batchPauseSeconds?: number;
+  skipRecentHours?: number;
+  dailyMarketingCap?: number;
+  autoPauseOnConsecutiveFailures?: number;
+  quietHoursEnabled?: boolean;
+  updatedBy: string;
+}): Promise<BroadcastQueueSafetySettings> {
+  const current = await getBroadcastQueueSettings();
+  const mkt = getRawLibSqlClient("marketing");
+  const nowIso = new Date().toISOString();
 
-  for (const phone of phones) {
-    const out = await sendWhatsAppCloudMessage({
-      toPhone: phone,
-      bodyText: tplBody,
-      templateName: tplName,
-    });
-    if (out.ok) {
-      sent++;
-      if (out.deliveryStatus === "DELIVERED" || out.deliveryStatus === "SENT") {
-        delivered++;
-      }
-      const billed = await recordDualPricingLedgerEntry({
-        broadcastId,
-        customerPhone: phone,
-        category,
-        staffName: `Broadcast: ${String(bc.name)}`,
-      });
-      totalClientBilled += billed.clientUnitRateInr;
-      totalMetaCost += billed.actualMetaUnitCostInr;
-    }
-  }
+  const nextMode = params.defaultPacingMode || current.defaultPacingMode;
+  const nextDelay =
+    params.delaySeconds !== undefined
+      ? Math.max(1, Math.min(120, Math.round(params.delaySeconds)))
+      : current.delaySeconds;
+  const nextBatch =
+    params.batchSize !== undefined
+      ? Math.max(5, Math.min(200, Math.round(params.batchSize)))
+      : current.batchSize;
+  const nextPause =
+    params.batchPauseSeconds !== undefined
+      ? Math.max(0, Math.min(600, Math.round(params.batchPauseSeconds)))
+      : current.batchPauseSeconds;
+  const nextSkipHrs =
+    params.skipRecentHours !== undefined
+      ? Math.max(0, Math.min(720, Math.round(params.skipRecentHours)))
+      : current.skipRecentHours;
+  const nextDailyCap =
+    params.dailyMarketingCap !== undefined
+      ? Math.max(10, Math.min(500000, Math.round(params.dailyMarketingCap)))
+      : current.dailyMarketingCap;
+  const nextAutoPause =
+    params.autoPauseOnConsecutiveFailures !== undefined
+      ? Math.max(
+          1,
+          Math.min(20, Math.round(params.autoPauseOnConsecutiveFailures))
+        )
+      : current.autoPauseOnConsecutiveFailures;
+  const nextQuiet =
+    params.quietHoursEnabled !== undefined
+      ? params.quietHoursEnabled
+      : current.quietHoursEnabled;
 
   await mkt.execute({
-    sql: `UPDATE broadcasts
-          SET status = 'COMPLETED',
-              sent_count = ?,
-              delivered_count = ?,
-              client_billed_inr = ?,
-              actual_meta_cost_inr = ?
-          WHERE id = ?`,
+    sql: `UPDATE broadcast_queue_settings
+          SET default_pacing_mode = ?,
+              delay_seconds = ?,
+              batch_size = ?,
+              batch_pause_seconds = ?,
+              skip_recent_hours = ?,
+              daily_marketing_cap = ?,
+              auto_pause_on_consecutive_failures = ?,
+              quiet_hours_enabled = ?,
+              updated_by = ?,
+              updated_at = ?
+          WHERE id = 'default'`,
     args: [
-      sent,
-      delivered,
-      Number(totalClientBilled.toFixed(2)),
-      Number(totalMetaCost.toFixed(4)),
-      broadcastId,
+      nextMode,
+      nextDelay,
+      nextBatch,
+      nextPause,
+      nextSkipHrs,
+      nextDailyCap,
+      nextAutoPause,
+      nextQuiet ? 1 : 0,
+      params.updatedBy,
+      nowIso,
     ],
   });
 
+  return getBroadcastQueueSettings();
+}
+
+function pacingDefaultsForMode(
+  mode: BroadcastPacingMode,
+  fallback: BroadcastQueueSafetySettings
+): { delaySeconds: number; batchSize: number; batchPauseSeconds: number } {
+  if (mode === "EXTRA_CAREFUL") {
+    return { delaySeconds: 8, batchSize: 15, batchPauseSeconds: 30 };
+  }
+  if (mode === "WARMED_FAST") {
+    return { delaySeconds: 2, batchSize: 40, batchPauseSeconds: 15 };
+  }
+  return {
+    delaySeconds: fallback.delaySeconds || 4,
+    batchSize: fallback.batchSize || 25,
+    batchPauseSeconds: fallback.batchPauseSeconds ?? 20,
+  };
+}
+
+/**
+ * Enqueues a marketing or utility broadcast into the anti-spam recipient queue:
+ * - Deduplicates phones
+ * - Skips opted-out contacts (`opt_in_marketing = 0`)
+ * - Skips contacts already messaged within `skipRecentHours` (for MARKETING)
+ * - Enforces `dailyMarketingCap` so Meta's messaging tier limit is never breached
+ * - Staggers `scheduled_at` slots across `delaySeconds` + `batchPauseSeconds`
+ */
+export async function enqueueBroadcastIntoSafeQueue(params: {
+  name?: string;
+  listId: string;
+  templateId: string;
+  pacingMode?: BroadcastPacingMode;
+  skipRecentHoursOverride?: number;
+  scheduledForIso?: string | null;
+  customVariablesOverride?: Record<string, string>;
+  createdByName: string;
+}): Promise<{
+  ok: boolean;
+  broadcastId?: string;
+  queuedCount?: number;
+  skippedCount?: number;
+  estimatedDurationSeconds?: number;
+  error?: string;
+}> {
+  await ensureDatabasesBootstrapped();
+  const mkt = getRawLibSqlClient("marketing");
+  const crm = getRawLibSqlClient("crm_orders");
+
+  const [lRes, tRes, settings] = await Promise.all([
+    mkt.execute({
+      sql: `SELECT * FROM marketing_lists WHERE id = ? LIMIT 1`,
+      args: [params.listId],
+    }),
+    mkt.execute({
+      sql: `SELECT * FROM templates WHERE id = ? LIMIT 1`,
+      args: [params.templateId],
+    }),
+    getBroadcastQueueSettings(),
+  ]);
+
+  if (!lRes.rows[0] || !tRes.rows[0]) {
+    return { ok: false, error: "Please select a valid customer list and template." };
+  }
+
+  const listRow = lRes.rows[0] as Record<string, unknown>;
+  const tplRow = tRes.rows[0] as Record<string, unknown>;
+
+  if (String(tplRow.approval_status) !== "APPROVED") {
+    return {
+      ok: false,
+      error: `Template "${String(tplRow.name)}" is currently ${String(
+        tplRow.approval_status
+      )}. Only Approved templates can be sent in broadcasts.`,
+    };
+  }
+
+  let rawPhones: string[] = [];
+  try {
+    rawPhones = JSON.parse(String(listRow.member_phones_json || "[]"));
+  } catch {
+    rawPhones = [];
+  }
+
+  // Deduplicate phones while preserving order
+  const seenDigits = new Set<string>();
+  const uniquePhones: string[] = [];
+  for (const p of rawPhones) {
+    const d = String(p || "").replace(/\D/g, "");
+    if (d.length >= 10 && !seenDigits.has(d)) {
+      seenDigits.add(d);
+      uniquePhones.push(p.startsWith("+") ? p : `+${d}`);
+    }
+  }
+
+  if (uniquePhones.length === 0) {
+    return { ok: false, error: "This customer list has no valid WhatsApp phone numbers." };
+  }
+
+  const mode: BroadcastPacingMode =
+    params.pacingMode || settings.defaultPacingMode;
+  const pacing = pacingDefaultsForMode(mode, settings);
+  const skipRecentHours =
+    params.skipRecentHoursOverride !== undefined
+      ? Math.max(0, Number(params.skipRecentHoursOverride))
+      : settings.skipRecentHours;
+
+  const category = String(tplRow.category || "MARKETING") as BillingMessageCategory;
+  const tplBody = String(tplRow.body_text || "");
+  let varSpecs: Array<{
+    index: number;
+    sourceField?: string;
+    sampleValue?: string;
+  }> = [];
+  try {
+    varSpecs = JSON.parse(String(tplRow.variables_schema_json || "[]"));
+  } catch {
+    varSpecs = [];
+  }
+
+  // Fetch customer profiles & latest order numbers in bulk
+  const [custRes, ordersRes] = await Promise.all([
+    crm.execute(`SELECT * FROM customers`),
+    crm.execute(`SELECT customer_phone, order_number FROM customer_orders ORDER BY ordered_at DESC`),
+  ]);
+
+  const customerByPhone = new Map<string, Record<string, unknown>>();
+  for (const c of custRes.rows) {
+    const d = String(c.phone || "").replace(/\D/g, "");
+    if (d) customerByPhone.set(d, c as Record<string, unknown>);
+  }
+  const latestOrderByPhone = new Map<string, string>();
+  for (const o of ordersRes.rows) {
+    const d = String(o.customer_phone || "").replace(/\D/g, "");
+    if (d && !latestOrderByPhone.has(d)) {
+      latestOrderByPhone.set(d, String(o.order_number));
+    }
+  }
+
+  // Recent broadcast cooldown lookup
+  const recentlyMessagedDigits = new Set<string>();
+  if (category === "MARKETING" && skipRecentHours > 0) {
+    const cutoffIso = new Date(
+      Date.now() - skipRecentHours * 3600 * 1000
+    ).toISOString();
+    const recentRes = await mkt.execute({
+      sql: `SELECT DISTINCT customer_phone FROM broadcast_recipients
+            WHERE status IN ('SENT', 'DELIVERED', 'READ') AND sent_at >= ?`,
+      args: [cutoffIso],
+    });
+    for (const r of recentRes.rows) {
+      const d = String(r.customer_phone || "").replace(/\D/g, "");
+      if (d) recentlyMessagedDigits.add(d);
+    }
+  }
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const startBaseMs =
+    params.scheduledForIso &&
+    !Number.isNaN(new Date(params.scheduledForIso).getTime()) &&
+    new Date(params.scheduledForIso).getTime() > nowMs
+      ? new Date(params.scheduledForIso).getTime()
+      : nowMs;
+  const isScheduledFuture = startBaseMs > nowMs + 5000;
+
+  const bcId = `bc_${crypto.randomUUID().slice(0, 8)}`;
+  const remainingDailyAllowance =
+    category === "MARKETING"
+      ? Math.max(0, settings.dailyMarketingCap - settings.sentTodayMarketingCount)
+      : Number.MAX_SAFE_INTEGER;
+
+  let queuedCount = 0;
+  let skippedCount = 0;
+  let cumulativeDelaySec = 0;
+  const recipientInserts: Array<{ sql: string; args: any[] }> = [];
+
+  const bodyVarIndices = Array.from(
+    new Set(Array.from(tplBody.matchAll(/\{\{(\d+)\}\}/g)).map((m) => Number(m[1])))
+  ).sort((a, b) => a - b);
+
+  for (const phone of uniquePhones) {
+    const digits = phone.replace(/\D/g, "");
+    const cust = customerByPhone.get(digits);
+    const custName = cust ? String(cust.name || phone) : phone;
+    const firstName = custName.split(/[\s(]/)[0] || "Sir/Madam";
+    const optIn = cust ? Number(cust.opt_in_marketing ?? 1) === 1 : true;
+
+    let skipReason: string | null = null;
+    if (!optIn && category === "MARKETING") {
+      skipReason = "Customer opted out of promotions";
+    } else if (category === "MARKETING" && recentlyMessagedDigits.has(digits)) {
+      skipReason = `Already received a broadcast in the last ${skipRecentHours}h`;
+    } else if (category === "MARKETING" && queuedCount >= remainingDailyAllowance) {
+      skipReason = `Daily WhatsApp marketing cap (${settings.dailyMarketingCap}/day) reached`;
+    }
+
+    // Resolve personalized variables
+    const resolvedVars = bodyVarIndices.map((idx) => {
+      const overrideVal = params.customVariablesOverride?.[String(idx)];
+      if (overrideVal && overrideVal.trim()) return overrideVal.trim();
+
+      const spec = varSpecs.find((v) => v.index === idx);
+      const src = spec?.sourceField || (idx === 1 ? "customer.firstName" : "custom");
+      if (src === "customer.firstName") return firstName;
+      if (src === "customer.fullName") return custName;
+      if (src === "customer.companyName")
+        return String(cust?.company_name || firstName);
+      if (src === "customer.city") return String(cust?.city || "India");
+      if (src === "order.latestNumber")
+        return latestOrderByPhone.get(digits) || spec?.sampleValue || "CC-2026";
+      return spec?.sampleValue || firstName;
+    });
+
+    let renderedBody = tplBody;
+    bodyVarIndices.forEach((idx, pos) => {
+      renderedBody = renderedBody.replace(
+        new RegExp(`\\{\\{${idx}\\}\\}`, "g"),
+        resolvedVars[pos] || ""
+      );
+    });
+
+    if (skipReason) {
+      skippedCount++;
+      recipientInserts.push({
+        sql: `INSERT INTO broadcast_recipients (
+          id, broadcast_id, customer_name, customer_phone, variables_json, rendered_body,
+          status, skip_or_error_reason, attempts, scheduled_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'SKIPPED', ?, 0, ?, ?)`,
+        args: [
+          `bcr_${crypto.randomUUID().slice(0, 8)}`,
+          bcId,
+          custName,
+          phone,
+          JSON.stringify(resolvedVars),
+          renderedBody,
+          skipReason,
+          nowIso,
+          nowIso,
+        ],
+      });
+      continue;
+    }
+
+    if (queuedCount > 0) {
+      cumulativeDelaySec += pacing.delaySeconds;
+      if (queuedCount % pacing.batchSize === 0) {
+        cumulativeDelaySec += pacing.batchPauseSeconds;
+      }
+    }
+    const scheduledIso = new Date(
+      startBaseMs + cumulativeDelaySec * 1000
+    ).toISOString();
+    queuedCount++;
+
+    recipientInserts.push({
+      sql: `INSERT INTO broadcast_recipients (
+        id, broadcast_id, customer_name, customer_phone, variables_json, rendered_body,
+        status, attempts, scheduled_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', 0, ?, ?)`,
+      args: [
+        `bcr_${crypto.randomUUID().slice(0, 8)}`,
+        bcId,
+        custName,
+        phone,
+        JSON.stringify(resolvedVars),
+        renderedBody,
+        scheduledIso,
+        nowIso,
+      ],
+    });
+  }
+
+  const initialStatus =
+    queuedCount === 0
+      ? "COMPLETED"
+      : isScheduledFuture
+      ? "SCHEDULED"
+      : "SENDING";
+
+  await mkt.batch(
+    [
+      {
+        sql: `INSERT INTO broadcasts (
+          id, name, list_id, list_name, template_id, template_name, billing_category,
+          status, pacing_mode, delay_seconds, batch_size, batch_pause_seconds, skip_recent_hours,
+          total_recipients, queued_count, skipped_count, failed_count, sent_count, delivered_count, read_count,
+          client_billed_inr, actual_meta_cost_inr, scheduled_for, next_dispatch_at, started_at, completed_at,
+          created_by_name, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          bcId,
+          (params.name || "").trim() || `${String(listRow.name)} Campaign`,
+          params.listId,
+          String(listRow.name),
+          params.templateId,
+          String(tplRow.name),
+          category,
+          initialStatus,
+          mode,
+          pacing.delaySeconds,
+          pacing.batchSize,
+          pacing.batchPauseSeconds,
+          skipRecentHours,
+          uniquePhones.length,
+          queuedCount,
+          skippedCount,
+          isScheduledFuture ? new Date(startBaseMs).toISOString() : null,
+          queuedCount > 0 ? new Date(startBaseMs).toISOString() : null,
+          !isScheduledFuture && queuedCount > 0 ? nowIso : null,
+          queuedCount === 0 ? nowIso : null,
+          params.createdByName,
+          nowIso,
+        ],
+      },
+      ...recipientInserts,
+    ],
+    "write"
+  );
+
+  ensureBackgroundWorkersRunning();
+  if (!isScheduledFuture && queuedCount > 0) {
+    void processMarketingBroadcastQueue().catch(() => {});
+  }
+
+  socketHub.emit("broadcast:progress", {
+    broadcastId: bcId,
+    status: initialStatus,
+    queuedCount,
+    skippedCount,
+    sent: 0,
+  });
+
+  return {
+    ok: true,
+    broadcastId: bcId,
+    queuedCount,
+    skippedCount,
+    estimatedDurationSeconds: cumulativeDelaySec,
+  };
+}
+
+/**
+ * Legacy queue job bridge in case `whatsapp:broadcast` job exists in `queue_jobs.db`
+ */
+async function executeBroadcastJob(_payload: Record<string, unknown>): Promise<void> {
+  await processMarketingBroadcastQueue();
+}
+
+/**
+ * Safe Paced Marketing Broadcast Queue Worker:
+ * Sends at most 1 message per active campaign per tick according to `delay_seconds`
+ * and `batch_pause_seconds`, with automatic circuit-breaker pause if Meta flags rate/spam errors!
+ */
+export async function processMarketingBroadcastQueue(): Promise<number> {
+  if (globalWorkerRunner.__ccMarketingQueueRunning) return 0;
+  globalWorkerRunner.__ccMarketingQueueRunning = true;
+
+  let dispatchedCount = 0;
+  try {
+    await ensureDatabasesBootstrapped();
+    const mkt = getRawLibSqlClient("marketing");
+    const settings = await getBroadcastQueueSettings();
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    // Activate any SCHEDULED broadcasts whose scheduled start time has arrived
+    await mkt.execute({
+      sql: `UPDATE broadcasts
+            SET status = 'SENDING',
+                started_at = COALESCE(started_at, ?)
+            WHERE status = 'SCHEDULED'
+              AND scheduled_for IS NOT NULL
+              AND scheduled_for <= ?`,
+      args: [nowIso, nowIso],
+    });
+
+    const activeRes = await mkt.execute({
+      sql: `SELECT * FROM broadcasts
+            WHERE status IN ('QUEUED', 'SENDING')
+              AND (next_dispatch_at IS NULL OR next_dispatch_at <= ?)
+            ORDER BY created_at ASC
+            LIMIT 3`,
+      args: [nowIso],
+    });
+
+    for (const bRow of activeRes.rows) {
+      const bcId = String(bRow.id);
+      const delaySec = Math.max(1, Number(bRow.delay_seconds ?? 4));
+      const batchSize = Math.max(5, Number(bRow.batch_size ?? 25));
+      const batchPauseSec = Math.max(0, Number(bRow.batch_pause_seconds ?? 20));
+      const category = String(
+        bRow.billing_category || "MARKETING"
+      ) as BillingMessageCategory;
+
+      // Pick the single next queued recipient due for sending
+      const nextRecRes = await mkt.execute({
+        sql: `SELECT * FROM broadcast_recipients
+              WHERE broadcast_id = ? AND status = 'QUEUED'
+              ORDER BY scheduled_at ASC, created_at ASC
+              LIMIT 1`,
+        args: [bcId],
+      });
+
+      const rec = nextRecRes.rows[0] as Record<string, unknown> | undefined;
+      if (!rec) {
+        // No more QUEUED recipients -> finalize campaign as COMPLETED
+        await mkt.execute({
+          sql: `UPDATE broadcasts
+                SET status = 'COMPLETED',
+                    queued_count = 0,
+                    next_dispatch_at = NULL,
+                    completed_at = COALESCE(completed_at, ?)
+                WHERE id = ?`,
+          args: [nowIso, bcId],
+        });
+        socketHub.emit("broadcast:progress", {
+          broadcastId: bcId,
+          status: "COMPLETED",
+        });
+        continue;
+      }
+
+      // Fetch template details for structured Meta components
+      const tplRes = await mkt.execute({
+        sql: `SELECT * FROM templates WHERE id = ? LIMIT 1`,
+        args: [String(bRow.template_id)],
+      });
+      const tpl = (tplRes.rows[0] || {}) as Record<string, unknown>;
+      const tplName = String(tpl.name || bRow.template_name || "");
+      const tplLang = String(tpl.language || "en");
+      const headerType = String(tpl.header_type || "NONE");
+      const headerMediaUrl = tpl.header_media_url
+        ? String(tpl.header_media_url)
+        : "";
+
+      let resolvedVars: string[] = [];
+      try {
+        resolvedVars = JSON.parse(String(rec.variables_json || "[]"));
+      } catch {
+        resolvedVars = [];
+      }
+
+      const templateComponents: Record<string, unknown>[] = [];
+      if (
+        (headerType === "IMAGE" ||
+          headerType === "VIDEO" ||
+          headerType === "DOCUMENT") &&
+        headerMediaUrl
+      ) {
+        const mediaKey = headerType.toLowerCase();
+        templateComponents.push({
+          type: "header",
+          parameters: [
+            {
+              type: mediaKey,
+              [mediaKey]: { link: headerMediaUrl },
+            },
+          ],
+        });
+      }
+      if (resolvedVars.length > 0) {
+        templateComponents.push({
+          type: "body",
+          parameters: resolvedVars.map((val) => ({
+            type: "text",
+            text: String(val),
+          })),
+        });
+      }
+
+      const recId = String(rec.id);
+      const phone = String(rec.customer_phone);
+      const renderedBody = String(rec.rendered_body || tpl.body_text || "");
+
+      await mkt.execute({
+        sql: `UPDATE broadcast_recipients SET status = 'SENDING', attempts = attempts + 1 WHERE id = ?`,
+        args: [recId],
+      });
+
+      const out = await sendWhatsAppCloudMessage({
+        toPhone: phone,
+        bodyText: renderedBody,
+        templateName: tplName,
+        languageCode: tplLang,
+        templateComponents,
+      });
+
+      const finishedAtMs = Date.now();
+      const finishedIso = new Date(finishedAtMs).toISOString();
+
+      if (out.ok) {
+        dispatchedCount++;
+        const billed = await recordDualPricingLedgerEntry({
+          broadcastId: bcId,
+          customerPhone: phone,
+          category,
+          staffName: `Broadcast: ${String(bRow.name)}`,
+        });
+
+        const nextSentCount = Number(bRow.sent_count ?? 0) + 1;
+        const isBatchBoundary = nextSentCount % batchSize === 0;
+        const waitSeconds =
+          delaySec + (isBatchBoundary ? batchPauseSec : 0);
+        const nextDispatchIso = new Date(
+          finishedAtMs + waitSeconds * 1000
+        ).toISOString();
+
+        await mkt.batch(
+          [
+            {
+              sql: `UPDATE broadcast_recipients
+                    SET status = ?,
+                        sent_at = ?,
+                        wa_message_id = ?,
+                        skip_or_error_reason = NULL
+                    WHERE id = ?`,
+              args: [
+                out.deliveryStatus === "DELIVERED" ? "DELIVERED" : "SENT",
+                finishedIso,
+                out.waMessageId,
+                recId,
+              ],
+            },
+            {
+              sql: `UPDATE templates SET sent_count = sent_count + 1 WHERE id = ?`,
+              args: [String(bRow.template_id)],
+            },
+          ],
+          "write"
+        );
+
+        // Recount remaining queued items accurately
+        const remRes = await mkt.execute({
+          sql: `SELECT COUNT(*) as cnt FROM broadcast_recipients WHERE broadcast_id = ? AND status = 'QUEUED'`,
+          args: [bcId],
+        });
+        const remainingQueued = Number(remRes.rows[0]?.cnt ?? 0);
+        const nextStatus = remainingQueued === 0 ? "COMPLETED" : "SENDING";
+
+        await mkt.execute({
+          sql: `UPDATE broadcasts
+                SET status = ?,
+                    sent_count = sent_count + 1,
+                    delivered_count = delivered_count + 1,
+                    queued_count = ?,
+                    consecutive_failures = 0,
+                    client_billed_inr = ROUND(client_billed_inr + ?, 2),
+                    actual_meta_cost_inr = ROUND(actual_meta_cost_inr + ?, 4),
+                    next_dispatch_at = ?,
+                    started_at = COALESCE(started_at, ?),
+                    completed_at = CASE WHEN ? = 0 THEN ? ELSE completed_at END
+                WHERE id = ?`,
+          args: [
+            nextStatus,
+            remainingQueued,
+            billed.clientUnitRateInr,
+            billed.actualMetaUnitCostInr,
+            remainingQueued > 0 ? nextDispatchIso : null,
+            finishedIso,
+            remainingQueued,
+            finishedIso,
+            bcId,
+          ],
+        });
+
+        socketHub.emit("broadcast:progress", {
+          broadcastId: bcId,
+          status: nextStatus,
+          sentCount: nextSentCount,
+          queuedCount: remainingQueued,
+          nextDispatchAt: remainingQueued > 0 ? nextDispatchIso : null,
+        });
+      } else {
+        const nextConsecutiveFailures =
+          Number(bRow.consecutive_failures ?? 0) + 1;
+        const shouldCircuitBreak =
+          Boolean(out.isRateOrSpamBlock) ||
+          nextConsecutiveFailures >= settings.autoPauseOnConsecutiveFailures;
+
+        await mkt.execute({
+          sql: `UPDATE broadcast_recipients
+                SET status = 'FAILED',
+                    skip_or_error_reason = ?
+                WHERE id = ?`,
+          args: [out.error || "Delivery failed", recId],
+        });
+
+        const remRes = await mkt.execute({
+          sql: `SELECT COUNT(*) as cnt FROM broadcast_recipients WHERE broadcast_id = ? AND status = 'QUEUED'`,
+          args: [bcId],
+        });
+        const remainingQueued = Number(remRes.rows[0]?.cnt ?? 0);
+
+        if (shouldCircuitBreak && remainingQueued > 0) {
+          const pauseReason = out.isRateOrSpamBlock
+            ? `Paused automatically to protect your WhatsApp number from Meta rate limits (${out.error || "rate limit"}). Wait 15 minutes before resuming.`
+            : `Paused automatically after ${nextConsecutiveFailures} failed messages in a row (${out.error || "send error"}). Check settings and click Resume.`;
+
+          await mkt.execute({
+            sql: `UPDATE broadcasts
+                  SET status = 'PAUSED',
+                      failed_count = failed_count + 1,
+                      queued_count = ?,
+                      consecutive_failures = ?,
+                      paused_reason = ?,
+                      next_dispatch_at = NULL
+                  WHERE id = ?`,
+            args: [remainingQueued, nextConsecutiveFailures, pauseReason, bcId],
+          });
+
+          socketHub.emit("broadcast:progress", {
+            broadcastId: bcId,
+            status: "PAUSED",
+            pausedReason: pauseReason,
+          });
+        } else {
+          const nextStatus = remainingQueued === 0 ? "COMPLETED" : "SENDING";
+          const nextDispatchIso = new Date(
+            finishedAtMs + delaySec * 1000
+          ).toISOString();
+          await mkt.execute({
+            sql: `UPDATE broadcasts
+                  SET status = ?,
+                      failed_count = failed_count + 1,
+                      queued_count = ?,
+                      consecutive_failures = ?,
+                      next_dispatch_at = ?,
+                      completed_at = CASE WHEN ? = 0 THEN ? ELSE completed_at END
+                  WHERE id = ?`,
+            args: [
+              nextStatus,
+              remainingQueued,
+              nextConsecutiveFailures,
+              remainingQueued > 0 ? nextDispatchIso : null,
+              remainingQueued,
+              finishedIso,
+              bcId,
+            ],
+          });
+          socketHub.emit("broadcast:progress", {
+            broadcastId: bcId,
+            status: nextStatus,
+            queuedCount: remainingQueued,
+          });
+        }
+      }
+    }
+  } finally {
+    globalWorkerRunner.__ccMarketingQueueRunning = false;
+  }
+
+  return dispatchedCount;
+}
+
+export async function pauseMarketingBroadcast(
+  broadcastId: string,
+  reason = "Paused manually by team."
+): Promise<void> {
+  const mkt = getRawLibSqlClient("marketing");
+  await mkt.execute({
+    sql: `UPDATE broadcasts
+          SET status = 'PAUSED',
+              paused_reason = ?,
+              next_dispatch_at = NULL
+          WHERE id = ? AND status IN ('QUEUED', 'SENDING', 'SCHEDULED')`,
+    args: [reason, broadcastId],
+  });
+  socketHub.emit("broadcast:progress", { broadcastId, status: "PAUSED" });
+}
+
+export async function resumeMarketingBroadcast(
+  broadcastId: string
+): Promise<void> {
+  const mkt = getRawLibSqlClient("marketing");
+  const nowIso = new Date().toISOString();
+  const remRes = await mkt.execute({
+    sql: `SELECT COUNT(*) as cnt FROM broadcast_recipients WHERE broadcast_id = ? AND status = 'QUEUED'`,
+    args: [broadcastId],
+  });
+  const remaining = Number(remRes.rows[0]?.cnt ?? 0);
+  await mkt.execute({
+    sql: `UPDATE broadcasts
+          SET status = ?,
+              paused_reason = NULL,
+              consecutive_failures = 0,
+              queued_count = ?,
+              next_dispatch_at = ?
+          WHERE id = ?`,
+    args: [
+      remaining > 0 ? "SENDING" : "COMPLETED",
+      remaining,
+      remaining > 0 ? nowIso : null,
+      broadcastId,
+    ],
+  });
+  ensureBackgroundWorkersRunning();
+  if (remaining > 0) {
+    void processMarketingBroadcastQueue().catch(() => {});
+  }
+  socketHub.emit("broadcast:progress", { broadcastId, status: "SENDING" });
+}
+
+export async function retryFailedBroadcastRecipients(
+  broadcastId: string
+): Promise<number> {
+  const mkt = getRawLibSqlClient("marketing");
+  const nowIso = new Date().toISOString();
+  await mkt.execute({
+    sql: `UPDATE broadcast_recipients
+          SET status = 'QUEUED',
+              skip_or_error_reason = NULL,
+              scheduled_at = ?
+          WHERE broadcast_id = ? AND status = 'FAILED'`,
+    args: [nowIso, broadcastId],
+  });
+  const remRes = await mkt.execute({
+    sql: `SELECT COUNT(*) as cnt FROM broadcast_recipients WHERE broadcast_id = ? AND status = 'QUEUED'`,
+    args: [broadcastId],
+  });
+  const remaining = Number(remRes.rows[0]?.cnt ?? 0);
+  await mkt.execute({
+    sql: `UPDATE broadcasts
+          SET status = ?,
+              failed_count = 0,
+              queued_count = ?,
+              paused_reason = NULL,
+              consecutive_failures = 0,
+              next_dispatch_at = ?
+          WHERE id = ?`,
+    args: [
+      remaining > 0 ? "SENDING" : "COMPLETED",
+      remaining,
+      remaining > 0 ? nowIso : null,
+      broadcastId,
+    ],
+  });
+  ensureBackgroundWorkersRunning();
+  if (remaining > 0) {
+    void processMarketingBroadcastQueue().catch(() => {});
+  }
   socketHub.emit("broadcast:progress", {
     broadcastId,
-    status: "COMPLETED",
-    sent,
-    delivered,
+    status: remaining > 0 ? "SENDING" : "COMPLETED",
   });
+  return remaining;
+}
+
+export async function cancelMarketingBroadcast(
+  broadcastId: string
+): Promise<void> {
+  const mkt = getRawLibSqlClient("marketing");
+  const nowIso = new Date().toISOString();
+  await mkt.batch(
+    [
+      {
+        sql: `UPDATE broadcast_recipients
+              SET status = 'CANCELLED',
+                  skip_or_error_reason = 'Campaign cancelled before sending'
+              WHERE broadcast_id = ? AND status = 'QUEUED'`,
+        args: [broadcastId],
+      },
+      {
+        sql: `UPDATE broadcasts
+              SET status = 'CANCELLED',
+                  queued_count = 0,
+                  next_dispatch_at = NULL,
+                  completed_at = ?
+              WHERE id = ?`,
+        args: [nowIso, broadcastId],
+      },
+    ],
+    "write"
+  );
+  socketHub.emit("broadcast:progress", { broadcastId, status: "CANCELLED" });
 }
 
 function getCurrentIstDateAndTime(): {
@@ -849,12 +1720,14 @@ function getCurrentIstDateAndTime(): {
 const globalWorkerRunner = globalThis as unknown as {
   __ccBackgroundWorkersStarted?: boolean;
   __ccLastMidnightBackupDate?: string;
+  __ccMarketingQueueRunning?: boolean;
 };
 
 /**
  * Idempotent in-process background daemon started automatically by the server:
- * 1. Drains LibSQL job queues every 6 seconds.
- * 2. Checks the Midnight IST Google Drive Backup schedule every 30 seconds and triggers backup automatically!
+ * 1. Drains safe anti-spam marketing broadcast queue every 2 seconds.
+ * 2. Drains LibSQL job queues every 6 seconds.
+ * 3. Checks the Midnight IST Google Drive Backup schedule every 30 seconds and triggers backup automatically!
  */
 export function ensureBackgroundWorkersRunning(): void {
   if (globalWorkerRunner.__ccBackgroundWorkersStarted) return;
@@ -865,6 +1738,12 @@ export function ensureBackgroundWorkersRunning(): void {
     schedule: "Daily Midnight IST (Configurable in Dev Panel)",
   });
   void drainPendingWorkerJobs();
+  void processMarketingBroadcastQueue().catch(() => {});
+
+  // Safe Paced Marketing Broadcast Queue loop (every 2 seconds)
+  setInterval(() => {
+    void processMarketingBroadcastQueue().catch(() => {});
+  }, 2000);
 
   // Queue consumer loop
   setInterval(() => {

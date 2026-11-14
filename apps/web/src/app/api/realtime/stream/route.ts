@@ -11,10 +11,11 @@ export async function GET() {
 
   const stream = new ReadableStream({
     start(controller) {
-      const send = (data: unknown) => {
+      const send = <T extends { type?: string }>(data: T) => {
         try {
+          const eventLine = data.type ? `event: ${data.type}\n` : "";
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
+            encoder.encode(`${eventLine}data: ${JSON.stringify(data)}\n\n`)
           );
         } catch {
           // Stream closed

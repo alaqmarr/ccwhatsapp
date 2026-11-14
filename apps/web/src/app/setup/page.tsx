@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, Copy, Loader2 } from "lucide-react";
 import {
+  CardListSkeleton,
   ClassicConceptsWordmark,
+  ElementErrorState,
   WHATSAPP_PUBLIC_DOMAIN,
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
@@ -39,6 +41,7 @@ interface SetupStateResponse {
 export default function SetupPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
   const [state, setState] = useState<SetupStateResponse | null>(null);
   const [error, setError] = useState("");
@@ -74,32 +77,48 @@ export default function SetupPage() {
     systemTokenSaved: false,
   });
 
-  useEffect(() => {
-    fetch("/api/setup")
-      .then((r) => r.json())
-      .then((d: SetupStateResponse) => {
-        setState(d);
-        if (d.facebookConfig) {
-          setMode(d.facebookConfig.mode || "SANDBOX_SIMULATOR");
-          setMetaAppId(d.facebookConfig.metaAppId || "");
-          setMetaAppSecret(d.facebookConfig.metaAppSecret || "");
-          setWabaId(d.facebookConfig.wabaId || "");
-          setPhoneNumberId(d.facebookConfig.phoneNumberId || "");
-          setBusinessDisplayPhone(
-            d.facebookConfig.businessDisplayPhone || "+91 73372 22876"
-          );
-          setSystemUserAccessToken(
-            d.facebookConfig.systemUserAccessToken || ""
-          );
-          setWebhookVerifyToken(
-            d.facebookConfig.webhookVerifyToken || "cc_whatsapp_verify_2026"
-          );
-          setSteps(d.facebookConfig.stepsCompleted || steps);
+  const loadSetup = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const r = await fetch("/api/setup", { cache: "no-store" });
+      if (!r.ok) {
+        setLoadError("Could not load Facebook WhatsApp setup configuration.");
+        return;
+      }
+      const d: SetupStateResponse = await r.json();
+      setState(d);
+      if (d.facebookConfig) {
+        setMode(d.facebookConfig.mode || "SANDBOX_SIMULATOR");
+        setMetaAppId(d.facebookConfig.metaAppId || "");
+        setMetaAppSecret(d.facebookConfig.metaAppSecret || "");
+        setWabaId(d.facebookConfig.wabaId || "");
+        setPhoneNumberId(d.facebookConfig.phoneNumberId || "");
+        setBusinessDisplayPhone(
+          d.facebookConfig.businessDisplayPhone || "+91 73372 22876"
+        );
+        setSystemUserAccessToken(
+          d.facebookConfig.systemUserAccessToken || ""
+        );
+        setWebhookVerifyToken(
+          d.facebookConfig.webhookVerifyToken || "cc_whatsapp_verify_2026"
+        );
+        if (d.facebookConfig.stepsCompleted) {
+          setSteps(d.facebookConfig.stepsCompleted);
         }
-      })
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      }
+    } catch {
+      setLoadError(
+        "Network error while loading Facebook setup. Click Try Again."
+      );
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadSetup();
+  }, [loadSetup]);
 
   const webhookUrl = `${WHATSAPP_PUBLIC_ORIGIN}/api/webhooks/whatsapp`;
 
@@ -176,9 +195,34 @@ export default function SetupPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-neutral-50 text-neutral-700 gap-2 text-sm">
-        <Loader2 className="w-4 h-4 animate-spin" />
-        <span>Loading setup...</span>
+      <div className="min-h-screen w-full bg-neutral-50 p-6 space-y-6">
+        <div className="bg-white rounded-lg border border-neutral-200 p-4 flex items-center gap-3">
+          <ClassicConceptsWordmark height={38} variant="light" />
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+          <div className="xl:col-span-5">
+            <CardListSkeleton rows={3} />
+          </div>
+          <div className="xl:col-span-7">
+            <CardListSkeleton rows={5} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError && !state) {
+    return (
+      <div className="min-h-screen w-full bg-neutral-50 p-6 space-y-6">
+        <div className="bg-white rounded-lg border border-neutral-200 p-4 flex items-center gap-3">
+          <ClassicConceptsWordmark height={38} variant="light" />
+        </div>
+        <ElementErrorState
+          title="Could not load Facebook WhatsApp setup"
+          message={loadError}
+          onRetry={() => loadSetup()}
+          retrying={loading}
+        />
       </div>
     );
   }

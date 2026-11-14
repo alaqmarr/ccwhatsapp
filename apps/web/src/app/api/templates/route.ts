@@ -1,0 +1,658 @@
+import crypto from "node:crypto";
+import { NextResponse } from "next/server";
+import {
+  buildMetaGraphTemplatePayload,
+  getCachedEcosystemCatalog,
+  sendWhatsAppCloudMessage,
+  submitTemplateToMetaCloud,
+  syncTemplatesFromMetaCloud,
+  validateWhatsAppTemplateRules,
+  type WhatsAppHeaderType,
+  type WhatsAppTemplateButton,
+  type WhatsAppTemplateCategory,
+  type WhatsAppTemplateDefinition,
+  type WhatsAppTemplateLocation,
+  type WhatsAppTemplateVariableSpec,
+} from "@cc/connections";
+import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import { hasPermission, isSuperAdminCapable } from "@cc/rbac";
+import { socketHub } from "@cc/sockets";
+import { listCustomAdminLinks } from "@cc/storage";
+import {
+  recordDualPricingLedgerEntry,
+  type BillingMessageCategory,
+} from "@cc/workers";
+import { getCurrentUser } from "@/lib/session";
+
+export const dynamic = "force-dynamic";
+
+function parseJsonSafe<T>(raw: unknown, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(String(raw)) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeTemplateSlug(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 120);
+}
+
+export async function GET() {
+  const user = await getCurrentUser();
+  if (!user || !hasPermission(user.role, "inbox:view", user.status)) {
+    return NextResponse.json(
+      { ok: false, error: "Sign in required." },
+      { status: 403 }
+    );
+  }
+
+  await ensureDatabasesBootstrapped();
+  const mkt = getRawLibSqlClient("marketing");
+  const bill = getRawLibSqlClient("billing_ops");
+
+  const [tplRes, pricingRes, customLinks, catalog] = await Promise.all([
+    mkt.execute(
+      `SELECT * FROM templates ORDER BY COALESCE(updated_at, created_at) DESC`
+    ),
+    bill.execute(`SELECT * FROM pricing_config WHERE id = 'default' LIMIT 1`),
+    listCustomAdminLinks(),
+    getCachedEcosystemCatalog().catch(() => ({
+      classicConceptsProducts: [],
+      classicEdgeItems: [],
+      allItems: [],
+    })),
+  ]);
+
+  const pRow = (pricingRes.rows[0] || {}) as Record<string, unknown>;
+  const marketingRateInr = Number(pRow.client_marketing_rate_inr ?? 0.95);
+  const otherRateInr = Number(pRow.client_other_rate_inr ?? 0.3);
+
+  const templates = tplRes.rows.map((t) => {
+    const buttons = parseJsonSafe<WhatsAppTemplateButton[]>(t.buttons_json, []);
+    const variablesSchema = parseJsonSafe<WhatsAppTemplateVariableSpec[]>(
+      t.variables_schema_json,
+      []
+    );
+    const headerLocation = parseJsonSafe<WhatsAppTemplateLocation | null>(
+      t.header_location_json,
+      null
+    );
+    const category = (String(t.category || "MARKETING") as WhatsAppTemplateCategory);
+    const headerType = (String(t.header_type || (t.header_text ? "TEXT" : "NONE")) as WhatsAppHeaderType);
+
+    const def: WhatsAppTemplateDefinition = {
+      id: String(t.id),
+      name: String(t.name),
+      language: String(t.language || "en"),
+      category,
+      headerType,
+      headerText: t.header_text ? String(t.header_text) : null,
+      headerMediaUrl: t.header_media_url ? String(t.header_media_url) : null,
+      headerLocation,
+      bodyText: String(t.body_text || ""),
+      footerText: t.footer_text ? String(t.footer_text) : null,
+      buttons,
+      variablesSchema,
+      allowCategoryChange: Number(t.allow_category_change ?? 1) === 1,
+      codeExpirationMinutes: t.code_expiration_minutes
+        ? Number(t.code_expiration_minutes)
+        : null,
+    };
+
+    return {
+      ...def,
+      id: String(t.id),
+      ctaLabel: t.cta_label ? String(t.cta_label) : null,
+      ctaUrl: t.cta_url ? String(t.cta_url) : null,
+      approvalStatus: String(t.approval_status || "APPROVED"),
+      metaTemplateId: t.meta_template_id ? String(t.meta_template_id) : null,
+      metaQualityScore: String(t.meta_quality_score || "GREEN"),
+      rejectionReason: t.rejection_reason ? String(t.rejection_reason) : null,
+      sentCount: Number(t.sent_count ?? 0),
+      createdByName: String(t.created_by_name || "System"),
+      createdAt: String(t.created_at),
+      updatedAt: String(t.updated_at || t.created_at),
+      metaPayloadPreview: buildMetaGraphTemplatePayload(def),
+    };
+  });
+
+  const catalogMediaItems = catalog.allItems
+    .filter((i) => Boolean(i.mainImage))
+    .slice(0, 24)
+    .map((i) => {
+      const rawImg = String(i.mainImage || "");
+      const origin =
+        i.brand === "CLASSIC_EDGE_53"
+          ? "https://www.classicedge53.com"
+          : "https://www.classicconcepts.in";
+      const imageUrl = /^https?:\/\//i.test(rawImg)
+        ? rawImg
+        : `${origin}${rawImg.startsWith("/") ? "" : "/"}${rawImg}`;
+      return {
+        name: i.name,
+        brandLabel: i.brandLabel,
+        url: i.url,
+        imageUrl,
+      };
+    });
+
+  return NextResponse.json({
+    ok: true,
+    canManage: hasPermission(user.role, "templates:manage", user.status),
+    isDev: user.role === "DEV",
+    isSuperAdmin: isSuperAdminCapable(user.role),
+    currentUserRole: user.role,
+    rates: {
+      marketingRateInr,
+      otherRateInr,
+    },
+    templates,
+    customLinks,
+    catalogMediaItems,
+  });
+}
+
+export async function POST(req: Request) {
+  const user = await getCurrentUser();
+  if (!user || !hasPermission(user.role, "templates:manage", user.status)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Only Manager, Admin, Superadmin, or Dev accounts can create or edit WhatsApp templates.",
+      },
+      { status: 403 }
+    );
+  }
+
+  await ensureDatabasesBootstrapped();
+  const body = await req.json().catch(() => ({}));
+  const action = String(body.action || "");
+  const mkt = getRawLibSqlClient("marketing");
+  const nowIso = new Date().toISOString();
+
+  if (action === "sync_meta") {
+    const syncRes = await syncTemplatesFromMetaCloud();
+    socketHub.emit("template:updated", { syncedCount: syncRes.syncedCount });
+    return NextResponse.json(syncRes, { status: syncRes.ok ? 200 : 400 });
+  }
+
+  if (action === "save_draft" || action === "submit_to_meta") {
+    const existingId = body.id ? String(body.id).trim() : "";
+    const slugName = normalizeTemplateSlug(
+      String(body.name || "classic_concepts_template")
+    );
+    const category: WhatsAppTemplateCategory =
+      body.category === "UTILITY" || body.category === "AUTHENTICATION"
+        ? body.category
+        : "MARKETING";
+    const headerType: WhatsAppHeaderType = [
+      "NONE",
+      "TEXT",
+      "IMAGE",
+      "VIDEO",
+      "DOCUMENT",
+      "LOCATION",
+    ].includes(String(body.headerType))
+      ? (String(body.headerType) as WhatsAppHeaderType)
+      : "NONE";
+
+    const buttons: WhatsAppTemplateButton[] = Array.isArray(body.buttons)
+      ? body.buttons.map((b: any, idx: number) => ({
+          id: String(b.id || `btn_${idx + 1}`),
+          type:
+            b.type === "URL" ||
+            b.type === "PHONE_NUMBER" ||
+            b.type === "COPY_CODE" ||
+            b.type === "OTP"
+              ? b.type
+              : "QUICK_REPLY",
+          text: String(b.text || "").trim(),
+          url: b.url ? String(b.url).trim() : undefined,
+          urlType: b.urlType === "DYNAMIC" ? "DYNAMIC" : "STATIC",
+          exampleSuffix: b.exampleSuffix
+            ? String(b.exampleSuffix).trim()
+            : undefined,
+          phoneNumber: b.phoneNumber ? String(b.phoneNumber).trim() : undefined,
+          exampleCode: b.exampleCode ? String(b.exampleCode).trim() : undefined,
+          otpType: b.otpType === "ONE_TAP" ? "ONE_TAP" : "COPY_CODE",
+        }))
+      : [];
+
+    const variablesSchema: WhatsAppTemplateVariableSpec[] = Array.isArray(
+      body.variablesSchema
+    )
+      ? body.variablesSchema.map((v: any, idx: number) => ({
+          index: Number(v.index || idx + 1),
+          label: String(v.label || `Variable ${idx + 1}`),
+          sourceField: v.sourceField || "custom",
+          sampleValue: String(v.sampleValue || "").trim(),
+        }))
+      : [];
+
+    const headerLocation: WhatsAppTemplateLocation | null =
+      headerType === "LOCATION" && body.headerLocation
+        ? {
+            name: String(body.headerLocation.name || "Classic Concepts"),
+            address: String(
+              body.headerLocation.address || "Secunderabad, Hyderabad"
+            ),
+            latitude: Number(body.headerLocation.latitude ?? 17.4399),
+            longitude: Number(body.headerLocation.longitude ?? 78.4983),
+          }
+        : null;
+
+    const tplDef: WhatsAppTemplateDefinition = {
+      id: existingId || undefined,
+      name: slugName,
+      language: String(body.language || "en").trim() || "en",
+      category,
+      headerType,
+      headerText:
+        headerType === "TEXT" && body.headerText
+          ? String(body.headerText).trim()
+          : null,
+      headerMediaUrl:
+        (headerType === "IMAGE" ||
+          headerType === "VIDEO" ||
+          headerType === "DOCUMENT") &&
+        body.headerMediaUrl
+          ? String(body.headerMediaUrl).trim()
+          : null,
+      headerLocation,
+      bodyText: String(body.bodyText || "").trim(),
+      footerText: body.footerText ? String(body.footerText).trim() : null,
+      buttons,
+      variablesSchema,
+      allowCategoryChange: body.allowCategoryChange !== false,
+      codeExpirationMinutes:
+        category === "AUTHENTICATION"
+          ? Number(body.codeExpirationMinutes || 10)
+          : null,
+    };
+
+    const validation = validateWhatsAppTemplateRules(tplDef);
+    if (action === "submit_to_meta" && !validation.valid) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: validation.errors[0],
+          errors: validation.errors,
+          warnings: validation.warnings,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!tplDef.name || !tplDef.bodyText) {
+      return NextResponse.json(
+        { ok: false, error: "Template name and message body are required." },
+        { status: 400 }
+      );
+    }
+
+    // Check unique name collision
+    const dupCheck = await mkt.execute({
+      sql: `SELECT id FROM templates WHERE name = ? LIMIT 1`,
+      args: [tplDef.name],
+    });
+    if (dupCheck.rows[0] && String(dupCheck.rows[0].id) !== existingId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `A template named "${tplDef.name}" already exists. Choose a different template name.`,
+        },
+        { status: 400 }
+      );
+    }
+
+    let approvalStatus = "DRAFT";
+    let metaTemplateId: string | null = null;
+    let rejectionReason: string | null = null;
+    let feedbackMsg = "Template saved as Draft.";
+
+    if (action === "submit_to_meta") {
+      const submitRes = await submitTemplateToMetaCloud(tplDef);
+      if (!submitRes.ok) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: submitRes.error || submitRes.message,
+          },
+          { status: 400 }
+        );
+      }
+      approvalStatus = submitRes.approvalStatus;
+      metaTemplateId = submitRes.metaTemplateId || null;
+      feedbackMsg = submitRes.message;
+    }
+
+    const firstUrlBtn = buttons.find((b) => b.type === "URL");
+    const targetId = existingId || `tpl_${crypto.randomUUID().slice(0, 8)}`;
+
+    if (existingId) {
+      await mkt.execute({
+        sql: `UPDATE templates
+              SET name = ?,
+                  language = ?,
+                  category = ?,
+                  header_type = ?,
+                  header_text = ?,
+                  header_media_url = ?,
+                  header_location_json = ?,
+                  body_text = ?,
+                  footer_text = ?,
+                  cta_label = ?,
+                  cta_url = ?,
+                  buttons_json = ?,
+                  variables_schema_json = ?,
+                  meta_template_id = COALESCE(?, meta_template_id),
+                  approval_status = ?,
+                  rejection_reason = ?,
+                  allow_category_change = ?,
+                  code_expiration_minutes = ?,
+                  updated_at = ?
+              WHERE id = ?`,
+        args: [
+          tplDef.name,
+          tplDef.language,
+          tplDef.category,
+          tplDef.headerType,
+          tplDef.headerText || null,
+          tplDef.headerMediaUrl || null,
+          headerLocation ? JSON.stringify(headerLocation) : null,
+          tplDef.bodyText,
+          tplDef.footerText || null,
+          firstUrlBtn?.text || null,
+          firstUrlBtn?.url || null,
+          JSON.stringify(buttons),
+          JSON.stringify(variablesSchema),
+          metaTemplateId,
+          approvalStatus,
+          rejectionReason,
+          tplDef.allowCategoryChange ? 1 : 0,
+          tplDef.codeExpirationMinutes ?? null,
+          nowIso,
+          existingId,
+        ],
+      });
+    } else {
+      await mkt.execute({
+        sql: `INSERT INTO templates (
+          id, name, language, category, header_type, header_text, header_media_url,
+          header_location_json, body_text, footer_text, cta_label, cta_url, buttons_json,
+          variables_schema_json, meta_template_id, meta_quality_score, approval_status,
+          rejection_reason, allow_category_change, code_expiration_minutes, created_by_name,
+          updated_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'GREEN', ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          targetId,
+          tplDef.name,
+          tplDef.language,
+          tplDef.category,
+          tplDef.headerType,
+          tplDef.headerText || null,
+          tplDef.headerMediaUrl || null,
+          headerLocation ? JSON.stringify(headerLocation) : null,
+          tplDef.bodyText,
+          tplDef.footerText || null,
+          firstUrlBtn?.text || null,
+          firstUrlBtn?.url || null,
+          JSON.stringify(buttons),
+          JSON.stringify(variablesSchema),
+          metaTemplateId,
+          approvalStatus,
+          rejectionReason,
+          tplDef.allowCategoryChange ? 1 : 0,
+          tplDef.codeExpirationMinutes ?? null,
+          user.name,
+          nowIso,
+          nowIso,
+        ],
+      });
+    }
+
+    socketHub.emit("template:updated", {
+      templateId: targetId,
+      status: approvalStatus,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      templateId: targetId,
+      approvalStatus,
+      warnings: validation.warnings,
+      message: feedbackMsg,
+    });
+  }
+
+  if (action === "duplicate_template") {
+    const sourceId = String(body.templateId || "");
+    const srcRes = await mkt.execute({
+      sql: `SELECT * FROM templates WHERE id = ? LIMIT 1`,
+      args: [sourceId],
+    });
+    if (!srcRes.rows[0]) {
+      return NextResponse.json(
+        { ok: false, error: "Template not found." },
+        { status: 404 }
+      );
+    }
+    const src = srcRes.rows[0] as Record<string, unknown>;
+    const newId = `tpl_${crypto.randomUUID().slice(0, 8)}`;
+    const cloneName = normalizeTemplateSlug(
+      `${String(src.name)}_copy_${Math.floor(10 + Math.random() * 89)}`
+    );
+
+    await mkt.execute({
+      sql: `INSERT INTO templates (
+        id, name, language, category, header_type, header_text, header_media_url,
+        header_location_json, body_text, footer_text, cta_label, cta_url, buttons_json,
+        variables_schema_json, meta_quality_score, approval_status, allow_category_change,
+        code_expiration_minutes, sent_count, created_by_name, updated_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'GREEN', 'DRAFT', ?, ?, 0, ?, ?, ?)`,
+      args: [
+        newId,
+        cloneName,
+        String(src.language || "en"),
+        String(src.category || "MARKETING"),
+        String(src.header_type || "NONE"),
+        src.header_text ? String(src.header_text) : null,
+        src.header_media_url ? String(src.header_media_url) : null,
+        src.header_location_json ? String(src.header_location_json) : null,
+        String(src.body_text || ""),
+        src.footer_text ? String(src.footer_text) : null,
+        src.cta_label ? String(src.cta_label) : null,
+        src.cta_url ? String(src.cta_url) : null,
+        String(src.buttons_json || "[]"),
+        String(src.variables_schema_json || "[]"),
+        Number(src.allow_category_change ?? 1),
+        src.code_expiration_minutes !== null &&
+        src.code_expiration_minutes !== undefined
+          ? Number(src.code_expiration_minutes)
+          : null,
+        user.name,
+        nowIso,
+        nowIso,
+      ],
+    });
+
+    socketHub.emit("template:updated", { templateId: newId, status: "DRAFT" });
+    return NextResponse.json({
+      ok: true,
+      templateId: newId,
+      name: cloneName,
+      message: `Cloned as "${cloneName}" (Draft).`,
+    });
+  }
+
+  if (action === "toggle_pause") {
+    const tplId = String(body.templateId || "");
+    const curRes = await mkt.execute({
+      sql: `SELECT approval_status FROM templates WHERE id = ? LIMIT 1`,
+      args: [tplId],
+    });
+    if (!curRes.rows[0]) {
+      return NextResponse.json(
+        { ok: false, error: "Template not found." },
+        { status: 404 }
+      );
+    }
+    const cur = String(curRes.rows[0].approval_status || "APPROVED");
+    const next = cur === "PAUSED" ? "APPROVED" : "PAUSED";
+    await mkt.execute({
+      sql: `UPDATE templates SET approval_status = ?, updated_at = ? WHERE id = ?`,
+      args: [next, nowIso, tplId],
+    });
+    socketHub.emit("template:updated", { templateId: tplId, status: next });
+    return NextResponse.json({
+      ok: true,
+      approvalStatus: next,
+      message:
+        next === "PAUSED"
+          ? "Template paused. Staff and broadcasts will not use it until resumed."
+          : "Template resumed and active again.",
+    });
+  }
+
+  if (action === "set_review_status") {
+    if (!isSuperAdminCapable(user.role)) {
+      return NextResponse.json(
+        { ok: false, error: "Only Dev or Superadmin can override review status." },
+        { status: 403 }
+      );
+    }
+    const tplId = String(body.templateId || "");
+    const nextStatus =
+      body.status === "REJECTED"
+        ? "REJECTED"
+        : body.status === "PENDING_APPROVAL"
+        ? "PENDING_APPROVAL"
+        : "APPROVED";
+    const reason =
+      nextStatus === "REJECTED"
+        ? String(body.rejectionReason || "Sample values or wording needed adjustment.")
+        : null;
+
+    await mkt.execute({
+      sql: `UPDATE templates
+            SET approval_status = ?,
+                rejection_reason = ?,
+                updated_at = ?
+            WHERE id = ?`,
+      args: [nextStatus, reason, nowIso, tplId],
+    });
+    socketHub.emit("template:updated", { templateId: tplId, status: nextStatus });
+    return NextResponse.json({ ok: true, approvalStatus: nextStatus });
+  }
+
+  if (action === "delete_template") {
+    const tplId = String(body.templateId || "");
+    await mkt.execute({
+      sql: `DELETE FROM templates WHERE id = ?`,
+      args: [tplId],
+    });
+    socketHub.emit("template:updated", { templateId: tplId, status: "DELETED" });
+    return NextResponse.json({ ok: true, message: "Template deleted." });
+  }
+
+  if (action === "send_test_template") {
+    const tplId = String(body.templateId || "");
+    const toPhone = String(body.toPhone || "").trim();
+    if (!toPhone) {
+      return NextResponse.json(
+        { ok: false, error: "Enter a WhatsApp number to receive the test message." },
+        { status: 400 }
+      );
+    }
+    const tplRes = await mkt.execute({
+      sql: `SELECT * FROM templates WHERE id = ? LIMIT 1`,
+      args: [tplId],
+    });
+    if (!tplRes.rows[0]) {
+      return NextResponse.json(
+        { ok: false, error: "Template not found." },
+        { status: 404 }
+      );
+    }
+    const t = tplRes.rows[0] as Record<string, unknown>;
+    const varSpecs = parseJsonSafe<WhatsAppTemplateVariableSpec[]>(
+      t.variables_schema_json,
+      []
+    );
+    let rendered = String(t.body_text || "");
+    for (const v of varSpecs) {
+      rendered = rendered.replace(
+        new RegExp(`\\{\\{${v.index}\\}\\}`, "g"),
+        v.sampleValue || "Sample"
+      );
+    }
+
+    const headerType = String(t.header_type || "NONE");
+    const headerMediaUrl = t.header_media_url ? String(t.header_media_url) : "";
+    const comps: Record<string, unknown>[] = [];
+    if (
+      (headerType === "IMAGE" ||
+        headerType === "VIDEO" ||
+        headerType === "DOCUMENT") &&
+      headerMediaUrl
+    ) {
+      const mk = headerType.toLowerCase();
+      comps.push({
+        type: "header",
+        parameters: [{ type: mk, [mk]: { link: headerMediaUrl } }],
+      });
+    }
+    if (varSpecs.length > 0) {
+      comps.push({
+        type: "body",
+        parameters: varSpecs
+          .sort((a, b) => a.index - b.index)
+          .map((v) => ({ type: "text", text: v.sampleValue || "Sample" })),
+      });
+    }
+
+    const sendRes = await sendWhatsAppCloudMessage({
+      toPhone,
+      bodyText: rendered,
+      templateName: String(t.name),
+      languageCode: String(t.language || "en"),
+      templateComponents: comps,
+    });
+    if (!sendRes.ok) {
+      return NextResponse.json(
+        { ok: false, error: sendRes.error || "Test send failed." },
+        { status: 400 }
+      );
+    }
+
+    const cat = String(t.category || "MARKETING") as BillingMessageCategory;
+    await recordDualPricingLedgerEntry({
+      customerPhone: toPhone,
+      category: cat,
+      staffName: `Template Test (${user.name})`,
+    });
+    await mkt.execute({
+      sql: `UPDATE templates SET sent_count = sent_count + 1 WHERE id = ?`,
+      args: [tplId],
+    });
+
+    return NextResponse.json({
+      ok: true,
+      mode: sendRes.mode,
+      message: `Sent test message of "${String(t.name)}" to ${toPhone}.`,
+    });
+  }
+
+  return NextResponse.json(
+    { ok: false, error: "Unsupported template action." },
+    { status: 400 }
+  );
+}

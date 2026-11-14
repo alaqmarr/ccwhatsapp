@@ -1,4 +1,10 @@
-export type UserRole = "DEV" | "SUPERADMIN" | "ADMIN" | "STAFF" | "CLIENT";
+export type UserRole =
+  | "DEV"
+  | "SUPERADMIN"
+  | "MANAGER"
+  | "ADMIN"
+  | "STAFF"
+  | "CLIENT";
 
 export type AccountStatus =
   | "UNVERIFIED_EMAIL"
@@ -54,7 +60,13 @@ const ADMIN_PERMISSIONS: Permission[] = [
   "marketing:manage_lists",
   "marketing:send_broadcasts",
   "automations:manage",
+  "templates:manage",
   "billing:view_client_pricing",
+];
+
+const MANAGER_PERMISSIONS: Permission[] = [
+  ...ADMIN_PERMISSIONS,
+  "settings:organization",
 ];
 
 const SUPERADMIN_PERMISSIONS: Permission[] = [
@@ -86,6 +98,7 @@ const CLIENT_PERMISSIONS: Permission[] = [
 export const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
   STAFF: new Set(STAFF_PERMISSIONS),
   ADMIN: new Set(ADMIN_PERMISSIONS),
+  MANAGER: new Set(MANAGER_PERMISSIONS),
   SUPERADMIN: new Set(SUPERADMIN_PERMISSIONS),
   DEV: new Set(DEV_PERMISSIONS),
   CLIENT: new Set(CLIENT_PERMISSIONS),
@@ -94,6 +107,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
 export const ROLE_LABELS: Record<UserRole, string> = {
   DEV: "Developer (Superadmin + Dev Ops)",
   SUPERADMIN: "Superadmin",
+  MANAGER: "Manager",
   ADMIN: "Operations Admin",
   STAFF: "WhatsApp Staff Agent",
   CLIENT: "Client Billing Viewer",

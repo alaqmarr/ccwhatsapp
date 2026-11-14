@@ -17,7 +17,9 @@ export default function RegisterStaffPage() {
   const [email, setEmail] = useState("");
   const [whatsappNumber, setWhatsappNumber] = useState("+91");
   const [department, setDepartment] = useState("Sales & Support");
-  const [requestedRole, setRequestedRole] = useState<"STAFF" | "ADMIN">("STAFF");
+  const [requestedRole, setRequestedRole] = useState<
+    "STAFF" | "ADMIN" | "MANAGER"
+  >("STAFF");
   const [password, setPassword] = useState("");
 
   const [otpCode, setOtpCode] = useState("");
@@ -212,12 +214,17 @@ export default function RegisterStaffPage() {
                   <select
                     value={requestedRole}
                     onChange={(e) =>
-                      setRequestedRole(e.target.value as "STAFF" | "ADMIN")
+                      setRequestedRole(
+                        e.target.value as "STAFF" | "ADMIN" | "MANAGER"
+                      )
                     }
                     className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm bg-white"
                   >
                     <option value="STAFF">Staff (Reply to customers)</option>
                     <option value="ADMIN">Admin (Chats + Broadcasts)</option>
+                    <option value="MANAGER">
+                      Manager (Templates + Broadcasts + Teams)
+                    </option>
                   </select>
                 </div>
               </div>

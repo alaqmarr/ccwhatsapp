@@ -7,6 +7,7 @@ import {
   BookOpen,
   Users,
   Megaphone,
+  FileText,
   Workflow,
   UserCheck,
   IndianRupee,
@@ -41,7 +42,10 @@ export function AppShell({
   const isDev = isDevRole(user.role) && isActiveAccount;
   const canViewPricing =
     isActiveAccount &&
-    ["DEV", "SUPERADMIN", "ADMIN", "CLIENT"].includes(user.role);
+    ["DEV", "SUPERADMIN", "MANAGER", "ADMIN", "CLIENT"].includes(user.role);
+  const canManageTemplates =
+    isActiveAccount &&
+    ["DEV", "SUPERADMIN", "MANAGER", "ADMIN"].includes(user.role);
 
   const navItems: Array<{
     href: string;
@@ -71,9 +75,15 @@ export function AppShell({
     },
     {
       href: "/dashboard/marketing",
-      label: "Broadcasts & Short Links",
+      label: "Broadcast Queue & Links",
       icon: Megaphone,
       visible: isActiveAccount && user.role !== "CLIENT",
+    },
+    {
+      href: "/dashboard/templates",
+      label: "Message Templates",
+      icon: FileText,
+      visible: canManageTemplates,
     },
     {
       href: "/dashboard/automations",

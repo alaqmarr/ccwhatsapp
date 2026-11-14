@@ -282,9 +282,76 @@ async function runBootstrapInternal(): Promise<void> {
         created_by_name TEXT NOT NULL,
         created_at TEXT NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS broadcast_queue_settings (
+        id TEXT PRIMARY KEY,
+        default_pacing_mode TEXT NOT NULL DEFAULT 'SAFE_STEADY',
+        delay_seconds INTEGER NOT NULL DEFAULT 4,
+        batch_size INTEGER NOT NULL DEFAULT 25,
+        batch_pause_seconds INTEGER NOT NULL DEFAULT 20,
+        skip_recent_hours INTEGER NOT NULL DEFAULT 24,
+        daily_marketing_cap INTEGER NOT NULL DEFAULT 250,
+        auto_pause_on_consecutive_failures INTEGER NOT NULL DEFAULT 3,
+        quiet_hours_enabled INTEGER NOT NULL DEFAULT 0,
+        updated_by TEXT NOT NULL DEFAULT 'System',
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS broadcast_recipients (
+        id TEXT PRIMARY KEY,
+        broadcast_id TEXT NOT NULL,
+        customer_name TEXT NOT NULL DEFAULT '',
+        customer_phone TEXT NOT NULL,
+        variables_json TEXT NOT NULL DEFAULT '[]',
+        rendered_body TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'QUEUED',
+        skip_or_error_reason TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        scheduled_at TEXT NOT NULL,
+        sent_at TEXT,
+        wa_message_id TEXT,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_bc_rec_broadcast_status ON broadcast_recipients (broadcast_id, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_bc_rec_phone_sent ON broadcast_recipients (customer_phone, sent_at)`,
     ],
     "write"
   );
+
+  // Non-destructive column upgrades for marketing.db (Templates Studio + Safe Broadcast Queue)
+  const extraMarketingColumns = [
+    `ALTER TABLE templates ADD COLUMN header_type TEXT NOT NULL DEFAULT 'NONE'`,
+    `ALTER TABLE templates ADD COLUMN header_media_url TEXT`,
+    `ALTER TABLE templates ADD COLUMN header_location_json TEXT`,
+    `ALTER TABLE templates ADD COLUMN buttons_json TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE templates ADD COLUMN variables_schema_json TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE templates ADD COLUMN meta_template_id TEXT`,
+    `ALTER TABLE templates ADD COLUMN meta_quality_score TEXT NOT NULL DEFAULT 'GREEN'`,
+    `ALTER TABLE templates ADD COLUMN rejection_reason TEXT`,
+    `ALTER TABLE templates ADD COLUMN allow_category_change INTEGER NOT NULL DEFAULT 1`,
+    `ALTER TABLE templates ADD COLUMN code_expiration_minutes INTEGER`,
+    `ALTER TABLE templates ADD COLUMN created_by_name TEXT DEFAULT 'System'`,
+    `ALTER TABLE templates ADD COLUMN updated_at TEXT`,
+    `ALTER TABLE broadcasts ADD COLUMN pacing_mode TEXT NOT NULL DEFAULT 'SAFE_STEADY'`,
+    `ALTER TABLE broadcasts ADD COLUMN delay_seconds INTEGER NOT NULL DEFAULT 4`,
+    `ALTER TABLE broadcasts ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 25`,
+    `ALTER TABLE broadcasts ADD COLUMN batch_pause_seconds INTEGER NOT NULL DEFAULT 20`,
+    `ALTER TABLE broadcasts ADD COLUMN skip_recent_hours INTEGER NOT NULL DEFAULT 24`,
+    `ALTER TABLE broadcasts ADD COLUMN queued_count INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE broadcasts ADD COLUMN skipped_count INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE broadcasts ADD COLUMN failed_count INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE broadcasts ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE broadcasts ADD COLUMN paused_reason TEXT`,
+    `ALTER TABLE broadcasts ADD COLUMN scheduled_for TEXT`,
+    `ALTER TABLE broadcasts ADD COLUMN next_dispatch_at TEXT`,
+    `ALTER TABLE broadcasts ADD COLUMN started_at TEXT`,
+    `ALTER TABLE broadcasts ADD COLUMN completed_at TEXT`,
+  ];
+  for (const ddl of extraMarketingColumns) {
+    try {
+      await mkt.execute(ddl);
+    } catch {
+      // Column already exists
+    }
+  }
 
   // 5. billing_ops.db
   await bill.batch(
@@ -1419,4 +1486,134 @@ async function seedInitialOperationalData(): Promise<void> {
   await bill.execute(
     `DELETE FROM message_billing_ledger WHERE category = 'SERVICE'`
   );
+
+  // Seed default anti-spam broadcast queue settings
+  const qSet = await mkt.execute(
+    `SELECT id FROM broadcast_queue_settings WHERE id = 'default' LIMIT 1`
+  );
+  if (!qSet.rows[0]) {
+    await mkt.execute({
+      sql: `INSERT INTO broadcast_queue_settings (
+        id, default_pacing_mode, delay_seconds, batch_size, batch_pause_seconds,
+        skip_recent_hours, daily_marketing_cap, auto_pause_on_consecutive_failures,
+        quiet_hours_enabled, updated_by, updated_at
+      ) VALUES ('default', 'SAFE_STEADY', 4, 25, 20, 24, 250, 3, 0, 'System', ?)`,
+      args: [isoNow],
+    });
+  }
+
+  // Backfill rich template fields for existing seeded templates
+  const tplRows = await mkt.execute(`SELECT * FROM templates`);
+  for (const r of tplRows.rows) {
+    const id = String(r.id);
+    const curHeaderType = String(r.header_type || "NONE");
+    const headerText = r.header_text ? String(r.header_text) : "";
+    const ctaLabel = r.cta_label ? String(r.cta_label) : "";
+    const ctaUrl = r.cta_url ? String(r.cta_url) : "";
+    const curButtons = String(r.buttons_json || "[]");
+    const curVars = String(r.variables_schema_json || "[]");
+    const bodyText = String(r.body_text || "");
+    const category = String(r.category || "MARKETING");
+
+    const nextHeaderType =
+      curHeaderType === "NONE" && headerText ? "TEXT" : curHeaderType;
+
+    let nextButtonsJson = curButtons;
+    if ((curButtons === "[]" || !curButtons) && ctaLabel && ctaUrl) {
+      nextButtonsJson = JSON.stringify([
+        {
+          id: `btn_${id}_1`,
+          type: "URL",
+          text: ctaLabel,
+          url: ctaUrl,
+          urlType: "STATIC",
+        },
+        ...(category === "MARKETING"
+          ? [
+              {
+                id: `btn_${id}_2`,
+                type: "QUICK_REPLY",
+                text: "Talk to Sales Team",
+              },
+            ]
+          : []),
+      ]);
+    } else if (
+      (curButtons === "[]" || !curButtons) &&
+      category === "AUTHENTICATION"
+    ) {
+      nextButtonsJson = JSON.stringify([
+        {
+          id: `btn_${id}_otp`,
+          type: "COPY_CODE",
+          text: "Copy Code",
+          exampleCode: "482910",
+        },
+      ]);
+    }
+
+    let nextVarsJson = curVars;
+    if (curVars === "[]" || !curVars) {
+      const matches = Array.from(bodyText.matchAll(/\{\{(\d+)\}\}/g)).map((m) =>
+        Number(m[1])
+      );
+      const uniqueNums = Array.from(new Set(matches)).sort((a, b) => a - b);
+      const defaults = uniqueNums.map((n) => {
+        if (category === "AUTHENTICATION" && n === 1) {
+          return {
+            index: 1,
+            label: "Verification Code",
+            sourceField: "custom",
+            sampleValue: "482910",
+          };
+        }
+        if (n === 1) {
+          return {
+            index: 1,
+            label: "Customer First Name",
+            sourceField: "customer.firstName",
+            sampleValue: "Vikram",
+          };
+        }
+        if (n === 2) {
+          return {
+            index: 2,
+            label: "Order Number",
+            sourceField: "order.latestNumber",
+            sampleValue: "CC-2026-1089",
+          };
+        }
+        return {
+          index: n,
+          label: `Detail ${n}`,
+          sourceField: "custom",
+          sampleValue: "ready for dispatch",
+        };
+      });
+      nextVarsJson = JSON.stringify(defaults);
+    }
+
+    if (
+      nextHeaderType !== curHeaderType ||
+      nextButtonsJson !== curButtons ||
+      nextVarsJson !== curVars
+    ) {
+      await mkt.execute({
+        sql: `UPDATE templates
+              SET header_type = ?,
+                  buttons_json = ?,
+                  variables_schema_json = ?,
+                  code_expiration_minutes = COALESCE(code_expiration_minutes, ?),
+                  updated_at = COALESCE(updated_at, created_at)
+              WHERE id = ?`,
+        args: [
+          nextHeaderType,
+          nextButtonsJson,
+          nextVarsJson,
+          category === "AUTHENTICATION" ? 10 : null,
+          id,
+        ],
+      });
+    }
+  }
 }

@@ -1,8 +1,12 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { Plus } from "lucide-react";
-import { WHATSAPP_PUBLIC_ORIGIN } from "@cc/ui";
+import { Plus, RefreshCw } from "lucide-react";
+import {
+  CardListSkeleton,
+  ElementErrorState,
+  WHATSAPP_PUBLIC_ORIGIN,
+} from "@cc/ui";
 
 interface AutomationRule {
   id: string;
@@ -18,6 +22,10 @@ interface AutomationRule {
 }
 
 export default function AutomationsPage() {
+  const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState<string>("");
+
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [name, setName] = useState<string>("");
   const [description, setDescription] = useState<string>("");
@@ -34,15 +42,30 @@ export default function AutomationsPage() {
   const [notice, setNotice] = useState<string>("");
 
   const loadRules = useCallback(async () => {
-    const res = await fetch("/api/automations", { cache: "no-store" });
-    const data = await res.json().catch(() => ({}));
-    if (data.ok) {
-      setRules(data.automations || []);
+    setRefreshing(true);
+    setLoadError("");
+    try {
+      const res = await fetch("/api/automations", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setRules(data.automations || []);
+      } else {
+        setLoadError(
+          data.error || "Could not load auto-reply rules right now."
+        );
+      }
+    } catch {
+      setLoadError(
+        "Network error while loading auto-reply rules. Click Try Again."
+      );
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    loadRules();
+    void loadRules();
   }, [loadRules]);
 
   async function toggleRule(rule: AutomationRule) {
@@ -78,7 +101,8 @@ export default function AutomationsPage() {
         name,
         description,
         triggerType,
-        triggerCondition: triggerType === "FIRST_CONTACT" ? "*" : triggerCondition,
+        triggerCondition:
+          triggerType === "FIRST_CONTACT" ? "*" : triggerCondition,
         actionType,
         actionPayload,
       }),
@@ -103,62 +127,95 @@ export default function AutomationsPage() {
             Auto-Replies & Topic Rules
           </h1>
           <p className="text-xs text-neutral-500 mt-0.5">
-            Automatically sort new enquiries by product topic or send an instant greeting when a customer messages us.
+            Automatically sort new enquiries by product topic, opt out contacts who reply STOP, or send an instant greeting when a chat is with System (ACRIO).
           </p>
         </div>
-        {notice && (
-          <div className="px-3.5 py-2 rounded-md bg-neutral-100 border border-neutral-300 text-xs font-medium text-neutral-900">
-            {notice}
-          </div>
-        )}
+
+        <div className="flex items-center gap-2">
+          {notice && (
+            <div className="px-3.5 py-2 rounded-md bg-neutral-100 border border-neutral-300 text-xs font-medium text-neutral-900">
+              {notice}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => loadRules()}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-white hover:bg-neutral-50 border border-neutral-300 text-xs font-medium text-neutral-700 cursor-pointer"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`}
+            />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <div className="lg:col-span-7 space-y-3">
-          {rules.map((r) => (
-            <div
-              key={r.id}
-              className={`bg-white rounded-lg border border-neutral-200 p-4 ${
-                r.isEnabled ? "" : "opacity-60 bg-neutral-50"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold text-neutral-900">
-                      {r.name}
-                    </h3>
-                    <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 text-[11px] font-medium">
-                      {r.triggerType === "FIRST_CONTACT"
-                        ? "First Message"
-                        : "Words Match"}
-                    </span>
+          {loading ? (
+            <CardListSkeleton rows={4} />
+          ) : loadError ? (
+            <ElementErrorState
+              title="Could not load auto-reply rules"
+              message={loadError}
+              onRetry={() => loadRules()}
+              retrying={refreshing}
+            />
+          ) : rules.length === 0 ? (
+            <div className="bg-white rounded-lg border border-neutral-200 p-6 text-center text-xs text-neutral-500">
+              No auto-reply rules yet. Add one using the form on the right.
+            </div>
+          ) : (
+            rules.map((r) => (
+              <div
+                key={r.id}
+                className={`bg-white rounded-lg border border-neutral-200 p-4 ${
+                  r.isEnabled ? "" : "opacity-60 bg-neutral-50"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold text-neutral-900">
+                        {r.name}
+                      </h3>
+                      <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 text-[11px] font-medium">
+                        {r.triggerType === "FIRST_CONTACT"
+                          ? "First Message"
+                          : "Words Match"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-neutral-600 mt-1">
+                      {r.description}
+                    </p>
                   </div>
-                  <p className="text-xs text-neutral-600 mt-1">{r.description}</p>
+
+                  <button
+                    type="button"
+                    onClick={() => toggleRule(r)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer ${
+                      r.isEnabled
+                        ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                        : "bg-white text-neutral-600 border-neutral-300"
+                    }`}
+                  >
+                    {r.isEnabled ? "On" : "Off"}
+                  </button>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => toggleRule(r)}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer ${
-                    r.isEnabled
-                      ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                      : "bg-white text-neutral-600 border-neutral-300"
-                  }`}
-                >
-                  {r.isEnabled ? "On" : "Off"}
-                </button>
+                <div className="mt-3 pt-2.5 border-t border-neutral-100 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-500">
+                  <span>
+                    Words:{" "}
+                    <strong className="text-neutral-800">
+                      {r.triggerCondition}
+                    </strong>
+                  </span>
+                  <span>Used {r.runsCount} times</span>
+                </div>
               </div>
-
-              <div className="mt-3 pt-2.5 border-t border-neutral-100 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-500">
-                <span>
-                  Words:{" "}
-                  <strong className="text-neutral-800">{r.triggerCondition}</strong>
-                </span>
-                <span>Used {r.runsCount} times</span>
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
 
         <div className="lg:col-span-5 bg-white rounded-lg border border-neutral-200 p-5 space-y-4">
@@ -206,7 +263,9 @@ export default function AutomationsPage() {
                   className="w-full rounded-md border border-neutral-300 px-3 py-2 bg-white"
                 >
                   <option value="KEYWORD">Customer mentions words</option>
-                  <option value="FIRST_CONTACT">New customer messages first time</option>
+                  <option value="FIRST_CONTACT">
+                    New customer messages first time
+                  </option>
                 </select>
               </div>
               <div>

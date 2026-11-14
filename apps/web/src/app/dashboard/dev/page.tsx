@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { ExternalLink, Play, RefreshCw, Save } from "lucide-react";
+import { CardListSkeleton, ElementErrorState, TableRowsSkeleton } from "@cc/ui";
 
 interface DbDiag {
   domain: string;
@@ -52,28 +53,50 @@ export default function DevBackupsPage() {
   const [saving, setSaving] = useState<boolean>(false);
   const [runningBackup, setRunningBackup] = useState<boolean>(false);
   const [statusBanner, setStatusBanner] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState<string>("");
 
   const loadDiagnostics = useCallback(async () => {
-    const res = await fetch("/api/dev/backups", { cache: "no-store" });
-    const data = await res.json().catch(() => ({}));
-    if (data.ok) {
-      setDatabases(data.databases || []);
-      setBackupLogs(data.backupLogs || []);
+    setRefreshing(true);
+    setLoadError("");
+    try {
+      const res = await fetch("/api/dev/backups", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setDatabases(data.databases || []);
+        setBackupLogs(data.backupLogs || []);
 
-      if (data.backupConfig) {
-        setEnabled(Boolean(data.backupConfig.enabled));
-        setMidnightHourIst(Number(data.backupConfig.midnightHourIst ?? 0));
-        setMidnightMinuteIst(Number(data.backupConfig.midnightMinuteIst ?? 0));
-        setGoogleDriveFolderId(data.backupConfig.googleDriveFolderId || "");
-        setGoogleServiceAccountEmail(
-          data.backupConfig.googleServiceAccountEmail || ""
+        if (data.backupConfig) {
+          setEnabled(Boolean(data.backupConfig.enabled));
+          setMidnightHourIst(Number(data.backupConfig.midnightHourIst ?? 0));
+          setMidnightMinuteIst(Number(data.backupConfig.midnightMinuteIst ?? 0));
+          setGoogleDriveFolderId(data.backupConfig.googleDriveFolderId || "");
+          setGoogleServiceAccountEmail(
+            data.backupConfig.googleServiceAccountEmail || ""
+          );
+          setHasPrivateKey(Boolean(data.backupConfig.hasPrivateKey));
+          setGoogleClientId(data.backupConfig.googleClientId || "");
+          setHasOauthRefreshToken(
+            Boolean(data.backupConfig.hasOauthRefreshToken)
+          );
+          setRetentionDays(Number(data.backupConfig.retentionDays ?? 30));
+          setIncludeMainWebsiteDb(
+            Boolean(data.backupConfig.includeMainWebsiteDb)
+          );
+        }
+      } else {
+        setLoadError(
+          data.error || "Could not load backup settings and database storage."
         );
-        setHasPrivateKey(Boolean(data.backupConfig.hasPrivateKey));
-        setGoogleClientId(data.backupConfig.googleClientId || "");
-        setHasOauthRefreshToken(Boolean(data.backupConfig.hasOauthRefreshToken));
-        setRetentionDays(Number(data.backupConfig.retentionDays ?? 30));
-        setIncludeMainWebsiteDb(Boolean(data.backupConfig.includeMainWebsiteDb));
       }
+    } catch {
+      setLoadError(
+        "Network error while loading backup settings. Click Try Again."
+      );
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -346,7 +369,17 @@ export default function DevBackupsPage() {
               Recent Backups
             </h2>
 
-            {backupLogs.length === 0 ? (
+            {loading ? (
+              <CardListSkeleton rows={3} />
+            ) : loadError ? (
+              <ElementErrorState
+                compact
+                title="Could not load recent backups"
+                message={loadError}
+                onRetry={() => loadDiagnostics()}
+                retrying={refreshing}
+              />
+            ) : backupLogs.length === 0 ? (
               <p className="text-neutral-400 py-4 text-center">
                 No backups run yet. Click &ldquo;Back Up Now&rdquo; at the top right to create one.
               </p>
@@ -400,21 +433,33 @@ export default function DevBackupsPage() {
             <h2 className="text-sm font-semibold text-neutral-900">
               Databases Included in Backup
             </h2>
-            <div className="divide-y divide-neutral-200">
-              {databases.map((db) => (
-                <div key={db.domain} className="py-2.5 first:pt-0 last:pb-0">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono font-medium text-neutral-900">
-                      {db.fileName}
-                    </span>
-                    <span className="text-neutral-500">
-                      {db.totalRows} records • {(db.sizeBytes / 1024).toFixed(1)} KB
-                    </span>
+            {loading ? (
+              <TableRowsSkeleton rows={5} cols={2} />
+            ) : loadError ? (
+              <ElementErrorState
+                compact
+                title="Could not load database list"
+                message={loadError}
+                onRetry={() => loadDiagnostics()}
+                retrying={refreshing}
+              />
+            ) : (
+              <div className="divide-y divide-neutral-200">
+                {databases.map((db) => (
+                  <div key={db.domain} className="py-2.5 first:pt-0 last:pb-0">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono font-medium text-neutral-900">
+                        {db.fileName}
+                      </span>
+                      <span className="text-neutral-500">
+                        {db.totalRows} records • {(db.sizeBytes / 1024).toFixed(1)} KB
+                      </span>
+                    </div>
+                    <p className="text-neutral-500 mt-0.5">{db.description}</p>
                   </div>
-                  <p className="text-neutral-500 mt-0.5">{db.description}</p>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

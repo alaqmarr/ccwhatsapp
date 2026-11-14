@@ -1,8 +1,13 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { Save } from "lucide-react";
-import { MetricStatCard } from "@cc/ui";
+import { RefreshCw, Save } from "lucide-react";
+import {
+  ElementErrorState,
+  MetricStatCard,
+  StatCardsSkeleton,
+  TableRowsSkeleton,
+} from "@cc/ui";
 
 interface CategoryBreakdown {
   category: string;
@@ -64,6 +69,9 @@ function friendlyCategoryName(cat: string): string {
 
 export default function PricingDashboardPage() {
   const [data, setData] = useState<PricingPayload | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [savedNotice, setSavedNotice] = useState<string>("");
 
@@ -72,22 +80,37 @@ export default function PricingDashboardPage() {
   const [clientOther, setClientOther] = useState<string>("0.30");
   const [metaMkt, setMetaMkt] = useState<string>("0.7846");
   const [metaUtil, setMetaUtil] = useState<string>("0.1150");
-  const [metaAuth, setMetaAuth] = useState<string>("0.1150");
+  const [metaAuth, setMetaUtilAuth] = useState<string>("0.1150");
   const [metaServ, setMetaServ] = useState<string>("0.0800");
 
   const loadPricing = useCallback(async () => {
-    const res = await fetch("/api/pricing", { cache: "no-store" });
-    const json = await res.json().catch(() => ({}));
-    if (json.ok) {
-      setData(json);
-      setClientMkt(String(json.rates.marketingRateInr ?? 0.95));
-      setClientOther(String(json.rates.otherMessagesRateInr ?? 0.3));
-      if (json.viewMode === "dev_actual_and_margin") {
-        setMetaMkt(String(json.rates.actualMetaMarketingRateInr ?? 0.7846));
-        setMetaUtil(String(json.rates.actualMetaUtilityRateInr ?? 0.115));
-        setMetaAuth(String(json.rates.actualMetaAuthRateInr ?? 0.115));
-        setMetaServ(String(json.rates.actualMetaServiceRateInr ?? 0.08));
+    setRefreshing(true);
+    setLoadError("");
+    try {
+      const res = await fetch("/api/pricing", { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.ok) {
+        setData(json);
+        setClientMkt(String(json.rates.marketingRateInr ?? 0.95));
+        setClientOther(String(json.rates.otherMessagesRateInr ?? 0.3));
+        if (json.viewMode === "dev_actual_and_margin") {
+          setMetaMkt(String(json.rates.actualMetaMarketingRateInr ?? 0.7846));
+          setMetaUtil(String(json.rates.actualMetaUtilityRateInr ?? 0.115));
+          setMetaUtilAuth(String(json.rates.actualMetaAuthRateInr ?? 0.115));
+          setMetaServ(String(json.rates.actualMetaServiceRateInr ?? 0.08));
+        }
+      } else {
+        setLoadError(
+          json.error || "Could not load message rates and usage right now."
+        );
       }
+    } catch {
+      setLoadError(
+        "Network error while loading message charges. Click Try Again."
+      );
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -122,13 +145,44 @@ export default function PricingDashboardPage() {
     }
   }
 
-  if (!data) {
+  if (loading && !data) {
     return (
-      <div className="p-6 text-xs text-neutral-500">
-        Loading message charges...
+      <div className="w-full px-6 py-5 space-y-6">
+        <div className="border-b border-neutral-200 pb-4">
+          <h1 className="text-lg font-semibold text-neutral-900">
+            WhatsApp Message Rates & Usage
+          </h1>
+          <p className="text-xs text-neutral-500 mt-0.5">
+            Loading current rates, category totals, and recent message ledger...
+          </p>
+        </div>
+        <StatCardsSkeleton count={3} />
+        <StatCardsSkeleton count={2} />
+        <TableRowsSkeleton rows={4} cols={4} />
+        <TableRowsSkeleton rows={6} cols={5} />
       </div>
     );
   }
+
+  if (loadError && !data) {
+    return (
+      <div className="w-full px-6 py-5 space-y-6">
+        <div className="border-b border-neutral-200 pb-4">
+          <h1 className="text-lg font-semibold text-neutral-900">
+            WhatsApp Message Rates & Usage
+          </h1>
+        </div>
+        <ElementErrorState
+          title="Could not load message charges"
+          message={loadError}
+          onRetry={() => loadPricing()}
+          retrying={refreshing}
+        />
+      </div>
+    );
+  }
+
+  if (!data) return null;
 
   const isDev = data.viewMode === "dev_actual_and_margin";
 
@@ -148,11 +202,24 @@ export default function PricingDashboardPage() {
           </p>
         </div>
 
-        {savedNotice && (
-          <div className="px-3.5 py-2 rounded-md bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-800">
-            {savedNotice}
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {savedNotice && (
+            <div className="px-3.5 py-2 rounded-md bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-800">
+              {savedNotice}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => loadPricing()}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-white hover:bg-neutral-50 border border-neutral-300 text-xs font-medium text-neutral-700 cursor-pointer"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`}
+            />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Three Rate Boxes: Free Staff Chat, ACRIO & Utility Templates, Marketing Templates */}
@@ -392,7 +459,7 @@ export default function PricingDashboardPage() {
                 type="number"
                 step="0.0001"
                 value={metaAuth}
-                onChange={(e) => setMetaAuth(e.target.value)}
+                onChange={(e) => setMetaUtilAuth(e.target.value)}
                 className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
               />
             </div>

@@ -267,7 +267,7 @@ export async function registerStaffAccount(params: {
   whatsappNumber: string;
   password: string;
   department?: string;
-  requestedRole?: "STAFF" | "ADMIN";
+  requestedRole?: "STAFF" | "ADMIN" | "MANAGER";
 }): Promise<{
   ok: boolean;
   userId?: string;
@@ -343,7 +343,12 @@ export async function registerStaffAccount(params: {
 
   const userId = `usr_${crypto.randomUUID().slice(0, 8)}`;
   const passwordHash = await bcrypt.hash(params.password, 10);
-  const role: UserRole = params.requestedRole === "ADMIN" ? "ADMIN" : "STAFF";
+  const role: UserRole =
+    params.requestedRole === "MANAGER"
+      ? "MANAGER"
+      : params.requestedRole === "ADMIN"
+      ? "ADMIN"
+      : "STAFF";
 
   await auth.batch(
     [

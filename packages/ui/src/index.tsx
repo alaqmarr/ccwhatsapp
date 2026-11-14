@@ -86,6 +86,7 @@ export function RoleBadge({ role }: { role: UserRole }) {
   const styles: Record<UserRole, string> = {
     DEV: "bg-neutral-900 text-white border-neutral-900",
     SUPERADMIN: "bg-amber-50 text-amber-900 border-amber-200",
+    MANAGER: "bg-purple-50 text-purple-900 border-purple-200",
     ADMIN: "bg-blue-50 text-blue-800 border-blue-200",
     STAFF: "bg-emerald-50 text-emerald-800 border-emerald-200",
     CLIENT: "bg-neutral-100 text-neutral-700 border-neutral-300",
@@ -93,15 +94,18 @@ export function RoleBadge({ role }: { role: UserRole }) {
   const label: Record<UserRole, string> = {
     DEV: "Dev (Superadmin)",
     SUPERADMIN: "Superadmin",
+    MANAGER: "Manager",
     ADMIN: "Admin",
     STAFF: "Staff",
     CLIENT: "Client",
   };
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${styles[role]}`}
+      className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${
+        styles[role] || styles.STAFF
+      }`}
     >
-      {label[role]}
+      {label[role] || role}
     </span>
   );
 }
@@ -145,6 +149,235 @@ export function MetricStatCard({
       <p className="text-xs font-medium text-neutral-500">{label}</p>
       <p className="text-2xl font-semibold text-neutral-900 mt-1">{value}</p>
       {subtext && <p className="text-xs text-neutral-500 mt-1">{subtext}</p>}
+    </div>
+  );
+}
+
+// ============================================================================
+// ELEMENT-WISE LOADING FALLBACKS & ERROR RETRY STATES
+// ============================================================================
+
+export function SkeletonBlock({ className = "" }: { className?: string }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={`animate-pulse rounded bg-neutral-200/80 ${className}`}
+    />
+  );
+}
+
+export function StatCardsSkeleton({
+  count = 4,
+  columnsClass = "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4",
+}: {
+  count?: number;
+  columnsClass?: string;
+}) {
+  return (
+    <div className={`grid ${columnsClass} gap-4`} aria-busy="true">
+      {Array.from({ length: count }).map((_, idx) => (
+        <div
+          key={idx}
+          className="bg-white rounded-lg border border-neutral-200 p-4 space-y-2.5"
+        >
+          <SkeletonBlock className="h-3 w-24" />
+          <SkeletonBlock className="h-7 w-16" />
+          <SkeletonBlock className="h-3 w-36" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function CardListSkeleton({
+  items,
+  rows,
+  compact = false,
+}: {
+  items?: number;
+  rows?: number;
+  compact?: boolean;
+}) {
+  const count = items ?? rows ?? 3;
+  return (
+    <div className="space-y-2.5" aria-busy="true">
+      {Array.from({ length: count }).map((_, idx) => (
+        <div
+          key={idx}
+          className={`rounded-lg border border-neutral-200 bg-white ${
+            compact ? "p-3 space-y-2" : "p-4 space-y-2.5"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <SkeletonBlock className="h-3.5 w-40" />
+            <SkeletonBlock className="h-5 w-16 rounded-full" />
+          </div>
+          <SkeletonBlock className="h-3 w-3/4" />
+          {!compact && <SkeletonBlock className="h-3 w-1/2" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function TableRowsSkeleton({
+  rows = 5,
+  columns,
+  cols,
+}: {
+  rows?: number;
+  columns?: number;
+  cols?: number;
+}) {
+  const colCount = columns ?? cols ?? 5;
+  return (
+    <div className="w-full divide-y divide-neutral-200" aria-busy="true">
+      {Array.from({ length: rows }).map((_, rIdx) => (
+        <div
+          key={rIdx}
+          className="py-3 flex items-center justify-between gap-4"
+        >
+          {Array.from({ length: colCount }).map((__, cIdx) => (
+            <SkeletonBlock
+              key={cIdx}
+              className={`h-3.5 ${
+                cIdx === 0
+                  ? "w-40"
+                  : cIdx === colCount - 1
+                  ? "w-20"
+                  : "w-24"
+              }`}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ChatThreadListSkeleton({
+  rows,
+  count,
+}: {
+  rows?: number;
+  count?: number;
+}) {
+  const total = rows ?? count ?? 6;
+  return (
+    <div className="divide-y divide-[#f0f2f5]" aria-busy="true">
+      {Array.from({ length: total }).map((_, idx) => (
+        <div key={idx} className="px-3 py-3 flex items-start gap-3 bg-white">
+          <SkeletonBlock className="w-11 h-11 rounded-full shrink-0" />
+          <div className="flex-1 min-w-0 space-y-2 pt-0.5">
+            <div className="flex items-center justify-between gap-2">
+              <SkeletonBlock className="h-3.5 w-28" />
+              <SkeletonBlock className="h-2.5 w-10" />
+            </div>
+            <SkeletonBlock className="h-3 w-44" />
+            <div className="flex items-center gap-1.5">
+              <SkeletonBlock className="h-4 w-16 rounded" />
+              <SkeletonBlock className="h-4 w-20 rounded" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ChatMessagesSkeleton({ bubbles = 5 }: { bubbles?: number }) {
+  return (
+    <div className="space-y-3 py-2" aria-busy="true">
+      {Array.from({ length: bubbles }).map((_, idx) => {
+        const outbound = idx % 2 === 1;
+        return (
+          <div
+            key={idx}
+            className={`flex ${outbound ? "justify-end" : "justify-start"}`}
+          >
+            <div
+              className={`w-[62%] max-w-md rounded-lg p-3 shadow-2xs space-y-2 ${
+                outbound ? "bg-[#d9fdd3]/80" : "bg-white/95"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <SkeletonBlock className="h-2.5 w-20" />
+                <SkeletonBlock className="h-2.5 w-12" />
+              </div>
+              <SkeletonBlock className="h-3 w-full" />
+              <SkeletonBlock className="h-3 w-2/3" />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function RightDrawerSkeleton() {
+  return (
+    <div className="space-y-4" aria-busy="true">
+      <div className="p-3 rounded-lg bg-[#f8f9fa] border border-[#e9edef] space-y-2">
+        <SkeletonBlock className="h-2.5 w-24" />
+        <SkeletonBlock className="h-3.5 w-32" />
+        <SkeletonBlock className="h-3 w-40" />
+      </div>
+      <div className="space-y-2">
+        <SkeletonBlock className="h-3 w-28" />
+        <SkeletonBlock className="h-8 w-full rounded-md" />
+      </div>
+      <div className="grid grid-cols-2 gap-2.5">
+        <div className="space-y-2">
+          <SkeletonBlock className="h-3 w-20" />
+          <SkeletonBlock className="h-8 w-full rounded-md" />
+        </div>
+        <div className="space-y-2">
+          <SkeletonBlock className="h-3 w-16" />
+          <SkeletonBlock className="h-8 w-full rounded-md" />
+        </div>
+      </div>
+      <div className="space-y-2">
+        <SkeletonBlock className="h-3 w-36" />
+        <SkeletonBlock className="h-16 w-full rounded-md" />
+      </div>
+    </div>
+  );
+}
+
+export function ElementErrorState({
+  title = "Could not load this section",
+  message = "Please check your connection and try again.",
+  onRetry,
+  retrying = false,
+  compact = false,
+}: {
+  title?: string;
+  message?: string;
+  onRetry?: () => void;
+  retrying?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      role="alert"
+      className={`rounded-lg bg-red-50/80 border border-red-200 text-red-950 ${
+        compact ? "p-3" : "p-4"
+      } flex flex-wrap items-center justify-between gap-3`}
+    >
+      <div className="space-y-0.5 min-w-0">
+        <p className="text-xs font-semibold text-red-900">{title}</p>
+        <p className="text-xs text-red-800">{message}</p>
+      </div>
+      {onRetry && (
+        <button
+          type="button"
+          disabled={retrying}
+          onClick={onRetry}
+          className="px-3 py-1.5 rounded-md bg-white hover:bg-red-100/70 border border-red-300 text-red-900 text-xs font-semibold cursor-pointer disabled:opacity-60 shrink-0"
+        >
+          {retrying ? "Retrying..." : "Try Again"}
+        </button>
+      )}
     </div>
   );
 }

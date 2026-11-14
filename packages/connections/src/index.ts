@@ -38,14 +38,94 @@ function sanitizePlainEnglish(text: string): string {
 }
 
 // ============================================================================
-// 1. META WHATSAPP CLOUD API CONNECTOR + SANDBOX SIMULATOR
+// 1. META WHATSAPP CLOUD API CONNECTOR + TEMPLATE STUDIO + SANDBOX SIMULATOR
 // ============================================================================
+export type WhatsAppHeaderType =
+  | "NONE"
+  | "TEXT"
+  | "IMAGE"
+  | "VIDEO"
+  | "DOCUMENT"
+  | "LOCATION";
+
+export type WhatsAppTemplateCategory =
+  | "MARKETING"
+  | "UTILITY"
+  | "AUTHENTICATION";
+
+export interface WhatsAppTemplateLocation {
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface WhatsAppTemplateButton {
+  id: string;
+  type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER" | "COPY_CODE" | "OTP";
+  text: string;
+  url?: string;
+  urlType?: "STATIC" | "DYNAMIC";
+  exampleSuffix?: string;
+  phoneNumber?: string;
+  exampleCode?: string;
+  otpType?: "COPY_CODE" | "ONE_TAP";
+}
+
+export interface WhatsAppTemplateVariableSpec {
+  index: number;
+  label: string;
+  sourceField:
+    | "customer.firstName"
+    | "customer.fullName"
+    | "customer.companyName"
+    | "customer.city"
+    | "order.latestNumber"
+    | "custom";
+  sampleValue: string;
+}
+
+export interface WhatsAppTemplateDefinition {
+  id?: string;
+  name: string;
+  language: string;
+  category: WhatsAppTemplateCategory;
+  headerType: WhatsAppHeaderType;
+  headerText?: string | null;
+  headerMediaUrl?: string | null;
+  headerLocation?: WhatsAppTemplateLocation | null;
+  bodyText: string;
+  footerText?: string | null;
+  buttons: WhatsAppTemplateButton[];
+  variablesSchema: WhatsAppTemplateVariableSpec[];
+  allowCategoryChange?: boolean;
+  codeExpirationMinutes?: number | null;
+}
+
 export interface OutboundWhatsAppSendResult {
   ok: boolean;
   waMessageId: string;
   mode: "LIVE_META_CLOUD" | "SANDBOX_SIMULATOR";
   deliveryStatus: "SENT" | "DELIVERED" | "FAILED";
   error?: string;
+  metaErrorCode?: number;
+  isRateOrSpamBlock?: boolean;
+}
+
+async function loadMetaWhatsAppSetupConfig(): Promise<Record<string, unknown>> {
+  await ensureDatabasesBootstrapped();
+  const auth = getRawLibSqlClient("core_auth");
+  const cfgRes = await auth.execute(
+    `SELECT value_json FROM setup_state WHERE key = 'facebook_whatsapp_config' LIMIT 1`
+  );
+  if (cfgRes.rows[0]?.value_json) {
+    try {
+      return JSON.parse(String(cfgRes.rows[0].value_json));
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
 export async function sendWhatsAppCloudMessage(params: {
@@ -53,26 +133,24 @@ export async function sendWhatsAppCloudMessage(params: {
   bodyText: string;
   templateName?: string;
   languageCode?: string;
+  templateComponents?: Record<string, unknown>[];
 }): Promise<OutboundWhatsAppSendResult> {
-  await ensureDatabasesBootstrapped();
-  const auth = getRawLibSqlClient("core_auth");
-  const cfgRes = await auth.execute(
-    `SELECT value_json FROM setup_state WHERE key = 'facebook_whatsapp_config' LIMIT 1`
-  );
-
-  let cfg: Record<string, unknown> = {};
-  if (cfgRes.rows[0]?.value_json) {
-    try {
-      cfg = JSON.parse(String(cfgRes.rows[0].value_json));
-    } catch {
-      cfg = {};
-    }
-  }
+  const cfg = await loadMetaWhatsAppSetupConfig();
 
   const mode = String(cfg.mode || "SANDBOX_SIMULATOR");
   const phoneNumberId = String(cfg.phoneNumberId || "").trim();
   const accessToken = String(cfg.systemUserAccessToken || "").trim();
   const recipientDigits = params.toPhone.replace(/\D/g, "");
+
+  if (!recipientDigits || recipientDigits.length < 10) {
+    return {
+      ok: false,
+      waMessageId: "",
+      mode: mode === "LIVE_META_CLOUD" ? "LIVE_META_CLOUD" : "SANDBOX_SIMULATOR",
+      deliveryStatus: "FAILED",
+      error: "Invalid WhatsApp number.",
+    };
+  }
 
   if (mode === "LIVE_META_CLOUD" && phoneNumberId && accessToken) {
     try {
@@ -84,6 +162,9 @@ export async function sendWhatsAppCloudMessage(params: {
             template: {
               name: params.templateName,
               language: { code: params.languageCode || "en" },
+              ...(params.templateComponents && params.templateComponents.length > 0
+                ? { components: params.templateComponents }
+                : {}),
             },
           }
         : {
@@ -109,12 +190,20 @@ export async function sendWhatsAppCloudMessage(params: {
 
       const data: any = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const metaCode = Number(data?.error?.code || 0) || undefined;
+        const isSpamOrRate =
+          res.status === 429 ||
+          [4, 368, 80007, 130429, 131048, 131049, 131056, 131031].includes(
+            metaCode || 0
+          );
         return {
           ok: false,
           waMessageId: "",
           mode: "LIVE_META_CLOUD",
           deliveryStatus: "FAILED",
-          error: data?.error?.message || `Meta Graph HTTP ${res.status}`,
+          error: data?.error?.message || `Meta HTTP ${res.status}`,
+          metaErrorCode: metaCode,
+          isRateOrSpamBlock: isSpamOrRate,
         };
       }
 
@@ -145,6 +234,584 @@ export async function sendWhatsAppCloudMessage(params: {
     waMessageId: simulatedId,
     mode: "SANDBOX_SIMULATOR",
     deliveryStatus: "DELIVERED",
+  };
+}
+
+export function validateWhatsAppTemplateRules(
+  tpl: WhatsAppTemplateDefinition
+): { valid: boolean; errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  const cleanName = tpl.name.trim();
+  if (!cleanName || !/^[a-z0-9_]{3,512}$/.test(cleanName)) {
+    errors.push(
+      "Template name must be at least 3 characters and use only lowercase letters, numbers, and underscores (for example: podium_offer_2026)."
+    );
+  }
+
+  const body = tpl.bodyText.trim();
+  if (!body) {
+    errors.push("Message body cannot be empty.");
+  } else if (body.length > 1024) {
+    errors.push("Message body must be 1,024 characters or shorter.");
+  }
+
+  // Extract variable indices from body
+  const bodyVarNums = Array.from(body.matchAll(/\{\{(\d+)\}\}/g)).map((m) =>
+    Number(m[1])
+  );
+  const uniqueBodyVars = Array.from(new Set(bodyVarNums)).sort((a, b) => a - b);
+  for (let i = 0; i < uniqueBodyVars.length; i++) {
+    if (uniqueBodyVars[i] !== i + 1) {
+      errors.push(
+        `Variables must be numbered in order starting from {{1}} with no skipped numbers (found {{${uniqueBodyVars.join(
+          "}}, {{"
+        )}}}).`
+      );
+      break;
+    }
+  }
+
+  if (tpl.category !== "AUTHENTICATION" && body) {
+    if (/^\{\{\d+\}\}/.test(body) || /\{\{\d+\}\}$/.test(body)) {
+      errors.push(
+        "Meta rejects templates that start or end directly with a {{variable}}. Add a greeting word before {{1}} or punctuation/words at the end."
+      );
+    }
+    if (/\{\{\d+\}\}\s*\{\{\d+\}\}/.test(body)) {
+      warnings.push(
+        "Avoid placing two variables side by side ({{1}} {{2}}). Add a word between them so Meta approves the template smoothly."
+      );
+    }
+  }
+
+  for (const num of uniqueBodyVars) {
+    const spec = tpl.variablesSchema.find((v) => v.index === num);
+    if (!spec || !spec.sampleValue.trim()) {
+      errors.push(
+        `Please enter a sample value for {{${num}}} so Meta reviewers can see an example message.`
+      );
+    }
+  }
+
+  if (tpl.headerType === "TEXT") {
+    const h = (tpl.headerText || "").trim();
+    if (!h) {
+      errors.push("Enter header text or switch Header to None.");
+    } else if (h.length > 60) {
+      errors.push("Header text must be 60 characters or shorter.");
+    }
+  } else if (
+    tpl.headerType === "IMAGE" ||
+    tpl.headerType === "VIDEO" ||
+    tpl.headerType === "DOCUMENT"
+  ) {
+    if (!(tpl.headerMediaUrl || "").trim()) {
+      errors.push(
+        `Provide a sample ${tpl.headerType.toLowerCase()} link or pick an item from the catalog.`
+      );
+    }
+  } else if (tpl.headerType === "LOCATION") {
+    if (!tpl.headerLocation?.name || !tpl.headerLocation?.address) {
+      errors.push("Enter location name and address for the map header.");
+    }
+  }
+
+  if ((tpl.footerText || "").length > 60) {
+    errors.push("Footer text must be 60 characters or shorter.");
+  }
+
+  if (tpl.buttons.length > 10) {
+    errors.push("WhatsApp allows at most 10 buttons per template.");
+  }
+  const urlButtons = tpl.buttons.filter((b) => b.type === "URL");
+  const phoneButtons = tpl.buttons.filter((b) => b.type === "PHONE_NUMBER");
+  const copyButtons = tpl.buttons.filter((b) => b.type === "COPY_CODE");
+
+  if (urlButtons.length > 2) {
+    errors.push("WhatsApp allows at most 2 website link buttons per template.");
+  }
+  if (phoneButtons.length > 1) {
+    errors.push("WhatsApp allows at most 1 phone call button per template.");
+  }
+  if (copyButtons.length > 1) {
+    errors.push("WhatsApp allows at most 1 copy-code button per template.");
+  }
+
+  for (const btn of tpl.buttons) {
+    if (!btn.text.trim() && btn.type !== "OTP") {
+      errors.push("Every button must have a button label.");
+    }
+    if (btn.text.trim().length > 25) {
+      errors.push(
+        `Button label "${btn.text}" must be 25 characters or shorter.`
+      );
+    }
+    if (btn.type === "URL") {
+      if (!btn.url || !/^https?:\/\//i.test(btn.url.trim())) {
+        errors.push(
+          `Website button "${btn.text}" needs a full https:// link.`
+        );
+      }
+      if (btn.url && /\b(bit\.ly|tinyurl\.com|t\.co)\b/i.test(btn.url)) {
+        warnings.push(
+          "Meta often rejects public URL shorteners like bit.ly. Use https://whatsapp.ccapl.cc/l/... short links instead."
+        );
+      }
+    }
+    if (btn.type === "PHONE_NUMBER" && !(btn.phoneNumber || "").trim()) {
+      errors.push(`Phone button "${btn.text}" needs a phone number.`);
+    }
+    if (btn.type === "COPY_CODE" && !(btn.exampleCode || "").trim()) {
+      errors.push(`Copy-code button "${btn.text}" needs a sample code.`);
+    }
+  }
+
+  if (
+    tpl.category === "MARKETING" &&
+    !/stop|opt\s*out|unsubscribe/i.test(
+      `${tpl.footerText || ""} ${tpl.bodyText} ${tpl.buttons
+        .map((b) => b.text)
+        .join(" ")}`
+    )
+  ) {
+    warnings.push(
+      "Tip: Adding 'Reply STOP to opt out' in the footer or a quick reply button lowers spam reports and keeps your WhatsApp quality rating green."
+    );
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
+}
+
+export function buildMetaGraphTemplatePayload(
+  tpl: WhatsAppTemplateDefinition
+): Record<string, unknown> {
+  const components: Record<string, unknown>[] = [];
+
+  if (tpl.category === "AUTHENTICATION") {
+    components.push({
+      type: "BODY",
+      add_security_recommendation: true,
+    });
+    if (tpl.codeExpirationMinutes && tpl.codeExpirationMinutes > 0) {
+      components.push({
+        type: "FOOTER",
+        code_expiration_minutes: Math.min(90, Math.max(1, tpl.codeExpirationMinutes)),
+      });
+    }
+    components.push({
+      type: "BUTTONS",
+      buttons: [
+        {
+          type: "OTP",
+          otp_type: "COPY_CODE",
+          text: tpl.buttons[0]?.text || "Copy Code",
+        },
+      ],
+    });
+    return {
+      name: tpl.name,
+      language: tpl.language || "en",
+      category: "AUTHENTICATION",
+      components,
+    };
+  }
+
+  // Header component
+  if (tpl.headerType === "TEXT" && tpl.headerText?.trim()) {
+    const hText = tpl.headerText.trim();
+    const hasVar = /\{\{1\}\}/.test(hText);
+    components.push({
+      type: "HEADER",
+      format: "TEXT",
+      text: hText,
+      ...(hasVar
+        ? {
+            example: {
+              header_text: [
+                tpl.variablesSchema.find((v) => v.index === 1)?.sampleValue ||
+                  "Customer",
+              ],
+            },
+          }
+        : {}),
+    });
+  } else if (
+    (tpl.headerType === "IMAGE" ||
+      tpl.headerType === "VIDEO" ||
+      tpl.headerType === "DOCUMENT") &&
+    tpl.headerMediaUrl?.trim()
+  ) {
+    components.push({
+      type: "HEADER",
+      format: tpl.headerType,
+      example: {
+        header_handle: [tpl.headerMediaUrl.trim()],
+      },
+    });
+  } else if (tpl.headerType === "LOCATION") {
+    components.push({
+      type: "HEADER",
+      format: "LOCATION",
+    });
+  }
+
+  // Body component with sample values
+  const body = tpl.bodyText.trim();
+  const varMatches = Array.from(
+    new Set(Array.from(body.matchAll(/\{\{(\d+)\}\}/g)).map((m) => Number(m[1])))
+  ).sort((a, b) => a - b);
+
+  components.push({
+    type: "BODY",
+    text: body,
+    ...(varMatches.length > 0
+      ? {
+          example: {
+            body_text: [
+              varMatches.map(
+                (idx) =>
+                  tpl.variablesSchema.find((v) => v.index === idx)
+                    ?.sampleValue || `Sample${idx}`
+              ),
+            ],
+          },
+        }
+      : {}),
+  });
+
+  // Footer component
+  if (tpl.footerText?.trim()) {
+    components.push({
+      type: "FOOTER",
+      text: tpl.footerText.trim(),
+    });
+  }
+
+  // Interactive Buttons component
+  if (tpl.buttons.length > 0) {
+    components.push({
+      type: "BUTTONS",
+      buttons: tpl.buttons.map((b) => {
+        if (b.type === "URL") {
+          const isDynamic =
+            b.urlType === "DYNAMIC" || /\{\{1\}\}/.test(b.url || "");
+          const baseUrl = (b.url || "").trim();
+          const finalUrl =
+            isDynamic && !/\{\{1\}\}$/.test(baseUrl)
+              ? `${baseUrl.replace(/\/?$/, "/")}{{1}}`
+              : baseUrl;
+          return {
+            type: "URL",
+            text: b.text.trim(),
+            url: finalUrl,
+            ...(isDynamic
+              ? { example: [b.exampleSuffix || "CC-2026"] }
+              : {}),
+          };
+        }
+        if (b.type === "PHONE_NUMBER") {
+          return {
+            type: "PHONE_NUMBER",
+            text: b.text.trim(),
+            phone_number: (b.phoneNumber || "").trim(),
+          };
+        }
+        if (b.type === "COPY_CODE") {
+          return {
+            type: "COPY_CODE",
+            example: b.exampleCode || "CLASSIC10",
+          };
+        }
+        return {
+          type: "QUICK_REPLY",
+          text: b.text.trim(),
+        };
+      }),
+    });
+  }
+
+  return {
+    name: tpl.name,
+    language: tpl.language || "en",
+    category: tpl.category,
+    allow_category_change: tpl.allowCategoryChange ?? true,
+    components,
+  };
+}
+
+export async function submitTemplateToMetaCloud(
+  tpl: WhatsAppTemplateDefinition
+): Promise<{
+  ok: boolean;
+  mode: "LIVE_META_CLOUD" | "SANDBOX_SIMULATOR";
+  metaTemplateId: string;
+  approvalStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED";
+  message: string;
+  error?: string;
+}> {
+  const validation = validateWhatsAppTemplateRules(tpl);
+  if (!validation.valid) {
+    return {
+      ok: false,
+      mode: "SANDBOX_SIMULATOR",
+      metaTemplateId: "",
+      approvalStatus: "REJECTED",
+      message: validation.errors[0],
+      error: validation.errors.join(" "),
+    };
+  }
+
+  const cfg = await loadMetaWhatsAppSetupConfig();
+  const mode = String(cfg.mode || "SANDBOX_SIMULATOR");
+  const wabaId = String(cfg.wabaId || "").trim();
+  const accessToken = String(cfg.systemUserAccessToken || "").trim();
+  const metaPayload = buildMetaGraphTemplatePayload(tpl);
+
+  if (mode === "LIVE_META_CLOUD" && wabaId && accessToken) {
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v21.0/${encodeURIComponent(
+          wabaId
+        )}/message_templates`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(metaPayload),
+          signal: AbortSignal.timeout(20000),
+        }
+      );
+      const data: any = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return {
+          ok: false,
+          mode: "LIVE_META_CLOUD",
+          metaTemplateId: "",
+          approvalStatus: "REJECTED",
+          message:
+            data?.error?.error_user_msg ||
+            data?.error?.message ||
+            `Meta Graph HTTP ${res.status}`,
+          error:
+            data?.error?.error_user_msg ||
+            data?.error?.message ||
+            `Meta Graph HTTP ${res.status}`,
+        };
+      }
+
+      const rawStatus = String(data?.status || "PENDING").toUpperCase();
+      const mappedStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED" =
+        rawStatus === "APPROVED"
+          ? "APPROVED"
+          : rawStatus === "REJECTED"
+          ? "REJECTED"
+          : "PENDING_APPROVAL";
+
+      return {
+        ok: true,
+        mode: "LIVE_META_CLOUD",
+        metaTemplateId: String(data?.id || `meta_${Date.now()}`),
+        approvalStatus: mappedStatus,
+        message:
+          mappedStatus === "APPROVED"
+            ? "Template approved immediately by Meta!"
+            : "Submitted to Meta for review. Approval usually takes a few minutes.",
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        mode: "LIVE_META_CLOUD",
+        metaTemplateId: "",
+        approvalStatus: "REJECTED",
+        message: err?.message || "Could not connect to Meta Graph API.",
+        error: err?.message || "Could not connect to Meta Graph API.",
+      };
+    }
+  }
+
+  // Sandbox Simulator Mode: validates full Meta schema & approves ready for immediate testing
+  return {
+    ok: true,
+    mode: "SANDBOX_SIMULATOR",
+    metaTemplateId: `sim_tpl_${crypto.randomBytes(5).toString("hex")}`,
+    approvalStatus: "APPROVED",
+    message:
+      "Validated all WhatsApp template rules and marked Approved (Sandbox mode; connect live WABA ID in Facebook Setup to submit directly to Meta).",
+  };
+}
+
+export async function syncTemplatesFromMetaCloud(): Promise<{
+  ok: boolean;
+  mode: "LIVE_META_CLOUD" | "SANDBOX_SIMULATOR";
+  syncedCount: number;
+  message: string;
+}> {
+  const cfg = await loadMetaWhatsAppSetupConfig();
+  const mode = String(cfg.mode || "SANDBOX_SIMULATOR");
+  const wabaId = String(cfg.wabaId || "").trim();
+  const accessToken = String(cfg.systemUserAccessToken || "").trim();
+  const mkt = getRawLibSqlClient("marketing");
+  const nowIso = new Date().toISOString();
+
+  if (mode === "LIVE_META_CLOUD" && wabaId && accessToken) {
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v21.0/${encodeURIComponent(
+          wabaId
+        )}/message_templates?fields=id,name,language,category,status,quality_score,rejected_reason,components&limit=100`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: AbortSignal.timeout(20000),
+        }
+      );
+      const json: any = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return {
+          ok: false,
+          mode: "LIVE_META_CLOUD",
+          syncedCount: 0,
+          message:
+            json?.error?.message || `Meta template sync failed (HTTP ${res.status}).`,
+        };
+      }
+
+      const items: any[] = Array.isArray(json?.data) ? json.data : [];
+      let synced = 0;
+
+      for (const item of items) {
+        const name = String(item.name || "").trim();
+        if (!name) continue;
+        const metaId = String(item.id || "");
+        const rawStatus = String(item.status || "APPROVED").toUpperCase();
+        const approvalStatus =
+          rawStatus === "APPROVED"
+            ? "APPROVED"
+            : rawStatus === "REJECTED"
+            ? "REJECTED"
+            : rawStatus === "PAUSED"
+            ? "PAUSED"
+            : "PENDING_APPROVAL";
+        const quality = String(
+          item?.quality_score?.score || "GREEN"
+        ).toUpperCase();
+        const rejReason =
+          item.rejected_reason && item.rejected_reason !== "NONE"
+            ? String(item.rejected_reason)
+            : null;
+
+        const existing = await mkt.execute({
+          sql: `SELECT id FROM templates WHERE name = ? LIMIT 1`,
+          args: [name],
+        });
+
+        if (existing.rows[0]) {
+          await mkt.execute({
+            sql: `UPDATE templates
+                  SET meta_template_id = ?,
+                      approval_status = ?,
+                      meta_quality_score = ?,
+                      rejection_reason = ?,
+                      updated_at = ?
+                  WHERE id = ?`,
+            args: [
+              metaId,
+              approvalStatus,
+              quality,
+              rejReason,
+              nowIso,
+              String(existing.rows[0].id),
+            ],
+          });
+          synced++;
+        } else {
+          const comps: any[] = Array.isArray(item.components)
+            ? item.components
+            : [];
+          const headerComp = comps.find((c) => c.type === "HEADER");
+          const bodyComp = comps.find((c) => c.type === "BODY");
+          const footerComp = comps.find((c) => c.type === "FOOTER");
+          const btnComp = comps.find((c) => c.type === "BUTTONS");
+
+          const buttons: WhatsAppTemplateButton[] = Array.isArray(
+            btnComp?.buttons
+          )
+            ? btnComp.buttons.map((b: any, idx: number) => ({
+                id: `btn_meta_${idx}`,
+                type:
+                  b.type === "URL"
+                    ? "URL"
+                    : b.type === "PHONE_NUMBER"
+                    ? "PHONE_NUMBER"
+                    : b.type === "COPY_CODE"
+                    ? "COPY_CODE"
+                    : "QUICK_REPLY",
+                text: String(b.text || "Open"),
+                url: b.url ? String(b.url) : undefined,
+                phoneNumber: b.phone_number
+                  ? String(b.phone_number)
+                  : undefined,
+              }))
+            : [];
+
+          const firstUrlBtn = buttons.find((b) => b.type === "URL");
+          await mkt.execute({
+            sql: `INSERT INTO templates (
+              id, name, language, category, header_type, header_text, body_text,
+              footer_text, cta_label, cta_url, buttons_json, meta_template_id,
+              meta_quality_score, approval_status, rejection_reason, created_by_name,
+              updated_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Meta Sync', ?, ?)`,
+            args: [
+              `tpl_${crypto.randomUUID().slice(0, 8)}`,
+              name,
+              String(item.language || "en"),
+              String(item.category || "MARKETING").toUpperCase(),
+              headerComp?.format ? String(headerComp.format) : "NONE",
+              headerComp?.text ? String(headerComp.text) : null,
+              String(bodyComp?.text || name),
+              footerComp?.text ? String(footerComp.text) : null,
+              firstUrlBtn?.text || null,
+              firstUrlBtn?.url || null,
+              JSON.stringify(buttons),
+              metaId,
+              quality,
+              approvalStatus,
+              rejReason,
+              nowIso,
+              nowIso,
+            ],
+          });
+          synced++;
+        }
+      }
+
+      return {
+        ok: true,
+        mode: "LIVE_META_CLOUD",
+        syncedCount: synced,
+        message: `Synced ${synced} WhatsApp templates from Meta.`,
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        mode: "LIVE_META_CLOUD",
+        syncedCount: 0,
+        message: err?.message || "Network error while syncing from Meta.",
+      };
+    }
+  }
+
+  const countRes = await mkt.execute(`SELECT COUNT(*) as cnt FROM templates`);
+  return {
+    ok: true,
+    mode: "SANDBOX_SIMULATOR",
+    syncedCount: Number(countRes.rows[0]?.cnt ?? 0),
+    message:
+      "Checked local templates (Sandbox mode active. Connect live WABA ID in Facebook Setup to pull templates from Meta).",
   };
 }
 

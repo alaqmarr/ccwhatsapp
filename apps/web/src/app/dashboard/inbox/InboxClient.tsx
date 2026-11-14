@@ -13,6 +13,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   Sparkles,
@@ -23,7 +24,10 @@ import {
 } from "lucide-react";
 import {
   CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE,
+  ChatMessagesSkeleton,
   ClassicConceptsMark,
+  ElementErrorState,
+  RightDrawerSkeleton,
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
 } from "@cc/ui";
@@ -151,6 +155,9 @@ export function InboxClient({
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   const [syncingThread, setSyncingThread] = useState<boolean>(false);
+  const [detailError, setDetailError] = useState<string>("");
+  const [threadsError, setThreadsError] = useState<string>("");
+  const [refreshingThreads, setRefreshingThreads] = useState<boolean>(false);
   const [nowMs, setNowMs] = useState<number>(initialData.serverNowMs);
 
   // Composer state: Free WhatsApp Reply | Paid Approved Template | Private Internal Team Note
@@ -239,25 +246,46 @@ export function InboxClient({
   }, []);
 
   // Silent background refresh of thread list (never clears existing threads!)
-  const refreshThreadsSilently = useCallback(async () => {
-    const res = await fetch("/api/conversations", { cache: "no-store" }).catch(
-      () => null
-    );
-    if (!res || !res.ok) return;
-    const data = await res.json().catch(() => ({}));
-    if (data.ok && Array.isArray(data.conversations)) {
-      setThreads(data.conversations);
+  const refreshThreadsSilently = useCallback(async (manual = false) => {
+    if (manual) {
+      setRefreshingThreads(true);
+      setThreadsError("");
+    }
+    try {
+      const res = await fetch("/api/conversations", { cache: "no-store" });
+      if (!res.ok) {
+        if (manual) {
+          setThreadsError("Could not refresh chats list right now.");
+        }
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data.ok && Array.isArray(data.conversations)) {
+        setThreads(data.conversations);
+        setThreadsError("");
+      } else if (manual) {
+        setThreadsError(data.error || "Could not refresh chats list.");
+      }
+    } catch {
+      if (manual) {
+        setThreadsError("Network error while refreshing chats.");
+      }
+    } finally {
+      if (manual) setRefreshingThreads(false);
     }
   }, []);
 
-  // Silent detail fetch: renders cached copy at 0ms if switching, then updates in place without unmounting!
+  // Silent detail fetch: renders cached copy at 0ms if switching, or element skeletons + retry if uncached!
   const fetchAndCacheDetail = useCallback(
     async (convId: string, updateProfileInputs = false) => {
       const cached = detailCacheRef.current.get(convId);
       if (cached && selectedIdRef.current === convId) {
         setDetail(cached);
+        setDetailError("");
         if (updateProfileInputs) syncProfileFields(cached);
-      } else {
+      } else if (selectedIdRef.current === convId) {
+        setDetail(null);
+        setDetailError("");
         setSyncingThread(true);
       }
 
@@ -266,7 +294,7 @@ export function InboxClient({
           cache: "no-store",
         });
         const data = await res.json().catch(() => ({}));
-        if (data.ok && data.conversation) {
+        if (res.ok && data.ok && data.conversation) {
           const nextBundle: ConversationDetailBundle = {
             conversation: data.conversation,
             messages: data.messages || [],
@@ -283,6 +311,7 @@ export function InboxClient({
           }
           if (selectedIdRef.current === convId) {
             setDetail(nextBundle);
+            setDetailError("");
             if (updateProfileInputs || !cached) {
               syncProfileFields(nextBundle);
             }
@@ -292,6 +321,16 @@ export function InboxClient({
               t.id === convId ? { ...t, unreadCount: 0 } : t
             )
           );
+        } else if (!cached && selectedIdRef.current === convId) {
+          setDetailError(
+            data.error || "Could not load this conversation right now."
+          );
+        }
+      } catch {
+        if (!cached && selectedIdRef.current === convId) {
+          setDetailError(
+            "Network error while loading messages. Click Try Again to reload."
+          );
         }
       } finally {
         setSyncingThread(false);
@@ -300,24 +339,28 @@ export function InboxClient({
     [syncProfileFields]
   );
 
-  // Select conversation handler (zero flash!)
+  // Select conversation handler (zero flash on cached, element skeleton on uncached!)
   function handleSelectConversation(convId: string) {
-    if (convId === selectedId) return;
+    if (convId === selectedId && (detail || syncingThread)) return;
     setSelectedId(convId);
     selectedIdRef.current = convId;
+    setDetailError("");
     const cached = detailCacheRef.current.get(convId);
     if (cached) {
       setDetail(cached);
       syncProfileFields(cached);
+    } else {
+      setDetail(null);
+      setSyncingThread(true);
     }
     void fetchAndCacheDetail(convId, true);
   }
 
-  // Real-time SSE + gentle silent poll (never triggers loading spinners!)
+  // Real-time SSE + gentle silent poll (never triggers loading spinners on existing chats!)
   useEffect(() => {
-    const es = new EventSource("/api/realtime");
+    const es = new EventSource("/api/realtime/stream");
     const refresh = () => {
-      void refreshThreadsSilently();
+      void refreshThreadsSilently(false);
       if (selectedIdRef.current) {
         void fetchAndCacheDetail(selectedIdRef.current, false);
       }
@@ -330,7 +373,7 @@ export function InboxClient({
     es.addEventListener("conversation:escalated", refresh);
 
     const poll = setInterval(() => {
-      void refreshThreadsSilently();
+      void refreshThreadsSilently(false);
       if (selectedIdRef.current) {
         void fetchAndCacheDetail(selectedIdRef.current, false);
       }
@@ -810,6 +853,18 @@ export function InboxClient({
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => refreshThreadsSilently(true)}
+              title="Refresh chats"
+              className="p-2 rounded-full hover:bg-[#e9edef] text-[#54656f] cursor-pointer"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${
+                  refreshingThreads ? "animate-spin" : ""
+                }`}
+              />
+            </button>
             <Link
               href="/dashboard/teams"
               title="Teams & Escalation Flow"
@@ -904,6 +959,17 @@ export function InboxClient({
 
         {/* WhatsApp Conversation Rows */}
         <div className="flex-1 overflow-y-auto divide-y divide-[#f0f2f5]">
+          {threadsError && (
+            <div className="p-3">
+              <ElementErrorState
+                compact
+                title="Could not refresh chats"
+                message={threadsError}
+                onRetry={() => refreshThreadsSilently(true)}
+                retrying={refreshingThreads}
+              />
+            </div>
+          )}
           {filteredThreads.length === 0 ? (
             <div className="p-6 text-center text-xs text-[#667781]">
               No chats match this filter.
@@ -1039,19 +1105,34 @@ export function InboxClient({
         {!activeConv ? (
           <div
             style={CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE}
-            className="flex-1 flex flex-col items-center justify-center p-8 text-center"
+            className="flex-1 flex flex-col justify-center overflow-y-auto"
           >
-            <div className="bg-white/95 border border-[#d1d7db] rounded-xl p-6 max-w-sm shadow-xs space-y-2.5">
-              <div className="mx-auto w-12 h-12 rounded-full bg-[#e7fce3] flex items-center justify-center text-[#00a884]">
-                <WhatsAppLogoIcon size={24} />
+            {selectedId && syncingThread ? (
+              <ChatMessagesSkeleton />
+            ) : selectedId && detailError ? (
+              <div className="p-8 max-w-md mx-auto w-full">
+                <ElementErrorState
+                  title="Could not load chat messages"
+                  message={detailError}
+                  onRetry={() => fetchAndCacheDetail(selectedId, true)}
+                  retrying={syncingThread}
+                />
               </div>
-              <h2 className="text-sm font-semibold text-[#111b21]">
-                Classic Concepts WhatsApp Desk
-              </h2>
-              <p className="text-xs text-[#54656f]">
-                Select any customer chat on the left. New enquiries are handled automatically by ACRIO first and connected to Sales Team whenever human help is needed.
-              </p>
-            </div>
+            ) : (
+              <div className="p-8 text-center flex justify-center">
+                <div className="bg-white/95 border border-[#d1d7db] rounded-xl p-6 max-w-sm shadow-xs space-y-2.5">
+                  <div className="mx-auto w-12 h-12 rounded-full bg-[#e7fce3] flex items-center justify-center text-[#00a884]">
+                    <WhatsAppLogoIcon size={24} />
+                  </div>
+                  <h2 className="text-sm font-semibold text-[#111b21]">
+                    Classic Concepts WhatsApp Desk
+                  </h2>
+                  <p className="text-xs text-[#54656f]">
+                    Select any customer chat on the left. New enquiries are handled automatically by ACRIO first and connected to Sales Team whenever human help is needed.
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <>
@@ -1600,9 +1681,21 @@ export function InboxClient({
 
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {!detail?.customer && !activeConv ? (
-              <p className="text-xs text-[#667781]">
-                Select a chat to view customer details.
-              </p>
+              selectedId && syncingThread ? (
+                <RightDrawerSkeleton />
+              ) : selectedId && detailError ? (
+                <ElementErrorState
+                  compact
+                  title="Customer details unavailable"
+                  message={detailError}
+                  onRetry={() => fetchAndCacheDetail(selectedId, true)}
+                  retrying={syncingThread}
+                />
+              ) : (
+                <p className="text-xs text-[#667781]">
+                  Select a chat to view customer details.
+                </p>
+              )
             ) : rightTab === "PROFILE" ? (
               <form onSubmit={handleSaveCustomerProfile} className="space-y-3.5">
                 <div className="p-3 rounded-lg bg-[#f8f9fa] border border-[#e9edef] space-y-1">

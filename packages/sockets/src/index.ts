@@ -10,6 +10,7 @@ export type RealtimeEventType =
   | "conversation:resolved"
   | "staff:approval_changed"
   | "broadcast:progress"
+  | "template:updated"
   | "backup:completed"
   | "queue:updated";
 
