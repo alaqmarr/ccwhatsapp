@@ -1,0 +1,569 @@
+import {
+  ensureDatabasesBootstrapped,
+  fetchWebsiteEnquiriesForCustomer,
+  getRawLibSqlClient,
+  resolveSharedAnthropicApiKey,
+} from "@cc/database";
+import { getCachedEcosystemCatalog, runAcrioChatCopilot } from "@cc/connections";
+import {
+  getWhatsAppCacheSummary,
+  listCustomAdminLinks,
+  rememberWhatsAppCache,
+} from "@cc/storage";
+import {
+  checkAndEscalateWaitingChats,
+  ensureBackgroundWorkersRunning,
+} from "@cc/workers";
+
+export interface ConversationSummary {
+  id: string;
+  customerPhone: string;
+  customerName: string;
+  customerId: string | null;
+  status: string;
+  priority: string;
+  smartCategory: string;
+  assignedStaffId: string | null;
+  assignedStaffName: string | null;
+  assignedTeamId: string | null;
+  assignedTeamName: string | null;
+  escalationLevel: string;
+  waitingSince: string | null;
+  lastResponseSeconds: number | null;
+  escalatedAt: string | null;
+  unreadCount: number;
+  lastMessagePreview: string;
+  lastMessageAt: string;
+  windowExpiresAt: string | null;
+  resolutionSummary: string | null;
+  resolvedByName: string | null;
+  tags: string[];
+}
+
+export interface ChatMessage {
+  id: string;
+  direction: string;
+  senderType: string;
+  senderName: string;
+  messageType: string;
+  billingCategory: string;
+  body: string;
+  templateName: string | null;
+  deliveryStatus: string;
+  createdAt: string;
+}
+
+export interface CustomerProfile {
+  id: string;
+  phone: string;
+  name: string;
+  email: string | null;
+  companyName: string | null;
+  organizationType: string;
+  city: string | null;
+  gstNumber: string | null;
+  acrioSegment: string;
+  lifetimeValueInr: number;
+  totalOrdersCount: number;
+  notes: string;
+}
+
+export interface CustomerOrder {
+  id: string;
+  orderNumber: string;
+  itemsSummary: string;
+  quantity: number;
+  totalAmountInr: number;
+  paymentStatus: string;
+  fulfillmentStatus: string;
+  invoiceUrl: string | null;
+  orderedAt: string;
+}
+
+export interface CustomerRelation {
+  id: string;
+  relationType: string;
+  summary: string;
+  handledBy: string;
+  occurredAt: string;
+}
+
+export interface WebsiteEnquiry {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  message: string;
+  source: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface AcrioRecommendedItem {
+  name: string;
+  slug: string;
+  sku: string | null;
+  priceInr: number | null;
+  url: string;
+  brand?: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  brandLabel?: string;
+  itemType?: "PRODUCT" | "MACHINE" | "CONSUMABLE";
+  modelsSummary?: string | null;
+}
+
+export interface AcrioCopilot {
+  engineLabel: string;
+  smartCategory: string;
+  priority: string;
+  suggestedReplies: string[];
+  recommendedProducts: AcrioRecommendedItem[];
+  resolutionDraft: string;
+}
+
+export interface TeamOption {
+  id: string;
+  name: string;
+  brandScope: string;
+  priorityRank: number;
+  p0WaitMinutes: number;
+  p1WaitMinutes: number;
+}
+
+export interface StaffOption {
+  id: string;
+  name: string;
+  role: string;
+  department: string;
+}
+
+export interface ApprovedTemplateOption {
+  id: string;
+  name: string;
+  category: "MARKETING" | "UTILITY" | "AUTHENTICATION";
+  headerText: string | null;
+  bodyText: string;
+  ctaUrl: string | null;
+}
+
+export interface CustomLinkItem {
+  id: string;
+  code: string;
+  title: string;
+  targetUrl: string;
+  clicksCount: number;
+}
+
+export interface ConversationDetailBundle {
+  conversation: {
+    id: string;
+    customerPhone: string;
+    customerName: string;
+    status: string;
+    priority: string;
+    smartCategory: string;
+    assignedStaffId: string | null;
+    assignedStaffName: string | null;
+    assignedTeamId: string | null;
+    assignedTeamName: string | null;
+    escalationLevel: string;
+    waitingSince: string | null;
+    lastResponseSeconds: number | null;
+    escalatedAt: string | null;
+    resolutionSummary: string | null;
+    resolvedByName: string | null;
+    windowExpiresAt: string | null;
+  };
+  messages: ChatMessage[];
+  customer: CustomerProfile | null;
+  orders: CustomerOrder[];
+  relations: CustomerRelation[];
+  websiteEnquiries: WebsiteEnquiry[];
+  acrio: AcrioCopilot | null;
+  customLinks: CustomLinkItem[];
+}
+
+export interface InitialInboxPayload {
+  currentUserId: string;
+  currentUserName: string;
+  serverNowMs: number;
+  threads: ConversationSummary[];
+  initialSelectedId: string | null;
+  initialDetail: ConversationDetailBundle | null;
+  teams: TeamOption[];
+  staffList: StaffOption[];
+  templates: ApprovedTemplateOption[];
+}
+
+export async function getConversationDetailServer(
+  conversationId: string,
+  markRead = true
+): Promise<ConversationDetailBundle | null> {
+  const conv = getRawLibSqlClient("conversations");
+  const crm = getRawLibSqlClient("crm_orders");
+
+  const convRes = await conv.execute({
+    sql: `SELECT * FROM conversations WHERE id = ? LIMIT 1`,
+    args: [conversationId],
+  });
+  if (!convRes.rows[0]) return null;
+
+  const cRow = convRes.rows[0] as Record<string, unknown>;
+  const customerPhone = String(cRow.customer_phone);
+
+  if (markRead && Number(cRow.unread_count ?? 0) > 0) {
+    await conv.execute({
+      sql: `UPDATE conversations SET unread_count = 0 WHERE id = ?`,
+      args: [conversationId],
+    });
+  }
+
+  const [msgRes, custRes, ordersRes, relationsRes, customLinks] = await Promise.all([
+    conv.execute({
+      sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
+      args: [conversationId],
+    }),
+    crm.execute({
+      sql: `SELECT * FROM customers WHERE phone = ? LIMIT 1`,
+      args: [customerPhone],
+    }),
+    crm.execute({
+      sql: `SELECT * FROM customer_orders WHERE customer_phone = ? ORDER BY ordered_at DESC`,
+      args: [customerPhone],
+    }),
+    crm.execute({
+      sql: `SELECT * FROM customer_relations WHERE customer_phone = ? ORDER BY occurred_at DESC`,
+      args: [customerPhone],
+    }),
+    listCustomAdminLinks(),
+  ]);
+
+  const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
+  const lookupKey = customerRow?.email ? String(customerRow.email) : customerPhone;
+  const websiteEnquiries = await rememberWhatsAppCache(
+    `customer-enq:${lookupKey}`,
+    ["customer-history"],
+    300,
+    () => fetchWebsiteEnquiriesForCustomer(lookupKey)
+  );
+
+  const messages: ChatMessage[] = msgRes.rows.map((m) => ({
+    id: String(m.id),
+    direction: String(m.direction),
+    senderType: String(m.sender_type),
+    senderName: String(m.sender_name),
+    messageType: String(m.message_type),
+    billingCategory: String(m.billing_category),
+    body: String(m.body),
+    templateName: m.template_name ? String(m.template_name) : null,
+    deliveryStatus: String(m.delivery_status),
+    createdAt: String(m.created_at),
+  }));
+
+  const orders: CustomerOrder[] = ordersRes.rows.map((o) => ({
+    id: String(o.id),
+    orderNumber: String(o.order_number),
+    itemsSummary: String(o.items_summary),
+    quantity: Number(o.quantity ?? 1),
+    totalAmountInr: Number(o.total_amount_inr ?? 0),
+    paymentStatus: String(o.payment_status),
+    fulfillmentStatus: String(o.fulfillment_status),
+    invoiceUrl: o.invoice_url ? String(o.invoice_url) : null,
+    orderedAt: String(o.ordered_at),
+  }));
+
+  const relations: CustomerRelation[] = relationsRes.rows.map((r) => ({
+    id: String(r.id),
+    relationType: String(r.relation_type),
+    summary: String(r.summary),
+    handledBy: String(r.handled_by),
+    occurredAt: String(r.occurred_at),
+  }));
+
+  const acrio = await runAcrioChatCopilot({
+    customerName: String(cRow.customer_name),
+    organizationType: customerRow?.organization_type
+      ? String(customerRow.organization_type)
+      : undefined,
+    recentMessages: messages.map((m) => ({ direction: m.direction, body: m.body })),
+    ordersSummary: orders.map(
+      (o) => `${o.orderNumber}: ${o.itemsSummary} (${o.fulfillmentStatus})`
+    ),
+  });
+
+  return {
+    conversation: {
+      id: String(cRow.id),
+      customerPhone,
+      customerName: String(cRow.customer_name),
+      status: String(cRow.status),
+      priority: String(cRow.priority),
+      smartCategory: String(cRow.smart_category),
+      assignedStaffId: cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : null,
+      assignedStaffName: cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : null,
+      assignedTeamId: cRow.assigned_team_id ? String(cRow.assigned_team_id) : null,
+      assignedTeamName: cRow.assigned_team_name ? String(cRow.assigned_team_name) : null,
+      escalationLevel: String(cRow.escalation_level || "P0"),
+      waitingSince: cRow.waiting_since ? String(cRow.waiting_since) : null,
+      lastResponseSeconds:
+        cRow.last_response_seconds !== null && cRow.last_response_seconds !== undefined
+          ? Number(cRow.last_response_seconds)
+          : null,
+      escalatedAt: cRow.escalated_at ? String(cRow.escalated_at) : null,
+      resolutionSummary: cRow.resolution_summary ? String(cRow.resolution_summary) : null,
+      resolvedByName: cRow.resolved_by_name ? String(cRow.resolved_by_name) : null,
+      windowExpiresAt: cRow.window_expires_at ? String(cRow.window_expires_at) : null,
+    },
+    messages,
+    customer: customerRow
+      ? {
+          id: String(customerRow.id),
+          phone: String(customerRow.phone),
+          name: String(customerRow.name),
+          email: customerRow.email ? String(customerRow.email) : null,
+          companyName: customerRow.company_name ? String(customerRow.company_name) : null,
+          organizationType: String(customerRow.organization_type || "Business"),
+          city: customerRow.city ? String(customerRow.city) : null,
+          gstNumber: customerRow.gst_number ? String(customerRow.gst_number) : null,
+          acrioSegment: String(customerRow.acrio_segment || "Active Lead"),
+          lifetimeValueInr: Number(customerRow.lifetime_value_inr ?? 0),
+          totalOrdersCount: Number(customerRow.total_orders_count ?? 0),
+          notes: String(customerRow.notes || ""),
+        }
+      : null,
+    orders,
+    relations,
+    websiteEnquiries,
+    acrio,
+    customLinks,
+  };
+}
+
+export async function getInitialInboxPayload(params: {
+  userId: string;
+  userName: string;
+  selectedConversationId?: string;
+}): Promise<InitialInboxPayload> {
+  await ensureDatabasesBootstrapped();
+  ensureBackgroundWorkersRunning();
+  await checkAndEscalateWaitingChats().catch(() => {});
+
+  const conv = getRawLibSqlClient("conversations");
+  const auth = getRawLibSqlClient("core_auth");
+  const mkt = getRawLibSqlClient("marketing");
+
+  const [threadsRes, teamsRes, staffRes, templatesRes] = await Promise.all([
+    conv.execute(
+      `SELECT * FROM conversations ORDER BY
+        CASE WHEN status != 'RESOLVED' AND waiting_since IS NOT NULL THEN 0
+             WHEN status != 'RESOLVED' THEN 1
+             ELSE 2 END,
+        last_message_at DESC`
+    ),
+    conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
+    auth.execute(
+      `SELECT id, name, role, department
+       FROM users
+       WHERE status = 'ACTIVE' AND role != 'CLIENT'
+       ORDER BY name ASC`
+    ),
+    mkt.execute(
+      `SELECT id, name, category, header_text, body_text, cta_url
+       FROM templates
+       WHERE approval_status = 'APPROVED'
+       ORDER BY category ASC, name ASC`
+    ),
+  ]);
+
+  const threads: ConversationSummary[] = threadsRes.rows.map((r) => ({
+    id: String(r.id),
+    customerPhone: String(r.customer_phone),
+    customerName: String(r.customer_name),
+    customerId: r.customer_id ? String(r.customer_id) : null,
+    status: String(r.status),
+    priority: String(r.priority),
+    smartCategory: String(r.smart_category),
+    assignedStaffId: r.assigned_staff_id ? String(r.assigned_staff_id) : null,
+    assignedStaffName: r.assigned_staff_name ? String(r.assigned_staff_name) : null,
+    assignedTeamId: r.assigned_team_id ? String(r.assigned_team_id) : null,
+    assignedTeamName: r.assigned_team_name ? String(r.assigned_team_name) : null,
+    escalationLevel: String(r.escalation_level || "P0"),
+    waitingSince: r.waiting_since ? String(r.waiting_since) : null,
+    lastResponseSeconds:
+      r.last_response_seconds !== null && r.last_response_seconds !== undefined
+        ? Number(r.last_response_seconds)
+        : null,
+    escalatedAt: r.escalated_at ? String(r.escalated_at) : null,
+    unreadCount: Number(r.unread_count ?? 0),
+    lastMessagePreview: String(r.last_message_preview || ""),
+    lastMessageAt: String(r.last_message_at),
+    windowExpiresAt: r.window_expires_at ? String(r.window_expires_at) : null,
+    resolutionSummary: r.resolution_summary ? String(r.resolution_summary) : null,
+    resolvedByName: r.resolved_by_name ? String(r.resolved_by_name) : null,
+    tags: (() => {
+      try {
+        return JSON.parse(String(r.tags_json || "[]"));
+      } catch {
+        return [];
+      }
+    })(),
+  }));
+
+  const teams: TeamOption[] = teamsRes.rows.map((t) => ({
+    id: String(t.id),
+    name: String(t.name),
+    brandScope: String(t.brand_scope || "ALL"),
+    priorityRank: Number(t.priority_rank ?? 10),
+    p0WaitMinutes: Number(t.p0_wait_minutes ?? 5),
+    p1WaitMinutes: Number(t.p1_wait_minutes ?? 12),
+  }));
+
+  const staffList: StaffOption[] = staffRes.rows.map((s) => ({
+    id: String(s.id),
+    name: String(s.name),
+    role: String(s.role),
+    department: String(s.department || "Operations"),
+  }));
+
+  const templates: ApprovedTemplateOption[] = templatesRes.rows.map((tpl) => {
+    const rawCat = String(tpl.category || "UTILITY");
+    const category: "MARKETING" | "UTILITY" | "AUTHENTICATION" =
+      rawCat === "MARKETING" || rawCat === "AUTHENTICATION" ? rawCat : "UTILITY";
+    return {
+      id: String(tpl.id),
+      name: String(tpl.name),
+      category,
+      headerText: tpl.header_text ? String(tpl.header_text) : null,
+      bodyText: String(tpl.body_text || ""),
+      ctaUrl: tpl.cta_url ? String(tpl.cta_url) : null,
+    };
+  });
+
+  const preferredId =
+    params.selectedConversationId &&
+    threads.some((t) => t.id === params.selectedConversationId)
+      ? params.selectedConversationId
+      : threads[0]?.id || null;
+
+  const initialDetail = preferredId
+    ? await getConversationDetailServer(preferredId, true)
+    : null;
+
+  if (preferredId) {
+    const target = threads.find((t) => t.id === preferredId);
+    if (target) target.unreadCount = 0;
+  }
+
+  return {
+    currentUserId: params.userId,
+    currentUserName: params.userName,
+    serverNowMs: Date.now(),
+    threads,
+    initialSelectedId: preferredId,
+    initialDetail,
+    teams,
+    staffList,
+    templates,
+  };
+}
+
+export async function getInitialTeamsPayload(canManage: boolean) {
+  await ensureDatabasesBootstrapped();
+  ensureBackgroundWorkersRunning();
+  await checkAndEscalateWaitingChats().catch(() => {});
+
+  const conv = getRawLibSqlClient("conversations");
+  const auth = getRawLibSqlClient("core_auth");
+
+  const [teamsRes, membersRes, staffRes, activeLoadsRes, catalog, aiKey] =
+    await Promise.all([
+      conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
+      conv.execute(
+        `SELECT * FROM team_members
+         ORDER BY CASE tier WHEN 'P0' THEN 1 WHEN 'P1' THEN 2 ELSE 3 END ASC, staff_name ASC`
+      ),
+      auth.execute(
+        `SELECT id, name, email, whatsapp_number, role, department
+         FROM users
+         WHERE status = 'ACTIVE' AND role != 'CLIENT'
+         ORDER BY name ASC`
+      ),
+      conv.execute(
+        `SELECT assigned_staff_id, assigned_team_id, waiting_since
+         FROM conversations
+         WHERE status != 'RESOLVED'`
+      ),
+      getCachedEcosystemCatalog(),
+      resolveSharedAnthropicApiKey(),
+    ]);
+
+  const loadByStaff = new Map<string, number>();
+  const waitingByTeam = new Map<string, number>();
+  for (const r of activeLoadsRes.rows) {
+    if (r.assigned_staff_id) {
+      const sid = String(r.assigned_staff_id);
+      loadByStaff.set(sid, (loadByStaff.get(sid) || 0) + 1);
+    }
+    if (r.assigned_team_id && r.waiting_since) {
+      const tid = String(r.assigned_team_id);
+      waitingByTeam.set(tid, (waitingByTeam.get(tid) || 0) + 1);
+    }
+  }
+
+  const members = membersRes.rows.map((m) => ({
+    id: String(m.id),
+    teamId: String(m.team_id),
+    staffId: String(m.staff_id),
+    staffName: String(m.staff_name),
+    staffEmail: String(m.staff_email || ""),
+    tier: (String(m.tier || "P0") as "P0" | "P1" | "P2"),
+    maxActiveChats: Number(m.max_active_chats ?? 8),
+    isAvailable: Number(m.is_available ?? 1) === 1,
+    activeOpenChats: loadByStaff.get(String(m.staff_id)) || 0,
+  }));
+
+  const teams = teamsRes.rows.map((t) => {
+    const id = String(t.id);
+    return {
+      id,
+      name: String(t.name),
+      description: String(t.description || ""),
+      brandScope: String(t.brand_scope || "ALL"),
+      routingKeywords: String(t.routing_keywords || ""),
+      priorityRank: Number(t.priority_rank ?? 10),
+      p0WaitMinutes: Number(t.p0_wait_minutes ?? 5),
+      p1WaitMinutes: Number(t.p1_wait_minutes ?? 12),
+      autoAssignEnabled: Number(t.auto_assign_enabled ?? 1) === 1,
+      waitingChatsCount: waitingByTeam.get(id) || 0,
+      members: members.filter((m) => m.teamId === id),
+    };
+  });
+
+  const activeStaff = staffRes.rows.map((s) => ({
+    id: String(s.id),
+    name: String(s.name),
+    email: String(s.email),
+    whatsappNumber: String(s.whatsapp_number),
+    role: String(s.role),
+    department: String(s.department || "Operations"),
+    activeOpenChats: loadByStaff.get(String(s.id)) || 0,
+  }));
+
+  const cacheSummary = getWhatsAppCacheSummary();
+
+  return {
+    canManage,
+    teams,
+    activeStaff,
+    syncInfo: {
+      classicConceptsCount: catalog.classicConceptsProducts.length,
+      classicEdgeMachinesCount: catalog.classicEdgeItems.filter((i) => i.itemType === "MACHINE").length,
+      classicEdgeConsumablesCount: catalog.classicEdgeItems.filter((i) => i.itemType === "CONSUMABLE").length,
+      lastSyncedAt: cacheSummary.lastSyncedAt,
+      aiConnected: Boolean(aiKey.apiKey),
+      aiKeySource: aiKey.source,
+      aiMaskedKey: aiKey.apiKey
+        ? `${aiKey.apiKey.slice(0, 10)}...${aiKey.apiKey.slice(-4)}`
+        : "",
+    },
+  };
+}

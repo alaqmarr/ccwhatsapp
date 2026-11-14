@@ -11,9 +11,11 @@ import {
 } from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
-import { listCustomAdminLinks } from "@cc/storage";
+import { listCustomAdminLinks, rememberWhatsAppCache } from "@cc/storage";
 import {
+  checkAndEscalateWaitingChats,
   recordDualPricingLedgerEntry,
+  smartAssignConversation,
   type BillingMessageCategory,
 } from "@cc/workers";
 import { getCurrentUser } from "@/lib/session";
@@ -30,6 +32,8 @@ export async function GET(
   }
 
   await ensureDatabasesBootstrapped();
+  await checkAndEscalateWaitingChats().catch(() => {});
+
   const { id } = await context.params;
   const conv = getRawLibSqlClient("conversations");
   const crm = getRawLibSqlClient("crm_orders");
@@ -50,7 +54,7 @@ export async function GET(
     args: [id],
   });
 
-  const [msgRes, custRes, ordersRes, relationsRes, customLinks] = await Promise.all([
+  const [msgRes, custRes, ordersRes, relationsRes, customLinks, teamsRes] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
       args: [id],
@@ -68,11 +72,16 @@ export async function GET(
       args: [customerPhone],
     }),
     listCustomAdminLinks(),
+    conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
   ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
-  const websiteEnquiries = await fetchWebsiteEnquiriesForCustomer(
-    customerRow?.email ? String(customerRow.email) : customerPhone
+  const lookupKey = customerRow?.email ? String(customerRow.email) : customerPhone;
+  const websiteEnquiries = await rememberWhatsAppCache(
+    `customer-enq:${lookupKey}`,
+    ["customer-history"],
+    300,
+    () => fetchWebsiteEnquiriesForCustomer(lookupKey)
   );
 
   const messages = msgRes.rows.map((m) => ({
@@ -108,6 +117,14 @@ export async function GET(
     occurredAt: String(r.occurred_at),
   }));
 
+  const teams = teamsRes.rows.map((t) => ({
+    id: String(t.id),
+    name: String(t.name),
+    brandScope: String(t.brand_scope || "ALL"),
+    p0WaitMinutes: Number(t.p0_wait_minutes ?? 5),
+    p1WaitMinutes: Number(t.p1_wait_minutes ?? 12),
+  }));
+
   const acrio = await runAcrioChatCopilot({
     customerName: String(cRow.customer_name),
     organizationType: customerRow?.organization_type
@@ -128,11 +145,21 @@ export async function GET(
       smartCategory: String(cRow.smart_category),
       assignedStaffId: cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : null,
       assignedStaffName: cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : null,
+      assignedTeamId: cRow.assigned_team_id ? String(cRow.assigned_team_id) : null,
+      assignedTeamName: cRow.assigned_team_name ? String(cRow.assigned_team_name) : null,
+      escalationLevel: String(cRow.escalation_level || "P0"),
+      waitingSince: cRow.waiting_since ? String(cRow.waiting_since) : null,
+      lastResponseSeconds:
+        cRow.last_response_seconds !== null && cRow.last_response_seconds !== undefined
+          ? Number(cRow.last_response_seconds)
+          : null,
+      escalatedAt: cRow.escalated_at ? String(cRow.escalated_at) : null,
       resolutionSummary: cRow.resolution_summary ? String(cRow.resolution_summary) : null,
       resolvedByName: cRow.resolved_by_name ? String(cRow.resolved_by_name) : null,
       windowExpiresAt: cRow.window_expires_at ? String(cRow.window_expires_at) : null,
     },
     messages,
+    teams,
     customer: customerRow
       ? {
           id: String(customerRow.id),
@@ -173,7 +200,8 @@ export async function POST(
 
   const conv = getRawLibSqlClient("conversations");
   const crm = getRawLibSqlClient("crm_orders");
-  const nowIso = new Date().toISOString();
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
 
   const cRes = await conv.execute({
     sql: `SELECT * FROM conversations WHERE id = ? LIMIT 1`,
@@ -185,27 +213,43 @@ export async function POST(
   const cRow = cRes.rows[0] as Record<string, unknown>;
   const customerPhone = String(cRow.customer_phone);
 
+  // 1. Outbound WhatsApp Reply
+  // Regular 24h window chat is 100% FREE (₹0.00).
+  // ONLY Templated messages (MARKETING ₹0.95, UTILITY/AUTHENTICATION ₹0.30) are billed here!
   if (action === "send_message") {
     const text = String(body.text || "").trim();
     if (!text) {
       return NextResponse.json({ ok: false, error: "Message cannot be empty." }, { status: 400 });
     }
 
-    const billingCategory: BillingMessageCategory =
-      body.billingCategory === "MARKETING" ||
-      body.billingCategory === "AUTHENTICATION" ||
-      body.billingCategory === "SERVICE"
-        ? body.billingCategory
+    const templateName = body.templateName ? String(body.templateName).trim() : undefined;
+    const isTemplate = body.messageType === "TEMPLATE" || Boolean(templateName);
+    const templateBillingCategory: BillingMessageCategory =
+      body.billingCategory === "MARKETING"
+        ? "MARKETING"
+        : body.billingCategory === "AUTHENTICATION"
+        ? "AUTHENTICATION"
         : "UTILITY";
-
-    const messageType = body.messageType ? String(body.messageType) : "TEXT";
-    const templateName = body.templateName ? String(body.templateName) : undefined;
 
     const sendRes = await sendWhatsAppCloudMessage({
       toPhone: customerPhone,
       bodyText: text,
       templateName,
     });
+
+    let responseSeconds: number | null =
+      cRow.last_response_seconds !== null && cRow.last_response_seconds !== undefined
+        ? Number(cRow.last_response_seconds)
+        : null;
+    if (cRow.waiting_since) {
+      const waitStart = new Date(String(cRow.waiting_since)).getTime();
+      if (!Number.isNaN(waitStart)) {
+        responseSeconds = Math.max(1, Math.round((nowMs - waitStart) / 1000));
+      }
+    }
+
+    const wasAcrioOrUnassigned =
+      !cRow.assigned_staff_id || String(cRow.assigned_staff_id) === "ACRIO";
 
     const msgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
     await conv.batch(
@@ -219,8 +263,8 @@ export async function POST(
             msgId,
             id,
             user.name,
-            messageType,
-            billingCategory,
+            isTemplate ? "TEMPLATE" : "TEXT",
+            isTemplate ? templateBillingCategory : "FREE_CHAT",
             text,
             templateName || null,
             sendRes.waMessageId,
@@ -230,43 +274,220 @@ export async function POST(
         },
         {
           sql: `UPDATE conversations
-                SET status = CASE WHEN status = 'OPEN' THEN 'ASSIGNED' ELSE status END,
-                    assigned_staff_id = COALESCE(assigned_staff_id, ?),
-                    assigned_staff_name = COALESCE(assigned_staff_name, ?),
+                SET status = 'ASSIGNED',
+                    assigned_staff_id = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_id END,
+                    assigned_staff_name = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_name END,
+                    assigned_team_id = CASE WHEN ? = 1 THEN COALESCE(assigned_team_id, 'team_sales') ELSE assigned_team_id END,
+                    assigned_team_name = CASE
+                      WHEN ? = 1 AND assigned_team_id IS NULL THEN 'Sales Team'
+                      ELSE assigned_team_name
+                    END,
+                    waiting_since = NULL,
+                    last_response_seconds = ?,
+                    escalation_level = 'P0',
                     last_message_preview = ?,
                     last_message_at = ?
                 WHERE id = ?`,
-          args: [user.id, user.name, text.slice(0, 140), nowIso, id],
+          args: [
+            wasAcrioOrUnassigned ? 1 : 0,
+            user.id,
+            wasAcrioOrUnassigned ? 1 : 0,
+            user.name,
+            wasAcrioOrUnassigned ? 1 : 0,
+            wasAcrioOrUnassigned ? 1 : 0,
+            responseSeconds,
+            text.slice(0, 140),
+            nowIso,
+            id,
+          ],
         },
       ],
       "write"
     );
 
-    await recordDualPricingLedgerEntry({
-      messageId: msgId,
-      conversationId: id,
-      customerPhone,
-      category: billingCategory,
-      staffName: user.name,
-    });
+    if (isTemplate) {
+      await recordDualPricingLedgerEntry({
+        messageId: msgId,
+        conversationId: id,
+        customerPhone,
+        category: templateBillingCategory,
+        staffName: user.name,
+      });
+    }
 
     socketHub.emit("message:new", { conversationId: id, senderName: user.name, text });
-    return NextResponse.json({ ok: true, messageId: msgId, mode: sendRes.mode });
+    return NextResponse.json({
+      ok: true,
+      messageId: msgId,
+      mode: sendRes.mode,
+      billed: isTemplate,
+    });
   }
 
-  if (action === "assign_staff") {
-    const staffId = body.staffId ? String(body.staffId) : user.id;
-    const staffName = body.staffName ? String(body.staffName) : user.name;
+  // 2. Private Internal Team Note (never sent to customer, ₹0.00 Free, keeps wait timer intact)
+  if (action === "add_internal_note") {
+    const noteText = String(body.noteText || body.text || "").trim();
+    if (!noteText) {
+      return NextResponse.json({ ok: false, error: "Internal note cannot be empty." }, { status: 400 });
+    }
+
+    const noteId = `msg_note_${crypto.randomUUID().slice(0, 8)}`;
     await conv.execute({
-      sql: `UPDATE conversations
-            SET assigned_staff_id = ?, assigned_staff_name = ?, status = 'ASSIGNED'
-            WHERE id = ?`,
-      args: [staffId, staffName, id],
+      sql: `INSERT INTO messages (
+        id, conversation_id, direction, sender_type, sender_name, message_type,
+        billing_category, body, delivery_status, created_at
+      ) VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+      args: [noteId, id, user.name, noteText, nowIso],
     });
-    socketHub.emit("conversation:assigned", { conversationId: id, staffName });
+
+    socketHub.emit("note:new", { conversationId: id, senderName: user.name, noteText });
+    return NextResponse.json({ ok: true, noteId });
+  }
+
+  // 2b. Human Staff Takes Over Chat from ACRIO (defaults to Sales Team)
+  if (action === "take_over_from_acrio") {
+    await conv.batch(
+      [
+        {
+          sql: `UPDATE conversations
+                SET status = 'ASSIGNED',
+                    assigned_staff_id = ?,
+                    assigned_staff_name = ?,
+                    assigned_team_id = 'team_sales',
+                    assigned_team_name = 'Sales Team',
+                    escalation_level = 'P0',
+                    waiting_since = NULL
+                WHERE id = ?`,
+          args: [user.id, user.name, id],
+        },
+        {
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, delivery_status, created_at
+          ) VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+          args: [
+            `msg_note_${crypto.randomUUID().slice(0, 8)}`,
+            id,
+            user.name,
+            `${user.name} took over this chat from ACRIO.`,
+            nowIso,
+          ],
+        },
+      ],
+      "write"
+    );
+
+    socketHub.emit("conversation:assigned", {
+      conversationId: id,
+      staffName: user.name,
+      teamName: "Sales Team",
+      escalationLevel: "P0",
+    });
     return NextResponse.json({ ok: true });
   }
 
+  // 2c. Return Chat Back to ACRIO Automatic Handling
+  if (action === "return_to_acrio") {
+    await conv.batch(
+      [
+        {
+          sql: `UPDATE conversations
+                SET status = 'OPEN',
+                    assigned_staff_id = 'ACRIO',
+                    assigned_staff_name = 'ACRIO',
+                    assigned_team_id = NULL,
+                    assigned_team_name = 'ACRIO Assistant',
+                    escalation_level = 'P0',
+                    waiting_since = NULL
+                WHERE id = ?`,
+          args: [id],
+        },
+        {
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, delivery_status, created_at
+          ) VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+          args: [
+            `msg_note_${crypto.randomUUID().slice(0, 8)}`,
+            id,
+            user.name,
+            `${user.name} handed this chat back to ACRIO for automatic answers.`,
+            nowIso,
+          ],
+        },
+      ],
+      "write"
+    );
+
+    socketHub.emit("conversation:assigned", {
+      conversationId: id,
+      staffName: "ACRIO",
+      teamName: "ACRIO Assistant",
+      escalationLevel: "P0",
+    });
+    return NextResponse.json({ ok: true });
+  }
+
+  // 3. Smart Team & Least-Loaded Agent Assignment (Defaults to Sales Team!)
+  if (action === "smart_assign") {
+    const res = await smartAssignConversation({
+      conversationId: id,
+      preferredTeamId: body.teamId ? String(body.teamId) : "team_sales",
+      preferredTier:
+        body.tier === "P1" || body.tier === "P2" ? body.tier : "P0",
+      onlyIfUnassigned: false,
+      triggeredByName: user.name,
+    });
+    return NextResponse.json({ ok: true, assignment: res });
+  }
+
+  // 4. Manual Team / Agent / Escalation Tier Assignment
+  if (action === "assign_staff") {
+    const staffId = body.staffId ? String(body.staffId) : user.id;
+    const staffName = body.staffName ? String(body.staffName) : user.name;
+    const teamId =
+      body.teamId !== undefined
+        ? body.teamId
+          ? String(body.teamId)
+          : null
+        : cRow.assigned_team_id
+        ? String(cRow.assigned_team_id)
+        : "team_sales";
+    const teamName =
+      body.teamName !== undefined
+        ? body.teamName
+          ? String(body.teamName)
+          : null
+        : cRow.assigned_team_name && String(cRow.assigned_team_name) !== "ACRIO Assistant"
+        ? String(cRow.assigned_team_name)
+        : "Sales Team";
+    const escalationLevel =
+      body.escalationLevel === "P1" || body.escalationLevel === "P2"
+        ? body.escalationLevel
+        : "P0";
+
+    await conv.execute({
+      sql: `UPDATE conversations
+            SET assigned_staff_id = ?,
+                assigned_staff_name = ?,
+                assigned_team_id = ?,
+                assigned_team_name = ?,
+                escalation_level = ?,
+                status = 'ASSIGNED'
+            WHERE id = ?`,
+      args: [staffId, staffName, teamId, teamName, escalationLevel, id],
+    });
+
+    socketHub.emit("conversation:assigned", {
+      conversationId: id,
+      staffName,
+      teamName,
+      escalationLevel,
+    });
+    return NextResponse.json({ ok: true });
+  }
+
+  // 5. Smart Resolve
   if (action === "smart_resolve") {
     const summary = String(body.resolutionSummary || "Resolved customer enquiry.").trim();
     const nextCategory = body.smartCategory ? String(body.smartCategory) : String(cRow.smart_category);
@@ -274,6 +495,8 @@ export async function POST(
     await conv.execute({
       sql: `UPDATE conversations
             SET status = 'RESOLVED',
+                waiting_since = NULL,
+                escalation_level = 'P0',
                 smart_category = ?,
                 resolution_summary = ?,
                 resolved_by_name = ?,
@@ -282,7 +505,6 @@ export async function POST(
       args: [nextCategory, summary, user.name, nowIso, id],
     });
 
-    // Also append to Customer Relations timeline so future agents see what happened!
     if (cRow.customer_id) {
       await crm.execute({
         sql: `INSERT INTO customer_relations (
@@ -305,7 +527,15 @@ export async function POST(
 
   if (action === "reopen") {
     await conv.execute({
-      sql: `UPDATE conversations SET status = 'OPEN' WHERE id = ?`,
+      sql: `UPDATE conversations
+            SET status = 'OPEN',
+                assigned_staff_id = 'ACRIO',
+                assigned_staff_name = 'ACRIO',
+                assigned_team_id = NULL,
+                assigned_team_name = 'ACRIO Assistant',
+                escalation_level = 'P0',
+                waiting_since = NULL
+            WHERE id = ?`,
       args: [id],
     });
     return NextResponse.json({ ok: true });

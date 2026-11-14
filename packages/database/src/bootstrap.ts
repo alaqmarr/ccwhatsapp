@@ -142,9 +142,49 @@ async function runBootstrapInternal(): Promise<void> {
         last_clicked_at TEXT,
         created_at TEXT NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS teams (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        brand_scope TEXT NOT NULL DEFAULT 'ALL',
+        routing_keywords TEXT NOT NULL DEFAULT '',
+        priority_rank INTEGER NOT NULL DEFAULT 10,
+        p0_wait_minutes INTEGER NOT NULL DEFAULT 5,
+        p1_wait_minutes INTEGER NOT NULL DEFAULT 12,
+        auto_assign_enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS team_members (
+        id TEXT PRIMARY KEY,
+        team_id TEXT NOT NULL,
+        staff_id TEXT NOT NULL,
+        staff_name TEXT NOT NULL,
+        staff_email TEXT NOT NULL DEFAULT '',
+        tier TEXT NOT NULL DEFAULT 'P0',
+        max_active_chats INTEGER NOT NULL DEFAULT 15,
+        is_available INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+      )`,
     ],
     "write"
   );
+
+  // Non-destructive column upgrades for existing conversations.db
+  const extraConvColumns = [
+    `ALTER TABLE conversations ADD COLUMN assigned_team_id TEXT`,
+    `ALTER TABLE conversations ADD COLUMN assigned_team_name TEXT`,
+    `ALTER TABLE conversations ADD COLUMN escalation_level TEXT NOT NULL DEFAULT 'P0'`,
+    `ALTER TABLE conversations ADD COLUMN waiting_since TEXT`,
+    `ALTER TABLE conversations ADD COLUMN last_response_seconds INTEGER`,
+    `ALTER TABLE conversations ADD COLUMN escalated_at TEXT`,
+  ];
+  for (const ddl of extraConvColumns) {
+    try {
+      await conv.execute(ddl);
+    } catch {
+      // Column already exists
+    }
+  }
 
   // 3. crm_orders.db
   await crm.batch(
@@ -1080,7 +1120,7 @@ async function seedInitialOperationalData(): Promise<void> {
   if (Number(existingLedger.rows[0]?.cnt ?? 0) === 0) {
     const sampleRows: {
       id: string;
-      cat: "MARKETING" | "UTILITY" | "AUTHENTICATION" | "SERVICE";
+      cat: "MARKETING" | "UTILITY" | "AUTHENTICATION" | "ACRIO";
       phone: string;
       clientRate: number;
       metaCost: number;
@@ -1090,10 +1130,10 @@ async function seedInitialOperationalData(): Promise<void> {
       { id: "ldg_1", cat: "MARKETING", phone: "+919848011223", clientRate: 0.95, metaCost: 0.7846, staff: "Campaign Broadcast", at: yesterday },
       { id: "ldg_2", cat: "MARKETING", phone: "+919900145678", clientRate: 0.95, metaCost: 0.7846, staff: "Campaign Broadcast", at: yesterday },
       { id: "ldg_3", cat: "MARKETING", phone: "+919848099112", clientRate: 0.95, metaCost: 0.7846, staff: "Campaign Broadcast", at: threeHoursAgo },
-      { id: "ldg_4", cat: "UTILITY", phone: "+919701234500", clientRate: 0.30, metaCost: 0.115, staff: "Sales Desk", at: yesterday },
-      { id: "ldg_5", cat: "UTILITY", phone: "+919848011223", clientRate: 0.30, metaCost: 0.115, staff: "Order Bot", at: threeHoursAgo },
-      { id: "ldg_6", cat: "AUTHENTICATION", phone: "+919000112233", clientRate: 0.30, metaCost: 0.115, staff: "Auth Verifier", at: oneHourAgo },
-      { id: "ldg_7", cat: "SERVICE", phone: "+919900145678", clientRate: 0.30, metaCost: 0.08, staff: "Support Desk", at: oneHourAgo },
+      { id: "ldg_4", cat: "UTILITY", phone: "+919701234500", clientRate: 0.30, metaCost: 0.115, staff: "Order Template", at: yesterday },
+      { id: "ldg_5", cat: "UTILITY", phone: "+919848011223", clientRate: 0.30, metaCost: 0.115, staff: "Dispatch Template", at: threeHoursAgo },
+      { id: "ldg_6", cat: "AUTHENTICATION", phone: "+919000112233", clientRate: 0.30, metaCost: 0.115, staff: "OTP Template", at: oneHourAgo },
+      { id: "ldg_7", cat: "ACRIO", phone: "+919900145678", clientRate: 0.30, metaCost: 0.04, staff: "ACRIO Auto-Handler", at: oneHourAgo },
     ];
 
     for (const r of sampleRows) {
@@ -1114,4 +1154,269 @@ async function seedInitialOperationalData(): Promise<void> {
       });
     }
   }
+
+  // Seed default Teams + P0 -> P1 -> P2 Responder Tiers if none exist yet
+  const existingTeams = await conv.execute(`SELECT COUNT(*) as cnt FROM teams`);
+  if (Number(existingTeams.rows[0]?.cnt ?? 0) === 0) {
+    // Ensure we have realistic active staff members so P0 -> P1 -> P2 escalation has distinct people
+    const activeUsersRes = await auth.execute(
+      `SELECT id, name, email, role FROM users WHERE status = 'ACTIVE' ORDER BY created_at ASC`
+    );
+    const ensureDemoStaff = [
+      {
+        id: "usr_sales_p0",
+        name: "Rohan Kulkarni",
+        email: "rohan.kulkarni@classiconcepts.in",
+        phone: "+919848022101",
+        role: "STAFF",
+        dept: "Sales Team",
+      },
+      {
+        id: "usr_sales_p1",
+        name: "Ananya Deshmukh",
+        email: "ananya.deshmukh@classiconcepts.in",
+        phone: "+919848022102",
+        role: "ADMIN",
+        dept: "Senior Sales & Hospitality",
+      },
+      {
+        id: "usr_ce53_p0",
+        name: "Karthik Nair",
+        email: "karthik.nair@classiconcepts.in",
+        phone: "+919848022103",
+        role: "STAFF",
+        dept: "Classic Edge 53 Machines",
+      },
+    ];
+    for (const st of ensureDemoStaff) {
+      const check = await auth.execute({
+        sql: `SELECT id FROM users WHERE email = ? LIMIT 1`,
+        args: [st.email],
+      });
+      if (check.rows.length === 0) {
+        await auth.execute({
+          sql: `INSERT INTO users (
+            id, name, email, whatsapp_number, password_hash, role, status,
+            department, email_verified_at, onboarding_completed_at, approved_by_name, approved_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 'System', ?, ?)`,
+          args: [
+            st.id,
+            st.name,
+            st.email,
+            st.phone,
+            "$2b$10$CwTycUXWue0Thq9StjUM0uJ8h0R6V5G7y1p2zK6X8n4vZ1Q8m9W2a",
+            st.role,
+            st.dept,
+            isoNow,
+            isoNow,
+            isoNow,
+            isoNow,
+          ],
+        });
+      }
+    }
+
+    const refreshedUsers = await auth.execute(
+      `SELECT id, name, email, role FROM users WHERE status = 'ACTIVE' ORDER BY created_at ASC`
+    );
+    const activePool = refreshedUsers.rows.length > 0 ? refreshedUsers.rows : activeUsersRes.rows;
+    const findByEmail = (em: string) =>
+      activePool.find((u) => String(u.email) === em) || activePool[0];
+    const leadUser =
+      activePool.find((u) => String(u.role) === "DEV" || String(u.role) === "SUPERADMIN") ||
+      activePool[0];
+
+    await conv.batch(
+      [
+        {
+          sql: `INSERT INTO teams (
+            id, name, description, brand_scope, routing_keywords, priority_rank, p0_wait_minutes, p1_wait_minutes, auto_assign_enabled, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            "team_sales",
+            "Sales Team",
+            "Default handoff team from ACRIO. Handles acrylic podiums, trophies, awards, hotel stands, signage, and quotes.",
+            "ALL",
+            "podium, lectern, trophy, memento, award, hotel, banquet, stand, holder, box, price, quote, bulk",
+            1,
+            5,
+            12,
+            1,
+            isoNow,
+          ],
+        },
+        {
+          sql: `INSERT INTO teams (
+            id, name, description, brand_scope, routing_keywords, priority_rank, p0_wait_minutes, p1_wait_minutes, auto_assign_enabled, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            "team_ce53_machines",
+            "Classic Edge 53 Machines Team",
+            "Handles CNC, diamond edge polishers, acrylic benders, heaters, and machine consumables.",
+            "CLASSIC_EDGE_53",
+            "machine, polisher, diamond, laser, router, bender, bending, heater, yn-jw, consumable, blade, classic edge",
+            2,
+            4,
+            10,
+            1,
+            isoNow,
+          ],
+        },
+        {
+          sql: `INSERT INTO teams (
+            id, name, description, brand_scope, routing_keywords, priority_rank, p0_wait_minutes, p1_wait_minutes, auto_assign_enabled, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            "team_custom_fab",
+            "Custom Fabrication Team",
+            "Handles custom sizes, drawings, industrial safety guards, and special acrylic builds.",
+            "CLASSIC_CONCEPTS",
+            "custom, drawing, mm, inch, thickness, enclosure, guard, cover, fabrication",
+            3,
+            6,
+            15,
+            1,
+            isoNow,
+          ],
+        },
+        {
+          sql: `INSERT INTO teams (
+            id, name, description, brand_scope, routing_keywords, priority_rank, p0_wait_minutes, p1_wait_minutes, auto_assign_enabled, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            "team_support",
+            "Orders & Dispatch Team",
+            "Handles payment confirmation, GST invoices, courier tracking, and dispatch updates.",
+            "ALL",
+            "order, dispatch, courier, tracking, invoice, gst, payment, delivery",
+            4,
+            5,
+            12,
+            1,
+            isoNow,
+          ],
+        },
+      ],
+      "write"
+    );
+
+    const p0Sales = findByEmail("rohan.kulkarni@classiconcepts.in");
+    const p1Sales = findByEmail("ananya.deshmukh@classiconcepts.in");
+    const p0Machines = findByEmail("karthik.nair@classiconcepts.in");
+
+    const memberSeeds: {
+      id: string;
+      teamId: string;
+      user: Record<string, unknown> | undefined;
+      tier: "P0" | "P1" | "P2";
+    }[] = [
+      { id: "tm_sales_p0", teamId: "team_sales", user: p0Sales, tier: "P0" },
+      { id: "tm_sales_p1", teamId: "team_sales", user: p1Sales, tier: "P1" },
+      { id: "tm_sales_p2", teamId: "team_sales", user: leadUser, tier: "P2" },
+      { id: "tm_ce53_p0", teamId: "team_ce53_machines", user: p0Machines, tier: "P0" },
+      { id: "tm_ce53_p1", teamId: "team_ce53_machines", user: p1Sales, tier: "P1" },
+      { id: "tm_ce53_p2", teamId: "team_ce53_machines", user: leadUser, tier: "P2" },
+      { id: "tm_fab_p0", teamId: "team_custom_fab", user: p1Sales, tier: "P0" },
+      { id: "tm_fab_p1", teamId: "team_custom_fab", user: p0Sales, tier: "P1" },
+      { id: "tm_fab_p2", teamId: "team_custom_fab", user: leadUser, tier: "P2" },
+      { id: "tm_sup_p0", teamId: "team_support", user: p0Sales, tier: "P0" },
+      { id: "tm_sup_p1", teamId: "team_support", user: p1Sales, tier: "P1" },
+    ];
+
+    for (const ms of memberSeeds) {
+      if (!ms.user) continue;
+      await conv.execute({
+        sql: `INSERT INTO team_members (
+          id, team_id, staff_id, staff_name, staff_email, tier, max_active_chats, is_available, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 15, 1, ?)`,
+        args: [
+          ms.id,
+          ms.teamId,
+          String(ms.user.id),
+          String(ms.user.name),
+          String(ms.user.email || ""),
+          ms.tier,
+          isoNow,
+        ],
+      });
+    }
+
+    // Set all open conversations to ACRIO first, then show 1 live Sales Team handoff example
+    const twoMinsAgo = new Date(now.getTime() - 2 * 60 * 1000).toISOString();
+    await conv.execute({
+      sql: `UPDATE conversations
+            SET assigned_staff_id = 'ACRIO',
+                assigned_staff_name = 'ACRIO',
+                assigned_team_id = NULL,
+                assigned_team_name = 'ACRIO Assistant',
+                escalation_level = 'P0',
+                waiting_since = NULL
+            WHERE status != 'RESOLVED' AND assigned_staff_id IS NULL`,
+      args: [],
+    });
+
+    const firstOpen = await conv.execute(
+      `SELECT id FROM conversations WHERE status != 'RESOLVED' ORDER BY last_message_at DESC LIMIT 1`
+    );
+    if (firstOpen.rows[0]?.id) {
+      const targetId = String(firstOpen.rows[0].id);
+      await conv.execute({
+        sql: `UPDATE conversations
+              SET status = 'ASSIGNED',
+                  assigned_team_id = 'team_sales',
+                  assigned_team_name = 'Sales Team',
+                  assigned_staff_id = ?,
+                  assigned_staff_name = ?,
+                  escalation_level = 'P0',
+                  waiting_since = ?
+              WHERE id = ?`,
+        args: [
+          p0Sales ? String(p0Sales.id) : null,
+          p0Sales ? String(p0Sales.name) : null,
+          twoMinsAgo,
+          targetId,
+        ],
+      });
+
+      await conv.execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, delivery_status, created_at
+        ) VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+        args: [
+          "msg_note_seed_1",
+          targetId,
+          "ACRIO Handover",
+          "Customer asked to confirm urgent Friday delivery & front logo print. Connected from ACRIO to Sales Team (P0).",
+          twoMinsAgo,
+        ],
+      });
+    }
+  }
+
+  // Ensure any unassigned open chats always start with ACRIO
+  await conv.execute(
+    `UPDATE conversations
+     SET assigned_staff_id = 'ACRIO',
+         assigned_staff_name = 'ACRIO',
+         assigned_team_name = COALESCE(assigned_team_name, 'ACRIO Assistant')
+     WHERE status != 'RESOLVED' AND assigned_staff_id IS NULL`
+  );
+  // Keep Sales Team as #1 default priority rank
+  await conv.execute(
+    `UPDATE teams SET priority_rank = 1 WHERE id = 'team_sales' AND priority_rank > 1`
+  );
+
+  // Enforce billing rule: migrate ACRIO rows to 'ACRIO' and purge any legacy 'SERVICE' charges from normal free chat
+  await bill.execute(
+    `UPDATE message_billing_ledger
+     SET category = 'ACRIO',
+         staff_name = 'ACRIO Auto-Handler',
+         actual_meta_unit_cost_inr = 0.04,
+         margin_inr = ROUND(client_unit_rate_inr - 0.04, 4)
+     WHERE category = 'SERVICE' AND (staff_name LIKE '%ACRIO%' OR id = 'ldg_7')`
+  );
+  await bill.execute(
+    `DELETE FROM message_billing_ledger WHERE category = 'SERVICE'`
+  );
 }

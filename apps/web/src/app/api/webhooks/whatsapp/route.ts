@@ -58,7 +58,7 @@ export async function POST(req: Request) {
       const val = change?.value || {};
       const contacts = val?.contacts || [];
 
-      // 1. Inbound customer messages
+      // 1. Inbound customer messages (initial assignment is ALWAYS ACRIO)
       for (const msg of val?.messages || []) {
         const fromDigits = String(msg?.from || "").replace(/\D/g, "");
         if (!fromDigits) continue;
@@ -86,10 +86,14 @@ export async function POST(req: Request) {
         }
 
         const existingConv = await conv.execute({
-          sql: `SELECT id FROM conversations WHERE customer_phone = ? LIMIT 1`,
+          sql: `SELECT id, status, assigned_staff_id FROM conversations WHERE customer_phone = ? LIMIT 1`,
           args: [e164],
         });
         const isNew = existingConv.rows.length === 0;
+        const prevStatus = existingConv.rows[0] ? String(existingConv.rows[0].status) : "";
+        const prevStaffId = existingConv.rows[0]?.assigned_staff_id
+          ? String(existingConv.rows[0].assigned_staff_id)
+          : null;
         const convId = isNew
           ? `conv_${crypto.randomUUID().slice(0, 8)}`
           : String(existingConv.rows[0].id);
@@ -98,20 +102,41 @@ export async function POST(req: Request) {
           await conv.execute({
             sql: `INSERT INTO conversations (
               id, customer_phone, customer_name, customer_id, status, priority,
-              smart_category, unread_count, last_message_preview, last_message_at, window_expires_at, created_at
-            ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', 1, ?, ?, ?, ?)`,
+              smart_category, assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name,
+              escalation_level, waiting_since, unread_count, last_message_preview, last_message_at, window_expires_at, created_at
+            ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', 'ACRIO', 'ACRIO', NULL, 'ACRIO Assistant', 'P0', NULL, 1, ?, ?, ?, ?)`,
             args: [convId, e164, contactName, custId, String(textBody).slice(0, 140), nowIso, windowExp, nowIso],
           });
         } else {
+          const resetToAcrio = prevStatus === "RESOLVED" || !prevStaffId;
+          const isHumanOwned = !resetToAcrio && prevStaffId !== "ACRIO";
           await conv.execute({
             sql: `UPDATE conversations
                   SET status = CASE WHEN status = 'RESOLVED' THEN 'OPEN' ELSE status END,
+                      assigned_staff_id = CASE WHEN ? = 1 THEN 'ACRIO' ELSE assigned_staff_id END,
+                      assigned_staff_name = CASE WHEN ? = 1 THEN 'ACRIO' ELSE assigned_staff_name END,
+                      assigned_team_id = CASE WHEN ? = 1 THEN NULL ELSE assigned_team_id END,
+                      assigned_team_name = CASE WHEN ? = 1 THEN 'ACRIO Assistant' ELSE assigned_team_name END,
+                      escalation_level = CASE WHEN ? = 1 THEN 'P0' ELSE escalation_level END,
+                      waiting_since = CASE WHEN ? = 1 THEN COALESCE(waiting_since, ?) ELSE waiting_since END,
                       unread_count = unread_count + 1,
                       last_message_preview = ?,
                       last_message_at = ?,
                       window_expires_at = ?
                   WHERE id = ?`,
-            args: [String(textBody).slice(0, 140), nowIso, windowExp, convId],
+            args: [
+              resetToAcrio ? 1 : 0,
+              resetToAcrio ? 1 : 0,
+              resetToAcrio ? 1 : 0,
+              resetToAcrio ? 1 : 0,
+              resetToAcrio ? 1 : 0,
+              isHumanOwned ? 1 : 0,
+              nowIso,
+              String(textBody).slice(0, 140),
+              nowIso,
+              windowExp,
+              convId,
+            ],
           });
         }
 
@@ -119,7 +144,7 @@ export async function POST(req: Request) {
           sql: `INSERT INTO messages (
             id, conversation_id, direction, sender_type, sender_name, message_type,
             billing_category, body, wa_message_id, delivery_status, created_at
-          ) VALUES (?, ?, 'INBOUND', 'CUSTOMER', ?, 'TEXT', 'SERVICE', ?, ?, 'DELIVERED', ?)`,
+          ) VALUES (?, ?, 'INBOUND', 'CUSTOMER', ?, 'TEXT', 'FREE_CHAT', ?, ?, 'DELIVERED', ?)`,
           args: [
             `msg_${crypto.randomUUID().slice(0, 8)}`,
             convId,
@@ -134,7 +159,7 @@ export async function POST(req: Request) {
           conversationId: convId,
           customerPhone: e164,
           inboundText: String(textBody),
-          isNewConversation: isNew,
+          isNewConversation: isNew || prevStatus === "RESOLVED",
         });
 
         socketHub.emit("message:new", { conversationId: convId, customerName: contactName });

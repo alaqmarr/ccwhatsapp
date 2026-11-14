@@ -13,7 +13,7 @@ const nextConfig: NextConfig = {
     "@cc/ui",
     "@cc/workers",
   ],
-  serverExternalPackages: ["@libsql/client", "nodemailer"],
+  serverExternalPackages: ["@libsql/client", "nodemailer", "ioredis"],
 };
 
 export default nextConfig;

@@ -150,3 +150,12 @@ export function resolveUploadsDirectory(): string {
   }
   return dir;
 }
+
+export {
+  WHATSAPP_REDIS_MAX_BYTES,
+  WHATSAPP_CACHE_TAGS,
+  type WhatsAppCacheTag,
+  rememberWhatsAppCache,
+  invalidateWhatsAppCacheTags,
+  getWhatsAppCacheSummary,
+} from "./redis-cache";

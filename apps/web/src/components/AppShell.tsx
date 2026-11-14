@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   BookOpen,
-  MessageSquare,
+  Users,
   Megaphone,
   Workflow,
   UserCheck,
@@ -18,6 +18,7 @@ import type { AuthenticatedUser } from "@cc/auth";
 import { isDevRole, isSuperAdminCapable } from "@cc/rbac";
 import {
   AccountStatusBadge,
+  ClassicConceptsWordmark,
   RoleBadge,
   WHATSAPP_PUBLIC_DOMAIN,
   WhatsAppLogoIcon,
@@ -42,7 +43,13 @@ export function AppShell({
     isActiveAccount &&
     ["DEV", "SUPERADMIN", "ADMIN", "CLIENT"].includes(user.role);
 
-  const navItems = [
+  const navItems: Array<{
+    href: string;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    visible: boolean;
+    badge?: string;
+  }> = [
     {
       href: "/onboarding",
       label: "How to Use",
@@ -53,7 +60,13 @@ export function AppShell({
     {
       href: "/dashboard/inbox",
       label: "Customer Chats",
-      icon: MessageSquare,
+      icon: WhatsAppLogoIcon,
+      visible: isActiveAccount && user.role !== "CLIENT",
+    },
+    {
+      href: "/dashboard/teams",
+      label: "Teams & Escalation",
+      icon: Users,
       visible: isActiveAccount && user.role !== "CLIENT",
     },
     {
@@ -105,37 +118,32 @@ export function AppShell({
   return (
     <div className="min-h-screen w-full flex flex-col lg:flex-row bg-neutral-50 text-neutral-900">
       {/* Light-Mode Left Navigation */}
-      <aside className="w-full lg:w-60 bg-white flex flex-col justify-between shrink-0 border-b lg:border-b-0 lg:border-r border-neutral-200">
+      <aside className="w-full lg:w-56 bg-white flex flex-col justify-between shrink-0 border-b lg:border-b-0 lg:border-r border-neutral-200">
         <div>
-          <div className="px-4 py-3.5 border-b border-neutral-200 flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-md bg-[#1da851] flex items-center justify-center text-white shrink-0">
-              <WhatsAppLogoIcon size={18} />
+          <div className="px-3.5 py-3 border-b border-neutral-200 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <ClassicConceptsWordmark height={42} variant="light" />
             </div>
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-neutral-900 truncate">
-                Classic Concepts
-              </div>
-              <p className="text-xs text-neutral-500 truncate">
-                {WHATSAPP_PUBLIC_DOMAIN}
-              </p>
+            <div className="flex items-center gap-1.5 text-[11px] text-neutral-600 font-medium">
+              <span className="w-4 h-4 rounded-full bg-[#25d366] text-white inline-flex items-center justify-center shrink-0">
+                <WhatsAppLogoIcon size={10} />
+              </span>
+              <span className="truncate">{WHATSAPP_PUBLIC_DOMAIN}</span>
             </div>
           </div>
 
-          <div className="px-4 py-3 border-b border-neutral-200 bg-neutral-50/70 space-y-1.5">
-            <div className="text-sm font-medium text-neutral-900 truncate">
+          <div className="px-3.5 py-2.5 border-b border-neutral-200 bg-neutral-50/70 space-y-1">
+            <div className="text-xs font-semibold text-neutral-900 truncate">
               {user.name}
             </div>
-            <div className="text-xs text-neutral-500 truncate">{user.email}</div>
-            <div className="text-xs text-neutral-500 truncate">
-              {user.whatsappNumber}
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <div className="text-[11px] text-neutral-500 truncate">{user.email}</div>
+            <div className="flex flex-wrap items-center gap-1 pt-1">
               <RoleBadge role={user.role} />
               <AccountStatusBadge status={user.status} />
             </div>
           </div>
 
-          <nav className="p-2.5 space-y-0.5">
+          <nav className="p-2 space-y-0.5">
             {navItems
               .filter((item) => item.visible)
               .map((item) => {
@@ -149,13 +157,13 @@ export function AppShell({
                     href={item.href}
                     className={`flex items-center justify-between gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
                       active
-                        ? "bg-neutral-900 text-white font-medium"
+                        ? "bg-[#00a884] text-white font-medium"
                         : "text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900"
                     }`}
                   >
-                    <span className="flex items-center gap-2.5">
+                    <span className="flex items-center gap-2.5 truncate">
                       <Icon className="w-4 h-4 shrink-0" />
-                      <span>{item.label}</span>
+                      <span className="truncate">{item.label}</span>
                     </span>
                     {item.badge && (
                       <span

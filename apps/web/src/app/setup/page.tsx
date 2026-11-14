@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, Copy, Loader2 } from "lucide-react";
 import {
+  ClassicConceptsWordmark,
   WHATSAPP_PUBLIC_DOMAIN,
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
@@ -31,6 +32,8 @@ interface SetupStateResponse {
     };
   };
   currentUser: { id: string; name: string; role: string } | null;
+  aiConnected?: boolean;
+  aiMaskedKey?: string;
 }
 
 export default function SetupPage() {
@@ -62,6 +65,7 @@ export default function SetupPage() {
   const [webhookVerifyToken, setWebhookVerifyToken] = useState(
     "cc_whatsapp_verify_2026"
   );
+  const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [steps, setSteps] = useState({
     metaBusinessVerified: false,
     whatsappAppCreated: false,
@@ -138,6 +142,7 @@ export default function SetupPage() {
             whatsappNumber,
             password,
             facebookConfig: facebookPayload,
+            anthropicApiKey,
           }),
         });
         const data = await res.json();
@@ -154,6 +159,7 @@ export default function SetupPage() {
           body: JSON.stringify({
             action: "update_facebook",
             facebookConfig: facebookPayload,
+            anthropicApiKey,
           }),
         });
         const data = await res.json();
@@ -181,17 +187,21 @@ export default function SetupPage() {
     <div className="min-h-screen w-full bg-neutral-50 text-neutral-900">
       {/* Full-Width Top Bar */}
       <header className="w-full bg-white border-b border-neutral-200 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-md bg-[#1da851] flex items-center justify-center text-white">
-            <WhatsAppLogoIcon size={20} />
-          </div>
-          <div>
-            <h1 className="text-base font-semibold text-neutral-900">
-              Developer Account & Facebook WhatsApp Setup
-            </h1>
-            <p className="text-xs text-neutral-500">
-              Domain: <strong>{WHATSAPP_PUBLIC_DOMAIN}</strong>
-            </p>
+        <div className="flex items-center gap-3.5">
+          <ClassicConceptsWordmark height={40} variant="light" />
+          <div className="h-7 w-px bg-neutral-200" />
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-full bg-[#25d366] flex items-center justify-center text-white shrink-0">
+              <WhatsAppLogoIcon size={17} />
+            </div>
+            <div>
+              <h1 className="text-base font-semibold text-neutral-900">
+                Developer Account & Facebook WhatsApp Setup
+              </h1>
+              <p className="text-xs text-neutral-500">
+                Domain: <strong>{WHATSAPP_PUBLIC_DOMAIN}</strong>
+              </p>
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -544,6 +554,19 @@ export default function SetupPage() {
                     value={systemUserAccessToken}
                     onChange={(e) => setSystemUserAccessToken(e.target.value)}
                     placeholder="Paste permanent Facebook token when switching to Live Mode"
+                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
+                  />
+                </div>
+                <div className="sm:col-span-2 pt-2 border-t border-neutral-100">
+                  <label className="block text-xs font-medium text-neutral-700 mb-1">
+                    Shared Anthropic API Key for ACRIO{" "}
+                    {state?.aiConnected ? `(Active: ${state.aiMaskedKey})` : "(Optional - one key works everywhere)"}
+                  </label>
+                  <input
+                    type="password"
+                    value={anthropicApiKey}
+                    onChange={(e) => setAnthropicApiKey(e.target.value)}
+                    placeholder="sk-ant-api03-... (shared across Classic Concepts, Classic Edge 53 & WhatsApp)"
                     className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
                   />
                 </div>

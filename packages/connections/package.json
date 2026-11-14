@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@cc/database": "*",
-    "@cc/sockets": "*"
+    "@cc/sockets": "*",
+    "@cc/storage": "*"
   }
 }

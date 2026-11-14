@@ -5,16 +5,23 @@ import {
   getSetupStatus,
   saveFacebookWhatsAppConfig,
 } from "@cc/auth";
+import {
+  resolveSharedAnthropicApiKey,
+  saveSharedAnthropicApiKey,
+} from "@cc/database";
 import { isDevRole } from "@cc/rbac";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const [setup, user] = await Promise.all([getSetupStatus(), getCurrentUser()]);
+  const [setup, user, aiKeyInfo] = await Promise.all([
+    getSetupStatus(),
+    getCurrentUser(),
+    resolveSharedAnthropicApiKey(),
+  ]);
   const isDev = isDevRole(user?.role);
 
-  // Mask raw secret token if non-DEV requests status after initial setup
   const safeFacebookConfig =
     !setup.hasDevAccount || isDev
       ? setup.facebookConfig
@@ -30,6 +37,10 @@ export async function GET() {
     hasDevAccount: setup.hasDevAccount,
     allFacebookStepsDone: setup.allFacebookStepsDone,
     facebookConfig: safeFacebookConfig,
+    aiConnected: Boolean(aiKeyInfo.apiKey),
+    aiMaskedKey: aiKeyInfo.apiKey
+      ? `${aiKeyInfo.apiKey.slice(0, 10)}...${aiKeyInfo.apiKey.slice(-4)}`
+      : "",
     currentUser: user,
   });
 }
@@ -54,6 +65,10 @@ export async function POST(req: Request) {
       );
     }
 
+    if (typeof body.anthropicApiKey === "string" && body.anthropicApiKey.trim()) {
+      await saveSharedAnthropicApiKey(body.anthropicApiKey.trim());
+    }
+
     const res = NextResponse.json({ ok: true, user: result.user });
     res.cookies.set(SESSION_COOKIE_NAME, result.sessionToken, {
       httpOnly: true,
@@ -75,6 +90,9 @@ export async function POST(req: Request) {
     }
 
     const updated = await saveFacebookWhatsAppConfig(body.facebookConfig || {});
+    if (typeof body.anthropicApiKey === "string" && body.anthropicApiKey.trim()) {
+      await saveSharedAnthropicApiKey(body.anthropicApiKey.trim());
+    }
     return NextResponse.json({ ok: true, facebookConfig: updated });
   }
 

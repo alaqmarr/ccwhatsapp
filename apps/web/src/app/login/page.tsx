@@ -4,7 +4,11 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
-import { WHATSAPP_PUBLIC_DOMAIN, WhatsAppLogoIcon } from "@cc/ui";
+import {
+  ClassicConceptsWordmark,
+  WHATSAPP_PUBLIC_DOMAIN,
+  WhatsAppLogoIcon,
+} from "@cc/ui";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -42,16 +46,20 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen w-full bg-neutral-50 flex flex-col">
       <header className="w-full bg-white border-b border-neutral-200 px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-md bg-[#1da851] text-white flex items-center justify-center">
-            <WhatsAppLogoIcon size={18} />
-          </div>
-          <div>
-            <div className="text-sm font-semibold text-neutral-900">
-              Classic Concepts WhatsApp Desk
+        <div className="flex items-center gap-3.5">
+          <ClassicConceptsWordmark height={38} variant="light" />
+          <div className="h-6 w-px bg-neutral-200" />
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-full bg-[#25d366] text-white flex items-center justify-center shrink-0">
+              <WhatsAppLogoIcon size={15} />
             </div>
-            <div className="text-xs text-neutral-500">
-              {WHATSAPP_PUBLIC_DOMAIN}
+            <div>
+              <div className="text-xs font-semibold text-neutral-900">
+                WhatsApp Business Desk
+              </div>
+              <div className="text-[11px] text-neutral-500">
+                {WHATSAPP_PUBLIC_DOMAIN}
+              </div>
             </div>
           </div>
         </div>

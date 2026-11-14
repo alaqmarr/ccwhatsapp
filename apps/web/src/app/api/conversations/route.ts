@@ -1,9 +1,16 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
+import { sendWhatsAppCloudMessage } from "@cc/connections";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
 import { hasPermission, normalizeWhatsAppNumber } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
-import { processInboundAutomations } from "@cc/workers";
+import {
+  checkAndEscalateWaitingChats,
+  ensureBackgroundWorkersRunning,
+  processInboundAutomations,
+  recordDualPricingLedgerEntry,
+  type BillingMessageCategory,
+} from "@cc/workers";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -15,15 +22,23 @@ export async function GET(req: Request) {
   }
 
   await ensureDatabasesBootstrapped();
+  ensureBackgroundWorkersRunning();
+  await checkAndEscalateWaitingChats().catch(() => {});
+
   const conv = getRawLibSqlClient("conversations");
   const { searchParams } = new URL(req.url);
   const statusFilter = searchParams.get("status") || "ALL";
   const categoryFilter = searchParams.get("category") || "ALL";
+  const teamFilter = searchParams.get("teamId") || "ALL";
+  const waitingOnly = searchParams.get("waiting") === "1";
+  const acrioOnly = searchParams.get("acrio") === "1";
   const mineOnly = searchParams.get("mine") === "1";
 
   const res = await conv.execute(
     `SELECT * FROM conversations ORDER BY
-      CASE status WHEN 'OPEN' THEN 0 WHEN 'ASSIGNED' THEN 1 ELSE 2 END,
+      CASE WHEN status != 'RESOLVED' AND waiting_since IS NOT NULL THEN 0
+           WHEN status != 'RESOLVED' THEN 1
+           ELSE 2 END,
       last_message_at DESC`
   );
 
@@ -37,6 +52,15 @@ export async function GET(req: Request) {
     smartCategory: String(r.smart_category),
     assignedStaffId: r.assigned_staff_id ? String(r.assigned_staff_id) : null,
     assignedStaffName: r.assigned_staff_name ? String(r.assigned_staff_name) : null,
+    assignedTeamId: r.assigned_team_id ? String(r.assigned_team_id) : null,
+    assignedTeamName: r.assigned_team_name ? String(r.assigned_team_name) : null,
+    escalationLevel: String(r.escalation_level || "P0"),
+    waitingSince: r.waiting_since ? String(r.waiting_since) : null,
+    lastResponseSeconds:
+      r.last_response_seconds !== null && r.last_response_seconds !== undefined
+        ? Number(r.last_response_seconds)
+        : null,
+    escalatedAt: r.escalated_at ? String(r.escalated_at) : null,
     unreadCount: Number(r.unread_count ?? 0),
     lastMessagePreview: String(r.last_message_preview || ""),
     lastMessageAt: String(r.last_message_at),
@@ -58,6 +82,15 @@ export async function GET(req: Request) {
   if (categoryFilter !== "ALL") {
     items = items.filter((c) => c.smartCategory === categoryFilter);
   }
+  if (teamFilter !== "ALL") {
+    items = items.filter((c) => c.assignedTeamId === teamFilter);
+  }
+  if (waitingOnly) {
+    items = items.filter((c) => c.status !== "RESOLVED" && Boolean(c.waitingSince));
+  }
+  if (acrioOnly) {
+    items = items.filter((c) => c.status !== "RESOLVED" && c.assignedStaffId === "ACRIO");
+  }
   if (mineOnly) {
     items = items.filter((c) => c.assignedStaffId === user.id);
   }
@@ -66,7 +99,9 @@ export async function GET(req: Request) {
 }
 
 /**
- * Allows simulating an incoming customer WhatsApp message (for Sandbox testing) or starting a new customer thread.
+ * Simulates an incoming customer WhatsApp message (for Test Mode) or starts a new outbound customer thread.
+ * Initial inbound assignment is ALWAYS ACRIO, which handles the query automatically in the backend and
+ * hands off to Sales Team (P0) only if the customer asks for staff or ACRIO cannot resolve.
  */
 export async function POST(req: Request) {
   const user = await getCurrentUser();
@@ -84,6 +119,8 @@ export async function POST(req: Request) {
   const customerName = String(body.customerName || phoneCheck.e164).trim();
   const text = String(body.messageText || "Hello Classic Concepts, I have a product enquiry.").trim();
   const direction = body.direction === "OUTBOUND" ? "OUTBOUND" : "INBOUND";
+  const templateName = body.templateName ? String(body.templateName).trim() : undefined;
+  const isTemplate = direction === "OUTBOUND" && Boolean(templateName || body.messageType === "TEMPLATE");
 
   const conv = getRawLibSqlClient("conversations");
   const crm = getRawLibSqlClient("crm_orders");
@@ -114,11 +151,15 @@ export async function POST(req: Request) {
   }
 
   const existingConv = await conv.execute({
-    sql: `SELECT id FROM conversations WHERE customer_phone = ? LIMIT 1`,
+    sql: `SELECT id, status, assigned_staff_id FROM conversations WHERE customer_phone = ? LIMIT 1`,
     args: [phoneCheck.e164],
   });
 
   const isNew = existingConv.rows.length === 0;
+  const prevStatus = existingConv.rows[0] ? String(existingConv.rows[0].status) : "";
+  const prevStaffId = existingConv.rows[0]?.assigned_staff_id
+    ? String(existingConv.rows[0].assigned_staff_id)
+    : null;
   const convId = isNew
     ? `conv_${crypto.randomUUID().slice(0, 8)}`
     : String(existingConv.rows[0].id);
@@ -127,56 +168,135 @@ export async function POST(req: Request) {
     await conv.execute({
       sql: `INSERT INTO conversations (
         id, customer_phone, customer_name, customer_id, status, priority, smart_category,
-        unread_count, last_message_preview, last_message_at, window_expires_at, created_at
-      ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', ?, ?, ?, ?, ?)`,
+        assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name,
+        escalation_level, waiting_since, unread_count, last_message_preview, last_message_at, window_expires_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'NORMAL', 'General Enquiry', ?, ?, ?, ?, 'P0', NULL, ?, ?, ?, ?, ?)`,
       args: [
         convId,
         phoneCheck.e164,
         customerName,
         customerId,
+        direction === "INBOUND" ? "OPEN" : "ASSIGNED",
+        direction === "INBOUND" ? "ACRIO" : user.id,
+        direction === "INBOUND" ? "ACRIO" : user.name,
+        direction === "INBOUND" ? null : "team_sales",
+        direction === "INBOUND" ? "ACRIO Assistant" : "Sales Team",
         direction === "INBOUND" ? 1 : 0,
         text.slice(0, 140),
         nowIso,
-        windowExp,
+        direction === "INBOUND" ? windowExp : null,
         nowIso,
+      ],
+    });
+  } else if (direction === "INBOUND") {
+    // Reopened chats reset to ACRIO first; human-owned open chats start/keep their wait timer
+    const resetToAcrio = prevStatus === "RESOLVED" || !prevStaffId;
+    const isHumanOwned = !resetToAcrio && prevStaffId !== "ACRIO";
+    await conv.execute({
+      sql: `UPDATE conversations
+            SET status = CASE WHEN status = 'RESOLVED' THEN 'OPEN' ELSE status END,
+                assigned_staff_id = CASE WHEN ? = 1 THEN 'ACRIO' ELSE assigned_staff_id END,
+                assigned_staff_name = CASE WHEN ? = 1 THEN 'ACRIO' ELSE assigned_staff_name END,
+                assigned_team_id = CASE WHEN ? = 1 THEN NULL ELSE assigned_team_id END,
+                assigned_team_name = CASE WHEN ? = 1 THEN 'ACRIO Assistant' ELSE assigned_team_name END,
+                escalation_level = CASE WHEN ? = 1 THEN 'P0' ELSE escalation_level END,
+                waiting_since = CASE WHEN ? = 1 THEN COALESCE(waiting_since, ?) ELSE waiting_since END,
+                unread_count = unread_count + 1,
+                last_message_preview = ?,
+                last_message_at = ?,
+                window_expires_at = ?
+            WHERE id = ?`,
+      args: [
+        resetToAcrio ? 1 : 0,
+        resetToAcrio ? 1 : 0,
+        resetToAcrio ? 1 : 0,
+        resetToAcrio ? 1 : 0,
+        resetToAcrio ? 1 : 0,
+        isHumanOwned ? 1 : 0,
+        nowIso,
+        text.slice(0, 140),
+        nowIso,
+        windowExp,
+        convId,
       ],
     });
   } else {
     await conv.execute({
       sql: `UPDATE conversations
-            SET status = CASE WHEN status = 'RESOLVED' THEN 'OPEN' ELSE status END,
-                unread_count = unread_count + ?,
+            SET status = 'ASSIGNED',
+                assigned_staff_id = ?,
+                assigned_staff_name = ?,
+                assigned_team_id = COALESCE(assigned_team_id, 'team_sales'),
+                assigned_team_name = CASE
+                  WHEN assigned_team_id IS NULL THEN 'Sales Team'
+                  ELSE assigned_team_name
+                END,
+                waiting_since = NULL,
                 last_message_preview = ?,
-                last_message_at = ?,
-                window_expires_at = ?
+                last_message_at = ?
             WHERE id = ?`,
-      args: [direction === "INBOUND" ? 1 : 0, text.slice(0, 140), nowIso, windowExp, convId],
+      args: [user.id, user.name, text.slice(0, 140), nowIso, convId],
     });
   }
+
+  let deliveryStatus = "DELIVERED";
+  let waMessageId: string | null = null;
+  if (direction === "OUTBOUND") {
+    const sendRes = await sendWhatsAppCloudMessage({
+      toPhone: phoneCheck.e164,
+      bodyText: text,
+      templateName,
+    });
+    deliveryStatus = sendRes.deliveryStatus;
+    waMessageId = sendRes.waMessageId;
+  }
+
+  const templateCategory: BillingMessageCategory =
+    body.billingCategory === "MARKETING"
+      ? "MARKETING"
+      : body.billingCategory === "AUTHENTICATION"
+      ? "AUTHENTICATION"
+      : "UTILITY";
 
   const msgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
   await conv.execute({
     sql: `INSERT INTO messages (
       id, conversation_id, direction, sender_type, sender_name, message_type,
-      billing_category, body, delivery_status, created_at
-    ) VALUES (?, ?, ?, ?, ?, 'TEXT', 'SERVICE', ?, 'DELIVERED', ?)`,
+      billing_category, body, template_name, wa_message_id, delivery_status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       msgId,
       convId,
       direction,
       direction === "INBOUND" ? "CUSTOMER" : "STAFF",
       direction === "INBOUND" ? customerName : user.name,
+      isTemplate ? "TEMPLATE" : "TEXT",
+      isTemplate ? templateCategory : "FREE_CHAT",
       text,
+      templateName || null,
+      waMessageId,
+      deliveryStatus,
       nowIso,
     ],
   });
+
+  // Charge ONLY if an outbound Template message was sent! Regular chat is ₹0.00 (Free).
+  if (isTemplate) {
+    await recordDualPricingLedgerEntry({
+      messageId: msgId,
+      conversationId: convId,
+      customerPhone: phoneCheck.e164,
+      category: templateCategory,
+      staffName: user.name,
+    });
+  }
 
   if (direction === "INBOUND") {
     await processInboundAutomations({
       conversationId: convId,
       customerPhone: phoneCheck.e164,
       inboundText: text,
-      isNewConversation: isNew,
+      isNewConversation: isNew || prevStatus === "RESOLVED",
     });
   }
 

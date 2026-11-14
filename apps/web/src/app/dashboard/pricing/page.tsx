@@ -50,13 +50,13 @@ interface PricingPayload {
 function friendlyCategoryName(cat: string): string {
   switch (cat) {
     case "MARKETING":
-      return "Marketing & Offers";
+      return "Marketing & Offer Templates";
     case "UTILITY":
-      return "Order & Delivery Updates";
+      return "Order & Delivery Templates";
     case "AUTHENTICATION":
-      return "Verification Codes";
-    case "SERVICE":
-      return "Customer Support Replies";
+      return "Verification Code Templates";
+    case "ACRIO":
+      return "ACRIO Automated Replies";
     default:
       return cat;
   }
@@ -143,8 +143,8 @@ export default function PricingDashboardPage() {
           </h1>
           <p className="text-xs text-neutral-500 mt-0.5">
             {isDev
-              ? "Shows actual Meta charges alongside Classic Concepts rates (₹0.95 Marketing, ₹0.30 all other messages). Only Dev accounts see actual Meta costs."
-              : "Fixed per-message rates: ₹0.95 per Marketing message and ₹0.30 for all other messages including verification codes, order updates, and support replies."}
+              ? "Normal staff chat replies and internal notes are free (₹0.00). Charges apply only to ACRIO automated replies (₹0.30) and templated messages (₹0.95 Marketing, ₹0.30 Utility/Auth)."
+              : "Normal staff chat replies inside the 24-hour window are completely free (₹0.00). Charges apply only to ACRIO automated replies (₹0.30) and templated messages (₹0.95 Marketing, ₹0.30 Utility/Verification)."}
           </p>
         </div>
 
@@ -155,12 +155,57 @@ export default function PricingDashboardPage() {
         )}
       </div>
 
-      {/* Two Rate Boxes */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Three Rate Boxes: Free Staff Chat, ACRIO & Utility Templates, Marketing Templates */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-emerald-50/60 rounded-lg border border-emerald-200 p-5 flex items-center justify-between gap-4">
+          <div>
+            <div className="text-xs font-medium text-emerald-800">
+              Staff Chat Replies & Internal Notes
+            </div>
+            <div className="text-2xl font-semibold text-emerald-950 mt-1">
+              ₹0.00{" "}
+              <span className="text-xs font-normal text-emerald-700">
+                free inside 24h window
+              </span>
+            </div>
+            <p className="text-xs text-emerald-800/90 mt-1">
+              All normal WhatsApp chat replies by staff and private team notes
+            </p>
+          </div>
+        </div>
+
         <div className="bg-white rounded-lg border border-neutral-200 p-5 flex items-center justify-between gap-4">
           <div>
             <div className="text-xs font-medium text-neutral-500">
-              Marketing Messages
+              ACRIO & Utility / Auth Templates
+            </div>
+            <div className="text-2xl font-semibold text-neutral-900 mt-1">
+              ₹{data.rates.otherMessagesRateInr.toFixed(2)}{" "}
+              <span className="text-xs font-normal text-neutral-500">
+                per message
+              </span>
+            </div>
+            <p className="text-xs text-neutral-500 mt-1">
+              ACRIO automatic answers, order templates, and OTP templates
+            </p>
+          </div>
+          {isDev && (
+            <div className="text-right bg-neutral-50 border border-neutral-200 rounded-md p-3 shrink-0 text-xs">
+              <div className="text-[11px] text-neutral-500">Actual Wholesale</div>
+              <div className="font-semibold text-neutral-900 mt-0.5">
+                Utility / Auth: ₹{(data.rates.actualMetaUtilityRateInr ?? 0).toFixed(3)}
+              </div>
+              <div className="font-semibold text-neutral-900">
+                ACRIO Cost: ₹0.040
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white rounded-lg border border-neutral-200 p-5 flex items-center justify-between gap-4">
+          <div>
+            <div className="text-xs font-medium text-neutral-500">
+              Marketing Templates
             </div>
             <div className="text-2xl font-semibold text-neutral-900 mt-1">
               ₹{data.rates.marketingRateInr.toFixed(2)}{" "}
@@ -169,7 +214,7 @@ export default function PricingDashboardPage() {
               </span>
             </div>
             <p className="text-xs text-neutral-500 mt-1">
-              Promotions, festival offers, and catalog broadcasts
+              Promotions, festival offers, and catalog template broadcasts
             </p>
           </div>
           {isDev && (
@@ -185,34 +230,6 @@ export default function PricingDashboardPage() {
                   (data.rates.actualMetaMarketingRateInr ?? 0)
                 ).toFixed(4)}{" "}
                 margin
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white rounded-lg border border-neutral-200 p-5 flex items-center justify-between gap-4">
-          <div>
-            <div className="text-xs font-medium text-neutral-500">
-              All Other Messages (Order Updates, Support & Verification)
-            </div>
-            <div className="text-2xl font-semibold text-neutral-900 mt-1">
-              ₹{data.rates.otherMessagesRateInr.toFixed(2)}{" "}
-              <span className="text-xs font-normal text-neutral-500">
-                per message
-              </span>
-            </div>
-            <p className="text-xs text-neutral-500 mt-1">
-              Login/verification codes, dispatch updates, quotes, and chat replies
-            </p>
-          </div>
-          {isDev && (
-            <div className="text-right bg-neutral-50 border border-neutral-200 rounded-md p-3 shrink-0 text-xs">
-              <div className="text-[11px] text-neutral-500">Actual Meta Cost</div>
-              <div className="font-semibold text-neutral-900 mt-0.5">
-                Utility / Auth: ₹{(data.rates.actualMetaUtilityRateInr ?? 0).toFixed(3)}
-              </div>
-              <div className="font-semibold text-neutral-900">
-                Support: ₹{(data.rates.actualMetaServiceRateInr ?? 0).toFixed(3)}
               </div>
             </div>
           )}

@@ -6,6 +6,7 @@ import {
   MetricStatCard,
   WHATSAPP_PUBLIC_DOMAIN,
   WHATSAPP_PUBLIC_ORIGIN,
+  WhatsAppLogoIcon,
 } from "@cc/ui";
 
 interface TemplateItem {
@@ -575,8 +576,11 @@ export default function MarketingAndLinksPage() {
       {/* SECTION 3: Send Broadcast + Save Template */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-6 bg-white rounded-lg border border-neutral-200 p-5 space-y-4">
-          <h2 className="text-sm font-semibold text-neutral-900">
-            Send WhatsApp Broadcast
+          <h2 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
+            <span className="w-5 h-5 rounded-full bg-[#25d366] text-white inline-flex items-center justify-center shrink-0">
+              <WhatsAppLogoIcon size={11} />
+            </span>
+            <span>Send WhatsApp Broadcast</span>
           </h2>
 
           <form onSubmit={handleLaunchBroadcast} className="space-y-3 text-xs">
@@ -655,9 +659,10 @@ export default function MarketingAndLinksPage() {
             <button
               type="submit"
               disabled={launching}
-              className="w-full py-2.5 rounded-md bg-[#1da851] hover:bg-[#178c43] text-white font-medium cursor-pointer"
+              className="w-full py-2.5 rounded-md bg-[#1da851] hover:bg-[#178c43] text-white font-medium inline-flex items-center justify-center gap-2 cursor-pointer"
             >
-              {launching ? "Sending..." : "Send Broadcast"}
+              <WhatsAppLogoIcon size={14} />
+              <span>{launching ? "Sending..." : "Send Broadcast"}</span>
             </button>
           </form>
 

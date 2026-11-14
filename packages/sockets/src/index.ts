@@ -1,9 +1,12 @@
 export type RealtimeEventType =
   | "connected"
   | "message:new"
+  | "note:new"
   | "message:status"
   | "conversation:updated"
   | "conversation:assigned"
+  | "conversation:escalated"
+  | "chat:escalated"
   | "conversation:resolved"
   | "staff:approval_changed"
   | "broadcast:progress"

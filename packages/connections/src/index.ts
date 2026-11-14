@@ -5,12 +5,20 @@ import zlib from "node:zlib";
 import nodemailer from "nodemailer";
 import {
   ensureDatabasesBootstrapped,
-  fetchClassicCatalogProducts,
   getRawLibSqlClient,
+  loadAllClassicConceptsProducts,
+  loadAllClassicEdgeItems,
   resolveBackupDirectory,
+  resolveSharedAnthropicApiKey,
+  searchEcosystemItems,
   snapshotAllDatabasesToFolder,
+  type MainWebsiteProduct,
 } from "@cc/database";
 import { socketHub } from "@cc/sockets";
+import {
+  invalidateWhatsAppCacheTags,
+  rememberWhatsAppCache,
+} from "@cc/storage";
 
 const LOCKED_CLAUDE_MODEL = "claude-haiku-5-5" as const;
 
@@ -161,21 +169,70 @@ export function verifyMetaWebhookSignature(
 }
 
 // ============================================================================
-// 2. ACRIO WHATSAPP AI CO-PILOT (Chat Replies, Smart Resolutions & Marketing Lists)
+// 2. ACRIO WHATSAPP AI CO-PILOT (Redis-Cached Classic Concepts + Classic Edge 53)
 // ============================================================================
+export interface AcrioRecommendedItem {
+  name: string;
+  slug: string;
+  sku: string | null;
+  priceInr: number | null;
+  url: string;
+  brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  brandLabel: string;
+  itemType: "PRODUCT" | "MACHINE" | "CONSUMABLE";
+  modelsSummary?: string | null;
+}
+
 export interface AcrioChatCopilotResult {
   engineLabel: string;
   smartCategory: string;
   priority: "URGENT" | "HIGH" | "NORMAL" | "LOW";
   suggestedReplies: string[];
-  recommendedProducts: {
-    name: string;
-    slug: string;
-    sku: string | null;
-    priceInr: number | null;
-    url: string;
-  }[];
+  recommendedProducts: AcrioRecommendedItem[];
   resolutionDraft: string;
+}
+
+export async function getCachedEcosystemCatalog(): Promise<{
+  classicConceptsProducts: MainWebsiteProduct[];
+  classicEdgeItems: MainWebsiteProduct[];
+  allItems: MainWebsiteProduct[];
+}> {
+  const [classicConceptsProducts, classicEdgeItems] = await Promise.all([
+    rememberWhatsAppCache(
+      "ecosystem:cc-products:v1",
+      ["cc-products"],
+      3600,
+      () => loadAllClassicConceptsProducts()
+    ),
+    rememberWhatsAppCache(
+      "ecosystem:ce53-items:v1",
+      ["ce53-machines"],
+      3600,
+      () => loadAllClassicEdgeItems()
+    ),
+  ]);
+
+  return {
+    classicConceptsProducts,
+    classicEdgeItems,
+    allItems: [...classicConceptsProducts, ...classicEdgeItems],
+  };
+}
+
+export async function syncEcosystemRedisCache(): Promise<{
+  classicConceptsCount: number;
+  classicEdgeMachinesCount: number;
+  classicEdgeConsumablesCount: number;
+  syncedAt: string;
+}> {
+  await invalidateWhatsAppCacheTags(["cc-products", "ce53-machines", "acrio-replies"]);
+  const { classicConceptsProducts, classicEdgeItems } = await getCachedEcosystemCatalog();
+  return {
+    classicConceptsCount: classicConceptsProducts.length,
+    classicEdgeMachinesCount: classicEdgeItems.filter((i) => i.itemType === "MACHINE").length,
+    classicEdgeConsumablesCount: classicEdgeItems.filter((i) => i.itemType === "CONSUMABLE").length,
+    syncedAt: new Date().toISOString(),
+  };
 }
 
 export async function runAcrioChatCopilot(params: {
@@ -184,21 +241,29 @@ export async function runAcrioChatCopilot(params: {
   recentMessages: { direction: string; body: string }[];
   ordersSummary?: string[];
 }): Promise<AcrioChatCopilotResult> {
+  // Exclude internal team notes when suggesting customer replies
+  const customerMessages = params.recentMessages.filter(
+    (m) => m.direction === "INBOUND" || m.direction === "OUTBOUND"
+  );
   const lastInbound =
-    [...params.recentMessages]
+    [...customerMessages]
       .reverse()
       .find((m) => m.direction === "INBOUND")?.body ||
-    params.recentMessages[params.recentMessages.length - 1]?.body ||
+    customerMessages[customerMessages.length - 1]?.body ||
     "";
 
   const lower = lastInbound.toLowerCase();
-  const catalog = await fetchClassicCatalogProducts(lastInbound, 3);
+  const { allItems } = await getCachedEcosystemCatalog();
+  const catalog = searchEcosystemItems(allItems, lastInbound, 4);
 
-  // Smart intent & category classification
+  // Smart intent & category classification across Classic Concepts + Classic Edge 53
   let smartCategory = "General Enquiry";
   let priority: AcrioChatCopilotResult["priority"] = "NORMAL";
 
-  if (/podium|lectern|pulpit|stage|auditorium|conference/i.test(lower)) {
+  if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|classic edge|consumable|blade|cutter/i.test(lower)) {
+    smartCategory = "Acrylic Machines (CE53)";
+    priority = "HIGH";
+  } else if (/podium|lectern|pulpit|stage|auditorium|conference/i.test(lower)) {
     smartCategory = "Podiums & Stage";
     priority = /friday|urgent|tomorrow|week/i.test(lower) ? "URGENT" : "HIGH";
   } else if (/trophy|trophies|memento|award|student|convocation|plaque/i.test(lower)) {
@@ -217,85 +282,113 @@ export async function runAcrioChatCopilot(params: {
   const firstName = params.customerName.split(/[\s(]/)[0] || "there";
   const topProduct = catalog[0];
 
-  const apiKey =
-    process.env.ANTHROPIC_ADMIN_API_KEY ||
-    process.env.ANTHROPIC_CLIENT_API_KEY ||
-    "";
+  const mappedRecommendations: AcrioRecommendedItem[] = catalog.map((c) => ({
+    name: c.name,
+    slug: c.slug,
+    sku: c.sku,
+    priceInr: c.basePrice,
+    url: c.url,
+    brand: c.brand,
+    brandLabel: c.brandLabel,
+    itemType: c.itemType,
+    modelsSummary: c.modelsSummary || null,
+  }));
 
-  if (apiKey) {
+  const { apiKey } = await resolveSharedAnthropicApiKey();
+
+  if (apiKey && lastInbound.trim()) {
+    const promptHash = crypto
+      .createHash("sha1")
+      .update(`${params.customerName}|${lastInbound.slice(0, 300)}`)
+      .digest("hex")
+      .slice(0, 16);
+
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: LOCKED_CLAUDE_MODEL,
-          max_tokens: 450,
-          temperature: 0.2,
-          system: `You are ACRIO, Classic Concepts' WhatsApp Staff Assistant running on Claude Haiku 5.5.
-Write strictly in simple everyday layman English. NEVER use em dashes ("—"), "--", or robotic AI words (bespoke, meticulous, seamless, leverage, utilize).
+      const aiResult = await rememberWhatsAppCache<AcrioChatCopilotResult | null>(
+        `acrio:reply:${promptHash}`,
+        ["acrio-replies"],
+        1800,
+        async () => {
+          const response = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model: LOCKED_CLAUDE_MODEL,
+              max_tokens: 450,
+              temperature: 0.2,
+              system: `You are ACRIO, the WhatsApp Staff Assistant for Classic Concepts (acrylic products at classicconcepts.in) and Classic Edge 53 (acrylic machines & consumables at classicedge53.com).
+Write strictly in simple everyday layman English. NEVER use em dashes ("—"), "--", or robotic AI words (bespoke, meticulous, seamless, leverage, utilize). Never repeat boilerplate about factory sqft unless directly asked.
 Return ONLY valid JSON:
 {
-  "smartCategory": "Podiums & Stage | Awards & Trophies | Hotel & Banquet | Custom Fabrication | Order & Delivery | General Enquiry",
+  "smartCategory": "Podiums & Stage | Awards & Trophies | Hotel & Banquet | Acrylic Machines (CE53) | Custom Fabrication | Order & Delivery | General Enquiry",
   "priority": "URGENT | HIGH | NORMAL",
-  "suggestedReplies": ["Short warm WhatsApp reply 1", "Reply option 2 with product/link", "Reply option 3 asking size/quantity"],
+  "suggestedReplies": ["Short natural WhatsApp reply 1", "Reply option 2 sharing matching product or machine link", "Reply option 3 asking size, model, or quantity"],
   "resolutionDraft": "1-2 plain English sentences summarizing chat resolution"
 }`,
-          messages: [
-            {
-              role: "user",
-              content: `Customer: ${params.customerName} (${params.organizationType || "Client"})
+              messages: [
+                {
+                  role: "user",
+                  content: `Customer: ${params.customerName} (${params.organizationType || "Client"})
 Past orders: ${(params.ordersSummary || []).join("; ") || "None yet"}
-Matching catalog items: ${catalog.map((c) => `${c.name} (${c.basePrice ? `Rs ${c.basePrice}` : "Price on Request"}, /shop/p/${c.slug})`).join("; ")}
+Matching items from Classic Concepts & Classic Edge 53 cache:
+${catalog.map((c) => `- [${c.brandLabel} ${c.itemType}] ${c.name}${c.sku ? ` (${c.sku})` : ""}${c.basePrice ? ` Rs ${c.basePrice}` : ""} -> ${c.url}`).join("\n")}
 Recent chat:
-${params.recentMessages.slice(-5).map((m) => `${m.direction}: ${m.body}`).join("\n")}`,
-            },
-          ],
-        }),
-        signal: AbortSignal.timeout(10000),
-      });
+${customerMessages.slice(-5).map((m) => `${m.direction}: ${m.body}`).join("\n")}`,
+                },
+              ],
+            }),
+            signal: AbortSignal.timeout(9000),
+          });
 
-      if (response.ok) {
-        const json: any = await response.json();
-        const text = json?.content?.[0]?.text || "";
-        const start = text.indexOf("{");
-        const end = text.lastIndexOf("}");
-        if (start !== -1 && end > start) {
+          if (!response.ok) return null;
+          const json: any = await response.json();
+          const text = json?.content?.[0]?.text || "";
+          const start = text.indexOf("{");
+          const end = text.lastIndexOf("}");
+          if (start === -1 || end <= start) return null;
           const parsed = JSON.parse(text.slice(start, end + 1));
-          if (Array.isArray(parsed.suggestedReplies) && parsed.suggestedReplies.length > 0) {
-            return {
-              engineLabel: "Claude Haiku 5.5 • Live AI",
-              smartCategory: parsed.smartCategory || smartCategory,
-              priority: parsed.priority || priority,
-              suggestedReplies: parsed.suggestedReplies
-                .slice(0, 3)
-                .map((s: string) => sanitizePlainEnglish(s)),
-              recommendedProducts: catalog.map((c) => ({
-                name: c.name,
-                slug: c.slug,
-                sku: c.sku,
-                priceInr: c.basePrice,
-                url: `https://www.classicconcepts.in/shop/p/${c.slug}`,
-              })),
-              resolutionDraft: sanitizePlainEnglish(
-                parsed.resolutionDraft ||
-                  `Assisted ${firstName} with ${smartCategory.toLowerCase()} options and shared catalog details.`
-              ),
-            };
+          if (!Array.isArray(parsed.suggestedReplies) || parsed.suggestedReplies.length === 0) {
+            return null;
           }
+          return {
+            engineLabel: "ACRIO",
+            smartCategory: parsed.smartCategory || smartCategory,
+            priority: parsed.priority || priority,
+            suggestedReplies: parsed.suggestedReplies
+              .slice(0, 3)
+              .map((s: string) => sanitizePlainEnglish(s)),
+            recommendedProducts: mappedRecommendations,
+            resolutionDraft: sanitizePlainEnglish(
+              parsed.resolutionDraft ||
+                `Assisted ${firstName} with ${smartCategory.toLowerCase()} options and shared product details.`
+            ),
+          };
         }
+      );
+
+      if (aiResult) {
+        return { ...aiResult, recommendedProducts: mappedRecommendations };
       }
     } catch {
-      // Fall through cleanly to local ACRIO Smart Catalog Engine
+      // Fall through cleanly to local ACRIO Smart Catalog & Machine Engine
     }
   }
 
-  // Instant Plain-English ACRIO Local Drafts tailored to the conversation
+  // Instant Plain-English ACRIO Local Drafts tailored to Classic Concepts & Classic Edge 53
   const localReplies: string[] = [];
-  if (smartCategory === "Podiums & Stage") {
+  if (smartCategory === "Acrylic Machines (CE53)") {
+    localReplies.push(
+      topProduct
+        ? `Hello ${firstName}! For acrylic fabrication, check our ${topProduct.name}${topProduct.sku ? ` (${topProduct.sku})` : ""} from Classic Edge 53: ${topProduct.url}`
+        : `Hello ${firstName}! Tell us the sheet thickness and working width you need and our Classic Edge 53 machine specialist will share the right model and brochure.`,
+      `Hi ${firstName}, would you like the specification sheet, live demo video, and landed quotation for this machine?`,
+      `Hello ${firstName}, we also stock genuine diamond cutters, heaters, and machine consumables ready for dispatch. Let us know your city for delivery details.`
+    );
+  } else if (smartCategory === "Podiums & Stage") {
     localReplies.push(
       `Hi ${firstName}! Yes, we have wide-top clear stage podiums ready and can add your front logo before dispatch. Shall I share our ready models and sizes?`,
       `Hello ${firstName}, here is our podium collection link: https://whatsapp.ccapl.cc/l/stage-podiums. Let us know your preferred height or logo file and we will confirm delivery.`,
@@ -317,11 +410,11 @@ ${params.recentMessages.slice(-5).map((m) => `${m.direction}: ${m.body}`).join("
     );
   } else {
     localReplies.push(
-      `Hello ${firstName}! Thank you for messaging Classic Concepts. Tell us the item, size, or quantity you need and I will share the closest options right away.`,
+      `Hello ${firstName}! Thank you for messaging Classic Concepts. Tell us the product, machine, size, or quantity you need and I will share the closest options right away.`,
       topProduct
-        ? `Hi ${firstName}, based on your message, take a look at ${topProduct.name}: https://www.classicconcepts.in/shop/p/${topProduct.slug}`
-        : `Hi ${firstName}, here is our main catalog link: https://whatsapp.ccapl.cc/l/stage-podiums. Let me know if you need podiums, stands, boxes, or awards!`,
-      `Hi ${firstName}, I am checking this with our production team and will update you shortly.`
+        ? `Hi ${firstName}, based on your message, take a look at ${topProduct.name}: ${topProduct.url}`
+        : `Hi ${firstName}, here is our main catalog link: https://whatsapp.ccapl.cc/l/stage-podiums. Let me know if you need acrylic products or Classic Edge 53 machines!`,
+      `Hi ${firstName}, I am checking this with our team and will update you shortly.`
     );
   }
 
@@ -330,16 +423,245 @@ ${params.recentMessages.slice(-5).map((m) => `${m.direction}: ${m.body}`).join("
     smartCategory,
     priority,
     suggestedReplies: localReplies.map(sanitizePlainEnglish),
-    recommendedProducts: catalog.map((c) => ({
-      name: c.name,
-      slug: c.slug,
-      sku: c.sku,
-      priceInr: c.basePrice,
-      url: `https://www.classicconcepts.in/shop/p/${c.slug}`,
-    })),
+    recommendedProducts: mappedRecommendations,
     resolutionDraft: sanitizePlainEnglish(
       `Shared ${smartCategory.toLowerCase()} options and pricing details with ${params.customerName}, and updated customer follow-up notes.`
     ),
+  };
+}
+
+export interface AcrioAutonomousTurnResult {
+  needsHumanHandoff: boolean;
+  handoffReason: string;
+  customerReply: string;
+  smartCategory: string;
+  priority: "URGENT" | "HIGH" | "NORMAL";
+}
+
+/**
+ * Autonomous ACRIO Backend Handler:
+ * Every new/reopened customer chat is initially assigned to ACRIO.
+ * - Answers product & machine queries automatically from the Redis-cached
+ *   Classic Concepts (`classicconcepts.in`) & Classic Edge 53 (`classicedge53.com`) catalogs.
+ * - If the customer asks to speak to support/staff OR ACRIO cannot resolve the query on its own,
+ *   flags `needsHumanHandoff = true` so the worker connects the chat to our Sales Team (P0 -> P1 -> P2).
+ */
+export async function runAcrioAutonomousTurn(params: {
+  customerName: string;
+  inboundText: string;
+  recentMessages?: { direction: string; body: string }[];
+}): Promise<AcrioAutonomousTurnResult> {
+  const rawText = params.inboundText.trim();
+  const lower = rawText.toLowerCase();
+  const firstName = params.customerName.split(/[\s(]/)[0] || "there";
+
+  // 1. Explicit request to talk to human support / sales staff
+  const explicitSupportRequest =
+    /\b(support|human|agent|staff|person|representative|executive|manager|sales\s*team|talk\s*to|speak\s*to|speak\s*with|connect\s*me|call\s*me|real\s*person|someone)\b/i.test(
+      lower
+    );
+
+  // 2. Complex / sensitive cases where ACRIO should hand off directly to Sales Team
+  const unresolvableByBot =
+    /\b(complaint|damaged|broken|wrong\s*item|refund|cancel|dispute|negotiate|final\s*discount|drawing\s*attached|cad|dxf|urgent\s*callback|gst\s*mismatch|payment\s*stuck)\b/i.test(
+      lower
+    );
+
+  const { allItems } = await getCachedEcosystemCatalog();
+  const matches = searchEcosystemItems(allItems, rawText, 3);
+  const top = matches[0];
+
+  let smartCategory = "General Enquiry";
+  let priority: "URGENT" | "HIGH" | "NORMAL" = "NORMAL";
+
+  if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|classic edge|consumable|blade|cutter/i.test(lower)) {
+    smartCategory = "Acrylic Machines (CE53)";
+    priority = "HIGH";
+  } else if (/podium|lectern|pulpit|stage|auditorium|conference/i.test(lower)) {
+    smartCategory = "Podiums & Stage";
+    priority = /friday|urgent|tomorrow|today/i.test(lower) ? "URGENT" : "HIGH";
+  } else if (/trophy|trophies|memento|award|student|convocation|plaque/i.test(lower)) {
+    smartCategory = "Awards & Trophies";
+  } else if (/hotel|banquet|menu|qr|resort|hospitality/i.test(lower)) {
+    smartCategory = "Hotel & Banquet";
+    priority = "HIGH";
+  } else if (/cover|guard|enclosure|custom|mm|inch/i.test(lower)) {
+    smartCategory = "Custom Fabrication";
+    priority = "HIGH";
+  } else if (/order|dispatch|delivery|invoice|advance|payment/i.test(lower)) {
+    smartCategory = "Order & Delivery";
+  }
+
+  if (explicitSupportRequest) {
+    return {
+      needsHumanHandoff: true,
+      handoffReason: `Customer asked to speak with our team ("${rawText.slice(0, 120)}").`,
+      customerReply: sanitizePlainEnglish(
+        `Hi ${firstName}! Connecting you to our Sales Team right away. A team member will reply to you here shortly.`
+      ),
+      smartCategory,
+      priority: "HIGH",
+    };
+  }
+
+  if (unresolvableByBot) {
+    return {
+      needsHumanHandoff: true,
+      handoffReason: `Query needs personal assistance from Sales Team ("${rawText.slice(0, 120)}").`,
+      customerReply: sanitizePlainEnglish(
+        `Hi ${firstName}, I am connecting your chat directly to our Sales Team so they can check this personally and help you right away.`
+      ),
+      smartCategory,
+      priority: "URGENT",
+    };
+  }
+
+  // 3. Try Claude Haiku 5.5 when shared Anthropic API key is configured
+  const { apiKey } = await resolveSharedAnthropicApiKey();
+  if (apiKey) {
+    try {
+      const historyLines = (params.recentMessages || [])
+        .filter((m) => m.direction === "INBOUND" || m.direction === "OUTBOUND")
+        .slice(-5)
+        .map((m) => `${m.direction}: ${m.body}`)
+        .join("\n");
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: LOCKED_CLAUDE_MODEL,
+          max_tokens: 380,
+          temperature: 0.2,
+          system: `You are ACRIO, the automated WhatsApp assistant for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic machines & consumables: classicedge53.com).
+Rules:
+1. Write in simple, warm, everyday layman English. Zero em-dashes ("—"), zero "--", zero robotic buzzwords. Never mention 16,000 sq ft boilerplate unless asked.
+2. Answer directly using the matching products/machines provided. Share the exact product/machine link when relevant.
+3. Set "needsHumanHandoff": true ONLY if the customer asks to talk to a human/support/salesperson, OR if the question cannot be answered from our catalog/machines (for example custom quote approval, order tracking check, complaint, or unclear special request).
+4. If "needsHumanHandoff" is false, end briefly by letting them know they can reply "talk to team" anytime if they want a team member.
+Return ONLY valid JSON:
+{
+  "needsHumanHandoff": false,
+  "handoffReason": "",
+  "smartCategory": "Podiums & Stage | Awards & Trophies | Hotel & Banquet | Acrylic Machines (CE53) | Custom Fabrication | Order & Delivery | General Enquiry",
+  "priority": "URGENT | HIGH | NORMAL",
+  "customerReply": "Your short WhatsApp reply"
+}`,
+          messages: [
+            {
+              role: "user",
+              content: `Customer: ${params.customerName}
+Matching catalog & machine items:
+${matches.map((c) => `- [${c.brandLabel} ${c.itemType}] ${c.name}${c.sku ? ` (${c.sku})` : ""}${c.basePrice ? ` Rs ${c.basePrice}` : ""} -> ${c.url}`).join("\n")}
+Recent chat:
+${historyLines}
+Latest customer message: ${rawText}`,
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(9000),
+      });
+
+      if (response.ok) {
+        const json: any = await response.json();
+        const text = json?.content?.[0]?.text || "";
+        const s = text.indexOf("{");
+        const e = text.lastIndexOf("}");
+        if (s !== -1 && e > s) {
+          const parsed = JSON.parse(text.slice(s, e + 1));
+          if (typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
+            const handoff = Boolean(parsed.needsHumanHandoff);
+            return {
+              needsHumanHandoff: handoff,
+              handoffReason:
+                parsed.handoffReason ||
+                (handoff
+                  ? `ACRIO could not resolve fully and connected customer to Sales Team.`
+                  : ""),
+              customerReply: sanitizePlainEnglish(parsed.customerReply),
+              smartCategory: parsed.smartCategory || smartCategory,
+              priority: parsed.priority || priority,
+            };
+          }
+        }
+      }
+    } catch {
+      // Fall back to deterministic catalog/machine answer engine below
+    }
+  }
+
+  // 4. Deterministic Backend ACRIO Resolution Engine (when offline or no API key yet)
+  if (/^(hi|hello|hey|good\s*morning|good\s*afternoon|good\s*evening|namaste)\W*$/i.test(rawText)) {
+    return {
+      needsHumanHandoff: false,
+      handoffReason: "",
+      customerReply: sanitizePlainEnglish(
+        `Hello ${firstName}! Welcome to Classic Concepts (ACRIO Assistant). Are you looking for acrylic podiums, awards, stands, custom boxes, or Classic Edge 53 machines? Tell me what you need, or reply "talk to team" anytime to speak with our Sales Team.`
+      ),
+      smartCategory,
+      priority: "NORMAL",
+    };
+  }
+
+  // Order tracking or custom dimension pricing requires human Sales Team verification
+  if (smartCategory === "Order & Delivery" || /\b(\d+\s*(?:mm|cm|inch|ft)\s*x\s*\d+)\b/i.test(lower)) {
+    return {
+      needsHumanHandoff: true,
+      handoffReason: `ACRIO needs human verification for ${smartCategory.toLowerCase()} ("${rawText.slice(0, 110)}").`,
+      customerReply: sanitizePlainEnglish(
+        `Hi ${firstName}! I have noted your details and connected your chat to our Sales Team so they can check exact pricing and schedule for you right away.`
+      ),
+      smartCategory,
+      priority: "HIGH",
+    };
+  }
+
+  if (smartCategory === "Acrylic Machines (CE53)" && top) {
+    return {
+      needsHumanHandoff: false,
+      handoffReason: "",
+      customerReply: sanitizePlainEnglish(
+        `Hi ${firstName}! Here is our matching Classic Edge 53 machine: ${top.name}${top.sku ? ` (${top.sku})` : ""} - ${top.url}. Share your sheet thickness or city for a quote, or reply "talk to team" to connect with our Sales Team.`
+      ),
+      smartCategory,
+      priority,
+    };
+  }
+
+  if (top && (smartCategory !== "General Enquiry" || matches.length > 0)) {
+    // Check if the query actually matched any meaningful keyword in our catalog; if completely unrelated/unclear, hand off to Sales Team!
+    const hasCatalogMatch = matches.some((item) => {
+      const words = lower.split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+      const hay = `${item.name} ${item.categoryName} ${item.sku || ""} ${item.description || ""}`.toLowerCase();
+      return words.some((w) => hay.includes(w));
+    });
+
+    if (hasCatalogMatch) {
+      return {
+        needsHumanHandoff: false,
+        handoffReason: "",
+        customerReply: sanitizePlainEnglish(
+          `Hi ${firstName}! Take a look at our ${top.name}${top.basePrice ? ` (Rs ${top.basePrice})` : ""}: ${top.url}. Let me know the quantity or size you need, or reply "talk to team" anytime to speak with our Sales Team.`
+        ),
+        smartCategory,
+        priority,
+      };
+    }
+  }
+
+  // If ACRIO cannot match the query confidently -> connect to Sales Team automatically!
+  return {
+    needsHumanHandoff: true,
+    handoffReason: `ACRIO could not match a standard catalog answer for "${rawText.slice(0, 110)}". Connected to Sales Team.`,
+    customerReply: sanitizePlainEnglish(
+      `Hi ${firstName}! Thank you for your message. I am connecting you to our Sales Team right now so a team member can help you with this.`
+    ),
+    smartCategory,
+    priority: "NORMAL",
   };
 }
 

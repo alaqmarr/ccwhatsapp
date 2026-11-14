@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   Check,
   Clock,
-  MessageSquare,
   ShoppingBag,
   Megaphone,
   Workflow,
@@ -14,8 +13,16 @@ import {
   HelpCircle,
 } from "lucide-react";
 import type { AuthenticatedUser } from "@cc/auth";
+import { WhatsAppLogoIcon } from "@cc/ui";
 
-const ONBOARDING_MODULES = [
+const ONBOARDING_MODULES: Array<{
+  id: string;
+  title: string;
+  icon: React.ComponentType<{ className?: string }>;
+  summary: string;
+  points: string[];
+  tip: string;
+}> = [
   {
     id: "approval_flow",
     title: "1. Account Verification & Approval",
@@ -31,55 +38,55 @@ const ONBOARDING_MODULES = [
   },
   {
     id: "inbox_24h",
-    title: "2. Replying to Customers & the 24-Hour Rule",
-    icon: MessageSquare,
+    title: "2. Replying to Customers & the 24-Hour Chat Window",
+    icon: WhatsAppLogoIcon,
     summary:
-      "How normal WhatsApp replies work compared to template messages.",
+      "How free WhatsApp chat replies work compared to template messages.",
     points: [
-      "Whenever a customer sends us a message on WhatsApp, you can reply freely for the next 24 hours.",
-      "Within those 24 hours, you can type normal messages, share product links, and answer questions.",
-      "If more than 24 hours pass since the customer's last message, WhatsApp requires sending an approved template message to restart the chat.",
+      "Whenever a customer sends us a message on WhatsApp, the chat window stays open for 24 hours.",
+      "All normal replies sent by our staff inside this 24-hour window are completely free (₹0.00).",
+      "If the chat window expires after 24 hours, WhatsApp requires sending an approved template message to restart the chat.",
     ],
-    tip: "Try to reply to new enquiries quickly while the customer is still online.",
+    tip: "Check 'Chat window expires in ...' at the top of the chat so you reply while normal chat is still open and free.",
   },
   {
     id: "acrio_copilot",
-    title: "3. Using ACRIO Reply Suggestions",
+    title: "3. ACRIO Automatic Handling & Sales Team Handoff",
     icon: HelpCircle,
     summary:
-      "Getting quick, clear reply drafts and product links right inside the chat.",
+      "How ACRIO answers new customer questions first and connects them to our Sales Team when needed.",
     points: [
-      "Above the message box, ACRIO reads what the customer asked and suggests 3 simple replies in plain English.",
-      "Click any suggested reply to put it in your text box, edit anything you want, and press Send.",
-      "When a customer's enquiry is finished, click 'Mark Resolved' at the top to save a short note for the next team member.",
+      "Every new customer chat starts with ACRIO, which answers product and machine questions automatically using Classic Concepts and Classic Edge 53 catalogs.",
+      "If the customer asks to speak to our team, or if ACRIO cannot resolve a custom quote or drawing request, ACRIO connects the chat directly to our Sales Team.",
+      "When you open a chat, ACRIO also shows 3 ready-to-send reply drafts and matching product or machine links above the message box.",
     ],
-    tip: "You can also click any suggested product button to paste its website link straight into your message.",
+    tip: "You can click 'Take Over Chat' anytime to step in personally, or 'Hand Back to ACRIO' when done.",
   },
   {
     id: "customer_360",
-    title: "4. Customer Details, Orders & Past Enquiries",
+    title: "4. Customer Details, Orders & Internal Team Notes",
     icon: ShoppingBag,
     summary:
-      "Checking who the customer is and what they bought before.",
+      "Checking customer history and leaving private notes for colleagues.",
     points: [
-      "On the right side of every chat, you can see the customer's company name, city, and notes.",
-      "Switch to the 'Orders' tab to check their past orders, payment status, or add a new order.",
-      "Switch to the 'Past History' tab to see earlier WhatsApp chats and enquiries they sent on the Classic Concepts website.",
+      "On the right side of every chat, you can see the customer's company name, city, past orders, and website enquiries from both classicconcepts.in and classicedge53.com.",
+      "Switch your reply box to 'Internal Team Note' to write a private yellow note for your teammates that is never sent to the customer on WhatsApp.",
+      "Internal team notes are completely free and help Sales and Fabrication stay aligned on custom sizes or pricing.",
     ],
-    tip: "Always check Past History first so repeat hotel or college buyers do not have to explain their requirement twice.",
+    tip: "Always check past orders and internal notes before quoting a repeat buyer.",
   },
   {
     id: "assignments_automations",
-    title: "5. Assigning Chats & Auto-Replies",
+    title: "5. Teams, Wait-Time Tracking & P0 to P1 Escalation",
     icon: Workflow,
     summary:
-      "Passing a chat to the right person on the team and setting up automatic replies.",
+      "Making sure no customer is kept waiting after ACRIO hands over a chat.",
     points: [
-      "Use the 'Assign' dropdown at the top of a chat to assign an enquiry to yourself or another colleague.",
-      "Use the 'Mine Only' button above the chat list when you only want to see chats assigned to you.",
-      "Under 'Auto-Replies', Admins can turn on automatic greetings or automatic tags when customers mention words like podium or trophy.",
+      "When ACRIO connects a customer to staff, the chat goes to the Sales Team P0 member with the fewest active chats.",
+      "A live wait timer tracks how long the customer has been waiting for a human reply.",
+      "If the P0 member is busy past the team wait limit, the chat automatically escalates to P1 and then P2 so the customer gets a fast answer.",
     ],
-    tip: "Assign custom size or drawing enquiries to the fabrication desk right away so quotes go out faster.",
+    tip: "Admins can create teams and adjust P0 and P1 wait limits anytime under 'Teams & Escalation'.",
   },
   {
     id: "marketing_links",
@@ -96,16 +103,16 @@ const ONBOARDING_MODULES = [
   },
   {
     id: "pricing_categories",
-    title: "7. Choosing the Right Message Type & Charges",
+    title: "7. Message Charges (Only ACRIO & Templates Are Billed)",
     icon: IndianRupee,
     summary:
-      "Understanding Marketing messages versus normal order and support messages.",
+      "Normal staff chat is free. Charges apply only to ACRIO automated replies and templated messages.",
     points: [
-      "Marketing messages cost ₹0.95 per message. Use this for promotions, festival offers, and catalog broadcasts.",
-      "All other messages (Order updates, Service replies, and Verification codes) cost ₹0.30 per message.",
-      "You can check your monthly message counts and charges anytime under 'Message Charges'.",
+      "Normal WhatsApp chat replies by staff inside the 24-hour window and Internal Team Notes are completely free (₹0.00).",
+      "ACRIO automated replies and Utility or Verification template messages cost ₹0.30 per message.",
+      "Marketing template messages (promotions, festival offers, and catalog broadcasts) cost ₹0.95 per message.",
     ],
-    tip: "When sending an order update or reply to an enquiry, keep the type set to Service or Order Update (₹0.30).",
+    tip: "You can check exact monthly ACRIO and template message counts anytime under 'Message Charges'.",
   },
 ];
 
@@ -196,9 +203,10 @@ export function OnboardingClient({
             <button
               type="button"
               onClick={() => markStepAndNext(activeModule.id, true)}
-              className="px-4 py-2 rounded-md bg-[#1da851] hover:bg-[#178c43] text-white text-xs font-medium cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-[#1da851] hover:bg-[#178c43] text-white text-xs font-medium cursor-pointer"
             >
-              Open Customer Chats
+              <WhatsAppLogoIcon size={14} />
+              <span>Open Customer Chats</span>
             </button>
           </div>
         </div>
