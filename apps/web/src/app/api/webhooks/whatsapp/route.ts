@@ -4,7 +4,11 @@ import { getSetupStatus } from "@cc/auth";
 import { verifyMetaWebhookSignature } from "@cc/connections";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
 import { socketHub } from "@cc/sockets";
-import { processInboundAutomations } from "@cc/workers";
+import {
+  applyWhatsAppMessageReceipt,
+  markPriorOutboundMessagesRead,
+  processInboundAutomations,
+} from "@cc/workers";
 
 export const dynamic = "force-dynamic";
 
@@ -140,6 +144,9 @@ export async function POST(req: Request) {
           });
         }
 
+        // Customer replied -> any earlier outbound messages in this thread were clearly read
+        await markPriorOutboundMessagesRead(convId);
+
         await conv.execute({
           sql: `INSERT INTO messages (
             id, conversation_id, direction, sender_type, sender_name, message_type,
@@ -165,16 +172,21 @@ export async function POST(req: Request) {
         socketHub.emit("message:new", { conversationId: convId, customerName: contactName });
       }
 
-      // 2. Delivery & Read Receipts
+      // 2. Monotonic Delivery & Read Receipts (never downgrades READ -> DELIVERED or DELIVERED -> SENT)
       for (const st of val?.statuses || []) {
         const waId = String(st?.id || "");
-        const nextStatus = String(st?.status || "").toUpperCase();
-        if (waId && ["SENT", "DELIVERED", "READ", "FAILED"].includes(nextStatus)) {
-          await conv.execute({
-            sql: `UPDATE messages SET delivery_status = ? WHERE wa_message_id = ?`,
-            args: [nextStatus, waId],
+        const rawStatus = String(st?.status || "").toUpperCase();
+        if (
+          waId &&
+          (rawStatus === "SENT" ||
+            rawStatus === "DELIVERED" ||
+            rawStatus === "READ" ||
+            rawStatus === "FAILED")
+        ) {
+          await applyWhatsAppMessageReceipt({
+            waMessageId: waId,
+            status: rawStatus,
           });
-          socketHub.emit("message:status", { waMessageId: waId, status: nextStatus });
         }
       }
     }

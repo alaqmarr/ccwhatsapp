@@ -31,6 +31,7 @@ import {
   TableRowsSkeleton,
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
+  WhatsAppMessageTicks,
 } from "@cc/ui";
 
 type HeaderType = "NONE" | "TEXT" | "IMAGE" | "VIDEO" | "DOCUMENT" | "LOCATION";
@@ -1910,11 +1911,18 @@ export default function TemplatesStudioPage() {
                             </div>
                           )}
 
-                          <div className="text-right text-[10px] text-[#667781]">
-                            {new Date().toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
+                          <div className="flex items-center justify-end gap-1.5 text-[10px] text-[#667781]">
+                            <span>
+                              {new Date().toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </span>
+                            <WhatsAppMessageTicks
+                              status="READ"
+                              showLabel
+                              size={13}
+                            />
                           </div>
                         </div>
 

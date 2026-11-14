@@ -7,8 +7,10 @@ import { socketHub } from "@cc/sockets";
 import {
   checkAndEscalateWaitingChats,
   ensureBackgroundWorkersRunning,
+  markPriorOutboundMessagesRead,
   processInboundAutomations,
   recordDualPricingLedgerEntry,
+  scheduleSandboxDeliveryReceipt,
   type BillingMessageCategory,
 } from "@cc/workers";
 import { getCurrentUser } from "@/lib/session";
@@ -34,47 +36,75 @@ export async function GET(req: Request) {
   const acrioOnly = searchParams.get("acrio") === "1";
   const mineOnly = searchParams.get("mine") === "1";
 
-  const res = await conv.execute(
-    `SELECT * FROM conversations ORDER BY
-      CASE WHEN status != 'RESOLVED' AND waiting_since IS NOT NULL THEN 0
-           WHEN status != 'RESOLVED' THEN 1
-           ELSE 2 END,
-      last_message_at DESC`
-  );
+  const [res, latestMsgRes] = await Promise.all([
+    conv.execute(
+      `SELECT * FROM conversations ORDER BY
+        CASE WHEN status != 'RESOLVED' AND waiting_since IS NOT NULL THEN 0
+             WHEN status != 'RESOLVED' THEN 1
+             ELSE 2 END,
+        last_message_at DESC`
+    ),
+    conv.execute(
+      `SELECT conversation_id, direction, delivery_status
+       FROM messages
+       WHERE direction IN ('INBOUND', 'OUTBOUND')
+       ORDER BY created_at DESC, rowid DESC`
+    ),
+  ]);
 
-  let items = res.rows.map((r) => ({
-    id: String(r.id),
-    customerPhone: String(r.customer_phone),
-    customerName: String(r.customer_name),
-    customerId: r.customer_id ? String(r.customer_id) : null,
-    status: String(r.status),
-    priority: String(r.priority),
-    smartCategory: String(r.smart_category),
-    assignedStaffId: r.assigned_staff_id ? String(r.assigned_staff_id) : null,
-    assignedStaffName: r.assigned_staff_name ? String(r.assigned_staff_name) : null,
-    assignedTeamId: r.assigned_team_id ? String(r.assigned_team_id) : null,
-    assignedTeamName: r.assigned_team_name ? String(r.assigned_team_name) : null,
-    escalationLevel: String(r.escalation_level || "P0"),
-    waitingSince: r.waiting_since ? String(r.waiting_since) : null,
-    lastResponseSeconds:
-      r.last_response_seconds !== null && r.last_response_seconds !== undefined
-        ? Number(r.last_response_seconds)
-        : null,
-    escalatedAt: r.escalated_at ? String(r.escalated_at) : null,
-    unreadCount: Number(r.unread_count ?? 0),
-    lastMessagePreview: String(r.last_message_preview || ""),
-    lastMessageAt: String(r.last_message_at),
-    windowExpiresAt: r.window_expires_at ? String(r.window_expires_at) : null,
-    resolutionSummary: r.resolution_summary ? String(r.resolution_summary) : null,
-    resolvedByName: r.resolved_by_name ? String(r.resolved_by_name) : null,
-    tags: (() => {
-      try {
-        return JSON.parse(String(r.tags_json || "[]"));
-      } catch {
-        return [];
-      }
-    })(),
-  }));
+  const latestByConv = new Map<
+    string,
+    { direction: string; deliveryStatus: string }
+  >();
+  for (const m of latestMsgRes.rows) {
+    const cid = String(m.conversation_id);
+    if (!latestByConv.has(cid)) {
+      latestByConv.set(cid, {
+        direction: String(m.direction),
+        deliveryStatus: String(m.delivery_status || "SENT"),
+      });
+    }
+  }
+
+  let items = res.rows.map((r) => {
+    const cid = String(r.id);
+    const latest = latestByConv.get(cid);
+    return {
+      id: cid,
+      customerPhone: String(r.customer_phone),
+      customerName: String(r.customer_name),
+      customerId: r.customer_id ? String(r.customer_id) : null,
+      status: String(r.status),
+      priority: String(r.priority),
+      smartCategory: String(r.smart_category),
+      assignedStaffId: r.assigned_staff_id ? String(r.assigned_staff_id) : null,
+      assignedStaffName: r.assigned_staff_name ? String(r.assigned_staff_name) : null,
+      assignedTeamId: r.assigned_team_id ? String(r.assigned_team_id) : null,
+      assignedTeamName: r.assigned_team_name ? String(r.assigned_team_name) : null,
+      escalationLevel: String(r.escalation_level || "P0"),
+      waitingSince: r.waiting_since ? String(r.waiting_since) : null,
+      lastResponseSeconds:
+        r.last_response_seconds !== null && r.last_response_seconds !== undefined
+          ? Number(r.last_response_seconds)
+          : null,
+      escalatedAt: r.escalated_at ? String(r.escalated_at) : null,
+      unreadCount: Number(r.unread_count ?? 0),
+      lastMessagePreview: String(r.last_message_preview || ""),
+      lastMessageAt: String(r.last_message_at),
+      lastMessageDirection: latest?.direction || null,
+      lastMessageStatus: latest?.deliveryStatus || null,
+      windowExpiresAt: r.window_expires_at ? String(r.window_expires_at) : null,
+      resolutionSummary: r.resolution_summary ? String(r.resolution_summary) : null,
+      resolvedByName: r.resolved_by_name ? String(r.resolved_by_name) : null,
+      tags: (() => {
+        try {
+          return JSON.parse(String(r.tags_json || "[]"));
+        } catch {
+          return [];
+        }
+      })(),
+    };
+  });
 
   if (statusFilter !== "ALL") {
     items = items.filter((c) => c.status === statusFilter);
@@ -242,14 +272,19 @@ export async function POST(req: Request) {
 
   let deliveryStatus = "DELIVERED";
   let waMessageId: string | null = null;
+  let sandboxMode = false;
   if (direction === "OUTBOUND") {
     const sendRes = await sendWhatsAppCloudMessage({
       toPhone: phoneCheck.e164,
       bodyText: text,
       templateName,
+      simulateAsyncDelivery: true,
     });
     deliveryStatus = sendRes.deliveryStatus;
     waMessageId = sendRes.waMessageId;
+    sandboxMode = sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR";
+  } else {
+    await markPriorOutboundMessagesRead(convId);
   }
 
   const templateCategory: BillingMessageCategory =
@@ -280,6 +315,14 @@ export async function POST(req: Request) {
       nowIso,
     ],
   });
+
+  if (direction === "OUTBOUND" && sandboxMode && waMessageId) {
+    scheduleSandboxDeliveryReceipt({
+      conversationId: convId,
+      messageId: msgId,
+      waMessageId,
+    });
+  }
 
   // Charge ONLY if an outbound Template message was sent! Regular chat is ₹0.00 (Free).
   if (isTemplate) {

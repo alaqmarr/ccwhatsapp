@@ -134,6 +134,7 @@ export async function sendWhatsAppCloudMessage(params: {
   templateName?: string;
   languageCode?: string;
   templateComponents?: Record<string, unknown>[];
+  simulateAsyncDelivery?: boolean;
 }): Promise<OutboundWhatsAppSendResult> {
   const cfg = await loadMetaWhatsAppSetupConfig();
 
@@ -227,13 +228,13 @@ export async function sendWhatsAppCloudMessage(params: {
     }
   }
 
-  // Sandbox Simulator Mode: generates authentic wamid and simulates DELIVERED status
+  // Sandbox Simulator Mode: generates authentic wamid; interactive chat replies start as SENT and transition to DELIVERED
   const simulatedId = `wamid.sim_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
   return {
     ok: true,
     waMessageId: simulatedId,
     mode: "SANDBOX_SIMULATOR",
-    deliveryStatus: "DELIVERED",
+    deliveryStatus: params.simulateAsyncDelivery ? "SENT" : "DELIVERED",
   };
 }
 

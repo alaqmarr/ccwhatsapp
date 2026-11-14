@@ -1616,4 +1616,19 @@ async function seedInitialOperationalData(): Promise<void> {
       });
     }
   }
+
+  // Backfill read receipts: any outbound message followed by a newer inbound customer reply in the same chat was already read
+  await conv.execute(`
+    UPDATE messages
+    SET delivery_status = 'READ'
+    WHERE direction = 'OUTBOUND'
+      AND delivery_status IN ('SENDING', 'SENT', 'DELIVERED')
+      AND EXISTS (
+        SELECT 1
+        FROM messages m2
+        WHERE m2.conversation_id = messages.conversation_id
+          AND m2.direction = 'INBOUND'
+          AND m2.created_at > messages.created_at
+      )
+  `);
 }

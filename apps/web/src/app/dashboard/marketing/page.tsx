@@ -30,6 +30,7 @@ import {
   WHATSAPP_PUBLIC_DOMAIN,
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
+  WhatsAppMessageTicks,
 } from "@cc/ui";
 
 type PacingMode = "SAFE_STEADY" | "EXTRA_CAREFUL" | "WARMED_FAST";
@@ -1648,13 +1649,29 @@ export default function MarketingAndLinksPage() {
                             </div>
                           </td>
                           <td className="py-2.5 px-3">
-                            <span
-                              className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${getStatusBadgeStyle(
-                                r.status
-                              )}`}
-                            >
-                              {r.status}
-                            </span>
+                            {["QUEUED", "SENDING", "SENT", "DELIVERED", "READ", "FAILED"].includes(
+                              String(r.status).toUpperCase()
+                            ) ? (
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] ${getStatusBadgeStyle(
+                                  r.status
+                                )}`}
+                              >
+                                <WhatsAppMessageTicks
+                                  status={r.status}
+                                  showLabel
+                                  size={13}
+                                />
+                              </span>
+                            ) : (
+                              <span
+                                className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${getStatusBadgeStyle(
+                                  r.status
+                                )}`}
+                              >
+                                {r.status}
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 px-3 text-neutral-600">
                             {r.sentAt

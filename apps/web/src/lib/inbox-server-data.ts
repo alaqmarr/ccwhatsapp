@@ -34,6 +34,8 @@ export interface ConversationSummary {
   unreadCount: number;
   lastMessagePreview: string;
   lastMessageAt: string;
+  lastMessageDirection: string | null;
+  lastMessageStatus: string | null;
   windowExpiresAt: string | null;
   resolutionSummary: string | null;
   resolvedByName: string | null;
@@ -343,62 +345,95 @@ export async function getInitialInboxPayload(params: {
   const auth = getRawLibSqlClient("core_auth");
   const mkt = getRawLibSqlClient("marketing");
 
-  const [threadsRes, teamsRes, staffRes, templatesRes] = await Promise.all([
-    conv.execute(
-      `SELECT * FROM conversations ORDER BY
-        CASE WHEN status != 'RESOLVED' AND waiting_since IS NOT NULL THEN 0
-             WHEN status != 'RESOLVED' THEN 1
-             ELSE 2 END,
-        last_message_at DESC`
-    ),
-    conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
-    auth.execute(
-      `SELECT id, name, role, department
-       FROM users
-       WHERE status = 'ACTIVE' AND role != 'CLIENT'
-       ORDER BY name ASC`
-    ),
-    mkt.execute(
-      `SELECT id, name, category, header_text, body_text, cta_url
-       FROM templates
-       WHERE approval_status = 'APPROVED'
-       ORDER BY category ASC, name ASC`
-    ),
-  ]);
+  const [threadsRes, latestMsgRes, teamsRes, staffRes, templatesRes] =
+    await Promise.all([
+      conv.execute(
+        `SELECT * FROM conversations ORDER BY
+          CASE WHEN status != 'RESOLVED' AND waiting_since IS NOT NULL THEN 0
+               WHEN status != 'RESOLVED' THEN 1
+               ELSE 2 END,
+          last_message_at DESC`
+      ),
+      conv.execute(
+        `SELECT conversation_id, direction, delivery_status
+         FROM messages
+         WHERE direction IN ('INBOUND', 'OUTBOUND')
+         ORDER BY created_at DESC, rowid DESC`
+      ),
+      conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
+      auth.execute(
+        `SELECT id, name, role, department
+         FROM users
+         WHERE status = 'ACTIVE' AND role != 'CLIENT'
+         ORDER BY name ASC`
+      ),
+      mkt.execute(
+        `SELECT id, name, category, header_text, body_text, cta_url
+         FROM templates
+         WHERE approval_status = 'APPROVED'
+         ORDER BY category ASC, name ASC`
+      ),
+    ]);
 
-  const threads: ConversationSummary[] = threadsRes.rows.map((r) => ({
-    id: String(r.id),
-    customerPhone: String(r.customer_phone),
-    customerName: String(r.customer_name),
-    customerId: r.customer_id ? String(r.customer_id) : null,
-    status: String(r.status),
-    priority: String(r.priority),
-    smartCategory: String(r.smart_category),
-    assignedStaffId: r.assigned_staff_id ? String(r.assigned_staff_id) : null,
-    assignedStaffName: r.assigned_staff_name ? String(r.assigned_staff_name) : null,
-    assignedTeamId: r.assigned_team_id ? String(r.assigned_team_id) : null,
-    assignedTeamName: r.assigned_team_name ? String(r.assigned_team_name) : null,
-    escalationLevel: String(r.escalation_level || "P0"),
-    waitingSince: r.waiting_since ? String(r.waiting_since) : null,
-    lastResponseSeconds:
-      r.last_response_seconds !== null && r.last_response_seconds !== undefined
-        ? Number(r.last_response_seconds)
+  const latestByConv = new Map<
+    string,
+    { direction: string; deliveryStatus: string }
+  >();
+  for (const m of latestMsgRes.rows) {
+    const cid = String(m.conversation_id);
+    if (!latestByConv.has(cid)) {
+      latestByConv.set(cid, {
+        direction: String(m.direction),
+        deliveryStatus: String(m.delivery_status || "SENT"),
+      });
+    }
+  }
+
+  const threads: ConversationSummary[] = threadsRes.rows.map((r) => {
+    const cid = String(r.id);
+    const latest = latestByConv.get(cid);
+    return {
+      id: cid,
+      customerPhone: String(r.customer_phone),
+      customerName: String(r.customer_name),
+      customerId: r.customer_id ? String(r.customer_id) : null,
+      status: String(r.status),
+      priority: String(r.priority),
+      smartCategory: String(r.smart_category),
+      assignedStaffId: r.assigned_staff_id ? String(r.assigned_staff_id) : null,
+      assignedStaffName: r.assigned_staff_name
+        ? String(r.assigned_staff_name)
         : null,
-    escalatedAt: r.escalated_at ? String(r.escalated_at) : null,
-    unreadCount: Number(r.unread_count ?? 0),
-    lastMessagePreview: String(r.last_message_preview || ""),
-    lastMessageAt: String(r.last_message_at),
-    windowExpiresAt: r.window_expires_at ? String(r.window_expires_at) : null,
-    resolutionSummary: r.resolution_summary ? String(r.resolution_summary) : null,
-    resolvedByName: r.resolved_by_name ? String(r.resolved_by_name) : null,
-    tags: (() => {
-      try {
-        return JSON.parse(String(r.tags_json || "[]"));
-      } catch {
-        return [];
-      }
-    })(),
-  }));
+      assignedTeamId: r.assigned_team_id ? String(r.assigned_team_id) : null,
+      assignedTeamName: r.assigned_team_name
+        ? String(r.assigned_team_name)
+        : null,
+      escalationLevel: String(r.escalation_level || "P0"),
+      waitingSince: r.waiting_since ? String(r.waiting_since) : null,
+      lastResponseSeconds:
+        r.last_response_seconds !== null && r.last_response_seconds !== undefined
+          ? Number(r.last_response_seconds)
+          : null,
+      escalatedAt: r.escalated_at ? String(r.escalated_at) : null,
+      unreadCount: Number(r.unread_count ?? 0),
+      lastMessagePreview: String(r.last_message_preview || ""),
+      lastMessageAt: String(r.last_message_at),
+      lastMessageDirection: latest?.direction || null,
+      lastMessageStatus: latest?.deliveryStatus || null,
+      windowExpiresAt: r.window_expires_at ? String(r.window_expires_at) : null,
+      resolutionSummary: r.resolution_summary
+        ? String(r.resolution_summary)
+        : null,
+      resolvedByName: r.resolved_by_name ? String(r.resolved_by_name) : null,
+      tags: (() => {
+        try {
+          return JSON.parse(String(r.tags_json || "[]"));
+        } catch {
+          return [];
+        }
+      })(),
+    };
+  });
 
   const teams: TeamOption[] = teamsRes.rows.map((t) => ({
     id: String(t.id),

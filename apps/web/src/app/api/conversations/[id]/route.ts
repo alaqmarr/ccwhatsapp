@@ -13,8 +13,10 @@ import { socketHub } from "@cc/sockets";
 import { listCustomAdminLinks, rememberWhatsAppCache } from "@cc/storage";
 import {
   checkAndEscalateWaitingChats,
+  markPriorOutboundMessagesRead,
   processInboundAutomations,
   recordDualPricingLedgerEntry,
+  scheduleSandboxDeliveryReceipt,
   smartAssignConversation,
   type BillingMessageCategory,
 } from "@cc/workers";
@@ -229,6 +231,7 @@ export async function POST(
       toPhone: customerPhone,
       bodyText: text,
       templateName,
+      simulateAsyncDelivery: true,
     });
 
     let responseSeconds: number | null =
@@ -299,7 +302,7 @@ export async function POST(
       "write"
     );
 
-    if (isTemplate) {
+    if (sendRes.ok && isTemplate) {
       await recordDualPricingLedgerEntry({
         messageId: msgId,
         conversationId: id,
@@ -309,13 +312,30 @@ export async function POST(
       });
     }
 
+    if (sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR") {
+      scheduleSandboxDeliveryReceipt({
+        conversationId: id,
+        messageId: msgId,
+        waMessageId: sendRes.waMessageId,
+      });
+    }
+
     socketHub.emit("message:new", { conversationId: id, senderName: user.name, text });
     return NextResponse.json({
-      ok: true,
+      ok: sendRes.ok,
       messageId: msgId,
+      waMessageId: sendRes.waMessageId,
+      deliveryStatus: sendRes.deliveryStatus,
       mode: sendRes.mode,
-      billed: isTemplate,
+      billed: sendRes.ok && isTemplate,
+      error: sendRes.error,
     });
+  }
+
+  // 1b. Simulate Customer Read Receipt (marks all prior outbound messages in this thread as READ)
+  if (action === "simulate_customer_read") {
+    const updatedCount = await markPriorOutboundMessagesRead(id);
+    return NextResponse.json({ ok: true, updatedCount });
   }
 
   // 2. Private Internal Team Note (never sent to customer, ₹0.00 Free, keeps wait timer intact)

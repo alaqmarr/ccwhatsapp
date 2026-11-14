@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link";
 import {
   Check,
-  CheckCheck,
   Clock,
   ExternalLink,
   FileText,
@@ -30,6 +29,7 @@ import {
   RightDrawerSkeleton,
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
+  WhatsAppMessageTicks,
 } from "@cc/ui";
 import type {
   ApprovedTemplateOption,
@@ -365,9 +365,61 @@ export function InboxClient({
         void fetchAndCacheDetail(selectedIdRef.current, false);
       }
     };
+    const handleStatusEvent = (ev: MessageEvent) => {
+      try {
+        const payload = JSON.parse(String(ev.data || "{}"));
+        const targetConvId = payload.conversationId
+          ? String(payload.conversationId)
+          : null;
+        const nextStatus = payload.status ? String(payload.status) : null;
+        const targetMsgId = payload.messageId ? String(payload.messageId) : null;
+        const markAllRead = Boolean(payload.markAllOutboundRead);
+
+        if (targetConvId && nextStatus) {
+          const cached = detailCacheRef.current.get(targetConvId);
+          if (cached) {
+            const patchedMessages = cached.messages.map((m) => {
+              if (m.direction !== "OUTBOUND") return m;
+              if (
+                markAllRead &&
+                (m.deliveryStatus === "SENDING" ||
+                  m.deliveryStatus === "SENT" ||
+                  m.deliveryStatus === "DELIVERED")
+              ) {
+                return { ...m, deliveryStatus: "READ" };
+              }
+              if (targetMsgId && m.id === targetMsgId) {
+                return { ...m, deliveryStatus: nextStatus };
+              }
+              return m;
+            });
+            const nextCached: ConversationDetailBundle = {
+              ...cached,
+              messages: patchedMessages,
+            };
+            detailCacheRef.current.set(targetConvId, nextCached);
+            if (selectedIdRef.current === targetConvId) {
+              setDetail(nextCached);
+            }
+          }
+
+          setThreads((prev) =>
+            prev.map((t) =>
+              t.id === targetConvId && t.lastMessageDirection === "OUTBOUND"
+                ? { ...t, lastMessageStatus: nextStatus }
+                : t
+            )
+          );
+        }
+      } catch {
+        // Ignore malformed SSE event payload
+      }
+      refresh();
+    };
+
     es.addEventListener("message:new", refresh);
     es.addEventListener("note:new", refresh);
-    es.addEventListener("message:status", refresh);
+    es.addEventListener("message:status", handleStatusEvent as EventListener);
     es.addEventListener("conversation:resolved", refresh);
     es.addEventListener("conversation:assigned", refresh);
     es.addEventListener("conversation:escalated", refresh);
@@ -474,6 +526,16 @@ export function InboxClient({
       ? formatWaitingDuration(activeConv.waitingSince, nowMs)
       : null;
 
+  const hasUnreadOutboundByCustomer = useMemo(
+    () =>
+      messages.some(
+        (m) =>
+          m.direction === "OUTBOUND" &&
+          (m.deliveryStatus === "SENT" || m.deliveryStatus === "DELIVERED")
+      ),
+    [messages]
+  );
+
   async function handleComposerSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedId || !replyText.trim() || !detail) return;
@@ -483,7 +545,7 @@ export function InboxClient({
     setSending(true);
     setReplyText("");
 
-    // Optimistic UI append at 0ms so there is zero waiting or screen jump!
+    // Optimistic UI append at 0ms: starts as SENDING (clock + "Sending") -> SENT (1 tick) -> DELIVERED (2 grey ticks) -> READ (2 blue ticks)
     const tempId = `optimistic_${Date.now()}`;
     const nowIso = new Date().toISOString();
     const optimisticMsg: ChatMessage =
@@ -515,7 +577,7 @@ export function InboxClient({
               composerMode === "TEMPLATE" && activeTemplate
                 ? activeTemplate.name
                 : null,
-            deliveryStatus: "SENT",
+            deliveryStatus: "SENDING",
             createdAt: nowIso,
           };
 
@@ -551,6 +613,55 @@ export function InboxClient({
     setDetail(optimisticBundle);
     detailCacheRef.current.set(currentConvId, optimisticBundle);
 
+    if (composerMode !== "NOTE") {
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.id === currentConvId
+            ? {
+                ...t,
+                lastMessagePreview: textToSend.slice(0, 140),
+                lastMessageAt: nowIso,
+                lastMessageDirection: "OUTBOUND",
+                lastMessageStatus: "SENDING",
+                waitingSince: null,
+              }
+            : t
+        )
+      );
+    }
+
+    const patchOptimisticReceipt = (
+      nextId: string,
+      nextDeliveryStatus: string
+    ) => {
+      const cur = detailCacheRef.current.get(currentConvId);
+      if (cur) {
+        const nextCur: ConversationDetailBundle = {
+          ...cur,
+          messages: cur.messages.map((m) =>
+            m.id === tempId
+              ? { ...m, id: nextId, deliveryStatus: nextDeliveryStatus }
+              : m
+          ),
+        };
+        detailCacheRef.current.set(currentConvId, nextCur);
+        if (selectedIdRef.current === currentConvId) {
+          setDetail(nextCur);
+        }
+      }
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.id === currentConvId
+            ? {
+                ...t,
+                lastMessageDirection: "OUTBOUND",
+                lastMessageStatus: nextDeliveryStatus,
+              }
+            : t
+        )
+      );
+    };
+
     try {
       if (composerMode === "NOTE") {
         await fetch(`/api/conversations/${currentConvId}`, {
@@ -563,7 +674,7 @@ export function InboxClient({
         });
         showToast("Internal team note saved (Free).");
       } else if (composerMode === "TEMPLATE" && activeTemplate) {
-        await fetch(`/api/conversations/${currentConvId}`, {
+        const res = await fetch(`/api/conversations/${currentConvId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -574,12 +685,22 @@ export function InboxClient({
             billingCategory: activeTemplate.category,
           }),
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          patchOptimisticReceipt(data.messageId || tempId, "FAILED");
+          showToast(data.error || "Template failed to send.");
+          return;
+        }
+        patchOptimisticReceipt(
+          String(data.messageId || tempId),
+          String(data.deliveryStatus || "SENT")
+        );
         const rateLabel =
           activeTemplate.category === "MARKETING" ? "₹0.95" : "₹0.30";
         showToast(`Template sent (${rateLabel}).`);
         setComposerMode("REPLY");
       } else {
-        await fetch(`/api/conversations/${currentConvId}`, {
+        const res = await fetch(`/api/conversations/${currentConvId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -588,14 +709,43 @@ export function InboxClient({
             messageType: "TEXT",
           }),
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          patchOptimisticReceipt(data.messageId || tempId, "FAILED");
+          showToast(data.error || "Message failed to send.");
+          return;
+        }
+        patchOptimisticReceipt(
+          String(data.messageId || tempId),
+          String(data.deliveryStatus || "SENT")
+        );
       }
       await Promise.all([
         fetchAndCacheDetail(currentConvId, false),
         refreshThreadsSilently(),
       ]);
+    } catch {
+      if (composerMode !== "NOTE") {
+        patchOptimisticReceipt(tempId, "FAILED");
+        showToast("Network error. Message marked Failed.");
+      }
     } finally {
       setSending(false);
     }
+  }
+
+  async function handleSimulateCustomerRead() {
+    if (!selectedId) return;
+    await fetch(`/api/conversations/${selectedId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "simulate_customer_read" }),
+    });
+    showToast("Marked outbound messages as Read by customer.");
+    await Promise.all([
+      fetchAndCacheDetail(selectedId, false),
+      refreshThreadsSilently(),
+    ]);
   }
 
   async function handleQuickNoteSave(e: React.FormEvent) {
@@ -1028,8 +1178,17 @@ export function InboxClient({
                     </div>
 
                     <div className="flex items-center justify-between gap-2 mt-0.5">
-                      <p className="text-xs text-[#667781] truncate">
-                        {t.lastMessagePreview || t.customerPhone}
+                      <p className="text-xs text-[#667781] truncate flex items-center gap-1 min-w-0">
+                        {t.lastMessageDirection === "OUTBOUND" && (
+                          <WhatsAppMessageTicks
+                            status={t.lastMessageStatus || "SENT"}
+                            showLabel={false}
+                            size={13}
+                          />
+                        )}
+                        <span className="truncate">
+                          {t.lastMessagePreview || t.customerPhone}
+                        </span>
                       </p>
                       {t.unreadCount > 0 && (
                         <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#25d366] text-white text-[10px] font-bold flex items-center justify-center shrink-0">
@@ -1208,8 +1367,23 @@ export function InboxClient({
                 </div>
               </div>
 
-              {/* Right Header Actions: ACRIO Takeover / Sales Team / Assign / Resolve */}
+              {/* Right Header Actions: ACRIO Takeover / Sales Team / Assign / Read Test / Resolve */}
               <div className="flex flex-wrap items-center gap-1.5">
+                {hasUnreadOutboundByCustomer && (
+                  <button
+                    type="button"
+                    onClick={handleSimulateCustomerRead}
+                    title="Simulate customer reading your messages (blue Read receipt)"
+                    className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-sky-50 text-[11px] font-medium text-[#0088cc] cursor-pointer"
+                  >
+                    <WhatsAppMessageTicks
+                      status="READ"
+                      showLabel={false}
+                      size={13}
+                    />
+                    <span>Mark Read</span>
+                  </button>
+                )}
                 {activeConv.status !== "RESOLVED" && isAcrioHandling ? (
                   <>
                     <button
@@ -1432,7 +1606,7 @@ export function InboxClient({
                         {m.body}
                       </p>
 
-                      <div className="flex items-center justify-end gap-1 mt-1 text-[10.5px] text-[#667781]">
+                      <div className="flex items-center justify-end gap-1.5 mt-1 text-[10.5px] text-[#667781]">
                         <span>
                           {new Date(m.createdAt).toLocaleTimeString([], {
                             hour: "2-digit",
@@ -1440,12 +1614,10 @@ export function InboxClient({
                           })}
                         </span>
                         {isOutbound && (
-                          <CheckCheck
-                            className={`w-3.5 h-3.5 ${
-                              m.deliveryStatus === "READ"
-                                ? "text-[#53bdeb]"
-                                : "text-[#667781]"
-                            }`}
+                          <WhatsAppMessageTicks
+                            status={m.deliveryStatus}
+                            showLabel
+                            size={14}
                           />
                         )}
                       </div>

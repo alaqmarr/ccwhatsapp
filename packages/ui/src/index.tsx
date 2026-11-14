@@ -381,3 +381,164 @@ export function ElementErrorState({
     </div>
   );
 }
+
+// ============================================================================
+// WHATSAPP DELIVERY & READ TICKS (Single, Double Grey, Double Blue + Status Label)
+// ============================================================================
+
+export type WhatsAppDeliveryStage =
+  | "SENDING"
+  | "SENT"
+  | "DELIVERED"
+  | "READ"
+  | "FAILED";
+
+export function normalizeWhatsAppDeliveryStatus(
+  raw?: string | null
+): WhatsAppDeliveryStage {
+  const s = String(raw || "SENT").trim().toUpperCase();
+  if (s === "SENDING" || s === "QUEUED" || s === "PENDING") return "SENDING";
+  if (s === "FAILED" || s === "UNDELIVERED" || s === "ERROR") return "FAILED";
+  if (s === "READ" || s === "SEEN" || s === "PLAYED") return "READ";
+  if (s === "DELIVERED") return "DELIVERED";
+  return "SENT";
+}
+
+export function WhatsAppMessageTicks({
+  status,
+  showLabel = true,
+  size = 15,
+}: {
+  status?: string | null;
+  showLabel?: boolean;
+  size?: number;
+}) {
+  const stage = normalizeWhatsAppDeliveryStatus(status);
+
+  if (stage === "SENDING") {
+    return (
+      <span
+        title="Sending message..."
+        aria-label="Sending"
+        className="inline-flex items-center gap-1 text-[#667781] shrink-0"
+      >
+        <svg
+          width={Math.max(11, size - 2)}
+          height={Math.max(11, size - 2)}
+          viewBox="0 0 16 16"
+          fill="none"
+          aria-hidden="true"
+        >
+          <circle
+            cx="8"
+            cy="8"
+            r="6.2"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M8 4.6V8.2L10.4 9.6"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        {showLabel && <span className="leading-none">Sending</span>}
+      </span>
+    );
+  }
+
+  if (stage === "FAILED") {
+    return (
+      <span
+        title="Message failed to deliver"
+        aria-label="Failed"
+        className="inline-flex items-center gap-1 text-red-600 font-semibold shrink-0"
+      >
+        <svg
+          width={Math.max(12, size - 2)}
+          height={Math.max(12, size - 2)}
+          viewBox="0 0 16 16"
+          fill="none"
+          aria-hidden="true"
+        >
+          <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.6" />
+          <path
+            d="M8 4.8V8.6"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <circle cx="8" cy="11.2" r="0.9" fill="currentColor" />
+        </svg>
+        {showLabel && <span className="leading-none">Failed</span>}
+      </span>
+    );
+  }
+
+  if (stage === "SENT") {
+    return (
+      <span
+        title="Sent (1 tick)"
+        aria-label="Sent"
+        className="inline-flex items-center gap-1 text-[#667781] shrink-0"
+      >
+        <svg
+          width={size}
+          height={Math.round(size * 0.78)}
+          viewBox="0 0 16 12"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M13.6 2.1L5.8 9.9L2.4 6.5"
+            stroke="currentColor"
+            strokeWidth="1.85"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        {showLabel && <span className="leading-none">Sent</span>}
+      </span>
+    );
+  }
+
+  const isRead = stage === "READ";
+  const label = isRead ? "Read" : "Delivered";
+
+  return (
+    <span
+      title={isRead ? "Read by customer" : "Delivered to customer"}
+      aria-label={label}
+      className={`inline-flex items-center gap-1 shrink-0 ${
+        isRead ? "text-[#0088cc] font-medium" : "text-[#54656f]"
+      }`}
+    >
+      <svg
+        width={Math.round(size * 1.24)}
+        height={Math.round(size * 0.78)}
+        viewBox="0 0 20 12"
+        fill="none"
+        aria-hidden="true"
+        className={isRead ? "text-[#0095f6]" : "text-[#54656f]"}
+      >
+        <path
+          d="M13.2 2.1L5.4 9.9L2.0 6.5"
+          stroke="currentColor"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M18.0 2.1L10.2 9.9L8.4 8.1"
+          stroke="currentColor"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      {showLabel && <span className="leading-none">{label}</span>}
+    </span>
+  );
+}
