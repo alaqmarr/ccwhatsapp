@@ -153,7 +153,51 @@ function formatRelationType(raw: string): string {
   }
 }
 
+function getChatWindowStatus(
+  windowExpiresAt: string | null,
+  messages: ChatMessage[],
+  nowMs: number
+): { expired: boolean; label: string } {
+  let targetMs = windowExpiresAt ? new Date(windowExpiresAt).getTime() : NaN;
+
+  const lastInbound = [...messages]
+    .reverse()
+    .find((m) => m.direction === "INBOUND");
+  if (lastInbound) {
+    const fromInbound =
+      new Date(lastInbound.createdAt).getTime() + 24 * 60 * 60 * 1000;
+    if (Number.isNaN(targetMs) || fromInbound > targetMs) {
+      targetMs = fromInbound;
+    }
+  }
+
+  if (Number.isNaN(targetMs)) {
+    return { expired: true, label: "Chat window expired" };
+  }
+
+  const diffMs = targetMs - nowMs;
+  if (diffMs <= 0) {
+    return { expired: true, label: "Chat window expired" };
+  }
+
+  const totalMinutes = Math.ceil(diffMs / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+
+  if (hours > 0) {
+    return {
+      expired: false,
+      label: `Chat window expires in ${hours}h ${mins}m`,
+    };
+  }
+  return {
+    expired: false,
+    label: `Chat window expires in ${Math.max(1, mins)}m`,
+  };
+}
+
 export default function InboxDashboardPage() {
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [threads, setThreads] = useState<ConversationSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -298,6 +342,11 @@ export default function InboxDashboardPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const es = new EventSource("/api/realtime/stream");
@@ -655,10 +704,27 @@ export default function InboxDashboardPage() {
                   </span>
                 </div>
                 <div className="flex items-center gap-3 text-xs text-neutral-500 mt-0.5">
-                  <span className="inline-flex items-center gap-1">
-                    <Clock className="w-3 h-3 text-emerald-600" />
-                    24-hour reply window open
-                  </span>
+                  {(() => {
+                    const win = getChatWindowStatus(
+                      activeConv.windowExpiresAt,
+                      messages,
+                      nowMs
+                    );
+                    return (
+                      <span
+                        className={`inline-flex items-center gap-1 ${
+                          win.expired ? "text-amber-700 font-medium" : "text-neutral-600"
+                        }`}
+                      >
+                        <Clock
+                          className={`w-3 h-3 ${
+                            win.expired ? "text-amber-600" : "text-emerald-600"
+                          }`}
+                        />
+                        {win.label}
+                      </span>
+                    );
+                  })()}
                   {activeConv.resolutionSummary && (
                     <span className="text-emerald-700 truncate max-w-md">
                       Note: {activeConv.resolutionSummary}
