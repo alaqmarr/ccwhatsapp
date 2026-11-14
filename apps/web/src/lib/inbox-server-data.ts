@@ -53,6 +53,29 @@ export interface ChatMessage {
   templateName: string | null;
   deliveryStatus: string;
   createdAt: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface ConversationAssignmentItem {
+  id: string;
+  conversationId: string;
+  fromStaffId: string | null;
+  fromStaffName: string | null;
+  fromTeamName: string | null;
+  toStaffId: string | null;
+  toStaffName: string;
+  toTeamId: string | null;
+  toTeamName: string;
+  escalationLevel: string;
+  assignmentSource: string;
+  assignedByName: string;
+  reason: string;
+  assignedAt: string;
+  firstResponseAt: string | null;
+  firstResponseSeconds: number | null;
+  firstResponseMessageId: string | null;
+  endedAt: string | null;
+  outcome: string;
 }
 
 export interface CustomerProfile {
@@ -176,6 +199,7 @@ export interface ConversationDetailBundle {
     windowExpiresAt: string | null;
   };
   messages: ChatMessage[];
+  assignments?: ConversationAssignmentItem[];
   customer: CustomerProfile | null;
   orders: CustomerOrder[];
   relations: CustomerRelation[];
@@ -219,9 +243,13 @@ export async function getConversationDetailServer(
     });
   }
 
-  const [msgRes, custRes, ordersRes, relationsRes, customLinks] = await Promise.all([
+  const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
+      args: [conversationId],
+    }),
+    conv.execute({
+      sql: `SELECT * FROM conversation_assignments WHERE conversation_id = ? ORDER BY assigned_at DESC`,
       args: [conversationId],
     }),
     crm.execute({
@@ -248,17 +276,55 @@ export async function getConversationDetailServer(
     () => fetchWebsiteEnquiriesForCustomer(lookupKey)
   );
 
-  const messages: ChatMessage[] = msgRes.rows.map((m) => ({
-    id: String(m.id),
-    direction: String(m.direction),
-    senderType: String(m.sender_type),
-    senderName: String(m.sender_name),
-    messageType: String(m.message_type),
-    billingCategory: String(m.billing_category),
-    body: String(m.body),
-    templateName: m.template_name ? String(m.template_name) : null,
-    deliveryStatus: String(m.delivery_status),
-    createdAt: String(m.created_at),
+  const messages: ChatMessage[] = msgRes.rows.map((m) => {
+    let metadata: Record<string, unknown> | null = null;
+    if (m.metadata_json) {
+      try {
+        metadata = JSON.parse(String(m.metadata_json));
+      } catch {
+        metadata = null;
+      }
+    }
+    return {
+      id: String(m.id),
+      direction: String(m.direction),
+      senderType: String(m.sender_type),
+      senderName: String(m.sender_name),
+      messageType: String(m.message_type),
+      billingCategory: String(m.billing_category),
+      body: String(m.body),
+      templateName: m.template_name ? String(m.template_name) : null,
+      deliveryStatus: String(m.delivery_status),
+      createdAt: String(m.created_at),
+      metadata,
+    };
+  });
+
+  const assignments: ConversationAssignmentItem[] = assignRes.rows.map((a) => ({
+    id: String(a.id),
+    conversationId: String(a.conversation_id),
+    fromStaffId: a.from_staff_id ? String(a.from_staff_id) : null,
+    fromStaffName: a.from_staff_name ? String(a.from_staff_name) : null,
+    fromTeamName: a.from_team_name ? String(a.from_team_name) : null,
+    toStaffId: a.to_staff_id ? String(a.to_staff_id) : null,
+    toStaffName: String(a.to_staff_name || ""),
+    toTeamId: a.to_team_id ? String(a.to_team_id) : null,
+    toTeamName: String(a.to_team_name || ""),
+    escalationLevel: String(a.escalation_level || "P0"),
+    assignmentSource: String(a.assignment_source || "MANUAL_ASSIGN"),
+    assignedByName: String(a.assigned_by_name || "System"),
+    reason: String(a.reason || ""),
+    assignedAt: String(a.assigned_at),
+    firstResponseAt: a.first_response_at ? String(a.first_response_at) : null,
+    firstResponseSeconds:
+      a.first_response_seconds !== null && a.first_response_seconds !== undefined
+        ? Number(a.first_response_seconds)
+        : null,
+    firstResponseMessageId: a.first_response_message_id
+      ? String(a.first_response_message_id)
+      : null,
+    endedAt: a.ended_at ? String(a.ended_at) : null,
+    outcome: String(a.outcome || "ACTIVE"),
   }));
 
   const orders: CustomerOrder[] = ordersRes.rows.map((o) => ({
@@ -308,6 +374,7 @@ export async function getConversationDetailServer(
       windowExpiresAt: cRow.window_expires_at ? String(cRow.window_expires_at) : null,
     },
     messages,
+    assignments,
     customer: customerRow
       ? {
           id: String(customerRow.id),

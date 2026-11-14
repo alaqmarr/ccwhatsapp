@@ -7,8 +7,10 @@ import { socketHub } from "@cc/sockets";
 import {
   checkAndEscalateWaitingChats,
   ensureBackgroundWorkersRunning,
+  logConversationAssignment,
   markPriorOutboundMessagesRead,
   processInboundAutomations,
+  recordAssignedFirstResponse,
   recordDualPricingLedgerEntry,
   scheduleSandboxDeliveryReceipt,
   type BillingMessageCategory,
@@ -270,6 +272,43 @@ export async function POST(req: Request) {
     });
   }
 
+  const resetToAcrio = !isNew && direction === "INBOUND" && prevStatus === "RESOLVED";
+  if (direction === "INBOUND" && (isNew || resetToAcrio)) {
+    const assignIso = new Date(Math.max(0, new Date(nowIso).getTime() - 2)).toISOString();
+    await logConversationAssignment({
+      conversationId: convId,
+      customerPhone: phoneCheck.e164,
+      customerName,
+      toStaffId: "ACRIO",
+      toStaffName: "ACRIO",
+      toTeamId: null,
+      toTeamName: "System (ACRIO)",
+      escalationLevel: "P0",
+      assignmentSource: "INITIAL_SYSTEM",
+      assignedByName: "System",
+      reason: isNew
+        ? "Customer started a new WhatsApp chat"
+        : "Customer messaged after previous resolution",
+      assignedAt: assignIso,
+    });
+  } else if (direction === "OUTBOUND" && isNew) {
+    const assignIso = new Date(Math.max(0, new Date(nowIso).getTime() - 2)).toISOString();
+    await logConversationAssignment({
+      conversationId: convId,
+      customerPhone: phoneCheck.e164,
+      customerName,
+      toStaffId: user.id,
+      toStaffName: user.name,
+      toTeamId: "team_sales",
+      toTeamName: "Sales Team",
+      escalationLevel: "P0",
+      assignmentSource: "OUTBOUND_START",
+      assignedByName: user.name,
+      reason: "Staff initiated outbound WhatsApp chat",
+      assignedAt: assignIso,
+    });
+  }
+
   let deliveryStatus = "DELIVERED";
   let waMessageId: string | null = null;
   let sandboxMode = false;
@@ -279,6 +318,7 @@ export async function POST(req: Request) {
       bodyText: text,
       templateName,
       simulateAsyncDelivery: true,
+      forceSandbox: Boolean(body.forceSandbox),
     });
     deliveryStatus = sendRes.deliveryStatus;
     waMessageId = sendRes.waMessageId;
@@ -315,6 +355,18 @@ export async function POST(req: Request) {
       nowIso,
     ],
   });
+
+  if (direction === "OUTBOUND") {
+    await recordAssignedFirstResponse({
+      conversationId: convId,
+      responderId: user.id,
+      responderName: user.name,
+      responderTeamId: "team_sales",
+      responderTeamName: "Sales Team",
+      messageId: msgId,
+      respondedAt: nowIso,
+    });
+  }
 
   if (direction === "OUTBOUND" && sandboxMode && waMessageId) {
     scheduleSandboxDeliveryReceipt({

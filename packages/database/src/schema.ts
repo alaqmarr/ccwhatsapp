@@ -116,6 +116,30 @@ export const customLinksTable = sqliteTable("custom_links", {
   createdAt: text("created_at").notNull(),
 });
 
+export const conversationAssignmentsTable = sqliteTable("conversation_assignments", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id").notNull(),
+  customerPhone: text("customer_phone").notNull().default(""),
+  customerName: text("customer_name").notNull().default(""),
+  fromStaffId: text("from_staff_id"),
+  fromStaffName: text("from_staff_name"),
+  fromTeamName: text("from_team_name"),
+  toStaffId: text("to_staff_id"),
+  toStaffName: text("to_staff_name").notNull(),
+  toTeamId: text("to_team_id"),
+  toTeamName: text("to_team_name").notNull(),
+  escalationLevel: text("escalation_level").notNull().default("P0"),
+  assignmentSource: text("assignment_source").notNull().default("MANUAL_ASSIGN"),
+  assignedByName: text("assigned_by_name").notNull().default("System"),
+  reason: text("reason").default(""),
+  assignedAt: text("assigned_at").notNull(),
+  firstResponseAt: text("first_response_at"),
+  firstResponseSeconds: integer("first_response_seconds"),
+  firstResponseMessageId: text("first_response_message_id"),
+  endedAt: text("ended_at"),
+  outcome: text("outcome").notNull().default("ACTIVE"), // ACTIVE | RESPONDED | ESCALATED | REASSIGNED | RESOLVED
+});
+
 // ============================================================================
 // 3. CRM_ORDERS.DB — Customers, Smart Categorisations, Orders & Past Relations
 // ============================================================================

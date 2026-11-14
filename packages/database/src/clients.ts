@@ -29,18 +29,121 @@ export const DATABASE_DESCRIPTIONS: Record<DatabaseDomain, string> = {
   queue_jobs: "Scheduled background tasks and broadcast queue",
 };
 
+let dotEnvLoadedForRoot: string | null = null;
+
+function parseAndPopulateDotEnvFile(filePath: string): void {
+  if (!fs.existsSync(filePath)) return;
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const key = line.slice(0, eq).trim();
+      if (!key) continue;
+      let val = line.slice(eq + 1).trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (!process.env[key] && val !== "") {
+        process.env[key] = val;
+      }
+    }
+  } catch {
+    // Non-blocking
+  }
+}
+
 export function resolveMonorepoRoot(): string {
+  let root = process.cwd();
   if (process.env.CCWHATSAPP_ROOT) {
-    return path.resolve(process.env.CCWHATSAPP_ROOT);
+    root = path.resolve(process.env.CCWHATSAPP_ROOT);
+  } else if (root.endsWith(path.join("apps", "web"))) {
+    root = path.resolve(root, "..", "..");
+  } else if (fs.existsSync(path.join(root, "ccwhatsapp"))) {
+    root = path.join(root, "ccwhatsapp");
   }
-  const cwd = process.cwd();
-  if (cwd.endsWith(path.join("apps", "web"))) {
-    return path.resolve(cwd, "..", "..");
+
+  if (dotEnvLoadedForRoot !== root) {
+    dotEnvLoadedForRoot = root;
+    parseAndPopulateDotEnvFile(path.join(root, ".env.local"));
+    parseAndPopulateDotEnvFile(path.join(root, ".env"));
+    parseAndPopulateDotEnvFile(path.join(root, ".env.production"));
   }
-  if (fs.existsSync(path.join(cwd, "ccwhatsapp"))) {
-    return path.join(cwd, "ccwhatsapp");
-  }
-  return cwd;
+
+  return root;
+}
+
+export interface EnvMetaWhatsAppConfig {
+  mode: "SANDBOX_SIMULATOR" | "LIVE_META_CLOUD";
+  businessPortfolioId: string;
+  wabaId: string;
+  phoneNumberId: string;
+  businessDisplayPhone: string;
+  verifiedName: string;
+  systemUserAccessToken: string;
+  webhookVerifyToken: string;
+  metaAppId: string;
+  metaAppSecret: string;
+  hasLiveCredentials: boolean;
+}
+
+export function resolveEnvMetaWhatsAppConfig(): EnvMetaWhatsAppConfig {
+  resolveMonorepoRoot();
+  const businessPortfolioId = (
+    process.env.META_BUSINESS_PORTFOLIO_ID ||
+    process.env.WHATSAPP_BUSINESS_PORTFOLIO_ID ||
+    ""
+  ).trim();
+  const wabaId = (
+    process.env.WHATSAPP_WABA_ID ||
+    process.env.WHATSAPP_MESSAGING_ACCOUNT_ID ||
+    ""
+  ).trim();
+  const phoneNumberId = (process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+  const systemUserAccessToken = (
+    process.env.WHATSAPP_SYSTEM_ACCESS_TOKEN ||
+    process.env.FACEBOOK_SYSTEM_ACCESS_TOKEN ||
+    ""
+  ).trim();
+  const businessDisplayPhone = (
+    process.env.WHATSAPP_DISPLAY_PHONE || "+91 73372 20568"
+  ).trim();
+  const verifiedName = (
+    process.env.WHATSAPP_VERIFIED_NAME ||
+    "Classic Concepts Acrylic Private Limited"
+  ).trim();
+  const webhookVerifyToken = (
+    process.env.WHATSAPP_VERIFY_TOKEN || "cc_whatsapp_verify_2026"
+  ).trim();
+  const metaAppId = (process.env.META_APP_ID || "").trim();
+  const metaAppSecret = (process.env.META_APP_SECRET || "").trim();
+  const hasLiveCredentials = Boolean(phoneNumberId && systemUserAccessToken);
+  const rawMode = (process.env.WHATSAPP_MODE || "").trim().toUpperCase();
+  const mode: "SANDBOX_SIMULATOR" | "LIVE_META_CLOUD" =
+    rawMode === "SANDBOX_SIMULATOR"
+      ? "SANDBOX_SIMULATOR"
+      : rawMode === "LIVE_META_CLOUD" || hasLiveCredentials
+      ? "LIVE_META_CLOUD"
+      : "SANDBOX_SIMULATOR";
+
+  return {
+    mode,
+    businessPortfolioId,
+    wabaId,
+    phoneNumberId,
+    businessDisplayPhone,
+    verifiedName,
+    systemUserAccessToken,
+    webhookVerifyToken,
+    metaAppId,
+    metaAppSecret,
+    hasLiveCredentials,
+  };
 }
 
 export function resolveDataDirectory(): string {
@@ -578,17 +681,31 @@ export async function fetchWebsiteEnquiriesForCustomer(
 }
 
 /**
- * Resolves a single shared Anthropic API key across:
- * 1. `core_auth.db` (`setup_state` key `ai_config`)
- * 2. Environment variables (`ANTHROPIC_API_KEY`, `ANTHROPIC_ADMIN_API_KEY`, `ANTHROPIC_CLIENT_API_KEY`)
- * 3. `classicconcepts/dev.db` (`SiteSetting.anthropicApiKey || anthropicAdminApiKey || anthropicClientApiKey`)
+ * Resolves the role-isolated Anthropic API key (`client` vs `admin`), locked to `claude-haiku-5-5`:
+ * 1. Environment variables (`ANTHROPIC_CLIENT_API_KEY` / `ANTHROPIC_ADMIN_API_KEY` from `.env` / `.env.production`)
+ * 2. `core_auth.db` (`setup_state` key `ai_config`)
+ * 3. `classicconcepts/dev.db` (`SiteSetting`)
  * 4. `.env` / `.env.local` in `classicconcepts`
  */
-export async function resolveSharedAnthropicApiKey(): Promise<{
+export async function resolveSharedAnthropicApiKey(
+  agentRole: "client" | "admin" = "client"
+): Promise<{
   apiKey: string;
-  source: "whatsapp_settings" | "env" | "classicconcepts_db" | "classicconcepts_env" | "none";
+  source: "env" | "whatsapp_settings" | "classicconcepts_db" | "classicconcepts_env" | "none";
 }> {
-  // 1. Check WhatsApp setup_state
+  resolveMonorepoRoot();
+
+  // 1. Check process.env role-specific key first (highest priority for .env deployments)
+  const roleEnvKey = (
+    agentRole === "admin"
+      ? process.env.ANTHROPIC_ADMIN_API_KEY || process.env.ANTHROPIC_API_KEY || ""
+      : process.env.ANTHROPIC_CLIENT_API_KEY || process.env.ANTHROPIC_API_KEY || ""
+  ).trim();
+  if (roleEnvKey.startsWith("sk-ant-")) {
+    return { apiKey: roleEnvKey, source: "env" };
+  }
+
+  // 2. Check WhatsApp setup_state
   try {
     const auth = getRawLibSqlClient("core_auth");
     const row = await auth.execute(
@@ -596,7 +713,11 @@ export async function resolveSharedAnthropicApiKey(): Promise<{
     );
     if (row.rows[0]?.value_json) {
       const parsed = JSON.parse(String(row.rows[0].value_json));
-      const key = String(parsed?.anthropicApiKey || "").trim();
+      const key = String(
+        agentRole === "admin"
+          ? parsed?.adminApiKey || parsed?.anthropicApiKey || ""
+          : parsed?.clientApiKey || parsed?.anthropicApiKey || ""
+      ).trim();
       if (key.startsWith("sk-ant-")) {
         return { apiKey: key, source: "whatsapp_settings" };
       }
@@ -605,18 +726,7 @@ export async function resolveSharedAnthropicApiKey(): Promise<{
     // Table may not be initialized yet
   }
 
-  // 2. Check process.env
-  const envKey = (
-    process.env.ANTHROPIC_API_KEY ||
-    process.env.ANTHROPIC_ADMIN_API_KEY ||
-    process.env.ANTHROPIC_CLIENT_API_KEY ||
-    ""
-  ).trim();
-  if (envKey.startsWith("sk-ant-")) {
-    return { apiKey: envKey, source: "env" };
-  }
-
-  // 3. Check classicconcepts SiteSetting table so one key works everywhere automatically
+  // 3. Check classicconcepts SiteSetting table
   try {
     const ccClient = getMainCatalogClient();
     if (ccClient) {
@@ -626,7 +736,9 @@ export async function resolveSharedAnthropicApiKey(): Promise<{
       const r = sRes.rows[0];
       if (r) {
         const dbKey = String(
-          r.anthropicApiKey || r.anthropicAdminApiKey || r.anthropicClientApiKey || ""
+          agentRole === "admin"
+            ? r.anthropicAdminApiKey || r.anthropicApiKey || ""
+            : r.anthropicClientApiKey || r.anthropicApiKey || ""
         ).trim();
         if (dbKey.startsWith("sk-ant-")) {
           return { apiKey: dbKey, source: "classicconcepts_db" };
@@ -647,12 +759,16 @@ export async function resolveSharedAnthropicApiKey(): Promise<{
       "C:/Users/DELL/Desktop/classicconcepts/.env",
       "C:/Users/DELL/Desktop/classicconcepts/.env.local",
     ];
+    const targetVar =
+      agentRole === "admin"
+        ? /ANTHROPIC_ADMIN_API_KEY\s*=\s*["']?(sk-ant-[A-Za-z0-9_-]+)["']?/
+        : /ANTHROPIC_CLIENT_API_KEY\s*=\s*["']?(sk-ant-[A-Za-z0-9_-]+)["']?/;
+    const fallbackVar =
+      /ANTHROPIC_API_KEY\s*=\s*["']?(sk-ant-[A-Za-z0-9_-]+)["']?/;
     for (const p of ccEnvPaths) {
       if (fs.existsSync(p)) {
         const content = fs.readFileSync(p, "utf8");
-        const match = content.match(
-          /ANTHROPIC(?:_ADMIN|_CLIENT)?_API_KEY\s*=\s*["']?(sk-ant-[A-Za-z0-9_-]+)["']?/
-        );
+        const match = content.match(targetVar) || content.match(fallbackVar);
         if (match?.[1]) {
           return { apiKey: match[1], source: "classicconcepts_env" };
         }
@@ -665,15 +781,51 @@ export async function resolveSharedAnthropicApiKey(): Promise<{
   return { apiKey: "", source: "none" };
 }
 
-export async function saveSharedAnthropicApiKey(apiKey: string): Promise<void> {
+export async function getAcrioKeysStatus(): Promise<{
+  clientConnected: boolean;
+  clientSource: string;
+  clientMasked: string;
+  adminConnected: boolean;
+  adminSource: string;
+  adminMasked: string;
+}> {
+  const [clientInfo, adminInfo] = await Promise.all([
+    resolveSharedAnthropicApiKey("client"),
+    resolveSharedAnthropicApiKey("admin"),
+  ]);
+  const mask = (k: string) =>
+    k ? `${k.slice(0, 11)}...${k.slice(-4)}` : "";
+  return {
+    clientConnected: Boolean(clientInfo.apiKey),
+    clientSource: clientInfo.source,
+    clientMasked: mask(clientInfo.apiKey),
+    adminConnected: Boolean(adminInfo.apiKey),
+    adminSource: adminInfo.source,
+    adminMasked: mask(adminInfo.apiKey),
+  };
+}
+
+export async function saveSharedAnthropicApiKey(
+  apiKey: string,
+  adminApiKey?: string
+): Promise<void> {
   const auth = getRawLibSqlClient("core_auth");
-  const clean = apiKey.trim();
+  const cleanClient = apiKey.trim();
+  const cleanAdmin = (adminApiKey || apiKey).trim();
   const now = new Date().toISOString();
   await auth.execute({
     sql: `INSERT INTO setup_state (key, value_json, updated_at)
           VALUES ('ai_config', ?, ?)
           ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
-    args: [JSON.stringify({ anthropicApiKey: clean, model: "claude-haiku-5-5" }), now],
+    args: [
+      JSON.stringify({
+        anthropicApiKey: cleanClient,
+        clientApiKey: cleanClient,
+        adminApiKey: cleanAdmin,
+        model: "claude-haiku-5-5",
+      }),
+      now,
+    ],
   });
 }
 

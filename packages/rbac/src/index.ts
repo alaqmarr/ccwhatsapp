@@ -25,6 +25,7 @@ export type Permission =
   | "links:use_custom_links"
   // Admin permissions
   | "inbox:assign_chats"
+  | "analytics:view"
   | "links:manage_custom_links"
   | "marketing:manage_lists"
   | "marketing:send_broadcasts"
@@ -47,6 +48,7 @@ const STAFF_PERMISSIONS: Permission[] = [
   "inbox:view",
   "inbox:reply",
   "inbox:smart_resolve",
+  "analytics:view",
   "acrio:use_chat_copilot",
   "crm:view_customer_360",
   "crm:manage_orders_notes",
@@ -92,6 +94,7 @@ const DEV_PERMISSIONS: Permission[] = [
 
 const CLIENT_PERMISSIONS: Permission[] = [
   "onboarding:view",
+  "analytics:view",
   "billing:view_client_pricing",
 ];
 

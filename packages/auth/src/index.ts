@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import {
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
+  resolveEnvMetaWhatsAppConfig,
 } from "@cc/database";
 import {
   type AccountStatus,
@@ -34,6 +35,8 @@ export interface AuthenticatedUser {
 
 export interface FacebookWhatsAppSetupConfig {
   mode: "SANDBOX_SIMULATOR" | "LIVE_META_CLOUD";
+  businessPortfolioId?: string;
+  verifiedName?: string;
   metaAppId: string;
   metaAppSecret: string;
   wabaId: string;
@@ -97,29 +100,68 @@ export async function getSetupStatus(): Promise<{
     args: [],
   });
 
+  const envMeta = resolveEnvMetaWhatsAppConfig();
   let facebookConfig: FacebookWhatsAppSetupConfig = {
-    mode: "SANDBOX_SIMULATOR",
-    metaAppId: "",
-    metaAppSecret: "",
-    wabaId: "",
-    phoneNumberId: "",
-    businessDisplayPhone: "+91 73372 22876",
-    systemUserAccessToken: "",
-    webhookVerifyToken: "cc_whatsapp_verify_2026",
+    mode: envMeta.mode,
+    businessPortfolioId: envMeta.businessPortfolioId,
+    verifiedName: envMeta.verifiedName,
+    metaAppId: envMeta.metaAppId,
+    metaAppSecret: envMeta.metaAppSecret,
+    wabaId: envMeta.wabaId,
+    phoneNumberId: envMeta.phoneNumberId,
+    businessDisplayPhone: envMeta.businessDisplayPhone || "+91 73372 20568",
+    systemUserAccessToken: envMeta.systemUserAccessToken,
+    webhookVerifyToken: envMeta.webhookVerifyToken || "cc_whatsapp_verify_2026",
     stepsCompleted: {
-      metaBusinessVerified: false,
-      whatsappAppCreated: false,
-      phoneRegistered: false,
-      webhookSubscribed: false,
-      systemTokenSaved: false,
+      metaBusinessVerified: Boolean(envMeta.businessPortfolioId || envMeta.wabaId),
+      whatsappAppCreated: envMeta.hasLiveCredentials,
+      phoneRegistered: Boolean(envMeta.phoneNumberId),
+      webhookSubscribed: envMeta.hasLiveCredentials,
+      systemTokenSaved: Boolean(envMeta.systemUserAccessToken),
     },
   };
 
   if (cfgRes.rows[0]?.value_json) {
     try {
+      const dbCfg = JSON.parse(String(cfgRes.rows[0].value_json));
       facebookConfig = {
         ...facebookConfig,
-        ...JSON.parse(String(cfgRes.rows[0].value_json)),
+        ...dbCfg,
+        mode:
+          envMeta.hasLiveCredentials && (!dbCfg.phoneNumberId || dbCfg.mode === "LIVE_META_CLOUD")
+            ? "LIVE_META_CLOUD"
+            : dbCfg.mode || facebookConfig.mode,
+        businessPortfolioId: dbCfg.businessPortfolioId || envMeta.businessPortfolioId,
+        verifiedName: dbCfg.verifiedName || envMeta.verifiedName,
+        metaAppId: dbCfg.metaAppId || envMeta.metaAppId,
+        metaAppSecret: dbCfg.metaAppSecret || envMeta.metaAppSecret,
+        wabaId: dbCfg.wabaId || envMeta.wabaId,
+        phoneNumberId: dbCfg.phoneNumberId || envMeta.phoneNumberId,
+        businessDisplayPhone:
+          !dbCfg.businessDisplayPhone || dbCfg.businessDisplayPhone === "+91 73372 22876"
+            ? envMeta.businessDisplayPhone || "+91 73372 20568"
+            : dbCfg.businessDisplayPhone,
+        systemUserAccessToken:
+          dbCfg.systemUserAccessToken || envMeta.systemUserAccessToken,
+        webhookVerifyToken:
+          dbCfg.webhookVerifyToken || envMeta.webhookVerifyToken || "cc_whatsapp_verify_2026",
+        stepsCompleted: {
+          metaBusinessVerified:
+            Boolean(dbCfg.stepsCompleted?.metaBusinessVerified) ||
+            Boolean(envMeta.businessPortfolioId || envMeta.wabaId),
+          whatsappAppCreated:
+            Boolean(dbCfg.stepsCompleted?.whatsappAppCreated) ||
+            envMeta.hasLiveCredentials,
+          phoneRegistered:
+            Boolean(dbCfg.stepsCompleted?.phoneRegistered) ||
+            Boolean(envMeta.phoneNumberId),
+          webhookSubscribed:
+            Boolean(dbCfg.stepsCompleted?.webhookSubscribed) ||
+            envMeta.hasLiveCredentials,
+          systemTokenSaved:
+            Boolean(dbCfg.stepsCompleted?.systemTokenSaved) ||
+            Boolean(envMeta.systemUserAccessToken),
+        },
       };
     } catch {
       // Keep default

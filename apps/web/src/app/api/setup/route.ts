@@ -6,7 +6,7 @@ import {
   saveFacebookWhatsAppConfig,
 } from "@cc/auth";
 import {
-  resolveSharedAnthropicApiKey,
+  getAcrioKeysStatus,
   saveSharedAnthropicApiKey,
 } from "@cc/database";
 import { isDevRole } from "@cc/rbac";
@@ -15,10 +15,10 @@ import { getCurrentUser } from "@/lib/session";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const [setup, user, aiKeyInfo] = await Promise.all([
+  const [setup, user, aiKeys] = await Promise.all([
     getSetupStatus(),
     getCurrentUser(),
-    resolveSharedAnthropicApiKey(),
+    getAcrioKeysStatus(),
   ]);
   const isDev = isDevRole(user?.role);
 
@@ -37,10 +37,9 @@ export async function GET() {
     hasDevAccount: setup.hasDevAccount,
     allFacebookStepsDone: setup.allFacebookStepsDone,
     facebookConfig: safeFacebookConfig,
-    aiConnected: Boolean(aiKeyInfo.apiKey),
-    aiMaskedKey: aiKeyInfo.apiKey
-      ? `${aiKeyInfo.apiKey.slice(0, 10)}...${aiKeyInfo.apiKey.slice(-4)}`
-      : "",
+    aiConnected: aiKeys.clientConnected || aiKeys.adminConnected,
+    aiMaskedKey: aiKeys.clientMasked,
+    aiKeys,
     currentUser: user,
   });
 }
@@ -66,7 +65,12 @@ export async function POST(req: Request) {
     }
 
     if (typeof body.anthropicApiKey === "string" && body.anthropicApiKey.trim()) {
-      await saveSharedAnthropicApiKey(body.anthropicApiKey.trim());
+      await saveSharedAnthropicApiKey(
+        body.anthropicApiKey.trim(),
+        typeof body.anthropicAdminApiKey === "string" && body.anthropicAdminApiKey.trim()
+          ? body.anthropicAdminApiKey.trim()
+          : undefined
+      );
     }
 
     const res = NextResponse.json({ ok: true, user: result.user });
@@ -91,7 +95,12 @@ export async function POST(req: Request) {
 
     const updated = await saveFacebookWhatsAppConfig(body.facebookConfig || {});
     if (typeof body.anthropicApiKey === "string" && body.anthropicApiKey.trim()) {
-      await saveSharedAnthropicApiKey(body.anthropicApiKey.trim());
+      await saveSharedAnthropicApiKey(
+        body.anthropicApiKey.trim(),
+        typeof body.anthropicAdminApiKey === "string" && body.anthropicAdminApiKey.trim()
+          ? body.anthropicAdminApiKey.trim()
+          : undefined
+      );
     }
     return NextResponse.json({ ok: true, facebookConfig: updated });
   }

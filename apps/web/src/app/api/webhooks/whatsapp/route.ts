@@ -6,6 +6,7 @@ import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
 import { socketHub } from "@cc/sockets";
 import {
   applyWhatsAppMessageReceipt,
+  logConversationAssignment,
   markPriorOutboundMessagesRead,
   processInboundAutomations,
 } from "@cc/workers";
@@ -141,6 +142,27 @@ export async function POST(req: Request) {
               windowExp,
               convId,
             ],
+          });
+        }
+
+        const resetToAcrio = !isNew && prevStatus === "RESOLVED";
+        if (isNew || resetToAcrio) {
+          const assignTime = new Date(Math.max(0, Date.now() - 2)).toISOString();
+          await logConversationAssignment({
+            conversationId: convId,
+            customerPhone: e164,
+            customerName: contactName,
+            toStaffId: "ACRIO",
+            toStaffName: "ACRIO",
+            toTeamId: null,
+            toTeamName: "System (ACRIO)",
+            escalationLevel: "P0",
+            assignmentSource: "INITIAL_SYSTEM",
+            assignedByName: "System",
+            reason: isNew
+              ? "Customer started a new WhatsApp chat"
+              : "Customer messaged after previous resolution",
+            assignedAt: assignTime,
           });
         }
 

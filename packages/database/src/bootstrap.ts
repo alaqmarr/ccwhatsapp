@@ -1,4 +1,8 @@
-import { getRawLibSqlClient } from "./clients";
+import {
+  getRawLibSqlClient,
+  resolveEnvMetaWhatsAppConfig,
+  resolveMonorepoRoot,
+} from "./clients";
 
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -165,6 +169,31 @@ async function runBootstrapInternal(): Promise<void> {
         is_available INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS conversation_assignments (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        customer_phone TEXT NOT NULL DEFAULT '',
+        customer_name TEXT NOT NULL DEFAULT '',
+        from_staff_id TEXT,
+        from_staff_name TEXT,
+        from_team_name TEXT,
+        to_staff_id TEXT,
+        to_staff_name TEXT NOT NULL,
+        to_team_id TEXT,
+        to_team_name TEXT NOT NULL,
+        escalation_level TEXT NOT NULL DEFAULT 'P0',
+        assignment_source TEXT NOT NULL DEFAULT 'MANUAL_ASSIGN',
+        assigned_by_name TEXT NOT NULL DEFAULT 'System',
+        reason TEXT DEFAULT '',
+        assigned_at TEXT NOT NULL,
+        first_response_at TEXT,
+        first_response_seconds INTEGER,
+        first_response_message_id TEXT,
+        ended_at TEXT,
+        outcome TEXT NOT NULL DEFAULT 'ACTIVE'
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_assign_conv ON conversation_assignments (conversation_id, assigned_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_assign_staff ON conversation_assignments (to_staff_id, assigned_at)`,
     ],
     "write"
   );
@@ -485,35 +514,121 @@ async function seedInitialOperationalData(): Promise<void> {
     });
   }
 
-  // Seed default Facebook/Meta setup checklist state if empty
+  // Seed & sync Facebook/Meta WhatsApp setup + Dual Anthropic keys from .env
+  resolveMonorepoRoot();
+  const envMeta = resolveEnvMetaWhatsAppConfig();
   const existingMetaSetup = await auth.execute(
-    `SELECT COUNT(*) as cnt FROM setup_state WHERE key = 'facebook_whatsapp_config'`
+    `SELECT value_json FROM setup_state WHERE key = 'facebook_whatsapp_config' LIMIT 1`
   );
-  if (Number(existingMetaSetup.rows[0]?.cnt ?? 0) === 0) {
+  if (!existingMetaSetup.rows[0]?.value_json) {
     await auth.execute({
       sql: `INSERT INTO setup_state (key, value_json, updated_at) VALUES (?, ?, ?)`,
       args: [
         "facebook_whatsapp_config",
         JSON.stringify({
-          mode: "SANDBOX_SIMULATOR",
-          metaAppId: "",
-          metaAppSecret: "",
-          wabaId: "",
-          phoneNumberId: "",
-          businessDisplayPhone: "+91 73372 22876",
-          systemUserAccessToken: "",
-          webhookVerifyToken: "cc_whatsapp_verify_2026",
+          mode: envMeta.mode,
+          businessPortfolioId: envMeta.businessPortfolioId,
+          metaAppId: envMeta.metaAppId,
+          metaAppSecret: envMeta.metaAppSecret,
+          wabaId: envMeta.wabaId,
+          phoneNumberId: envMeta.phoneNumberId,
+          businessDisplayPhone: envMeta.businessDisplayPhone,
+          verifiedName: envMeta.verifiedName,
+          systemUserAccessToken: envMeta.systemUserAccessToken,
+          webhookVerifyToken: envMeta.webhookVerifyToken,
           stepsCompleted: {
-            metaBusinessVerified: false,
-            whatsappAppCreated: false,
-            phoneRegistered: false,
-            webhookSubscribed: false,
-            systemTokenSaved: false,
+            metaBusinessVerified: Boolean(envMeta.businessPortfolioId || envMeta.wabaId),
+            whatsappAppCreated: envMeta.hasLiveCredentials,
+            phoneRegistered: Boolean(envMeta.phoneNumberId),
+            webhookSubscribed: envMeta.hasLiveCredentials,
+            systemTokenSaved: Boolean(envMeta.systemUserAccessToken),
           },
         }),
         isoNow,
       ],
     });
+  } else if (envMeta.hasLiveCredentials) {
+    try {
+      const cur = JSON.parse(String(existingMetaSetup.rows[0].value_json));
+      const needsSeed =
+        !cur.phoneNumberId ||
+        !cur.systemUserAccessToken ||
+        !cur.wabaId ||
+        !cur.businessPortfolioId ||
+        cur.businessDisplayPhone === "+91 73372 22876";
+      if (needsSeed) {
+        const merged = {
+          ...cur,
+          mode: envMeta.mode,
+          businessPortfolioId: cur.businessPortfolioId || envMeta.businessPortfolioId,
+          metaAppId: cur.metaAppId || envMeta.metaAppId,
+          metaAppSecret: cur.metaAppSecret || envMeta.metaAppSecret,
+          wabaId: cur.wabaId || envMeta.wabaId,
+          phoneNumberId: cur.phoneNumberId || envMeta.phoneNumberId,
+          businessDisplayPhone:
+            !cur.businessDisplayPhone || cur.businessDisplayPhone === "+91 73372 22876"
+              ? envMeta.businessDisplayPhone
+              : cur.businessDisplayPhone,
+          verifiedName: cur.verifiedName || envMeta.verifiedName,
+          systemUserAccessToken:
+            cur.systemUserAccessToken || envMeta.systemUserAccessToken,
+          webhookVerifyToken: cur.webhookVerifyToken || envMeta.webhookVerifyToken,
+          stepsCompleted: {
+            metaBusinessVerified: true,
+            whatsappAppCreated: true,
+            phoneRegistered: true,
+            webhookSubscribed: true,
+            systemTokenSaved: true,
+            ...(cur.stepsCompleted || {}),
+          },
+        };
+        merged.stepsCompleted = {
+          metaBusinessVerified: true,
+          whatsappAppCreated: true,
+          phoneRegistered: true,
+          webhookSubscribed: true,
+          systemTokenSaved: true,
+        };
+        await auth.execute({
+          sql: `UPDATE setup_state SET value_json = ?, updated_at = ? WHERE key = 'facebook_whatsapp_config'`,
+          args: [JSON.stringify(merged), isoNow],
+        });
+      }
+    } catch {
+      // Keep existing
+    }
+  }
+
+  // Seed dual ACRIO Anthropic keys (client_key & admin_key) from .env into setup_state
+  const envClientKey = (process.env.ANTHROPIC_CLIENT_API_KEY || "").trim();
+  const envAdminKey = (process.env.ANTHROPIC_ADMIN_API_KEY || "").trim();
+  if (envClientKey || envAdminKey) {
+    const existingAi = await auth.execute(
+      `SELECT value_json FROM setup_state WHERE key = 'ai_config' LIMIT 1`
+    );
+    let parsedAi: Record<string, unknown> = {};
+    if (existingAi.rows[0]?.value_json) {
+      try {
+        parsedAi = JSON.parse(String(existingAi.rows[0].value_json));
+      } catch {
+        parsedAi = {};
+      }
+    }
+    if (!parsedAi.clientApiKey || !parsedAi.adminApiKey) {
+      const nextAi = {
+        ...parsedAi,
+        anthropicApiKey: String(parsedAi.anthropicApiKey || envClientKey || envAdminKey),
+        clientApiKey: String(parsedAi.clientApiKey || envClientKey || envAdminKey),
+        adminApiKey: String(parsedAi.adminApiKey || envAdminKey || envClientKey),
+        model: "claude-haiku-5-5",
+      };
+      await auth.execute({
+        sql: `INSERT INTO setup_state (key, value_json, updated_at)
+              VALUES ('ai_config', ?, ?)
+              ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+        args: [JSON.stringify(nextAi), isoNow],
+      });
+    }
   }
 
   // Seed realistic CRM customers, orders & past relations if empty
@@ -1631,4 +1746,142 @@ async function seedInitialOperationalData(): Promise<void> {
           AND m2.created_at > messages.created_at
       )
   `);
+
+  // Backfill structured assignment + first-response records & chat timeline events for existing conversations
+  const missingAssignConvs = await conv.execute(`
+    SELECT *
+    FROM conversations c
+    WHERE NOT EXISTS (
+      SELECT 1 FROM conversation_assignments ca WHERE ca.conversation_id = c.id
+    )
+  `);
+
+  for (const c of missingAssignConvs.rows) {
+    const cid = String(c.id);
+    const custPhone = String(c.customer_phone || "");
+    const custName = String(c.customer_name || "");
+    const convStatus = String(c.status || "OPEN");
+    const createdAt = String(c.created_at || new Date().toISOString());
+    const toStaffId = c.assigned_staff_id ? String(c.assigned_staff_id) : "ACRIO";
+    const toStaffName = c.assigned_staff_name
+      ? String(c.assigned_staff_name)
+      : toStaffId === "ACRIO"
+      ? "ACRIO"
+      : "Sales Desk";
+    const toTeamId = c.assigned_team_id
+      ? String(c.assigned_team_id)
+      : toStaffId === "ACRIO"
+      ? null
+      : "team_sales";
+    const toTeamName = c.assigned_team_name
+      ? String(c.assigned_team_name)
+      : toStaffId === "ACRIO"
+      ? "System (ACRIO)"
+      : "Sales Team";
+    const tier = String(c.escalation_level || "P0");
+
+    const firstOutRes = await conv.execute({
+      sql: `SELECT id, sender_name, created_at
+            FROM messages
+            WHERE conversation_id = ? AND direction = 'OUTBOUND'
+            ORDER BY created_at ASC
+            LIMIT 1`,
+      args: [cid],
+    });
+    const firstOut = firstOutRes.rows[0];
+    const firstRespAt = firstOut ? String(firstOut.created_at) : null;
+    const firstRespMsgId = firstOut ? String(firstOut.id) : null;
+
+    let firstRespSec: number | null =
+      c.last_response_seconds !== null && c.last_response_seconds !== undefined
+        ? Number(c.last_response_seconds)
+        : null;
+    if (firstRespSec === null && firstRespAt) {
+      const diff = Math.round(
+        (new Date(firstRespAt).getTime() - new Date(createdAt).getTime()) / 1000
+      );
+      firstRespSec = Number.isNaN(diff) ? 45 : Math.max(8, diff);
+    }
+
+    const assignId = `asg_init_${cid}`;
+    const outcome = firstRespAt
+      ? "RESPONDED"
+      : convStatus === "RESOLVED"
+      ? "RESOLVED"
+      : "ACTIVE";
+    const endedAt =
+      convStatus === "RESOLVED"
+        ? String(c.resolved_at || c.last_message_at || createdAt)
+        : null;
+    const source =
+      toStaffId === "ACRIO" ? "INITIAL_SYSTEM" : "SMART_ASSIGN";
+
+    await conv.execute({
+      sql: `INSERT OR IGNORE INTO conversation_assignments (
+        id, conversation_id, customer_phone, customer_name,
+        from_staff_id, from_staff_name, from_team_name,
+        to_staff_id, to_staff_name, to_team_id, to_team_name,
+        escalation_level, assignment_source, assigned_by_name, reason,
+        assigned_at, first_response_at, first_response_seconds, first_response_message_id,
+        ended_at, outcome
+      ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, 'System', 'Initial chat assignment', ?, ?, ?, ?, ?, ?)`,
+      args: [
+        assignId,
+        cid,
+        custPhone,
+        custName,
+        toStaffId,
+        toStaffName,
+        toTeamId,
+        toTeamName,
+        tier,
+        source,
+        createdAt,
+        firstRespAt,
+        firstRespSec,
+        firstRespMsgId,
+        endedAt,
+        outcome,
+      ],
+    });
+
+    const existingEventMsg = await conv.execute({
+      sql: `SELECT id FROM messages WHERE conversation_id = ? AND message_type = 'ASSIGNMENT_EVENT' LIMIT 1`,
+      args: [cid],
+    });
+    if (existingEventMsg.rows.length === 0) {
+      const summaryText =
+        toStaffId === "ACRIO"
+          ? "Chat assigned to System (ACRIO) for automatic backend handling."
+          : `Chat assigned to ${toTeamName} (${tier}: ${toStaffName}).`;
+      const meta = {
+        assignmentId: assignId,
+        toStaffId,
+        toStaffName,
+        toTeamId,
+        toTeamName,
+        escalationLevel: tier,
+        assignmentSource: source,
+        assignedByName: "System",
+        assignedAt: createdAt,
+        firstResponseAt: firstRespAt,
+        firstResponseSeconds: firstRespSec,
+        firstResponderName: firstOut ? String(firstOut.sender_name) : null,
+        outcome,
+      };
+      await conv.execute({
+        sql: `INSERT OR IGNORE INTO messages (
+          id, conversation_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, metadata_json, delivery_status, created_at
+        ) VALUES (?, ?, 'INTERNAL', 'SYSTEM_EVENT', 'Assignment Tracker', 'ASSIGNMENT_EVENT', 'INTERNAL', ?, ?, 'SAVED', ?)`,
+        args: [
+          `msg_asg_${cid}`,
+          cid,
+          summaryText,
+          JSON.stringify(meta),
+          createdAt,
+        ],
+      });
+    }
+  }
 }

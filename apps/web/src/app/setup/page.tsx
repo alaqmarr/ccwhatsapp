@@ -18,6 +18,8 @@ interface SetupStateResponse {
   allFacebookStepsDone: boolean;
   facebookConfig: {
     mode: "SANDBOX_SIMULATOR" | "LIVE_META_CLOUD";
+    businessPortfolioId?: string;
+    verifiedName?: string;
     metaAppId: string;
     metaAppSecret: string;
     wabaId: string;
@@ -36,6 +38,14 @@ interface SetupStateResponse {
   currentUser: { id: string; name: string; role: string } | null;
   aiConnected?: boolean;
   aiMaskedKey?: string;
+  aiKeys?: {
+    clientConnected: boolean;
+    clientSource: string;
+    clientMasked: string;
+    adminConnected: boolean;
+    adminSource: string;
+    adminMasked: string;
+  };
 }
 
 export default function SetupPage() {
@@ -58,17 +68,19 @@ export default function SetupPage() {
   const [mode, setMode] = useState<"SANDBOX_SIMULATOR" | "LIVE_META_CLOUD">(
     "SANDBOX_SIMULATOR"
   );
+  const [businessPortfolioId, setBusinessPortfolioId] = useState("");
   const [metaAppId, setMetaAppId] = useState("");
   const [metaAppSecret, setMetaAppSecret] = useState("");
   const [wabaId, setWabaId] = useState("");
   const [phoneNumberId, setPhoneNumberId] = useState("");
   const [businessDisplayPhone, setBusinessDisplayPhone] =
-    useState("+91 73372 22876");
+    useState("+91 73372 20568");
   const [systemUserAccessToken, setSystemUserAccessToken] = useState("");
   const [webhookVerifyToken, setWebhookVerifyToken] = useState(
     "cc_whatsapp_verify_2026"
   );
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
+  const [anthropicAdminApiKey, setAnthropicAdminApiKey] = useState("");
   const [steps, setSteps] = useState({
     metaBusinessVerified: false,
     whatsappAppCreated: false,
@@ -90,12 +102,13 @@ export default function SetupPage() {
       setState(d);
       if (d.facebookConfig) {
         setMode(d.facebookConfig.mode || "SANDBOX_SIMULATOR");
+        setBusinessPortfolioId(d.facebookConfig.businessPortfolioId || "");
         setMetaAppId(d.facebookConfig.metaAppId || "");
         setMetaAppSecret(d.facebookConfig.metaAppSecret || "");
         setWabaId(d.facebookConfig.wabaId || "");
         setPhoneNumberId(d.facebookConfig.phoneNumberId || "");
         setBusinessDisplayPhone(
-          d.facebookConfig.businessDisplayPhone || "+91 73372 22876"
+          d.facebookConfig.businessDisplayPhone || "+91 73372 20568"
         );
         setSystemUserAccessToken(
           d.facebookConfig.systemUserAccessToken || ""
@@ -136,6 +149,7 @@ export default function SetupPage() {
 
     const facebookPayload = {
       mode,
+      businessPortfolioId,
       metaAppId,
       metaAppSecret: metaAppSecret === "••••••••" ? undefined : metaAppSecret,
       wabaId,
@@ -162,6 +176,7 @@ export default function SetupPage() {
             password,
             facebookConfig: facebookPayload,
             anthropicApiKey,
+            anthropicAdminApiKey,
           }),
         });
         const data = await res.json();
@@ -179,6 +194,7 @@ export default function SetupPage() {
             action: "update_facebook",
             facebookConfig: facebookPayload,
             anthropicApiKey,
+            anthropicAdminApiKey,
           }),
         });
         const data = await res.json();
@@ -521,25 +537,25 @@ export default function SetupPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                 <div>
                   <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Facebook App ID
+                    Business Portfolio ID
                   </label>
                   <input
                     type="text"
-                    value={metaAppId}
-                    onChange={(e) => setMetaAppId(e.target.value)}
-                    placeholder="Optional in Test Mode"
+                    value={businessPortfolioId}
+                    onChange={(e) => setBusinessPortfolioId(e.target.value)}
+                    placeholder="30341529622102835"
                     className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    WhatsApp Business Account ID
+                    Messaging Account ID (WABA)
                   </label>
                   <input
                     type="text"
                     value={wabaId}
                     onChange={(e) => setWabaId(e.target.value)}
-                    placeholder="Optional in Test Mode"
+                    placeholder="2195463394700930"
                     className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
                   />
                 </div>
@@ -551,7 +567,7 @@ export default function SetupPage() {
                     type="text"
                     value={phoneNumberId}
                     onChange={(e) => setPhoneNumberId(e.target.value)}
-                    placeholder="Optional in Test Mode"
+                    placeholder="1456145487577989"
                     className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
                   />
                 </div>
@@ -568,13 +584,13 @@ export default function SetupPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Facebook App Secret
+                    Facebook App ID
                   </label>
                   <input
-                    type="password"
-                    value={metaAppSecret}
-                    onChange={(e) => setMetaAppSecret(e.target.value)}
-                    placeholder="Optional in Test Mode"
+                    type="text"
+                    value={metaAppId}
+                    onChange={(e) => setMetaAppId(e.target.value)}
+                    placeholder="Optional when using System Access Token"
                     className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
                   />
                 </div>
@@ -591,28 +607,47 @@ export default function SetupPage() {
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Permanent Access Token
+                    Permanent System Access Token (Never Expires)
                   </label>
                   <input
                     type="password"
                     value={systemUserAccessToken}
                     onChange={(e) => setSystemUserAccessToken(e.target.value)}
-                    placeholder="Paste permanent Facebook token when switching to Live Mode"
+                    placeholder="Paste permanent Facebook system access token"
                     className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
                   />
                 </div>
-                <div className="sm:col-span-2 pt-2 border-t border-neutral-100">
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Shared Anthropic API Key for ACRIO{" "}
-                    {state?.aiConnected ? `(Active: ${state.aiMaskedKey})` : "(Optional - one key works everywhere)"}
-                  </label>
-                  <input
-                    type="password"
-                    value={anthropicApiKey}
-                    onChange={(e) => setAnthropicApiKey(e.target.value)}
-                    placeholder="sk-ant-api03-... (shared across Classic Concepts, Classic Edge 53 & WhatsApp)"
-                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                  />
+                <div className="sm:col-span-2 pt-2 border-t border-neutral-100 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-700 mb-1">
+                      Client ACRIO Key (claude-haiku-5-5){" "}
+                      {state?.aiKeys?.clientConnected
+                        ? `(Active via ${state.aiKeys.clientSource}: ${state.aiKeys.clientMasked})`
+                        : ""}
+                    </label>
+                    <input
+                      type="password"
+                      value={anthropicApiKey}
+                      onChange={(e) => setAnthropicApiKey(e.target.value)}
+                      placeholder="ANTHROPIC_CLIENT_API_KEY (loaded from .env)"
+                      className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-700 mb-1">
+                      Admin ACRIO Key (claude-haiku-5-5){" "}
+                      {state?.aiKeys?.adminConnected
+                        ? `(Active via ${state.aiKeys.adminSource}: ${state.aiKeys.adminMasked})`
+                        : ""}
+                    </label>
+                    <input
+                      type="password"
+                      value={anthropicAdminApiKey}
+                      onChange={(e) => setAnthropicAdminApiKey(e.target.value)}
+                      placeholder="ANTHROPIC_ADMIN_API_KEY (loaded from .env)"
+                      className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
+                    />
+                  </div>
                 </div>
               </div>
 

@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  BarChart3,
   Check,
   Clock,
   ExternalLink,
@@ -106,6 +107,18 @@ function formatResponseSpeed(seconds: number | null): string | null {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function formatDateTimeShort(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString([], {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function getInitials(name: string): string {
@@ -298,6 +311,7 @@ export function InboxClient({
           const nextBundle: ConversationDetailBundle = {
             conversation: data.conversation,
             messages: data.messages || [],
+            assignments: data.assignments || [],
             customer: data.customer || null,
             orders: data.orders || [],
             relations: data.relations || [],
@@ -507,11 +521,9 @@ export function InboxClient({
   }, [threads, quickFilter, teamFilter, searchQuery, initialData.currentUserId]);
 
   const messages = detail?.messages || [];
+  const assignments = detail?.assignments || [];
   const internalNotes = useMemo(
-    () =>
-      messages.filter(
-        (m) => m.direction === "INTERNAL" || m.messageType === "INTERNAL_NOTE"
-      ),
+    () => messages.filter((m) => m.messageType === "INTERNAL_NOTE"),
     [messages]
   );
 
@@ -1015,6 +1027,13 @@ export function InboxClient({
                 }`}
               />
             </button>
+            <Link
+              href="/dashboard/analytics"
+              title="Assignment & First-Response Analytics"
+              className="p-2 rounded-full hover:bg-[#e9edef] text-[#54656f]"
+            >
+              <BarChart3 className="w-4 h-4" />
+            </Link>
             <Link
               href="/dashboard/teams"
               title="Teams & Escalation Flow"
@@ -1527,6 +1546,133 @@ export function InboxClient({
               )}
 
               {messages.map((m) => {
+                if (m.messageType === "ASSIGNMENT_EVENT") {
+                  const meta = (m.metadata || {}) as Record<string, unknown>;
+                  const toStaffId = meta.toStaffId ? String(meta.toStaffId) : "";
+                  const toStaffName = meta.toStaffName
+                    ? String(meta.toStaffName)
+                    : "Staff";
+                  const toTeamName = meta.toTeamName
+                    ? String(meta.toTeamName)
+                    : "Sales Team";
+                  const tier = meta.escalationLevel
+                    ? String(meta.escalationLevel)
+                    : "P0";
+                  const assignedAtIso = meta.assignedAt
+                    ? String(meta.assignedAt)
+                    : m.createdAt;
+                  const firstRespIso = meta.firstResponseAt
+                    ? String(meta.firstResponseAt)
+                    : null;
+                  const firstRespSec =
+                    typeof meta.firstResponseSeconds === "number"
+                      ? meta.firstResponseSeconds
+                      : null;
+                  const outcome = meta.outcome ? String(meta.outcome) : "ACTIVE";
+                  const isSystemAsg = toStaffId === "ACRIO";
+                  const livePendingWait =
+                    !firstRespIso &&
+                    outcome === "ACTIVE" &&
+                    !isSystemAsg &&
+                    activeConv.status !== "RESOLVED"
+                      ? formatWaitingDuration(assignedAtIso, nowMs)
+                      : null;
+
+                  return (
+                    <div key={m.id} className="flex justify-center my-2">
+                      <div className="w-full max-w-[84%] rounded-lg px-3.5 py-2.5 bg-white/95 border border-[#d1d7db] shadow-2xs text-[#111b21]">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          <div className="inline-flex flex-wrap items-center gap-1.5 font-semibold">
+                            {isSystemAsg ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
+                                <Sparkles className="w-3 h-3" />
+                                <span>System (ACRIO)</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#e7fce3] text-[#008069] border border-[#b7ebaf]">
+                                <UserCheck className="w-3 h-3" />
+                                <span>
+                                  {toStaffName} • {toTeamName}
+                                </span>
+                              </span>
+                            )}
+                            {!isSystemAsg && (
+                              <span
+                                className={`px-1.5 py-0.2 rounded text-[10px] font-semibold ${
+                                  tier === "P2"
+                                    ? "bg-red-600 text-white"
+                                    : tier === "P1"
+                                    ? "bg-amber-500 text-white"
+                                    : "bg-neutral-100 text-neutral-700"
+                                }`}
+                              >
+                                {tier}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[#54656f] font-medium">
+                            Assigned: {formatDateTimeShort(assignedAtIso)}
+                          </span>
+                        </div>
+
+                        <p className="text-xs text-[#3b4a54] mt-1 leading-snug">
+                          {m.body}
+                        </p>
+
+                        <div className="mt-1.5 pt-1.5 border-t border-neutral-100 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          {firstRespIso ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-800 font-medium">
+                              <Check className="w-3 h-3 text-emerald-600" />
+                              <span>
+                                First response:{" "}
+                                <strong>{formatDateTimeShort(firstRespIso)}</strong>
+                                {firstRespSec !== null && (
+                                  <>
+                                    {" "}
+                                    (in{" "}
+                                    <strong>
+                                      {formatResponseSpeed(firstRespSec)}
+                                    </strong>
+                                    )
+                                  </>
+                                )}
+                              </span>
+                            </span>
+                          ) : outcome === "ESCALATED" ? (
+                            <span className="inline-flex items-center gap-1 text-red-700 font-medium">
+                              <Clock className="w-3 h-3" />
+                              <span>Escalated before first response</span>
+                            </span>
+                          ) : outcome === "REASSIGNED" ? (
+                            <span className="text-neutral-500">
+                              Reassigned before first response
+                            </span>
+                          ) : livePendingWait ? (
+                            <span
+                              className={`inline-flex items-center gap-1 font-medium ${
+                                livePendingWait.minutes >= 5
+                                  ? "text-red-700"
+                                  : "text-amber-700"
+                              }`}
+                            >
+                              <Clock className="w-3 h-3" />
+                              <span>
+                                Awaiting first response ({livePendingWait.text})
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-neutral-500">
+                              {isSystemAsg
+                                ? "Standing by for customer message"
+                                : "No outbound reply needed"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 const isInternalNote =
                   m.direction === "INTERNAL" ||
                   m.messageType === "INTERNAL_NOTE";
@@ -1833,7 +1979,7 @@ export function InboxClient({
                 { key: "PROFILE", label: "Details" },
                 { key: "ORDERS", label: `Orders (${detail?.orders.length || 0})` },
                 { key: "NOTES", label: `Notes (${internalNotes.length})` },
-                { key: "HISTORY", label: "Web & Past" },
+                { key: "HISTORY", label: `History (${assignments.length})` },
               ] as const
             ).map((tb) => (
               <button
@@ -2087,6 +2233,96 @@ export function InboxClient({
               </div>
             ) : (
               <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-semibold text-neutral-800">
+                      Assignment & First-Response Log
+                    </h4>
+                    <Link
+                      href="/dashboard/analytics"
+                      className="text-[11px] font-medium text-[#008069] hover:underline"
+                    >
+                      Full Analytics
+                    </Link>
+                  </div>
+                  {assignments.length === 0 ? (
+                    <p className="text-xs text-neutral-500">
+                      No assignments logged yet.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {assignments.map((asg) => {
+                        const isSys = asg.toStaffId === "ACRIO";
+                        const pendingWait =
+                          !asg.firstResponseAt &&
+                          asg.outcome === "ACTIVE" &&
+                          !isSys &&
+                          activeConv?.status !== "RESOLVED"
+                            ? formatWaitingDuration(asg.assignedAt, nowMs)
+                            : null;
+                        return (
+                          <div
+                            key={asg.id}
+                            className="p-2.5 rounded-lg bg-neutral-50 border border-neutral-200 space-y-1.5 text-xs"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-neutral-900 truncate">
+                                {isSys
+                                  ? "System (ACRIO)"
+                                  : `${asg.toStaffName} (${asg.escalationLevel})`}
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                  asg.firstResponseAt
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : asg.outcome === "ESCALATED"
+                                    ? "bg-red-100 text-red-800"
+                                    : asg.outcome === "ACTIVE"
+                                    ? "bg-amber-100 text-amber-900"
+                                    : "bg-neutral-200 text-neutral-700"
+                                }`}
+                              >
+                                {asg.firstResponseAt
+                                  ? `Replied in ${formatResponseSpeed(
+                                      asg.firstResponseSeconds
+                                    )}`
+                                  : asg.outcome}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-neutral-600 space-y-0.5">
+                              <div>
+                                <span className="text-neutral-500">Team:</span>{" "}
+                                {asg.toTeamName} • by {asg.assignedByName}
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Assigned:</span>{" "}
+                                <strong>{formatDateTimeShort(asg.assignedAt)}</strong>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">
+                                  First response:
+                                </span>{" "}
+                                {asg.firstResponseAt ? (
+                                  <strong className="text-emerald-800">
+                                    {formatDateTimeShort(asg.firstResponseAt)} (
+                                    {formatResponseSpeed(asg.firstResponseSeconds)})
+                                  </strong>
+                                ) : pendingWait ? (
+                                  <strong className="text-amber-800">
+                                    Waiting {pendingWait.text}
+                                  </strong>
+                                ) : (
+                                  <span>None before {asg.outcome.toLowerCase()}</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
                 <div>
                   <h4 className="text-xs font-semibold text-neutral-700 mb-2">
                     Past WhatsApp Interactions

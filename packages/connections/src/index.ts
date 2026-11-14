@@ -9,6 +9,7 @@ import {
   loadAllClassicConceptsProducts,
   loadAllClassicEdgeItems,
   resolveBackupDirectory,
+  resolveEnvMetaWhatsAppConfig,
   resolveSharedAnthropicApiKey,
   searchEcosystemItems,
   snapshotAllDatabasesToFolder,
@@ -114,18 +115,36 @@ export interface OutboundWhatsAppSendResult {
 
 async function loadMetaWhatsAppSetupConfig(): Promise<Record<string, unknown>> {
   await ensureDatabasesBootstrapped();
+  const envMeta = resolveEnvMetaWhatsAppConfig();
   const auth = getRawLibSqlClient("core_auth");
   const cfgRes = await auth.execute(
     `SELECT value_json FROM setup_state WHERE key = 'facebook_whatsapp_config' LIMIT 1`
   );
+  let dbCfg: Record<string, unknown> = {};
   if (cfgRes.rows[0]?.value_json) {
     try {
-      return JSON.parse(String(cfgRes.rows[0].value_json));
+      dbCfg = JSON.parse(String(cfgRes.rows[0].value_json));
     } catch {
-      return {};
+      dbCfg = {};
     }
   }
-  return {};
+  return {
+    ...dbCfg,
+    mode:
+      envMeta.hasLiveCredentials && (!dbCfg.phoneNumberId || dbCfg.mode === "LIVE_META_CLOUD")
+        ? "LIVE_META_CLOUD"
+        : dbCfg.mode || envMeta.mode,
+    businessPortfolioId: dbCfg.businessPortfolioId || envMeta.businessPortfolioId,
+    verifiedName: dbCfg.verifiedName || envMeta.verifiedName,
+    wabaId: dbCfg.wabaId || envMeta.wabaId,
+    phoneNumberId: dbCfg.phoneNumberId || envMeta.phoneNumberId,
+    businessDisplayPhone: dbCfg.businessDisplayPhone || envMeta.businessDisplayPhone,
+    systemUserAccessToken:
+      dbCfg.systemUserAccessToken || envMeta.systemUserAccessToken,
+    webhookVerifyToken: dbCfg.webhookVerifyToken || envMeta.webhookVerifyToken,
+    metaAppId: dbCfg.metaAppId || envMeta.metaAppId,
+    metaAppSecret: dbCfg.metaAppSecret || envMeta.metaAppSecret,
+  };
 }
 
 export async function sendWhatsAppCloudMessage(params: {
@@ -135,10 +154,16 @@ export async function sendWhatsAppCloudMessage(params: {
   languageCode?: string;
   templateComponents?: Record<string, unknown>[];
   simulateAsyncDelivery?: boolean;
+  forceSandbox?: boolean;
 }): Promise<OutboundWhatsAppSendResult> {
   const cfg = await loadMetaWhatsAppSetupConfig();
 
-  const mode = String(cfg.mode || "SANDBOX_SIMULATOR");
+  const useSandbox =
+    Boolean(params.forceSandbox) ||
+    process.env.WHATSAPP_FORCE_SANDBOX_FOR_TESTS === "1";
+  const mode = useSandbox
+    ? "SANDBOX_SIMULATOR"
+    : String(cfg.mode || "SANDBOX_SIMULATOR");
   const phoneNumberId = String(cfg.phoneNumberId || "").trim();
   const accessToken = String(cfg.systemUserAccessToken || "").trim();
   const recipientDigits = params.toPhone.replace(/\D/g, "");
@@ -1101,8 +1126,8 @@ export async function runAcrioAutonomousTurn(params: {
     };
   }
 
-  // 3. Try Claude Haiku 5.5 when shared Anthropic API key is configured
-  const { apiKey } = await resolveSharedAnthropicApiKey();
+  // 3. Try Claude Haiku 5.5 when Customer/Client Anthropic API key is configured
+  const { apiKey } = await resolveSharedAnthropicApiKey("client");
   if (apiKey) {
     try {
       const historyLines = (params.recentMessages || [])
@@ -1318,6 +1343,66 @@ export async function buildAcrioSmartMarketingSegment(prompt: string): Promise<{
     suggestedName = "ACRIO: Industrial & Custom Fabrication Clients";
   else if (/vip|repeat/.test(p)) suggestedName = "ACRIO: High-Value Repeat Clients";
 
+  let filterExplanation = `Matched ${filtered.length} opted-in contacts based on organization category, past order history, and ACRIO conversation tags.`;
+
+  // Optional Admin-key Claude Haiku 5.5 refinement for internal marketing segmentation
+  const { apiKey: adminApiKey } = await resolveSharedAnthropicApiKey("admin");
+  if (adminApiKey && prompt.trim().length > 6 && all.length > 0) {
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": adminApiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: LOCKED_CLAUDE_MODEL,
+          max_tokens: 220,
+          temperature: 0.1,
+          system: `You are ACRIO Admin Assistant for Classic Concepts. Write in plain everyday English (zero em-dashes, zero buzzwords). Given a marketing list prompt and CRM contacts, pick matching contact IDs and return ONLY valid JSON: {"suggestedName": "Short Clear List Name", "matchedIds": ["id1"], "explanation": "Short plain explanation"}`,
+          messages: [
+            {
+              role: "user",
+              content: `Prompt: ${prompt.trim()}\nOpted-in contacts:\n${all
+                .slice(0, 40)
+                .map(
+                  (c) =>
+                    `${c.id} | ${c.name} | ${c.organizationType || ""} | ${c.acrioSegment} | Rs ${c.lifetimeValueInr}`
+                )
+                .join("\n")}`,
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(6500),
+      });
+      if (response.ok) {
+        const json: any = await response.json();
+        const text = json?.content?.[0]?.text || "";
+        const s = text.indexOf("{");
+        const e = text.lastIndexOf("}");
+        if (s !== -1 && e > s) {
+          const parsed = JSON.parse(text.slice(s, e + 1));
+          if (Array.isArray(parsed.matchedIds) && parsed.matchedIds.length > 0) {
+            const idSet = new Set(parsed.matchedIds.map(String));
+            const aiMatched = all.filter((c) => idSet.has(c.id));
+            if (aiMatched.length > 0) {
+              filtered = aiMatched;
+            }
+          }
+          if (typeof parsed.suggestedName === "string" && parsed.suggestedName.trim()) {
+            suggestedName = sanitizePlainEnglish(parsed.suggestedName.trim());
+          }
+          if (typeof parsed.explanation === "string" && parsed.explanation.trim()) {
+            filterExplanation = sanitizePlainEnglish(parsed.explanation.trim());
+          }
+        }
+      }
+    } catch {
+      // Keep deterministic segment fallback
+    }
+  }
+
   return {
     suggestedName,
     description: sanitizePlainEnglish(
@@ -1332,9 +1417,7 @@ export async function buildAcrioSmartMarketingSegment(prompt: string): Promise<{
       acrioSegment: c.acrioSegment,
       lifetimeValueInr: c.lifetimeValueInr,
     })),
-    filterExplanation: sanitizePlainEnglish(
-      `Matched ${filtered.length} opted-in contacts based on organization category, past order history, and ACRIO conversation tags.`
-    ),
+    filterExplanation: sanitizePlainEnglish(filterExplanation),
   };
 }
 

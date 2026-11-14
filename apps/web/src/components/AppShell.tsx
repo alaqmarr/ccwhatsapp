@@ -4,6 +4,7 @@ import React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  BarChart3,
   BookOpen,
   Users,
   Megaphone,
@@ -72,6 +73,12 @@ export function AppShell({
       label: "Teams & Escalation",
       icon: Users,
       visible: isActiveAccount && user.role !== "CLIENT",
+    },
+    {
+      href: "/dashboard/analytics",
+      label: "Analytics & Reports",
+      icon: BarChart3,
+      visible: isActiveAccount,
     },
     {
       href: "/dashboard/marketing",
