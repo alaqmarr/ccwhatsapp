@@ -637,9 +637,13 @@ export async function resolveSharedAnthropicApiKey(): Promise<{
     // Non-blocking
   }
 
-  // 4. Check classicconcepts .env file if present
+  // 4. Check sibling classicconcepts .env files if present (Linux VPS or local dev)
   try {
+    const root = resolveMonorepoRoot();
     const ccEnvPaths = [
+      path.resolve(root, "..", "classicconcepts", ".env.production"),
+      path.resolve(root, "..", "classicconcepts", ".env"),
+      path.resolve(root, "..", "classicconcepts", ".env.local"),
       "C:/Users/DELL/Desktop/classicconcepts/.env",
       "C:/Users/DELL/Desktop/classicconcepts/.env.local",
     ];

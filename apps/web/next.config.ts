@@ -1,4 +1,46 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { NextConfig } from "next";
+
+// Load monorepo-root .env files so pasting .env.production at repo root works for build & runtime
+function loadRootEnvFiles() {
+  const repoRoot = path.resolve(__dirname, "..", "..");
+  const files =
+    process.env.NODE_ENV === "production"
+      ? [".env.production.local", ".env.production", ".env.local", ".env"]
+      : [".env.local", ".env", ".env.production"];
+
+  for (const name of files) {
+    const fullPath = path.join(repoRoot, name);
+    if (!fs.existsSync(fullPath)) continue;
+    try {
+      const content = fs.readFileSync(fullPath, "utf8");
+      for (const rawLine of content.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("#")) continue;
+        const eqIdx = line.indexOf("=");
+        if (eqIdx <= 0) continue;
+        const key = line
+          .slice(0, eqIdx)
+          .replace(/^export\s+/, "")
+          .trim();
+        if (!key || process.env[key] !== undefined) continue;
+        let val = line.slice(eqIdx + 1).trim();
+        if (
+          (val.startsWith('"') && val.endsWith('"')) ||
+          (val.startsWith("'") && val.endsWith("'"))
+        ) {
+          val = val.slice(1, -1);
+        }
+        process.env[key] = val;
+      }
+    } catch {
+      // Ignore unreadable env file
+    }
+  }
+}
+
+loadRootEnvFiles();
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["whatsapp.ccapl.cc"],
