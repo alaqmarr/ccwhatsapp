@@ -637,11 +637,11 @@ export default function MarketingAndLinksPage() {
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-200 pb-4">
         <div>
-          <h1 className="text-lg font-semibold text-neutral-900 flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-[#00a884]" />
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
+            <ShieldCheck className="w-6 h-6 text-[#00a884] shrink-0" />
             <span>Safe Broadcast Queue, ACRIO Lists & Short Links</span>
           </h1>
-          <p className="text-xs text-neutral-500 mt-0.5">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
             Queue WhatsApp broadcasts one recipient at a time with safe anti-spam spacing, opt-out filtering, and Meta rate-limit protection.
           </p>
         </div>

@@ -91,10 +91,10 @@ export default function RegisterStaffPage() {
               <WhatsAppLogoIcon size={15} />
             </div>
             <div>
-              <div className="text-xs font-semibold text-neutral-900">
+              <div className="font-display text-sm font-bold tracking-tight text-slate-900">
                 WhatsApp Business Desk
               </div>
-              <div className="text-[11px] text-neutral-500">
+              <div className="font-mono text-[11px] text-slate-500">
                 {WHATSAPP_PUBLIC_DOMAIN}
               </div>
             </div>
@@ -102,19 +102,19 @@ export default function RegisterStaffPage() {
         </div>
         <Link
           href="/login"
-          className="text-xs font-medium text-neutral-700 hover:text-neutral-900"
+          className="text-xs font-semibold text-slate-700 hover:text-slate-950"
         >
           Back to sign in
         </Link>
       </header>
 
       <div className="flex-1 w-full flex items-center justify-center p-6">
-        <div className="w-full max-w-lg bg-white rounded-lg border border-neutral-200 p-6 space-y-5">
+        <div className="w-full max-w-lg bg-white rounded-xl border border-neutral-200 p-7 space-y-5 shadow-xs">
           <div>
-            <h1 className="text-lg font-semibold text-neutral-900">
+            <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
               Staff Registration
             </h1>
-            <p className="text-xs text-neutral-500 mt-1">
+            <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
               Use your active WhatsApp number and your @classiconcepts.in work email.
               After verifying your email code, your account goes to Superadmin or Dev for approval.
             </p>

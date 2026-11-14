@@ -190,12 +190,12 @@ export default function PricingDashboardPage() {
     <div className="w-full px-6 py-5 space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 pb-4">
         <div>
-          <h1 className="text-lg font-semibold text-neutral-900">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
             {isDev
               ? "Developer Pricing: Actual Meta Cost vs Client Rate"
               : "WhatsApp Message Rates & Usage"}
           </h1>
-          <p className="text-xs text-neutral-500 mt-0.5">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
             {isDev
               ? "Normal staff chat replies and internal notes are free (₹0.00). Charges apply only to ACRIO automated replies (₹0.30) and templated messages (₹0.95 Marketing, ₹0.30 Utility/Auth)."
               : "Normal staff chat replies inside the 24-hour window are completely free (₹0.00). Charges apply only to ACRIO automated replies (₹0.30) and templated messages (₹0.95 Marketing, ₹0.30 Utility/Verification)."}
@@ -224,63 +224,65 @@ export default function PricingDashboardPage() {
 
       {/* Three Rate Boxes: Free Staff Chat, ACRIO & Utility Templates, Marketing Templates */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-emerald-50/60 rounded-lg border border-emerald-200 p-5 flex items-center justify-between gap-4">
+        <div className="bg-emerald-50/70 rounded-xl border border-emerald-200 p-5 flex items-center justify-between gap-4">
           <div>
-            <div className="text-xs font-medium text-emerald-800">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-emerald-800">
               Staff Chat Replies & Internal Notes
             </div>
-            <div className="text-2xl font-semibold text-emerald-950 mt-1">
+            <div className="metric-value text-[30px] font-bold text-emerald-950 mt-1.5">
               ₹0.00{" "}
-              <span className="text-xs font-normal text-emerald-700">
+              <span className="font-sans text-xs font-medium tracking-normal text-emerald-700">
                 free inside 24h window
               </span>
             </div>
-            <p className="text-xs text-emerald-800/90 mt-1">
+            <p className="text-xs leading-relaxed text-emerald-800/90 mt-1.5">
               All normal WhatsApp chat replies by staff and private team notes
             </p>
           </div>
         </div>
 
-        <div className="bg-white rounded-lg border border-neutral-200 p-5 flex items-center justify-between gap-4">
+        <div className="bg-white rounded-xl border border-neutral-200 p-5 flex items-center justify-between gap-4 shadow-2xs">
           <div>
-            <div className="text-xs font-medium text-neutral-500">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
               ACRIO & Utility / Auth Templates
             </div>
-            <div className="text-2xl font-semibold text-neutral-900 mt-1">
+            <div className="metric-value text-[30px] font-bold text-slate-900 mt-1.5">
               ₹{data.rates.otherMessagesRateInr.toFixed(2)}{" "}
-              <span className="text-xs font-normal text-neutral-500">
+              <span className="font-sans text-xs font-medium tracking-normal text-slate-500">
                 per message
               </span>
             </div>
-            <p className="text-xs text-neutral-500 mt-1">
+            <p className="text-xs leading-relaxed text-slate-500 mt-1.5">
               ACRIO automatic answers, order templates, and OTP templates
             </p>
           </div>
           {isDev && (
-            <div className="text-right bg-neutral-50 border border-neutral-200 rounded-md p-3 shrink-0 text-xs">
-              <div className="text-[11px] text-neutral-500">Actual Wholesale</div>
-              <div className="font-semibold text-neutral-900 mt-0.5">
+            <div className="text-right bg-slate-50 border border-neutral-200 rounded-lg p-3 shrink-0 text-xs tabular-nums">
+              <div className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-slate-500">
+                Actual Wholesale
+              </div>
+              <div className="font-semibold text-slate-900 mt-1">
                 Utility / Auth: ₹{(data.rates.actualMetaUtilityRateInr ?? 0).toFixed(3)}
               </div>
-              <div className="font-semibold text-neutral-900">
+              <div className="font-semibold text-slate-900">
                 ACRIO Cost: ₹0.040
               </div>
             </div>
           )}
         </div>
 
-        <div className="bg-white rounded-lg border border-neutral-200 p-5 flex items-center justify-between gap-4">
+        <div className="bg-white rounded-xl border border-neutral-200 p-5 flex items-center justify-between gap-4 shadow-2xs">
           <div>
-            <div className="text-xs font-medium text-neutral-500">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
               Marketing Templates
             </div>
-            <div className="text-2xl font-semibold text-neutral-900 mt-1">
+            <div className="metric-value text-[30px] font-bold text-slate-900 mt-1.5">
               ₹{data.rates.marketingRateInr.toFixed(2)}{" "}
-              <span className="text-xs font-normal text-neutral-500">
+              <span className="font-sans text-xs font-medium tracking-normal text-slate-500">
                 per message
               </span>
             </div>
-            <p className="text-xs text-neutral-500 mt-1">
+            <p className="text-xs leading-relaxed text-slate-500 mt-1.5">
               Promotions, festival offers, and catalog template broadcasts
             </p>
           </div>

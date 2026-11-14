@@ -255,11 +255,14 @@ export default function SetupPage() {
               <WhatsAppLogoIcon size={17} />
             </div>
             <div>
-              <h1 className="text-base font-semibold text-neutral-900">
+              <h1 className="font-display text-xl font-bold tracking-tight text-slate-900">
                 Developer Account & Facebook WhatsApp Setup
               </h1>
-              <p className="text-xs text-neutral-500">
-                Domain: <strong>{WHATSAPP_PUBLIC_DOMAIN}</strong>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Domain:{" "}
+                <strong className="font-mono font-semibold text-slate-800">
+                  {WHATSAPP_PUBLIC_DOMAIN}
+                </strong>
               </p>
             </div>
           </div>

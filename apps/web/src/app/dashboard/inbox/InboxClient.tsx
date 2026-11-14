@@ -1000,15 +1000,15 @@ export function InboxClient({
           <div className="flex items-center gap-2.5 min-w-0">
             <ClassicConceptsMark size={28} />
             <div className="min-w-0">
-              <h1 className="text-sm font-semibold text-[#111b21] truncate flex items-center gap-1.5">
-                <span>Chats</span>
+              <h1 className="font-display text-[17px] font-bold tracking-tight text-[#111b21] truncate flex items-center gap-1.5">
+                <span>Customer Chats</span>
                 {waitingThreadsCount > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-semibold">
+                  <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white font-sans text-[10px] font-bold uppercase tracking-[0.04em] tabular-nums">
                     {waitingThreadsCount} waiting
                   </span>
                 )}
               </h1>
-              <p className="text-[11px] text-[#667781] truncate">
+              <p className="text-[11.5px] font-medium text-[#667781] truncate">
                 System (ACRIO) • Handoff to Sales Team
               </p>
             </div>
@@ -1182,14 +1182,14 @@ export function InboxClient({
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[13.5px] font-semibold text-[#111b21] truncate">
+                      <span className="text-[14px] font-semibold tracking-[-0.015em] text-[#111b21] truncate">
                         {t.customerName}
                       </span>
                       <span
-                        className={`text-[11px] shrink-0 ${
+                        className={`text-[11px] tabular-nums shrink-0 ${
                           t.unreadCount > 0
                             ? "text-[#00a884] font-semibold"
-                            : "text-[#667781]"
+                            : "text-[#667781] font-medium"
                         }`}
                       >
                         {formatShortThreadTime(t.lastMessageAt)}
@@ -1197,7 +1197,7 @@ export function InboxClient({
                     </div>
 
                     <div className="flex items-center justify-between gap-2 mt-0.5">
-                      <p className="text-xs text-[#667781] truncate flex items-center gap-1 min-w-0">
+                      <p className="text-[12.5px] leading-snug text-[#54656f] truncate flex items-center gap-1 min-w-0">
                         {t.lastMessageDirection === "OUTBOUND" && (
                           <WhatsAppMessageTicks
                             status={t.lastMessageStatus || "SENT"}
@@ -1210,7 +1210,7 @@ export function InboxClient({
                         </span>
                       </p>
                       {t.unreadCount > 0 && (
-                        <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#25d366] text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                        <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#25d366] text-white text-[10px] font-bold tabular-nums flex items-center justify-center shrink-0">
                           {t.unreadCount}
                         </span>
                       )}
@@ -1302,10 +1302,10 @@ export function InboxClient({
                   <div className="mx-auto w-12 h-12 rounded-full bg-[#e7fce3] flex items-center justify-center text-[#00a884]">
                     <WhatsAppLogoIcon size={24} />
                   </div>
-                  <h2 className="text-sm font-semibold text-[#111b21]">
+                  <h2 className="font-display text-lg font-bold tracking-tight text-[#111b21]">
                     Classic Concepts WhatsApp Desk
                   </h2>
-                  <p className="text-xs text-[#54656f]">
+                  <p className="text-[13px] leading-relaxed text-[#54656f]">
                     Select any customer chat on the left. New enquiries are handled automatically by ACRIO first and connected to Sales Team whenever human help is needed.
                   </p>
                 </div>
@@ -1317,7 +1317,7 @@ export function InboxClient({
             {/* Top WhatsApp Chat Header */}
             <div className="min-h-[58px] px-4 py-2 bg-[#f0f2f5] border-b border-[#d1d7db] flex flex-wrap items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-full bg-[#dfe5e7] text-[#3b4a54] flex items-center justify-center text-xs font-semibold shrink-0 relative">
+                <div className="w-10 h-10 rounded-full bg-[#dfe5e7] text-[#3b4a54] flex items-center justify-center text-xs font-bold shrink-0 relative">
                   {getInitials(activeConv.customerName)}
                   <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#25d366] text-white flex items-center justify-center ring-2 ring-[#f0f2f5]">
                     <WhatsAppLogoIcon size={9} />
@@ -1325,10 +1325,10 @@ export function InboxClient({
                 </div>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-sm font-semibold text-[#111b21] truncate">
+                    <h2 className="font-display text-[16px] font-bold tracking-tight text-[#111b21] truncate">
                       {activeConv.customerName}
                     </h2>
-                    <span className="text-xs font-mono text-[#54656f]">
+                    <span className="text-xs font-mono font-medium text-[#54656f]">
                       {activeConv.customerPhone}
                     </span>
                     {detail?.customer?.companyName && (
@@ -1748,11 +1748,11 @@ export function InboxClient({
                         </div>
                       </div>
 
-                      <p className="text-[13.5px] whitespace-pre-wrap leading-snug">
+                      <p className="text-[14px] whitespace-pre-wrap leading-[1.52] tracking-[-0.006em]">
                         {m.body}
                       </p>
 
-                      <div className="flex items-center justify-end gap-1.5 mt-1 text-[10.5px] text-[#667781]">
+                      <div className="flex items-center justify-end gap-1.5 mt-1 text-[10.5px] tabular-nums text-[#667781]">
                         <span>
                           {new Date(m.createdAt).toLocaleTimeString([], {
                             hour: "2-digit",

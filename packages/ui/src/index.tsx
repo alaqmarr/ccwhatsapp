@@ -84,15 +84,15 @@ export const CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE: React.CSSProperties = {
 
 export function RoleBadge({ role }: { role: UserRole }) {
   const styles: Record<UserRole, string> = {
-    DEV: "bg-neutral-900 text-white border-neutral-900",
-    SUPERADMIN: "bg-amber-50 text-amber-900 border-amber-200",
-    MANAGER: "bg-purple-50 text-purple-900 border-purple-200",
-    ADMIN: "bg-blue-50 text-blue-800 border-blue-200",
-    STAFF: "bg-emerald-50 text-emerald-800 border-emerald-200",
-    CLIENT: "bg-neutral-100 text-neutral-700 border-neutral-300",
+    DEV: "bg-slate-900 text-white border-slate-900",
+    SUPERADMIN: "bg-amber-50 text-amber-900 border-amber-200/90",
+    MANAGER: "bg-purple-50 text-purple-900 border-purple-200/90",
+    ADMIN: "bg-blue-50 text-blue-800 border-blue-200/90",
+    STAFF: "bg-emerald-50 text-emerald-800 border-emerald-200/90",
+    CLIENT: "bg-slate-100 text-slate-700 border-slate-300",
   };
   const label: Record<UserRole, string> = {
-    DEV: "Dev (Superadmin)",
+    DEV: "Dev • Superadmin",
     SUPERADMIN: "Superadmin",
     MANAGER: "Manager",
     ADMIN: "Admin",
@@ -101,7 +101,7 @@ export function RoleBadge({ role }: { role: UserRole }) {
   };
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${
+      className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-[0.06em] border ${
         styles[role] || styles.STAFF
       }`}
     >
@@ -112,22 +112,22 @@ export function RoleBadge({ role }: { role: UserRole }) {
 
 export function AccountStatusBadge({ status }: { status: AccountStatus }) {
   const styles: Record<AccountStatus, string> = {
-    ACTIVE: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    PENDING_APPROVAL: "bg-amber-50 text-amber-800 border-amber-200",
-    UNVERIFIED_EMAIL: "bg-neutral-100 text-neutral-700 border-neutral-300",
-    REJECTED: "bg-red-50 text-red-700 border-red-200",
-    SUSPENDED: "bg-red-50 text-red-800 border-red-200",
+    ACTIVE: "bg-emerald-50 text-emerald-700 border-emerald-200/90",
+    PENDING_APPROVAL: "bg-amber-50 text-amber-800 border-amber-200/90",
+    UNVERIFIED_EMAIL: "bg-slate-100 text-slate-700 border-slate-300",
+    REJECTED: "bg-red-50 text-red-700 border-red-200/90",
+    SUSPENDED: "bg-red-50 text-red-800 border-red-200/90",
   };
   const labels: Record<AccountStatus, string> = {
     ACTIVE: "Active",
-    PENDING_APPROVAL: "Waiting for Approval",
-    UNVERIFIED_EMAIL: "Email Not Verified",
+    PENDING_APPROVAL: "Pending Approval",
+    UNVERIFIED_EMAIL: "Unverified",
     REJECTED: "Declined",
     SUSPENDED: "Paused",
   };
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${styles[status]}`}
+      className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-[0.055em] border ${styles[status]}`}
     >
       {labels[status]}
     </span>
@@ -145,10 +145,16 @@ export function MetricStatCard({
   accent?: "blue" | "emerald" | "purple" | "amber";
 }) {
   return (
-    <div className="bg-white rounded-lg border border-neutral-200 p-4">
-      <p className="text-xs font-medium text-neutral-500">{label}</p>
-      <p className="text-2xl font-semibold text-neutral-900 mt-1">{value}</p>
-      {subtext && <p className="text-xs text-neutral-500 mt-1">{subtext}</p>}
+    <div className="bg-white rounded-xl border border-neutral-200/90 p-4 shadow-2xs">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
+        {label}
+      </p>
+      <p className="metric-value text-[28px] font-bold text-slate-900 mt-1.5">
+        {value}
+      </p>
+      {subtext && (
+        <p className="text-xs leading-relaxed text-slate-500 mt-1.5">{subtext}</p>
+      )}
     </div>
   );
 }

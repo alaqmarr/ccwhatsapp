@@ -123,10 +123,10 @@ export default function AutomationsPage() {
     <div className="w-full px-6 py-5 space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 pb-4">
         <div>
-          <h1 className="text-lg font-semibold text-neutral-900">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
             Auto-Replies & Topic Rules
           </h1>
-          <p className="text-xs text-neutral-500 mt-0.5">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
             Automatically sort new enquiries by product topic, opt out contacts who reply STOP, or send an instant greeting when a chat is with System (ACRIO).
           </p>
         </div>

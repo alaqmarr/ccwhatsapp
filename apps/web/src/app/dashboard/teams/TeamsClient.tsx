@@ -382,11 +382,11 @@ export function TeamsClient({
       {/* Top Header */}
       <div className="bg-white rounded-lg border border-neutral-200 p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div>
-          <h1 className="text-lg font-semibold text-neutral-900 flex items-center gap-2">
-            <Users className="w-5 h-5 text-[#00a884]" />
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2.5">
+            <Users className="w-6 h-6 text-[#00a884] shrink-0" />
             <span>Teams, ACRIO Handoff & Wait-Time Escalation</span>
           </h1>
-          <p className="text-sm text-neutral-600 mt-0.5">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-4xl">
             Every new customer chat starts with ACRIO automatically. When a customer asks for support or needs a custom quote, ACRIO connects the chat to Sales Team (P0) by default and escalates P0 to P1 to P2 if unanswered.
           </p>
         </div>

@@ -899,10 +899,10 @@ export default function TemplatesStudioPage() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-200 pb-4">
         <div>
-          <h1 className="text-lg font-semibold text-neutral-900">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
             WhatsApp Message Templates Studio
           </h1>
-          <p className="text-xs text-neutral-500 mt-0.5">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
             Design, preview, test, and submit WhatsApp templates with headers, dynamic variables, interactive buttons, and short links.
           </p>
         </div>

@@ -395,15 +395,15 @@ export default function AnalyticsDashboardPage() {
     <div className="w-full px-6 py-5 space-y-6 bg-neutral-50 text-neutral-900">
       {/* Top Header & Filter Controls */}
       <div className="bg-white rounded-lg border border-neutral-200 p-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-[#e7fce3] text-[#008069] flex items-center justify-center shrink-0">
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-xl bg-[#e7fce3] text-[#008069] flex items-center justify-center shrink-0">
             <BarChart3 className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-neutral-900 flex items-center gap-2">
+            <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
               <span>WhatsApp Analytics, Assignments & First-Response SLA</span>
             </h1>
-            <p className="text-xs text-neutral-500">
+            <p className="text-[13px] leading-relaxed text-slate-500 mt-0.5">
               Tracks exact assignment times, agent first-response speed, P0/P1/P2
               escalations, ACRIO automation, message ticks, and revenue.
             </p>
@@ -507,46 +507,46 @@ export default function AnalyticsDashboardPage() {
           {/* ROW 1: 8 Executive KPI Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             {/* 1. Avg Human First Response */}
-            <div className="bg-white rounded-lg border border-neutral-200 p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-neutral-500 font-medium">
+            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>Avg Human First Response</span>
                 <Clock className="w-4 h-4 text-[#00a884]" />
               </div>
-              <div className="text-2xl font-bold text-neutral-900">
+              <div className="metric-value text-[28px] font-bold text-slate-900">
                 {formatDuration(data.kpis.avgHumanFirstResponseSeconds)}
               </div>
-              <div className="text-[11px] text-neutral-500 flex flex-wrap items-center justify-between gap-1">
+              <div className="text-xs text-slate-500 flex flex-wrap items-center justify-between gap-1 tabular-nums">
                 <span>
                   Median:{" "}
-                  <strong>
+                  <strong className="font-semibold text-slate-700">
                     {formatDuration(data.kpis.medianHumanFirstResponseSeconds)}
                   </strong>
                 </span>
-                <span className="text-emerald-700 font-medium">
+                <span className="text-emerald-700 font-semibold">
                   {data.kpis.slaUnder5MinPct}% under 5m
                 </span>
               </div>
             </div>
 
             {/* 2. Human Assignments & Response Rate */}
-            <div className="bg-white rounded-lg border border-neutral-200 p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-neutral-500 font-medium">
+            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>Team Assignments & Replies</span>
                 <UserCheck className="w-4 h-4 text-emerald-600" />
               </div>
-              <div className="text-2xl font-bold text-neutral-900">
+              <div className="metric-value text-[28px] font-bold text-slate-900">
                 {data.kpis.humanRespondedCount}{" "}
-                <span className="text-sm font-normal text-neutral-500">
+                <span className="font-sans text-xs font-medium tracking-normal text-slate-500">
                   / {data.kpis.humanAssignmentsCount} assigned
                 </span>
               </div>
-              <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+              <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                 <span>Response rate: {data.kpis.humanResponseRatePct}%</span>
                 <span
                   className={
                     data.kpis.autoEscalationsCount > 0
-                      ? "text-red-700 font-medium"
-                      : "text-neutral-500"
+                      ? "text-red-700 font-semibold"
+                      : "text-slate-500"
                   }
                 >
                   {data.kpis.autoEscalationsCount} escalated (
@@ -556,18 +556,18 @@ export default function AnalyticsDashboardPage() {
             </div>
 
             {/* 3. Conversations & Live Waiting Queue */}
-            <div className="bg-white rounded-lg border border-neutral-200 p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-neutral-500 font-medium">
+            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>Customer Conversations</span>
                 <WhatsAppLogoIcon size={15} className="text-[#25d366]" />
               </div>
-              <div className="text-2xl font-bold text-neutral-900">
+              <div className="metric-value text-[28px] font-bold text-slate-900">
                 {data.kpis.totalConversations}{" "}
-                <span className="text-sm font-normal text-emerald-700">
+                <span className="font-sans text-xs font-semibold tracking-normal text-emerald-700">
                   ({data.kpis.resolutionRatePct}% resolved)
                 </span>
               </div>
-              <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+              <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                 <span>
                   Open: {data.kpis.openConversations + data.kpis.assignedConversations}
                 </span>
@@ -575,10 +575,10 @@ export default function AnalyticsDashboardPage() {
                   className={
                     data.kpis.waitingNowCount > 0
                       ? "text-amber-800 font-semibold"
-                      : "text-emerald-700 font-medium"
+                      : "text-emerald-700 font-semibold"
                   }
                 >
-                  Waiting now: {data.kpis.waitingNowCount} (P0:{" "}
+                  Waiting: {data.kpis.waitingNowCount} (P0:{" "}
                   {data.kpis.waitingP0Count}, P1: {data.kpis.waitingP1Count}, P2:{" "}
                   {data.kpis.waitingP2Count})
                 </span>
@@ -586,18 +586,18 @@ export default function AnalyticsDashboardPage() {
             </div>
 
             {/* 4. ACRIO Autonomous Resolution */}
-            <div className="bg-white rounded-lg border border-neutral-200 p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-neutral-500 font-medium">
+            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>System (ACRIO) Handling</span>
                 <Sparkles className="w-4 h-4 text-indigo-600" />
               </div>
-              <div className="text-2xl font-bold text-neutral-900">
+              <div className="metric-value text-[28px] font-bold text-slate-900">
                 {data.kpis.acrioAutonomousRatePct}%{" "}
-                <span className="text-sm font-normal text-neutral-500">
+                <span className="font-sans text-xs font-medium tracking-normal text-slate-500">
                   handled without handoff
                 </span>
               </div>
-              <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+              <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                 <span>{data.kpis.acrioRepliesCount} ACRIO replies sent</span>
                 <span>
                   Avg speed: {formatDuration(data.kpis.acrioAvgResponseSeconds)}
@@ -606,73 +606,73 @@ export default function AnalyticsDashboardPage() {
             </div>
 
             {/* 5. Message Volume & Free Chat Savings */}
-            <div className="bg-white rounded-lg border border-neutral-200 p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-neutral-500 font-medium">
+            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>Messages Sent & Received</span>
                 <TrendingUp className="w-4 h-4 text-sky-600" />
               </div>
-              <div className="text-2xl font-bold text-neutral-900">
+              <div className="metric-value text-[28px] font-bold text-slate-900">
                 {data.kpis.inboundMessagesCount + data.kpis.outboundMessagesCount}
               </div>
-              <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+              <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                 <span>
                   In: {data.kpis.inboundMessagesCount} • Out:{" "}
                   {data.kpis.outboundMessagesCount}
                 </span>
-                <span className="text-emerald-700 font-medium">
+                <span className="text-emerald-700 font-semibold">
                   {data.kpis.freeStaffRepliesCount} Free staff replies
                 </span>
               </div>
             </div>
 
             {/* 6. Outbound Delivery & Read Rate */}
-            <div className="bg-white rounded-lg border border-neutral-200 p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-neutral-500 font-medium">
+            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>WhatsApp Read & Delivery Rate</span>
                 <WhatsAppMessageTicks status="READ" showLabel={false} size={15} />
               </div>
-              <div className="text-2xl font-bold text-neutral-900">
+              <div className="metric-value text-[28px] font-bold text-slate-900">
                 {data.kpis.outboundReadRatePct}%{" "}
-                <span className="text-sm font-normal text-[#0088cc]">
+                <span className="font-sans text-xs font-semibold tracking-normal text-[#0088cc]">
                   Read
                 </span>
               </div>
-              <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+              <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                 <span>Delivered+: {data.kpis.outboundDeliveryRatePct}%</span>
                 <span>Failed: {data.tickFunnel.failed}</span>
               </div>
             </div>
 
             {/* 7. WhatsApp Orders & Revenue */}
-            <div className="bg-white rounded-lg border border-neutral-200 p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-neutral-500 font-medium">
+            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>Orders Logged on WhatsApp</span>
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
               </div>
-              <div className="text-2xl font-bold text-neutral-900">
+              <div className="metric-value text-[28px] font-bold text-slate-900">
                 ₹{data.kpis.ordersRevenueInr.toLocaleString("en-IN")}
               </div>
-              <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+              <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                 <span>{data.kpis.ordersCount} orders in period</span>
-                <span className="text-emerald-700 font-medium">
+                <span className="text-emerald-700 font-semibold">
                   {data.kpis.optedInCustomers}/{data.kpis.totalCustomers} opted in
                 </span>
               </div>
             </div>
 
             {/* 8. Message Charges (Role-Isolated Dual Pricing!) */}
-            <div className="bg-white rounded-lg border border-neutral-200 p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-xs text-neutral-500 font-medium">
+            <div className="bg-white rounded-xl border border-neutral-200/90 p-4 space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
                 <span>
                   {isDev ? "Billed vs Meta Cost (Dev)" : "Paid Message Charges"}
                 </span>
-                <IndianRupee className="w-4 h-4 text-neutral-700" />
+                <IndianRupee className="w-4 h-4 text-slate-700" />
               </div>
-              <div className="text-2xl font-bold text-neutral-900">
+              <div className="metric-value text-[28px] font-bold text-slate-900">
                 ₹{data.kpis.clientBilledInr.toFixed(2)}
               </div>
               {isDev ? (
-                <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+                <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                   <span>
                     Meta: ₹{(data.kpis.actualMetaCostInr ?? 0).toFixed(2)}
                   </span>
@@ -681,9 +681,9 @@ export default function AnalyticsDashboardPage() {
                   </span>
                 </div>
               ) : (
-                <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+                <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                   <span>ACRIO + Templates only</span>
-                  <span className="text-emerald-700 font-medium">
+                  <span className="text-emerald-700 font-semibold">
                     Regular chat: ₹0.00
                   </span>
                 </div>

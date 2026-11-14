@@ -187,17 +187,17 @@ export function OnboardingClient({
           </button>
         </div>
       ) : (
-        <div className="p-4 rounded-lg bg-white border border-neutral-200 flex flex-wrap items-center justify-between gap-4">
+        <div className="p-5 rounded-xl bg-white border border-neutral-200 flex flex-wrap items-center justify-between gap-4 shadow-2xs">
           <div>
-            <h1 className="text-base font-semibold text-neutral-900">
+            <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
               How to Use the Classic Concepts WhatsApp Desk
             </h1>
-            <p className="text-xs text-neutral-500 mt-0.5">
+            <p className="text-[13.5px] leading-relaxed text-slate-500 mt-0.5">
               Go through each short topic below, or open Customer Chats whenever you are ready.
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-neutral-500">
+            <span className="text-xs font-medium tabular-nums text-slate-500">
               {completedSteps.length} of {ONBOARDING_MODULES.length} read
             </span>
             <button
