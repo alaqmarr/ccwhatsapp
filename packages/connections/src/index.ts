@@ -1951,10 +1951,10 @@ export function classifyAcrioInboundIntent(
 
   const hasDomainProductNoun = ACRIO_DOMAIN_PRODUCT_NOUN_RE.test(lower);
 
-  // 1. Informational question about human handoff ("Whom will you connect me to?", "Who handles custom quotes?")
+  // 1. Informational question about human handoff ("Whom will you connect me to?", "Who handles custom quotes?", "Who is your sales manager?")
   // Must be checked BEFORE HUMAN_HANDOFF_REQUEST so it does NOT falsely trigger handoff.
   if (
-    /\b(?:who|whom|which\s*(?:team|person|department|member|specialist))\s+(?:will|would|do|can|are)\s+you\s+(?:connect|transfer|assign|hand\s*over|forward)\b|\b(?:to\s+whom|with\s+whom)\s+(?:will|would|do|can)\s+you\s+connect\b|\b(?:who|whom)\s+(?:handles|takes\s*care\s*of|manages|looks\s*after)\s+(?:this|my\s*chat|custom|orders|sales|support|enquiries|inquiries)\b|\bhow\s+does\s+(?:the\s+)?(?:handoff|human\s*support|sales\s*team)\s+work\b/i.test(
+    /\b(?:who|whom|which\s*(?:team|person|department|member|specialist)|what\s*(?:team|department))\s+(?:will|would|do|can|are)\s+you\s+(?:connect|transfer|assign|hand\s*over|forward)\b|\b(?:to\s+whom|with\s+whom)\s+(?:will|would|do|can)\s+you\s+connect\b|\b(?:who|whom)\s+(?:handles|takes\s*care\s*of|manages|looks\s*after|is\s+in|is\s+your)\s+(?:this|my\s*chat|custom|orders|sales|support|enquiries|inquiries|team|manager|executive)\b|\b(?:can\s+i\s+know|tell\s+me)\s+(?:who|whom)\s+(?:you\s+will\s+connect|i\s+will\s+(?:talk|speak)\s+(?:to|with))\b|\bhow\s+does\s+(?:the\s+)?(?:handoff|human\s*support|sales\s*team)\s+work\b/i.test(
       lower
     )
   ) {
@@ -1969,8 +1969,8 @@ export function classifyAcrioInboundIntent(
 
   // 2. Explicit request to be connected to a human / sales person right now
   if (
-    !/^(?:who|whom|what|which|how|why)\b/i.test(lower) &&
-    /\b(talk\s*to\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|speak\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|connect\s*me(?:\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive))?|human\s*agent|real\s*person|call\s*me|please\s*call|need\s*a\s*call|want\s*a\s*call|transfer\s*(?:me|chat)\s*to\s*(?:human|sales|team)|assign\s*(?:to\s*)?(?:human|sales|team))\b/i.test(
+    !/^(?:who|whom|which\s+team|what\s+team|how\s+does)\b/i.test(lower) &&
+    /\b(talk\s*to\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|speak\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|connect\s*me(?:\s*(?:now|right\s*away|please)|\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive))?|yes\s*,?\s*(?:please\s*)?connect\s*me|human\s*agent|real\s*person|call\s*me|can\s+someone\s+call|please\s*call|need\s*a\s*call|want\s*a\s*call|transfer\s*(?:me|chat)\s*to\s*(?:human|sales|team)|assign\s*(?:to\s*)?(?:human|sales|team))\b/i.test(
       lower
     )
   ) {
@@ -3091,25 +3091,50 @@ export async function runAcrioAutonomousTurn(params: {
     let reply = "";
     let reason = "";
     let outPri: "URGENT" | "HIGH" | "NORMAL" = "HIGH";
-    let outCat = "General Enquiry";
+    let outCat = convState.activeCategory || "General Enquiry";
+
+    const stateParts: string[] = [];
+    if (convState.primaryProductQuery) {
+      stateParts.push(`product: ${convState.primaryProductQuery}`);
+    }
+    if (convState.maxPrice !== null && convState.minPrice !== null) {
+      stateParts.push(
+        `budget: ₹${convState.minPrice.toLocaleString("en-IN")} to ₹${convState.maxPrice.toLocaleString("en-IN")}`
+      );
+    } else if (convState.maxPrice !== null) {
+      stateParts.push(`budget: up to ₹${convState.maxPrice.toLocaleString("en-IN")}`);
+    } else if (convState.minPrice !== null) {
+      stateParts.push(`budget: from ₹${convState.minPrice.toLocaleString("en-IN")}`);
+    }
+    if (convState.preferences.length > 0) {
+      stateParts.push(`preferences: ${convState.preferences.join(", ")}`);
+    }
+    if (convState.dimensionsOrThickness) {
+      stateParts.push(`size/thickness: ${convState.dimensionsOrThickness}`);
+    }
+    if (convState.quantity) {
+      stateParts.push(`qty: ${convState.quantity}`);
+    }
+    const stateContextNote =
+      stateParts.length > 0 ? ` • Context: ${stateParts.join(", ")}` : "";
 
     if (intentInfo.intent === "HUMAN_HANDOFF_REQUEST") {
       reply = alreadyGreeted
         ? `Sure, I am connecting you to our *Sales Team* right away.\n\nA team member will pick up this chat from here and help you shortly.`
         : `Hi ${firstName}! Connecting you to our *Sales Team* right away.\n\nA team member will reply to you here shortly.`;
-      reason = `Customer asked to speak with our team ("${rawText.slice(0, 120)}").`;
+      reason = `Customer asked to speak with our team ("${rawText.slice(0, 120)}")${stateContextNote}.`;
     } else if (intentInfo.intent === "SUPPORT_ISSUE") {
       reply = alreadyGreeted
         ? `I have flagged this directly for our *Sales & Support Team* so a senior team member can check it personally and resolve it for you right away.`
         : `Hi ${firstName}, I am connecting your chat directly to our *Sales & Support Team* so they can check this personally and help you right away.`;
-      reason = `Query needs personal assistance from Sales Team ("${rawText.slice(0, 120)}").`;
+      reason = `Query needs personal assistance from Sales Team ("${rawText.slice(0, 120)}")${stateContextNote}.`;
       outPri = "URGENT";
     } else {
       const trackOrigin = resolvePublicTrackingOrigin();
       reply = alreadyGreeted
         ? `You can check live courier status anytime on our tracking portal:\n${trackOrigin}\n\nI am also connecting our *Sales Team* here so they can verify your dispatch details personally.`
         : `Hi ${firstName}, you can check live courier status anytime here:\n${trackOrigin}\n\nI am also connecting our *Sales Team* so they can check your order status personally.`;
-      reason = `Customer asked about a specific order ("${rawText.slice(0, 120)}").`;
+      reason = `Customer asked about a specific order ("${rawText.slice(0, 120)}")${stateContextNote}.`;
       outCat = "Order & Delivery";
     }
 
@@ -3142,6 +3167,7 @@ export async function runAcrioAutonomousTurn(params: {
       customerReply: formatted,
       smartCategory: outCat,
       priority: outPri,
+      conversationState: convState,
     };
   }
 
@@ -3382,11 +3408,16 @@ ${stateSummaryLine ? `${stateSummaryLine}\n` : ""}${catalogContext}
 Customer's latest WhatsApp message:
 ${rawText}`;
 
-      const lastTurn = claudeMessages[claudeMessages.length - 1];
-      if (lastTurn && lastTurn.role === "user") {
-        lastTurn.content = `${lastTurn.content}\n\n${latestPromptPayload}`;
-      } else {
+      if (!intentInfo.requiresProductLookup) {
+        claudeMessages.length = 0;
         claudeMessages.push({ role: "user", content: latestPromptPayload });
+      } else {
+        const lastTurn = claudeMessages[claudeMessages.length - 1];
+        if (lastTurn && lastTurn.role === "user") {
+          lastTurn.content = `${lastTurn.content}\n\n${latestPromptPayload}`;
+        } else {
+          claudeMessages.push({ role: "user", content: latestPromptPayload });
+        }
       }
 
       const aiCall = await callClaudeHaikuMessagesDetailed({
@@ -3452,11 +3483,19 @@ Return ONLY valid JSON:
             intentInfo.intent === "OFF_TOPIC"
               ? false
               : Boolean(parsed.needsHumanHandoff);
-          const cleanedReply = stripRepeatedGreeting(
+          const rawFormatted = stripRepeatedGreeting(
             formatWhatsAppOutboundText(parsed.customerReply),
             alreadyGreeted,
             params.customerName
           );
+          const cleanedReply = !intentInfo.requiresProductLookup
+            ? rawFormatted
+                .split("\n")
+                .filter((line) => !/https?:\/\/ccapl\.cc\/\S+/i.test(line))
+                .join("\n")
+                .replace(/\n{3,}/g, "\n\n")
+                .trim()
+            : rawFormatted;
           addStep(
             "Parsed JSON & formatted WhatsApp outbound message",
             `intent=${intentInfo.intent}, smartCategory="${parsed.smartCategory || smartCategory}", handoff=${handoff}, chars=${cleanedReply.length}`

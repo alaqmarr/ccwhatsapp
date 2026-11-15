@@ -420,6 +420,41 @@ async function performCustomerOptOut(params: {
  * 4. Advanced Auto-Reply Rules Engine (`EXACT`, `CONTAINS`, `REGEX`, `FIRST_CONTACT`, `OUT_OF_HOURS_IST`, `BUTTON_PAYLOAD`)
  * 5. Multi-Turn ACRIO AI Specialist (`claude-haiku-5-5`) when assigned to System (`ACRIO`)
  */
+const claimedInboundWaIds = new Set<string>();
+const processedAutomationWaIds = new Set<string>();
+
+/**
+ * Idempotency guard for inbound Meta WhatsApp message IDs (`wamid.*`).
+ * Prevents duplicate message inserts, duplicate ACRIO runs, and duplicate ₹0.30 ledger charges
+ * when Meta retries a webhook delivery. Empty IDs (e.g. local simulator calls) always return true.
+ */
+export async function claimInboundWaMessageId(
+  waMessageId?: string | null
+): Promise<boolean> {
+  const cleanId = String(waMessageId || "").trim();
+  if (!cleanId) return true;
+  if (claimedInboundWaIds.has(cleanId)) return false;
+
+  await ensureDatabasesBootstrapped();
+  const conv = getRawLibSqlClient("conversations");
+  const existing = await conv.execute({
+    sql: `SELECT id FROM messages WHERE wa_message_id = ? LIMIT 1`,
+    args: [cleanId],
+  });
+  if (existing.rows.length > 0) {
+    claimedInboundWaIds.add(cleanId);
+    return false;
+  }
+
+  claimedInboundWaIds.add(cleanId);
+  return true;
+}
+
+export function resetClaimedWaMessageIdsForTest(): void {
+  claimedInboundWaIds.clear();
+  processedAutomationWaIds.clear();
+}
+
 export async function processInboundAutomations(params: {
   conversationId: string;
   customerPhone: string;
@@ -429,7 +464,17 @@ export async function processInboundAutomations(params: {
   buttonPayload?: string;
   buttonText?: string;
   replyToWaMessageId?: string;
+  waMessageId?: string;
+  onBeforeAcrioSend?: () => Promise<void> | void;
 }): Promise<void> {
+  const cleanWaId = String(params.waMessageId || "").trim();
+  if (cleanWaId) {
+    if (processedAutomationWaIds.has(cleanWaId)) {
+      return;
+    }
+    processedAutomationWaIds.add(cleanWaId);
+  }
+
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
   const mkt = getRawLibSqlClient("marketing");
@@ -442,7 +487,14 @@ export async function processInboundAutomations(params: {
   const currentAssignedId = convRow.assigned_staff_id
     ? String(convRow.assigned_staff_id)
     : "";
-  const isHandledByAcrio = currentAssignedId === "ACRIO";
+  const currentTeamId = convRow.assigned_team_id
+    ? String(convRow.assigned_team_id)
+    : "";
+  const currentStatus = convRow.status ? String(convRow.status) : "";
+  const isHandledByAcrio =
+    currentAssignedId === "ACRIO" &&
+    currentStatus !== "ASSIGNED" &&
+    (!currentTeamId || currentTeamId === "System (ACRIO)");
   const lower = params.inboundText.toLowerCase().trim();
   const nowIso = new Date().toISOString();
 
@@ -1149,6 +1201,32 @@ export async function processInboundAutomations(params: {
     recentMessages,
     hasAlreadyGreeted,
   });
+
+  if (params.onBeforeAcrioSend) {
+    await params.onBeforeAcrioSend();
+  }
+
+  // Re-verify conversation ownership immediately before sending ACRIO's outbound reply
+  // so a human staff member who took over while ACRIO was generating its reply is never overwritten.
+  const postTurnConvRes = await conv.execute({
+    sql: `SELECT status, assigned_staff_id, assigned_team_id FROM conversations WHERE id = ? LIMIT 1`,
+    args: [params.conversationId],
+  });
+  const postTurnRow = (postTurnConvRes.rows[0] || {}) as Record<string, unknown>;
+  const postStaffId = postTurnRow.assigned_staff_id
+    ? String(postTurnRow.assigned_staff_id)
+    : "";
+  const postTeamId = postTurnRow.assigned_team_id
+    ? String(postTurnRow.assigned_team_id)
+    : "";
+  const postStatus = postTurnRow.status ? String(postTurnRow.status) : "";
+  const stillOwnedByAcrio =
+    postStaffId === "ACRIO" &&
+    postStatus !== "ASSIGNED" &&
+    (!postTeamId || postTeamId === "System (ACRIO)");
+  if (!stillOwnedByAcrio) {
+    return;
+  }
 
   // Send ACRIO's automatic WhatsApp reply (either answering directly or confirming handoff to Sales Team)
   const sendRes = await sendWhatsAppCloudMessage({

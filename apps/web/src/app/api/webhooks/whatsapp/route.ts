@@ -10,6 +10,7 @@ import {
 import { socketHub } from "@cc/sockets";
 import {
   applyWhatsAppMessageReceipt,
+  claimInboundWaMessageId,
   logConversationAssignment,
   markPriorOutboundMessagesRead,
   processInboundAutomations,
@@ -127,6 +128,13 @@ export async function POST(req: Request) {
 
       // 1. Inbound customer messages (initial assignment is ALWAYS ACRIO)
       for (const msg of val?.messages || []) {
+        const inboundWaMessageId = String(msg?.id || "").trim();
+        if (inboundWaMessageId) {
+          const isFirstDelivery = await claimInboundWaMessageId(inboundWaMessageId);
+          if (!isFirstDelivery) {
+            continue;
+          }
+        }
         const fromDigits = String(msg?.from || "").replace(/\D/g, "");
         if (!fromDigits) continue;
         const e164 = `+${fromDigits}`;
@@ -415,6 +423,7 @@ export async function POST(req: Request) {
           buttonPayload: buttonPayload ? String(buttonPayload) : undefined,
           buttonText: buttonText ? String(buttonText) : undefined,
           replyToWaMessageId: contextWaId || undefined,
+          waMessageId: inboundWaMessageId || undefined,
         });
 
         socketHub.emit("message:new", { conversationId: convId, customerName: contactName });
