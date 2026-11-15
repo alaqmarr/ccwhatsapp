@@ -13,7 +13,9 @@ function checkFile(filePath) {
 
   // Check 1: Forbidden em-dash in source code comments or strings
   // (Exempting assertions, test files, and regex character classes)
-  const isTestOrHarness = relPath.startsWith("tests" + path.sep);
+  const isTestOrHarness =
+    relPath.startsWith("local-tests" + path.sep) ||
+    relPath.startsWith("tests" + path.sep);
   const isClientsRegex = relPath.includes("packages" + path.sep + "database" + path.sep + "src" + path.sep + "clients.ts");
   const isThisLintScript = relPath.includes("scripts" + path.sep + "lint.js");
 

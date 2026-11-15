@@ -13,7 +13,7 @@
     "start": "npm --workspace @cc/web run start -- -p 3007",
     "typecheck": "npm --workspace @cc/web run typecheck",
     "lint": "node scripts/lint.js",
-    "test:e2e": "tsx scripts/run-e2e-tests.ts",
+    "test:e2e": "tsx local-tests/run-e2e-tests.ts",
     "db:reset": "bash reset-db.sh",
     "pm2:start": "pm2 start ecosystem.config.cjs --update-env"
   },

@@ -62,3 +62,4 @@ Desktop.ini
 *.swo
 scratch/
 audit-shots/
+local-tests/
