@@ -5,8 +5,12 @@ import zlib from "node:zlib";
 import nodemailer from "nodemailer";
 import {
   appendAiTraceLog,
+  buildCompleteEcosystemDatabaseDirectory,
   buildEcosystemDeepProductContextAndAnswer,
   cleanDisplayProductName,
+  extractCompactDimensionPairsFromText,
+  extractExplicitProductOrModelCodes,
+  loadLiveDatabaseOperationalContext,
   ensureDatabasesBootstrapped,
   extractBudgetConstraintsFromQuery,
   getEcosystemBudgetFallbackInfo,
@@ -145,7 +149,13 @@ export async function callClaudeHaikuMessagesDetailed(params: {
     const bodyObj: Record<string, unknown> = {
       model: LOCKED_CLAUDE_MODEL,
       max_tokens: params.maxTokens ?? 2048,
-      system: params.system,
+      system: [
+        {
+          type: "text",
+          text: params.system,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       messages: params.messages,
     };
     if (includeLegacyTemp && typeof params.temperature === "number") {
@@ -1746,13 +1756,13 @@ export async function getCachedEcosystemCatalog(): Promise<{
 }> {
   const [ccRes, ceRes] = await Promise.all([
     rememberWhatsAppCacheWithMeta(
-      "ecosystem:cc-products:v7",
+      "ecosystem:cc-products:v9",
       ["cc-products"],
       3600,
       () => loadAllClassicConceptsProducts()
     ),
     rememberWhatsAppCacheWithMeta(
-      "ecosystem:ce53-items:v6",
+      "ecosystem:ce53-items:v9",
       ["ce53-machines"],
       3600,
       () => loadAllClassicEdgeItems()
@@ -1857,12 +1867,20 @@ export function buildGroupedProductShortLinksSection(params: {
 
   const formatLine = (it: MainWebsiteProduct, idx: number) => {
     const cleanTitle = cleanDisplayProductName(it.name);
+    const hasMrp = it.regularPrice && it.basePrice && it.regularPrice > it.basePrice;
     const priceTag =
       typeof it.basePrice === "number" && it.basePrice > 0
-        ? ` (₹${it.basePrice.toLocaleString("en-IN")})`
+        ? ` (₹${it.basePrice.toLocaleString("en-IN")}${hasMrp ? `, MRP ₹${it.regularPrice!.toLocaleString("en-IN")}` : ""})`
         : " (Custom Quote)";
+    const dimTag =
+      it.dimensions && it.dimensions.length > 0
+        ? `\n   ${it.dimensions
+            .slice(0, 2)
+            .map((d) => `${d.label || d.key}: ${d.value}`)
+            .join(", ")}`
+        : "";
     const link = it.shortUrl || it.url;
-    return `${idx + 1}. *${cleanTitle}*${priceTag}\n   ${link}`;
+    return `${idx + 1}. *${cleanTitle}*${priceTag}${dimTag}\n   ${link}`;
   };
 
   const blocks: string[] = [
@@ -1942,7 +1960,7 @@ export interface AcrioIntentClassification {
 }
 
 const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
-  /\b(ccp[-_\s]?\d{2,4}|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|sign|nameplate|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|keychain|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|stool|chair|furniture|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
+  /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|sign|nameplate|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|stool|chair|furniture|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
   /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*k\b|\d{4,6}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these)\b/i;
@@ -2282,10 +2300,10 @@ function detectProductFamilyAndQuery(rawText: string): {
   const isCorrectionOnly =
     (excludesConsumables || excludesMachines) && strippedForCheck.length === 0;
 
-  if (/\b(pulpit|pulpits|podium|podiums|lectern|lecterns|rostrum|rostrums)\b/i.test(lower)) {
+  if (/\b(pulpit|pulpits|podium|podiums|lectern|lecterns|rostrum|rostrums|ccpo?[-_\s]?\d{2,4})\b/i.test(lower)) {
     return {
       productFamily: "podium",
-      primaryProductQuery: "pulpit podium",
+      primaryProductQuery: `${rawText.trim()} pulpit podium`,
       activeCategory: "Podiums & Stage",
       activeBrand: "CLASSIC_CONCEPTS",
       itemTypeFilter: "PRODUCT",
@@ -2297,7 +2315,7 @@ function detectProductFamilyAndQuery(rawText: string): {
   if (/\b(trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals)\b/i.test(lower)) {
     return {
       productFamily: "trophy",
-      primaryProductQuery: "acrylic trophy award memento",
+      primaryProductQuery: `${rawText.trim()} acrylic trophy award memento`,
       activeCategory: "Awards & Trophies",
       activeBrand: "CLASSIC_CONCEPTS",
       itemTypeFilter: "PRODUCT",
@@ -2313,7 +2331,7 @@ function detectProductFamilyAndQuery(rawText: string): {
   ) {
     return {
       productFamily: "polishing_machine",
-      primaryProductQuery: "diamond edge polishing machine",
+      primaryProductQuery: `${rawText.trim()} diamond edge polishing machine`,
       activeCategory: "Acrylic Machines (CE53)",
       activeBrand: "CLASSIC_EDGE_53",
       itemTypeFilter: excludesMachines ? "CONSUMABLE" : "MACHINE",
@@ -2325,7 +2343,7 @@ function detectProductFamilyAndQuery(rawText: string): {
   if (/\b(bender|bending\s*(?:machine|heater)?|strip\s*heater|line\s*bending)\b/i.test(lower)) {
     return {
       productFamily: "bending_machine",
-      primaryProductQuery: "acrylic bending machine heater",
+      primaryProductQuery: `${rawText.trim()} acrylic bending machine heater`,
       activeCategory: "Acrylic Machines (CE53)",
       activeBrand: "CLASSIC_EDGE_53",
       itemTypeFilter: excludesMachines ? "CONSUMABLE" : "MACHINE",
@@ -2335,7 +2353,25 @@ function detectProductFamilyAndQuery(rawText: string): {
   }
 
   if (
-    /\b(machine|machines|laser|router|cnc|polisher|polishing|thermoforming|oven|yn-|ce53|classic\s*edge)\b/i.test(
+    !excludesConsumables &&
+    !/\b(machine|machines)\b/i.test(lower) &&
+    /\b(blade|blades|cutter|cutters|router\s*bit|router\s*bits|carbide|collet|collect|consumable|consumables|solvent|chloroform|glue|adhesive|buffing|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|ball|balls|sphere|turntable|rotating\s*disc|photo\s*magnet|radeon|glitter\s*sheet|mirror\s*sheet|metallic\s*sheet)\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      productFamily: "consumable",
+      primaryProductQuery: rawText.trim(),
+      activeCategory: "Acrylic Machines (CE53)",
+      activeBrand: "CLASSIC_EDGE_53",
+      itemTypeFilter: "CONSUMABLE",
+      excludedItemTypes: excludesMachines ? ["MACHINE"] : [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  if (
+    /\b(machine|machines|laser|router|cnc|polisher|polishing|thermoforming|oven|chiller|compressor|yn-|ce53|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|classic\s*edge)\b/i.test(
       lower
     )
   ) {
@@ -2347,18 +2383,6 @@ function detectProductFamilyAndQuery(rawText: string): {
       itemTypeFilter: excludesMachines ? "CONSUMABLE" : "MACHINE",
       excludedItemTypes: excludesConsumables ? ["CONSUMABLE"] : [],
       isCorrectionOnly,
-    };
-  }
-
-  if (!excludesConsumables && /\b(blade|cutter|consumable|solvent|chloroform|glue|adhesive|buffing)\b/i.test(lower)) {
-    return {
-      productFamily: "consumable",
-      primaryProductQuery: rawText.trim(),
-      activeCategory: "Acrylic Machines (CE53)",
-      activeBrand: "CLASSIC_EDGE_53",
-      itemTypeFilter: "CONSUMABLE",
-      excludedItemTypes: excludesMachines ? ["MACHINE"] : [],
-      isCorrectionOnly: false,
     };
   }
 
@@ -2662,10 +2686,28 @@ export function buildNormalizedSearchFromState(
   budgetLabel: string | null;
 } {
   const parts: string[] = [];
+  const rawTrimmed = fallbackRawText.trim();
+  const hasExplicitInRaw =
+    extractExplicitProductOrModelCodes(rawTrimmed).length > 0 ||
+    extractCompactDimensionPairsFromText(rawTrimmed).pairs.length > 0 ||
+    extractCompactDimensionPairsFromText(rawTrimmed).ranges.length > 0;
+
+  if (hasExplicitInRaw && rawTrimmed) {
+    parts.push(rawTrimmed);
+  }
   if (state.primaryProductQuery) {
-    parts.push(state.primaryProductQuery);
-  } else if (fallbackRawText.trim()) {
-    parts.push(fallbackRawText.trim());
+    if (!parts.some((p) => p.toLowerCase().includes(state.primaryProductQuery!.toLowerCase()))) {
+      parts.push(state.primaryProductQuery);
+    }
+  }
+  if (
+    rawTrimmed &&
+    !parts.some((p) => p.toLowerCase().includes(rawTrimmed.toLowerCase())) &&
+    !/\b(not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|just\s+machines|only\s+machines|increase\s+(?:the\s+)?budget|raise\s+(?:the\s+)?budget|stretch\s+(?:the\s+)?budget)\b/i.test(
+      rawTrimmed
+    )
+  ) {
+    parts.push(rawTrimmed);
   }
 
   const nonGenericPrefs = (state.preferences || []).filter(
@@ -2823,9 +2865,24 @@ export async function runAcrioChatCopilot(params: {
       lastInbound
     );
     usedQuery = searchQuery;
-    catalog = searchEcosystemItems(allItems, searchQuery, 4, searchOptions);
-    if (catalog.length === 0 && searchQuery !== lastInbound) {
-      catalog = searchEcosystemItems(allItems, lastInbound, 4, searchOptions);
+    catalog = searchEcosystemItems(allItems, searchQuery, 8, searchOptions);
+    if (searchQuery !== lastInbound) {
+      const directMatches = searchEcosystemItems(allItems, lastInbound, 8, searchOptions);
+      if (catalog.length === 0) {
+        catalog = directMatches;
+      } else if (
+        directMatches.length > 0 &&
+        (extractExplicitProductOrModelCodes(lastInbound).length > 0 ||
+          extractCompactDimensionPairsFromText(lastInbound).pairs.length > 0)
+      ) {
+        const seen = new Set<string>();
+        catalog = [...directMatches, ...catalog].filter((it) => {
+          const k = `${it.brand}:${it.slug || it.id}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        }).slice(0, 8);
+      }
     }
   }
 
@@ -3219,10 +3276,15 @@ export async function runAcrioAutonomousTurn(params: {
   let budgetFallbackLowestPrice: number | null = null;
   let budgetFallbackLowestItem: MainWebsiteProduct | null = null;
 
+  const fetchedCatalog = await getCachedEcosystemCatalog();
+  allItems = fetchedCatalog.allItems;
+  const liveOperationalContext = await loadLiveDatabaseOperationalContext({
+    customerName: params.customerName,
+    rawQuery: rawText,
+  });
+
   if (intentInfo.requiresProductLookup) {
-    const fetched = await getCachedEcosystemCatalog();
-    allItems = fetched.allItems;
-    cacheMeta = fetched.cacheMeta;
+    cacheMeta = fetchedCatalog.cacheMeta;
     addStep("Checked ecosystem catalog cache", cacheMeta.cacheSummary);
 
     const normalizedSearch = buildNormalizedSearchFromState(convState, rawText);
@@ -3230,14 +3292,16 @@ export async function runAcrioAutonomousTurn(params: {
     budgetLabel = normalizedSearch.budgetLabel;
 
     const prevMaxPrice = storedState?.maxPrice ?? null;
-    const hasExplicitCodeInTurn =
-      /\b(ccp[-_\s]?\d{2,4}|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium)\b/i.test(
-        rawText
-      );
+    const explicitCodesInTurn = extractExplicitProductOrModelCodes(rawText);
+    const dimsInTurn = extractCompactDimensionPairsFromText(rawText);
+    const hasExplicitCodeOrDimInTurn =
+      explicitCodesInTurn.length > 0 ||
+      dimsInTurn.pairs.length > 0 ||
+      dimsInTurn.ranges.length > 0;
     const budgetChangedInTurn = prevMaxPrice !== convState.maxPrice;
 
     if (
-      !hasExplicitCodeInTurn &&
+      !hasExplicitCodeOrDimInTurn &&
       !budgetChangedInTurn &&
       convState.lastRecommendedProducts.length > 0 &&
       (intentInfo.intent === "PRODUCT_COMPARISON" ||
@@ -3269,7 +3333,7 @@ export async function runAcrioAutonomousTurn(params: {
       const rawMatches = searchEcosystemItems(
         allItems,
         usedLookupQuery,
-        budgetRaised ? 16 : 8,
+        budgetRaised ? 16 : 12,
         normalizedSearch.searchOptions
       );
       if (budgetRaised) {
@@ -3279,22 +3343,32 @@ export async function runAcrioAutonomousTurn(params: {
         const existingTier = rawMatches.filter(
           (it) => !(typeof it.basePrice === "number" && it.basePrice > prevMaxPrice)
         );
-        contextMatches = [...newlyUnlocked, ...existingTier].slice(0, 8);
+        contextMatches = [...newlyUnlocked, ...existingTier].slice(0, 12);
       } else {
         contextMatches = rawMatches;
       }
     }
 
-    if (contextMatches.length === 0 && usedLookupQuery !== rawText) {
+    if (usedLookupQuery !== rawText) {
       const directFallback = searchEcosystemItems(
         allItems,
         rawText,
-        8,
+        12,
         normalizedSearch.searchOptions
       );
-      if (directFallback.length > 0) {
+      if (contextMatches.length === 0 && directFallback.length > 0) {
         contextMatches = directFallback;
         usedLookupQuery = rawText;
+      } else if (hasExplicitCodeOrDimInTurn && directFallback.length > 0) {
+        const seen = new Set<string>();
+        contextMatches = [...directFallback, ...contextMatches]
+          .filter((it) => {
+            const k = `${it.brand}:${it.slug || it.id}`;
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+          })
+          .slice(0, 12);
       }
     }
 
@@ -3480,11 +3554,12 @@ Welcome the customer briefly and ask what they are looking to display, build, or
         ? `Active Conversation Memory: product="${convState.primaryProductQuery || "unspecified"}", category="${smartCategory}", budget="${budgetLabel || "open"}", preferences=[${convState.preferences.join(", ") || "none"}]${convState.excludedItemTypes.length ? `, excludedItemTypes=[${convState.excludedItemTypes.join(", ")}]` : ""}`
         : "";
 
+      const completeDatabaseDirectory = buildCompleteEcosystemDatabaseDirectory(allItems);
       const latestPromptPayload = `[Internal Context for ACRIO - never echo raw labels]
 Customer Name: ${params.customerName}
 Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Start directly with the helpful answer.)" : `NO (First reply: greet "${firstName}" warmly once in 1 short line.)`}
 Detected Category: ${smartCategory}
-${stateSummaryLine ? `${stateSummaryLine}\n` : ""}${catalogContext}
+${stateSummaryLine ? `${stateSummaryLine}\n` : ""}${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Teams, Staff, Resources, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
 
 Customer's latest WhatsApp message:
 ${rawText}`;
@@ -3506,35 +3581,39 @@ ${rawText}`;
         maxTokens: 2048,
         effort: "medium",
         timeoutMs: 24000,
-        system: `You are ACRIO, the WhatsApp product & fabrication specialist for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic fabrication machines & tools: classicedge53.com).
+        system: `You are ACRIO, the WhatsApp product & fabrication specialist for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic fabrication machines, tools & hardware accessories: classicedge53.com).
 
 CORE CONVERSATION, ACCURACY & WHATSAPP FORMATTING RULES:
-1. UNDERSTAND CUSTOMER INTENT ACCURATELY:
-   - If Turn Intent is IDENTITY_META, COMPANY_INFO, TOPIC_RESET, HUMAN_HANDOFF_INFO, GREETING, or OFF_TOPIC, answer that question directly in 2-4 lines and NEVER list or repeat products from earlier turns!
+1. COMPLETE DATABASE VISIBILITY & ACCURATE PRODUCT MATCHING:
+   - You have access to the ENTIRE verified database below: all 189+ Classic Concepts products (including all 31 Acrylic & Wood Podiums CCP053 to CCP111 with exact Top Sheet, Height, Bottom Sheet, Logo Panel, and Name Panel sizes), all 18 Classic Edge 53 industrial machines & models, all 5 machine consumables, all 188 acrylic hardware accessories (hinges, camlocks, standoffs, spacers, screws, knobs, handles, latches, catches, brackets, rods, tubes, balls, rotating discs, specialty mirror/glitter/radeon sheets), podium optional add-ons, downloadable resources, specialist teams & team members, and customer enquiries/orders.
+   - ALWAYS check both the Matched Products section AND the Complete Verified Ecosystem Catalog Directory below before ever claiming a product or dimension does not exist!
+   - For example, if a customer asks for a pulpit/podium with a "22 x 16-inch top surface", *Acrylic Podium CCP065* (₹27,500, discounted from MRP ₹50,000) has an exact 22" x 16" Inches Top Sheet and 32" Min. to 44" Inches adjustable height! Never say none of our pulpits has a 22 x 16-inch top!
+   - If a customer asks "Tell me about <Product / SKU>" (such as "Tell me about Acrylic Podium CCP065"), share its full verified dimensions, features, available variants (e.g. Black, White), price, and shortlink!
+   - If Turn Intent is IDENTITY_META, COMPANY_INFO, TOPIC_RESET, HUMAN_HANDOFF_INFO, GREETING, or OFF_TOPIC, answer that question directly in 2-4 lines (using the Team/Company info when relevant) and NEVER list or repeat products from earlier turns!
    - Know common terms: "pulpit" / "lectern" / "rostrum" = Acrylic Stage Podiums.
    - Respect price budgets strictly (e.g. "under ₹25,000" -> ONLY show podiums priced at or below ₹25,000 from the Matched Products list, with their exact ₹ price!).
    - NEVER include unrelated products (never suggest trays, ovens, machines, or tubes when someone asks for pulpits/podiums!).
-   - If the customer repeats or clarifies an earlier message (like "I said I am looking for pulpits"), apologize briefly in 5-6 words if needed and immediately show the exact pulpit/podium options!
 2. CLEAN, PROFESSIONAL WHATSAPP FORMATTING (CRITICAL):
-   - NEVER repeat "Hi ${firstName}" or "Hello" if Already Greeted Earlier is YES.
+   - NEVER repeat "Hi" or "Hello" if Already Greeted Earlier is YES.
    - When sharing Matched Products, structure the reply with clean visual spacing so it reads beautifully on a mobile WhatsApp screen:
      Short 1-sentence direct opening answer.
 
      *<Category Heading>:*
      1. *<Clean Product Name>* (₹<Price>)
-        https://ccapl.cc/<6-char-id>
-     2. *<Clean Product Name>* (₹<Price>)
+        <Key Dimensions or Specs>
         https://ccapl.cc/<6-char-id>
 
      Short 1-sentence practical follow-up question (e.g. event city, logo printing on front, or quantity needed).
    - Use single asterisks *like this* for WhatsApp bold (NEVER **double asterisks**, NEVER [markdown](links), NEVER ### headings).
-   - Use ₹ for Indian Rupees (e.g. ₹14,999).
+   - Use ₹ for Indian Rupees (e.g. ₹27,500).
 3. PLAIN EVERYDAY ENGLISH:
    - Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
    - NEVER add a robotic footer like "reply talk to team anytime".
 4. HUMAN HANDOFF RULE:
    - Set "needsHumanHandoff": true ONLY if the customer explicitly asks for a human/call right now, reports a damaged order/refund issue, or has ALREADY confirmed final custom dimensions + quantity and wants a formal Sales proforma invoice.
    - If the customer is only asking "Whom will you connect me to?" (HUMAN_HANDOFF_INFO), set "needsHumanHandoff": false!
+
+${completeDatabaseDirectory}
 
 Return ONLY valid JSON:
 {

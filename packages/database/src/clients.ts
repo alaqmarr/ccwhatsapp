@@ -2131,102 +2131,116 @@ function buildEcosystemItemSearchBlob(item: MainWebsiteProduct): string {
  * via API if configured, or directly from the local SQLite database.
  */
 export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProduct[]> {
-  const apiUrl = resolveClassicConceptsInternalUrl();
-  if (apiUrl) {
+  const candidateUrls = Array.from(
+    new Set(
+      [resolveClassicConceptsInternalUrl(), "https://www.classicconcepts.in"]
+        .filter(Boolean)
+        .map((u) => u.replace(/\/+$/, ""))
+    )
+  );
+  const parseApiProducts = (productsList: any[]): MainWebsiteProduct[] =>
+    productsList
+      .filter((p: any) => !isDummyPlaceholderRow(p?.id, p?.name))
+      .map((p: any) => {
+        const allSpecs: EcosystemSpecItem[] = Array.isArray(p.specifications)
+          ? p.specifications
+              .map((s: any) => ({
+                key: String(s.key || s.name || "").trim(),
+                value: String(s.value || "").trim(),
+                type: String(s.type || "specification"),
+              }))
+              .filter((s: EcosystemSpecItem) => Boolean(s.key && s.value))
+          : [];
+        const dimensions = allSpecs.filter((s) => isEcosystemDimensionSpec(s));
+        const specifications = allSpecs.filter((s) => !isEcosystemDimensionSpec(s));
+        const variants: EcosystemVariantItem[] = Array.isArray(p.variants)
+          ? p.variants
+              .map((v: any) => ({
+                id: v.id ? String(v.id) : undefined,
+                name: String(v.name || "").trim(),
+                price:
+                  typeof v.price === "number" && v.price > 0 ? v.price : null,
+                imageUrl: v.imageUrl ? String(v.imageUrl) : null,
+              }))
+              .filter((v: EcosystemVariantItem) => Boolean(v.name))
+          : [];
+        const features: string[] = Array.isArray(p.features)
+          ? p.features.map((f: any) => String(f || "").trim()).filter(Boolean)
+          : [];
+        const descriptionHtmlText =
+          p.descriptionText ||
+          normalizeCatalogHtmlToText(p.descriptionHtml) ||
+          normalizeCatalogHtmlToText(p.description);
+        const importantNoteText =
+          p.importantNoteText || normalizeCatalogHtmlToText(p.importantNoteHtml);
+        const normalizedSku = p.sku
+          ? String(p.sku).replace(/^CCPO(\d+)/i, "CCP0$1")
+          : null;
+
+        const item: MainWebsiteProduct = {
+          id: String(p.id),
+          brand: "CLASSIC_CONCEPTS" as const,
+          brandLabel: "Classic Concepts",
+          itemType: "PRODUCT" as const,
+          name: String(p.name),
+          slug: String(p.slug),
+          sku: normalizedSku,
+          categoryName: String(p.categoryName || "Acrylic Products"),
+          podiumSubCategory: p.podiumSubCategory
+            ? String(p.podiumSubCategory)
+            : null,
+          description: p.description ? String(p.description) : null,
+          descriptionHtmlText,
+          importantNoteText,
+          searchKeywords: p.searchKeywords ? String(p.searchKeywords) : null,
+          basePrice:
+            typeof p.discountPrice === "number" && p.discountPrice > 0
+              ? p.discountPrice
+              : typeof p.basePrice === "number" && p.basePrice > 0
+              ? p.basePrice
+              : null,
+          regularPrice:
+            typeof p.basePrice === "number" && p.basePrice > 0
+              ? p.basePrice
+              : null,
+          mainImage: p.mainImage ? String(p.mainImage) : null,
+          url: String(p.url || `https://classicconcepts.in/shop/p/${p.slug}`),
+          features,
+          dimensions,
+          specifications,
+          variants,
+          isRegisteredDesign: Boolean(p.isRegisteredDesign),
+          designRegistrationNo: p.designRegistrationNo
+            ? String(p.designRegistrationNo)
+            : null,
+          ipProtectionText: p.ipProtectionText
+            ? String(p.ipProtectionText)
+            : null,
+          videoUrl: p.videoUrl ? String(p.videoUrl) : null,
+          industries: Array.isArray(p.industries) ? p.industries : [],
+          problemStatements: Array.isArray(p.problemStatements)
+            ? p.problemStatements
+            : [],
+          resources: Array.isArray(p.resources) ? p.resources : [],
+          specsSummary:
+            allSpecs.length > 0
+              ? allSpecs.map((s) => `${s.key}: ${s.value}`).join(", ")
+              : null,
+        };
+        item.searchBlob = buildEcosystemItemSearchBlob(item);
+        return item;
+      });
+
+  const primaryUrl = candidateUrls[0];
+  if (primaryUrl && !primaryUrl.includes("classicconcepts.in")) {
     try {
-      const res = await fetch(`${apiUrl}/api/whatsapp-catalog`, {
+      const res = await fetch(`${primaryUrl}/api/whatsapp-catalog`, {
         signal: AbortSignal.timeout(3500),
       });
       if (res.ok) {
         const data: any = await res.json();
         if (Array.isArray(data?.products) && data.products.length > 0) {
-          const apiItems: MainWebsiteProduct[] = data.products
-            .filter((p: any) => !isDummyPlaceholderRow(p?.id, p?.name))
-            .map((p: any) => {
-              const allSpecs: EcosystemSpecItem[] = Array.isArray(p.specifications)
-                ? p.specifications
-                    .map((s: any) => ({
-                      key: String(s.key || s.name || "").trim(),
-                      value: String(s.value || "").trim(),
-                      type: String(s.type || "specification"),
-                    }))
-                    .filter((s: EcosystemSpecItem) => Boolean(s.key && s.value))
-                : [];
-              const dimensions = allSpecs.filter((s) => isEcosystemDimensionSpec(s));
-              const specifications = allSpecs.filter((s) => !isEcosystemDimensionSpec(s));
-              const variants: EcosystemVariantItem[] = Array.isArray(p.variants)
-                ? p.variants
-                    .map((v: any) => ({
-                      id: v.id ? String(v.id) : undefined,
-                      name: String(v.name || "").trim(),
-                      price:
-                        typeof v.price === "number" && v.price > 0
-                          ? v.price
-                          : null,
-                      imageUrl: v.imageUrl ? String(v.imageUrl) : null,
-                    }))
-                    .filter((v: EcosystemVariantItem) => Boolean(v.name))
-                : [];
-              const features: string[] = Array.isArray(p.features)
-                ? p.features.map((f: any) => String(f || "").trim()).filter(Boolean)
-                : [];
-              const descriptionHtmlText =
-                p.descriptionText ||
-                normalizeCatalogHtmlToText(p.descriptionHtml) ||
-                normalizeCatalogHtmlToText(p.description);
-              const importantNoteText =
-                p.importantNoteText ||
-                normalizeCatalogHtmlToText(p.importantNoteHtml);
-
-              const item: MainWebsiteProduct = {
-                id: String(p.id),
-                brand: "CLASSIC_CONCEPTS" as const,
-                brandLabel: "Classic Concepts",
-                itemType: "PRODUCT" as const,
-                name: String(p.name),
-                slug: String(p.slug),
-                sku: p.sku ? String(p.sku) : null,
-                categoryName: String(p.categoryName || "Acrylic Products"),
-                podiumSubCategory: p.podiumSubCategory
-                  ? String(p.podiumSubCategory)
-                  : null,
-                description: p.description ? String(p.description) : null,
-                descriptionHtmlText,
-                importantNoteText,
-                searchKeywords: p.searchKeywords ? String(p.searchKeywords) : null,
-                basePrice:
-                  typeof p.discountPrice === "number" && p.discountPrice > 0
-                    ? p.discountPrice
-                    : typeof p.basePrice === "number" && p.basePrice > 0
-                    ? p.basePrice
-                    : null,
-                mainImage: p.mainImage ? String(p.mainImage) : null,
-                url: String(p.url || `https://classicconcepts.in/shop/p/${p.slug}`),
-                features,
-                dimensions,
-                specifications,
-                variants,
-                isRegisteredDesign: Boolean(p.isRegisteredDesign),
-                designRegistrationNo: p.designRegistrationNo
-                  ? String(p.designRegistrationNo)
-                  : null,
-                ipProtectionText: p.ipProtectionText
-                  ? String(p.ipProtectionText)
-                  : null,
-                videoUrl: p.videoUrl ? String(p.videoUrl) : null,
-                industries: Array.isArray(p.industries) ? p.industries : [],
-                problemStatements: Array.isArray(p.problemStatements)
-                  ? p.problemStatements
-                  : [],
-                resources: Array.isArray(p.resources) ? p.resources : [],
-                specsSummary:
-                  allSpecs.length > 0
-                    ? allSpecs.map((s) => `${s.key}: ${s.value}`).join(", ")
-                    : null,
-              };
-              item.searchBlob = buildEcosystemItemSearchBlob(item);
-              return item;
-            });
+          const apiItems = parseApiProducts(data.products);
           if (apiItems.length > 0) {
             return ensureEcosystemProductShortLinks(apiItems);
           }
@@ -2418,6 +2432,13 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         r.importantNoteHtml ? String(r.importantNoteHtml) : ""
       );
 
+      const rawSku = r.sku ? String(r.sku).trim() : "";
+      const normSku = rawSku ? rawSku.replace(/^CCPO(\d+)/i, "CCP0$1") : null;
+      const regularPrice =
+        r.basePrice !== null && r.basePrice !== undefined && Number(r.basePrice) > 0
+          ? Number(r.basePrice)
+          : null;
+
       const item: MainWebsiteProduct = {
         id,
         brand: "CLASSIC_CONCEPTS" as const,
@@ -2425,7 +2446,7 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         itemType: "PRODUCT" as const,
         name: String(r.name),
         slug,
-        sku: r.sku ? String(r.sku) : null,
+        sku: normSku,
         categoryName: r.subCategoryName
           ? `${String(r.categoryName || "Acrylic")} - ${String(r.subCategoryName)}`
           : String(r.categoryName || "Acrylic Products"),
@@ -2437,6 +2458,7 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         importantNoteText: importantNoteText || null,
         searchKeywords: r.searchKeywords ? String(r.searchKeywords) : null,
         basePrice: effectivePrice,
+        regularPrice,
         mainImage: r.mainImage ? String(r.mainImage) : null,
         url: `https://classicconcepts.in/shop/p/${slug}`,
         features,
@@ -2551,6 +2573,9 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
         }
         for (const c of data?.consumables || []) {
           if (isDummyPlaceholderRow(c?.id, c?.name)) continue;
+          const descStr = c.description ? String(c.description) : "";
+          const priceMatch = descStr.match(/(?:starting\s+from|price:?)?\s*₹\s*([\d,]+(?:\.\d+)?)/i);
+          const parsedPrice = priceMatch ? Number(priceMatch[1].replace(/,/g, "")) : null;
           const item: MainWebsiteProduct = {
             id: String(c.id),
             brand: "CLASSIC_EDGE_53",
@@ -2559,10 +2584,10 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
             name: String(c.name),
             slug: String(c.id),
             sku: null,
-            categoryName: String(c.categoryName || "Machine Consumables"),
-            description: c.description ? String(c.description) : null,
+            categoryName: String(c.categoryName || c.category || "Machine Consumables"),
+            description: descStr || null,
             searchKeywords: c.keywords ? String(c.keywords) : null,
-            basePrice: null,
+            basePrice: parsedPrice && Number.isFinite(parsedPrice) ? parsedPrice : null,
             mainImage: c.mainImage ? String(c.mainImage) : null,
             url: String(
               c.url || `https://classicedge53.com/consumables/${c.id}`
@@ -2778,7 +2803,12 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
           : "Machine Consumables",
         description: c.description ? String(c.description) : null,
         searchKeywords: c.keywords ? String(c.keywords) : null,
-        basePrice: null,
+        basePrice: (() => {
+          const descStr = c.description ? String(c.description) : "";
+          const m = descStr.match(/(?:starting\s+from|price:?)?\s*₹\s*([\d,]+(?:\.\d+)?)/i);
+          const v = m ? Number(m[1].replace(/,/g, "")) : null;
+          return v && Number.isFinite(v) ? v : null;
+        })(),
         mainImage: c.image ? String(c.image) : null,
         url: `https://classicedge53.com/consumables/${id}`,
         specsSummary: c.keywords ? String(c.keywords) : null,
@@ -2787,12 +2817,107 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
       items.push(item);
     }
 
-    return ensureEcosystemProductShortLinks(
-      items.length > 0 ? items : FALLBACK_CLASSIC_EDGE_MACHINES
-    );
+    if (items.length >= 5) {
+      return ensureEcosystemProductShortLinks(items);
+    }
   } catch {
-    return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_EDGE_MACHINES);
+    // Fall through to remote Classic Edge 53 catalog fallback
   }
+
+  try {
+    const res = await fetch("https://www.classicedge53.com/api/whatsapp-catalog", {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) {
+      const data: any = await res.json();
+      const combined: MainWebsiteProduct[] = [];
+      for (const m of data?.machines || []) {
+        if (isDummyPlaceholderRow(m?.id, m?.name)) continue;
+        const prodSpecs: EcosystemSpecItem[] = Array.isArray(m.specifications)
+          ? m.specifications
+              .map((s: any) => ({
+                key: String(s.key || "").trim(),
+                value: String(s.value || "").trim(),
+                type: "specification",
+              }))
+              .filter((s: EcosystemSpecItem) => Boolean(s.key && s.value))
+          : [];
+        const models: EcosystemModelItem[] = Array.isArray(m.models)
+          ? m.models.map((md: any) => ({
+              id: String(md.id || md.modelName || ""),
+              modelName: String(md.modelName || ""),
+              specifications: Array.isArray(md.specifications)
+                ? md.specifications
+                    .map((s: any) => ({
+                      key: String(s.key || "").trim(),
+                      value: String(s.value || "").trim(),
+                    }))
+                    .filter((s: { key: string; value: string }) => Boolean(s.key && s.value))
+                : [],
+              resources: Array.isArray(md.resources) ? md.resources : [],
+              consumables: Array.isArray(md.consumables) ? md.consumables : [],
+            }))
+          : [];
+        const item: MainWebsiteProduct = {
+          id: String(m.id),
+          brand: "CLASSIC_EDGE_53",
+          brandLabel: "Classic Edge 53",
+          itemType: "MACHINE",
+          name: String(m.name),
+          slug: String(m.id),
+          sku: models.length > 0 ? models.map((md) => md.modelName).join(" / ") : null,
+          categoryName: "Classic Edge 53 Machine",
+          description: m.description ? String(m.description) : null,
+          searchKeywords: m.keywords ? String(m.keywords) : null,
+          basePrice: null,
+          mainImage: m.coverImage ? String(m.coverImage) : null,
+          url: String(m.url || `https://classicedge53.com/products/${m.id}`),
+          features: Array.isArray(m.features)
+            ? m.features.map((f: any) => String(f || "").trim()).filter(Boolean)
+            : [],
+          specifications: prodSpecs,
+          models,
+          resources: Array.isArray(m.resources) ? m.resources : [],
+          relatedConsumables: Array.isArray(m.consumables) ? m.consumables : [],
+          modelsSummary: models.length > 0 ? models.map((md) => md.modelName).join(", ") : null,
+          specsSummary: prodSpecs.length > 0 ? prodSpecs.map((s) => `${s.key}: ${s.value}`).join(", ") : null,
+        };
+        item.searchBlob = buildEcosystemItemSearchBlob(item);
+        combined.push(item);
+      }
+      for (const c of data?.consumables || []) {
+        if (isDummyPlaceholderRow(c?.id, c?.name)) continue;
+        const descStr = c.description ? String(c.description) : "";
+        const priceMatch = descStr.match(/(?:starting\s+from|price:?)?\s*₹\s*([\d,]+(?:\.\d+)?)/i);
+        const parsedPrice = priceMatch ? Number(priceMatch[1].replace(/,/g, "")) : null;
+        const item: MainWebsiteProduct = {
+          id: String(c.id),
+          brand: "CLASSIC_EDGE_53",
+          brandLabel: "Classic Edge 53",
+          itemType: "CONSUMABLE",
+          name: String(c.name),
+          slug: String(c.id),
+          sku: null,
+          categoryName: String(c.categoryName || c.category || "Machine Consumables"),
+          description: descStr || null,
+          searchKeywords: c.keywords ? String(c.keywords) : null,
+          basePrice: parsedPrice && Number.isFinite(parsedPrice) ? parsedPrice : null,
+          mainImage: c.mainImage ? String(c.mainImage) : null,
+          url: String(c.url || `https://classicedge53.com/consumables/${c.id}`),
+          specsSummary: c.keywords ? String(c.keywords) : null,
+        };
+        item.searchBlob = buildEcosystemItemSearchBlob(item);
+        combined.push(item);
+      }
+      if (combined.length > 0) {
+        return ensureEcosystemProductShortLinks(combined);
+      }
+    }
+  } catch {
+    // Ignore remote fallback error
+  }
+
+  return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_EDGE_MACHINES);
 }
 
 const SEARCH_STOPWORDS = new Set([
@@ -2930,20 +3055,56 @@ function wordMatchesToken(word: string, token: string): boolean {
   return false;
 }
 
-function extractExplicitProductOrModelCodes(query: string): string[] {
+export function extractExplicitProductOrModelCodes(query: string): string[] {
   const codes = new Set<string>();
   const matches = query.matchAll(
-    /\b(ccp[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce[-_\s]?[a-z]{2,4}[-_\s]?\d{2,4}[a-z]*|a[345][-_\s]?t[-_\s]?stand[-_\s]?\d*)\b/gi
+    /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}[a-z0-9]*|jw[-_\s]?\d{3,4}[a-z]?|zd[-_\s]?\d{3,4}|ce[-_\s]?[a-z]{2,4}[-_\s]?\d{2,4}[a-z]*|a[345][-_\s]?t[-_\s]?stand[-_\s]?\d*|d30)\b/gi
   );
   for (const m of matches) {
     if (m[1]) {
-      codes.add(m[1].toLowerCase().replace(/[-_\s]+/g, ""));
+      codes.add(
+        m[1]
+          .toLowerCase()
+          .replace(/[-_\s]+/g, "")
+          .replace(/^ccpo(\d)/, "ccp0$1")
+      );
     }
   }
   if (/\bc[-\s]*podium\b|\bc[-\s]*shaped\s+pillar/i.test(query)) {
     codes.add("ccp053");
   }
   return Array.from(codes);
+}
+
+export function extractCompactDimensionPairsFromText(text: string): {
+  pairs: string[];
+  ranges: string[];
+} {
+  const normalized = String(text || "")
+    .toLowerCase()
+    .replace(/[×✕*]/g, "x")
+    .replace(/["”″']/g, " ");
+  const pairsSet = new Set<string>();
+  const rangesSet = new Set<string>();
+
+  const pairRegex = /(\d{1,4}(?:\.\d+)?)\s*(?:inch|inches|in|mm|cm|ft|feet)?\s*(?:x|by)\s*(\d{1,4}(?:\.\d+)?)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = pairRegex.exec(normalized)) !== null) {
+    const a = m[1];
+    const b = m[2];
+    pairsSet.add(`${a}x${b}`);
+    pairsSet.add(`${b}x${a}`);
+  }
+
+  const rangeRegex = /(\d{1,4}(?:\.\d+)?)\s*(?:min\.?\s*)?(?:to|-)\s*(\d{1,4}(?:\.\d+)?)\s*(?:max\.?\s*)?(?:inch|inches|in|mm|cm)\b/gi;
+  while ((m = rangeRegex.exec(normalized)) !== null) {
+    rangesSet.add(`${m[1]}to${m[2]}`);
+  }
+
+  return {
+    pairs: Array.from(pairsSet),
+    ranges: Array.from(rangesSet),
+  };
 }
 
 export function searchEcosystemItems(
@@ -2965,11 +3126,15 @@ export function searchEcosystemItems(
       q
     );
   const mentionsMachineExplicitly =
-    /\b(machine|machines|polisher|polishing\s+machine|bender|bending\s+machine|line\s+bender|laser\s+cutter|laser\s+cutting|cnc\s+router|flame\s+polish|thermoforming\s+oven|yn[-_\s]?jw\d+|abm[-_\s]?\d+|ce[-_\s]?(?:lc|cnc|fp|to)\d+)\b/i.test(
+    /\b(machine|machines|polisher|polishing\s+machine|bender|bending\s+machine|line\s+bender|laser\s+cutter|laser\s+cutting|cnc\s+router\s+machine|flame\s+polish|thermoforming\s+oven|chiller|compressor|yn[-_\s]?jw\d+|abm[-_\s]?\d+|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|ce[-_\s]?(?:lc|cnc|fp|to)\d+)\b/i.test(
       q
-    );
+    ) ||
+    (/\b(cnc\s+router|router|laser)\b/i.test(q) &&
+      !/\b(bit|bits|tool|tools|blade|blades|cutter|cutters|carbide|collet|collect|consumable|consumables|accessor(?:y|ies))\b/i.test(
+        q
+      ));
   const mentionsConsumablesExplicitly =
-    /\b(consumable|consumables|tool|tools|blade|blades|cutter|cutters|solvent|glue|bonding|buffing|heating\s+wire|spare\s+part|accessories)\b/i.test(
+    /\b(consumable|consumables|tool|tools|blade|blades|cutter|cutters|router\s+bit|router\s+bits|carbide|collet|collect|solvent|glue|bonding|buffing|heating\s+wire|spare\s+part|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|rod|rods|tube|tubes|ball|balls|sphere|turntable|rotating\s+disc|key\s*ring|photo\s*magnet|radeon|glitter\s+sheet|mirror\s+sheet|metallic\s+sheet)\b/i.test(
       q
     );
 
@@ -3101,8 +3266,10 @@ export function searchEcosystemItems(
     }
   }
 
+  const queryDims = extractCompactDimensionPairsFromText(searchQuery);
+  const wantsTopSurface = /\b(top\s*surface|top\s*sheet|reading\s*top|reading\s*surface|top\s*panel|top\s*size|top)\b/i.test(q);
   const hasExplicitEdgeModel = explicitCodes.some((c) =>
-    /^(ynjw|abm|celc|cecnc|cefp|ceto)/.test(c)
+    /^(ynjw|abm|ce53|cw\d|f308|f500|sd\d|jw\d|zd\d|d30|celc|cecnc|cefp|ceto)/.test(c)
   );
   const hasExplicitCcCode = explicitCodes.some((c) => /^ccp\d/.test(c));
 
@@ -3131,7 +3298,9 @@ export function searchEcosystemItems(
     hasExplicitEdgeModel ||
     effectiveItemType === "MACHINE" ||
     effectiveItemType === "CONSUMABLE" ||
-    /\b(machine|machines|laser|cnc|router|polisher|polishing|diamond|bending|bender|heater|blade|blades|cutter|consumable|consumables|ce53|yn-|abm-|thermoforming|oven)\b/i.test(
+    mentionsMachineExplicitly ||
+    mentionsConsumablesExplicitly ||
+    /\b(machine|machines|laser|cnc|router|polisher|polishing|diamond|bending|bender|heater|blade|blades|cutter|consumable|consumables|ce53|yn-|abm-|thermoforming|oven|chiller|compressor)\b/i.test(
       queryWithoutPricesAndNegations
     );
   const wantsDisplayProduct =
@@ -3194,7 +3363,7 @@ export function searchEcosystemItems(
       `${item.categoryName} ${(item.podiumSubCategoryNames || []).join(" ")}`
     );
     const skuLower = (item.sku || "").toLowerCase();
-    const skuCompact = skuLower.replace(/[-_\s]+/g, "");
+    const skuCompact = skuLower.replace(/[-_\s]+/g, "").replace(/^ccpo(\d)/, "ccp0$1");
     const slugCompact = (item.slug || "").toLowerCase().replace(/[-_\s]+/g, "");
     const modelLower = (
       item.modelsSummary ||
@@ -3207,7 +3376,7 @@ export function searchEcosystemItems(
 
     let matchScore = 0;
 
-    // Boost exact product/model codes (e.g., CCP054, CCP055, YN-JW1200, ABM-1250)
+    // Boost exact product/model codes (e.g., CCP054, CCP065, YN-JW1200, ABM-1250, CW-5300)
     if (explicitCodes.length > 0) {
       for (const code of explicitCodes) {
         if (
@@ -3216,7 +3385,35 @@ export function searchEcosystemItems(
           slugCompact.includes(code) ||
           modelCompact.includes(code)
         ) {
-          matchScore += 180;
+          matchScore += skuCompact === code || slugCompact.endsWith(code) ? 520 : 320;
+        }
+      }
+    }
+
+    // Exact Dimension Pair & Height Range Scoring (e.g., "22 × 16-inch top surface" -> CCP065)
+    if (queryDims.pairs.length > 0 || queryDims.ranges.length > 0) {
+      const topSheetSpec = (item.dimensions || []).find((d) =>
+        /top\s*sheet|reading\s*top|top\s*surface|top/i.test(d.label || d.key || "")
+      );
+      const topSheetDims = extractCompactDimensionPairsFromText(topSheetSpec?.value || "");
+      const allStructDims = extractCompactDimensionPairsFromText(
+        `${(item.dimensions || []).map((d) => `${d.label || d.key || ""} ${d.value}`).join(" ")} ${(item.specifications || []).map((s) => `${s.label || s.key || ""} ${s.value}`).join(" ")}`
+      );
+      const allDescDims = extractCompactDimensionPairsFromText(deepText);
+
+      for (const qPair of queryDims.pairs) {
+        if (topSheetDims.pairs.includes(qPair)) {
+          matchScore += wantsTopSurface ? 380 : 280;
+        } else if (allStructDims.pairs.includes(qPair)) {
+          matchScore += 240;
+        } else if (allDescDims.pairs.includes(qPair)) {
+          matchScore += 160;
+        }
+      }
+
+      for (const qRange of queryDims.ranges) {
+        if (allStructDims.ranges.includes(qRange) || allDescDims.ranges.includes(qRange)) {
+          matchScore += 220;
         }
       }
     }
@@ -4261,7 +4458,18 @@ export function buildEcosystemDeepProductContextAndAnswer(params: {
     /\b(?:can\s+(?:this|the|it)|does\s+(?:this|the|it)|process|bend|cut|polish|support|handle)\b.*?\b(\d+)\s*(mm|inch|inches|kw|w|rpm|v|volt)\b|\b(motor\s+brand|power\s+consumption|exact\s+sheet\s+thickness|sheet\s+thickness\s+of\s+ccp\d+)\b/i
   );
 
+  const explicitCodesInQuery = extractExplicitProductOrModelCodes(rawQuery);
+  const queryDimsInDeep = extractCompactDimensionPairsFromText(rawQuery);
+  const isSpecificModelOrTellMeQuery =
+    explicitCodesInQuery.length > 0 ||
+    queryDimsInDeep.pairs.length > 0 ||
+    queryDimsInDeep.ranges.length > 0 ||
+    /\b(tell\s+me\s+about|details\s+of|details\s+for|info\s+about|information\s+on|describe|what\s+is|everything\s+about)\b/i.test(
+      q
+    );
+
   const isDeepQuestion =
+    isSpecificModelOrTellMeQuery ||
     isComparison ||
     isDimensionQuery ||
     isVariantQuery ||
@@ -4269,7 +4477,7 @@ export function buildEcosystemDeepProductContextAndAnswer(params: {
     Boolean(unverifiedThicknessOrSpecMatch);
 
   // Build Stage 2 Question-Aware Prompt Context
-  const promptLines = matchedItems.slice(0, 6).map((it, idx) => {
+  const promptLines = matchedItems.slice(0, 12).map((it, idx) => {
     const priceLabel =
       typeof it.basePrice === "number" && it.basePrice > 0
         ? `₹${it.basePrice.toLocaleString("en-IN")}${
@@ -4566,9 +4774,10 @@ export function buildEcosystemDeepProductContextAndAnswer(params: {
 
   // Single-product deep question (dimensions, variants, specs, features, notes)
   const item = matchedItems[0];
+  const hasMrp = item.regularPrice && item.basePrice && item.regularPrice > item.basePrice;
   const priceStr =
     typeof item.basePrice === "number" && item.basePrice > 0
-      ? `₹${item.basePrice.toLocaleString("en-IN")}`
+      ? `₹${item.basePrice.toLocaleString("en-IN")}${hasMrp ? ` (discounted from MRP ₹${item.regularPrice!.toLocaleString("en-IN")})` : ""}`
       : "Custom Quote on Request";
   const detailLines: string[] = [
     `Here are the verified catalog details for *${item.name}* (*${priceStr}*) at ${getLink(item)}:`,
@@ -4617,4 +4826,393 @@ export function buildEcosystemDeepProductContextAndAnswer(params: {
     deterministicDeepAnswer: detailLines.join("\n"),
     isDeepQuestion: true,
   };
+}
+
+
+// ============================================================================
+// COMPLETE ECOSYSTEM DATABASE DIRECTORY & LIVE OPERATIONAL CONTEXT
+// ============================================================================
+let cachedDirectoryKey = "";
+let cachedDirectoryText = "";
+
+export function buildCompleteEcosystemDatabaseDirectory(
+  allItems: MainWebsiteProduct[]
+): string {
+  const key = `${allItems.length}:${allItems[0]?.id || ""}:${allItems[allItems.length - 1]?.id || ""}`;
+  if (cachedDirectoryKey === key && cachedDirectoryText) {
+    return cachedDirectoryText;
+  }
+
+  const ccProducts = allItems.filter((i) => i.brand === "CLASSIC_CONCEPTS");
+  const ceMachines = allItems.filter(
+    (i) => i.brand === "CLASSIC_EDGE_53" && i.itemType === "MACHINE"
+  );
+  const ceConsumables = allItems.filter(
+    (i) => i.brand === "CLASSIC_EDGE_53" && i.itemType === "CONSUMABLE"
+  );
+
+  const podiums = ccProducts.filter(
+    (p) =>
+      /\b(podium|lectern|pulpit|rostrum)\b|^ccp\d/i.test(
+        `${p.name} ${p.categoryName} ${p.sku || ""}`
+      )
+  );
+  const otherCcProducts = ccProducts.filter((p) => !podiums.includes(p));
+
+  const lines: string[] = [];
+  lines.push(
+    `COMPLETE VERIFIED ECOSYSTEM CATALOG DIRECTORY (${allItems.length} total items: ${ccProducts.length} Classic Concepts products, ${ceMachines.length} Classic Edge 53 machines, ${ceConsumables.length} consumables & acrylic hardware accessories):`
+  );
+
+  lines.push(
+    `\n[A] ALL ${podiums.length} ACRYLIC & WOOD STAGE PODIUMS / PULPITS / LECTERNS (EXACT SIZES, PRICES & LINKS):`
+  );
+  for (const p of podiums) {
+    const cleanTitle = cleanDisplayProductName(p.name);
+    const skuTag = p.sku ? ` [${p.sku}]` : "";
+    const hasMrp = p.regularPrice && p.basePrice && p.regularPrice > p.basePrice;
+    const priceTag = p.basePrice
+      ? `₹${p.basePrice.toLocaleString("en-IN")}${hasMrp ? ` (MRP ₹${p.regularPrice!.toLocaleString("en-IN")})` : ""}`
+      : "Quote";
+    const dimSummary =
+      (p.dimensions || [])
+        .map((d) => `${d.label || d.key}: ${d.value}`)
+        .join(", ") || "";
+    const varSummary =
+      p.variants && p.variants.length > 0
+        ? ` | Variants: ${p.variants
+            .map((v) =>
+              v.price ? `${v.name} (₹${v.price.toLocaleString("en-IN")})` : v.name
+            )
+            .join(", ")}`
+        : "";
+    lines.push(
+      `- ${cleanTitle}${skuTag} | ${priceTag}${dimSummary ? ` | ${dimSummary}` : ""}${varSummary} | ${p.shortUrl || p.url}`
+    );
+  }
+
+  lines.push(
+    `\n[B] ALL ${ceMachines.length} CLASSIC EDGE 53 INDUSTRIAL ACRYLIC MACHINES (MODELS, SPECS & LINKS):`
+  );
+  for (const m of ceMachines) {
+    const cleanTitle = cleanDisplayProductName(m.name);
+    const priceTag = m.basePrice
+      ? `from ₹${m.basePrice.toLocaleString("en-IN")}`
+      : "Quote on request";
+    const modelsTag = m.modelsSummary ? ` | Models: ${m.modelsSummary}` : "";
+    const specsTag = (m.specifications || [])
+      .slice(0, 5)
+      .map((s) => `${s.label || s.key}: ${s.value}`)
+      .join(", ");
+    lines.push(
+      `- ${cleanTitle} | ${priceTag}${modelsTag}${specsTag ? ` | ${specsTag}` : ""} | ${m.shortUrl || m.url}`
+    );
+  }
+
+  const machineConsumables = ceConsumables.filter(
+    (c) => !/accessories/i.test(c.categoryName)
+  );
+  const acrylicAccessories = ceConsumables.filter((c) =>
+    /accessories/i.test(c.categoryName)
+  );
+
+  lines.push(
+    `\n[C] CLASSIC EDGE 53 MACHINE CONSUMABLES & TOOLS (${machineConsumables.length} items):`
+  );
+  for (const c of machineConsumables) {
+    const priceTag = c.basePrice
+      ? `₹${c.basePrice.toLocaleString("en-IN")}`
+      : "Quote";
+    lines.push(
+      `- ${cleanDisplayProductName(c.name)} | ${priceTag}${c.description ? ` | ${c.description.slice(0, 90)}` : ""} | ${c.shortUrl || c.url}`
+    );
+  }
+
+  lines.push(
+    `\n[D] PODIUM OPTIONAL ADD-ONS & ${acrylicAccessories.length} ACRYLIC HARDWARE ACCESSORIES / SPECIALTY SHEETS:`
+  );
+  lines.push(
+    `- Standard Podium Add-Ons: Customized Acrylic Logo Plate, Warm Light Profile (LED backlit), Wireless Collar & Handheld Mics, Podium Cover, Heavy-Duty Castor Wheels, Hard Flight Case.`
+  );
+  for (const acc of acrylicAccessories) {
+    const priceTag = acc.basePrice
+      ? `₹${acc.basePrice.toLocaleString("en-IN")}`
+      : "Quote";
+    lines.push(
+      `- ${cleanDisplayProductName(acc.name)} | ${priceTag}${acc.description ? ` | ${acc.description.slice(0, 80)}` : ""} | ${acc.shortUrl || acc.url}`
+    );
+  }
+
+  lines.push(
+    `\n[E] ALL OTHER CLASSIC CONCEPTS READY ACRYLIC PRODUCTS (${otherCcProducts.length} items across Awards, Hotel/Menu Stands, Boxes, Retail Risers, Furniture, Religious & Cast Sheets):`
+  );
+  for (const p of otherCcProducts) {
+    const cleanTitle = cleanDisplayProductName(p.name);
+    const skuTag = p.sku ? ` [${p.sku}]` : "";
+    const priceTag = p.basePrice
+      ? `₹${p.basePrice.toLocaleString("en-IN")}`
+      : "Quote";
+    const sizeTag =
+      p.dimensions && p.dimensions.length > 0
+        ? ` | ${p.dimensions.map((d) => `${d.label || d.key}: ${d.value}`).join(", ")}`
+        : "";
+    lines.push(
+      `- [${p.categoryName}] ${cleanTitle}${skuTag} | ${priceTag}${sizeTag} | ${p.shortUrl || p.url}`
+    );
+  }
+
+  cachedDirectoryKey = key;
+  cachedDirectoryText = lines.join("\n");
+  return cachedDirectoryText;
+}
+
+export async function loadLiveDatabaseOperationalContext(params: {
+  customerPhone?: string;
+  customerName?: string;
+  rawQuery?: string;
+}): Promise<string> {
+  const sections: string[] = [];
+  const q = String(params.rawQuery || "").toLowerCase();
+
+  try {
+    const auth = getRawLibSqlClient("core_auth");
+    const inbox = getRawLibSqlClient("conversations");
+    const crm = getRawLibSqlClient("crm_orders");
+
+    // 1. Specialist Teams & Team Members (from WhatsApp Hub + Classic Concepts DB)
+    const [teamsRes, membersRes, usersRes] = await Promise.all([
+      inbox
+        .execute(
+          `SELECT id, name, description, brand_scope, routing_keywords FROM teams ORDER BY priority_rank ASC, name ASC`
+        )
+        .catch(() => ({ rows: [] as any[] })),
+      inbox
+        .execute(
+          `SELECT team_id, staff_name, staff_email, tier, is_available FROM team_members`
+        )
+        .catch(() => ({ rows: [] as any[] })),
+      auth
+        .execute(
+          `SELECT id, name, email, whatsapp_number, role, status, department FROM users WHERE status = 'ACTIVE'`
+        )
+        .catch(() => ({ rows: [] as any[] })),
+    ]);
+
+    const teamLines: string[] = [];
+    for (const t of teamsRes.rows) {
+      const tMembers = membersRes.rows
+        .filter(
+          (m) =>
+            String(m.team_id) === String(t.id) &&
+            Number(m.is_available ?? 1) === 1
+        )
+        .map(
+          (m) =>
+            `${m.staff_name} (${m.tier || "P0"}, ${m.staff_email})`
+        );
+      teamLines.push(
+        `• ${t.name} [${t.brand_scope || "ALL"}]: ${t.description || ""}${tMembers.length > 0 ? ` | Active Members: ${tMembers.join(", ")}` : ""}`
+      );
+    }
+    if (usersRes.rows.length > 0) {
+      teamLines.push(
+        `• Active Staff Directory: ` +
+          usersRes.rows
+            .map(
+              (u) =>
+                `${u.name} (${u.department || u.role}, ${u.email}${u.whatsapp_number ? `, ${u.whatsapp_number}` : ""})`
+            )
+            .join("; ")
+      );
+    }
+
+    const ccClient = getMainCatalogClient();
+    if (ccClient) {
+      const ccTeam = await ccClient
+        .execute(`SELECT name, role, bio FROM TeamMember ORDER BY "order" ASC`)
+        .catch(() => ({ rows: [] as any[] }));
+      for (const m of ccTeam.rows) {
+        teamLines.push(
+          `• Leadership: ${m.name} (${m.role}) - ${String(m.bio || "").slice(0, 140)}`
+        );
+      }
+
+      const ccRes = await ccClient
+        .execute(
+          `SELECT title, category, type, fileUrl FROM Resource ORDER BY createdAt DESC LIMIT 12`
+        )
+        .catch(() => ({ rows: [] as any[] }));
+      if (ccRes.rows.length > 0) {
+        sections.push(
+          `DOWNLOADABLE CATALOGUES & RESOURCES:\n` +
+            ccRes.rows
+              .map(
+                (r) =>
+                  `• ${r.title} (${r.category || r.type || "PDF"}): ${r.fileUrl}`
+              )
+              .join("\n")
+        );
+      }
+    }
+
+    if (teamLines.length > 0) {
+      sections.push(
+        `COMPANY TEAMS, DEPARTMENTS & SPECIALISTS:\n${teamLines.join("\n")}`
+      );
+    }
+
+    // 2. Customer-specific CRM profile, orders, trackings, and enquiries
+    const cleanPhone = params.customerPhone
+      ? normalizeWhatsAppPhone(params.customerPhone)
+      : "";
+    const phoneTail = cleanPhone.slice(-10);
+
+    if (phoneTail.length >= 10) {
+      const custRes = await crm
+        .execute({
+          sql: `SELECT id, name, phone, email, company_name, organization_type, acrio_segment, total_orders_count, lifetime_value_inr, notes FROM customers WHERE phone LIKE ? LIMIT 3`,
+          args: [`%${phoneTail}%`],
+        })
+        .catch(() => ({ rows: [] as any[] }));
+
+      if (custRes.rows.length > 0) {
+        const c = custRes.rows[0];
+        sections.push(
+          `CURRENT CUSTOMER CRM RECORD: ${c.name} (${c.phone})${c.company_name ? `, Company: ${c.company_name}` : ""}${c.organization_type ? `, Segment: ${c.organization_type}` : ""}, Orders: ${c.total_orders_count ?? 0}, LTV: ₹${Number(c.lifetime_value_inr ?? 0).toLocaleString("en-IN")}${c.notes ? `, Notes: ${c.notes}` : ""}`
+        );
+      }
+
+      const [ordRes, trkRes, enqRes] = await Promise.all([
+        crm
+          .execute({
+            sql: `SELECT order_number, items_summary, quantity, total_amount_inr, payment_status, fulfillment_status, ordered_at FROM customer_orders WHERE customer_phone LIKE ? ORDER BY ordered_at DESC LIMIT 5`,
+            args: [`%${phoneTail}%`],
+          })
+          .catch(() => ({ rows: [] as any[] })),
+        crm
+          .execute({
+            sql: `SELECT order_id, lookup_key, brand, items_summary, provider_name, awb_number, shipment_status, estimated_delivery FROM order_trackings WHERE customer_phone LIKE ? ORDER BY updated_at DESC LIMIT 5`,
+            args: [`%${phoneTail}%`],
+          })
+          .catch(() => ({ rows: [] as any[] })),
+        crm
+          .execute({
+            sql: `SELECT brand, external_key, customer_name, smart_reply_text, assigned_staff_name, created_at FROM website_enquiry_sync_logs WHERE customer_phone LIKE ? ORDER BY created_at DESC LIMIT 5`,
+            args: [`%${phoneTail}%`],
+          })
+          .catch(() => ({ rows: [] as any[] })),
+      ]);
+
+      if (ordRes.rows.length > 0 || trkRes.rows.length > 0) {
+        const ordLines = [
+          ...ordRes.rows.map(
+            (o) =>
+              `• Order ${o.order_number}: ${o.items_summary} (Qty ${o.quantity ?? 1}), Amount=₹${Number(o.total_amount_inr ?? 0).toLocaleString("en-IN")}, Payment=${o.payment_status}, Fulfillment=${o.fulfillment_status}`
+          ),
+          ...trkRes.rows.map(
+            (t) =>
+              `• Shipment ${t.order_id} (${t.lookup_key}): Status=${t.shipment_status}, Courier=${t.provider_name}, AWB=${t.awb_number}, ETA=${t.estimated_delivery || "N/A"}`
+          ),
+        ];
+        sections.push(`CUSTOMER ORDERS & DISPATCH TRACKING:\n${ordLines.join("\n")}`);
+      }
+
+      if (enqRes.rows.length > 0) {
+        sections.push(
+          `CUSTOMER WEBSITE ENQUIRIES ON FILE:\n` +
+            enqRes.rows
+              .map(
+                (e) =>
+                  `• [${e.brand}] ${e.customer_name} (Assigned: ${e.assigned_staff_name || "Sales"}): "${String(e.smart_reply_text || "").slice(0, 120)}"`
+              )
+              .join("\n")
+        );
+      }
+
+      if (ccClient) {
+        const [ccEnq, ccCart] = await Promise.all([
+          ccClient
+            .execute({
+              sql: `SELECT name, company, message, status, createdAt FROM Enquiry WHERE phone LIKE ? ORDER BY createdAt DESC LIMIT 5`,
+              args: [`%${phoneTail}%`],
+            })
+            .catch(() => ({ rows: [] as any[] })),
+          ccClient
+            .execute({
+              sql: `SELECT orderCode, customerName, totalAmount, status, createdAt FROM CartOrder WHERE customerPhone LIKE ? ORDER BY createdAt DESC LIMIT 5`,
+              args: [`%${phoneTail}%`],
+            })
+            .catch(() => ({ rows: [] as any[] })),
+        ]);
+        if (ccEnq.rows.length > 0) {
+          sections.push(
+            `MAIN WEBSITE ENQUIRIES FOR THIS PHONE:\n` +
+              ccEnq.rows
+                .map(
+                  (e) =>
+                    `• ${e.name}${e.company ? ` (${e.company})` : ""} [${e.status}]: "${String(e.message || "").slice(0, 120)}"`
+                )
+                .join("\n")
+          );
+        }
+        if (ccCart.rows.length > 0) {
+          sections.push(
+            `MAIN WEBSITE CART ORDERS FOR THIS PHONE:\n` +
+              ccCart.rows
+                .map(
+                  (o) =>
+                    `• Order ${o.orderCode}: ₹${Number(o.totalAmount ?? 0).toLocaleString("en-IN")} [${o.status}]`
+                )
+                .join("\n")
+          );
+        }
+      }
+    }
+
+    // 3. If query explicitly asks about recent enquiries, orders, or order number / AWB
+    if (
+      /\b(enquir(?:y|ies)|order|orders|awb|tracking|dispatch|shipment|cc-\d+|ord[-_a-z0-9]+)\b/i.test(
+        q
+      )
+    ) {
+      const [recentEnq, recentOrd] = await Promise.all([
+        crm
+          .execute(
+            `SELECT brand, customer_name, customer_phone, smart_reply_text, assigned_staff_name, created_at FROM website_enquiry_sync_logs ORDER BY created_at DESC LIMIT 8`
+          )
+          .catch(() => ({ rows: [] as any[] })),
+        crm
+          .execute(
+            `SELECT order_number, customer_phone, items_summary, total_amount_inr, payment_status, fulfillment_status FROM customer_orders ORDER BY ordered_at DESC LIMIT 8`
+          )
+          .catch(() => ({ rows: [] as any[] })),
+      ]);
+      if (recentEnq.rows.length > 0) {
+        sections.push(
+          `RECENT ECOSYSTEM ENQUIRIES LOG:\n` +
+            recentEnq.rows
+              .map(
+                (e) =>
+                  `• [${e.brand}] ${e.customer_name} (${e.customer_phone}): "${String(e.smart_reply_text || "").slice(0, 100)}" [Assigned: ${e.assigned_staff_name || "Sales"}]`
+              )
+              .join("\n")
+        );
+      }
+      if (recentOrd.rows.length > 0) {
+        sections.push(
+          `RECENT ECOSYSTEM ORDERS LOG:\n` +
+            recentOrd.rows
+              .map(
+                (o) =>
+                  `• ${o.order_number} (${o.customer_phone}): ${o.items_summary} | ₹${Number(o.total_amount_inr ?? 0).toLocaleString("en-IN")} | Payment=${o.payment_status}, Status=${o.fulfillment_status}`
+              )
+              .join("\n")
+        );
+      }
+    }
+  } catch {
+    // Non-blocking operational context lookup
+  }
+
+  return sections.join("\n\n");
 }
