@@ -647,10 +647,19 @@ export default function TemplatesStudioPage() {
       issues.push("Message body cannot be empty.");
     } else if (
       category !== "AUTHENTICATION" &&
-      (/^\{\{\d+\}\}/.test(trimmedBody) || /\{\{\d+\}\}$/.test(trimmedBody))
+      (/^[*_~`]*\{\{\d+\}\}/.test(trimmedBody) ||
+        /\{\{\d+\}\}[*_~`]*$/.test(trimmedBody))
     ) {
       issues.push(
         "WhatsApp rejects messages that start or end directly with {{1}}. Add a word before or punctuation after."
+      );
+    }
+    if (
+      category === "UTILITY" &&
+      buttons.some((b) => b.type === "COPY_CODE")
+    ) {
+      issues.push(
+        "WhatsApp does not allow Copy Code buttons on Utility templates. Switch Category to Marketing for offer codes, or Authentication for OTP codes."
       );
     }
 
@@ -809,6 +818,18 @@ export default function TemplatesStudioPage() {
         return;
       }
       if (data.templateId) setEditingId(data.templateId);
+      if (data.effectiveCategory) {
+        setCategory(data.effectiveCategory);
+      }
+      if (typeof data.effectiveBodyText === "string" && data.effectiveBodyText) {
+        setBodyText(data.effectiveBodyText);
+      }
+      if (data.effectiveFooterText !== undefined) {
+        setFooterText(data.effectiveFooterText || "");
+      }
+      if (Array.isArray(data.effectiveButtons)) {
+        setButtons(data.effectiveButtons);
+      }
       notifySuccess(data.message || "Template saved.");
       await loadTemplatesData();
     } catch {
@@ -1272,6 +1293,12 @@ export default function TemplatesStudioPage() {
                   </select>
                 </div>
               </div>
+
+              {category === "AUTHENTICATION" && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Note: If Meta has temporarily paused Authentication (OTP) templates on your WhatsApp Business Account during display name or tier review, clicking Submit will safely keep this template saved as a Draft without creating rejected records on Meta. Marketing and Utility templates submit normally.
+                </div>
+              )}
 
               <div className="flex flex-wrap items-center justify-between gap-3 bg-neutral-50 border border-neutral-200 rounded-md px-3 py-2">
                 <label className="inline-flex items-center gap-2 cursor-pointer text-neutral-700">

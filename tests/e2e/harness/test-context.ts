@@ -2,6 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import module from "node:module";
+
+// Guarantee live ./data/*.db is never touched if a test file triggers DB bootstrap at import time
+if (!process.env.DATABASE_DATA_DIR) {
+  process.env.DATABASE_DATA_DIR = path.join(
+    os.tmpdir(),
+    `ccwa-test-boot-${process.pid}-${Date.now()}`
+  );
+}
+
 import {
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,

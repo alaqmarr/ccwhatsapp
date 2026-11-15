@@ -390,6 +390,7 @@ export async function POST(req: Request) {
     let metaTemplateId: string | null = null;
     let rejectionReason: string | null = null;
     let feedbackMsg = "Template saved as Draft.";
+    let savedButtons = buttons;
 
     if (action === "submit_to_meta") {
       const submitRes = await submitTemplateToMetaCloud(tplDef);
@@ -405,9 +406,25 @@ export async function POST(req: Request) {
       approvalStatus = submitRes.approvalStatus;
       metaTemplateId = submitRes.metaTemplateId || null;
       feedbackMsg = submitRes.message;
+      if (submitRes.effectiveCategory) {
+        tplDef.category = submitRes.effectiveCategory;
+        if (tplDef.category !== "AUTHENTICATION") {
+          tplDef.codeExpirationMinutes = null;
+        }
+      }
+      if (submitRes.effectiveBodyText) {
+        tplDef.bodyText = submitRes.effectiveBodyText;
+      }
+      if (submitRes.effectiveFooterText !== undefined) {
+        tplDef.footerText = submitRes.effectiveFooterText;
+      }
+      if (Array.isArray(submitRes.effectiveButtons)) {
+        savedButtons = submitRes.effectiveButtons;
+        tplDef.buttons = savedButtons;
+      }
     }
 
-    const firstUrlBtn = buttons.find((b) => b.type === "URL");
+    const firstUrlBtn = savedButtons.find((b) => b.type === "URL");
     const targetId = existingId || `tpl_${crypto.randomUUID().slice(0, 8)}`;
 
     if (existingId) {
@@ -445,7 +462,7 @@ export async function POST(req: Request) {
           tplDef.footerText || null,
           firstUrlBtn?.text || null,
           firstUrlBtn?.url || null,
-          JSON.stringify(buttons),
+          JSON.stringify(savedButtons),
           JSON.stringify(variablesSchema),
           metaTemplateId,
           approvalStatus,
@@ -478,7 +495,7 @@ export async function POST(req: Request) {
           tplDef.footerText || null,
           firstUrlBtn?.text || null,
           firstUrlBtn?.url || null,
-          JSON.stringify(buttons),
+          JSON.stringify(savedButtons),
           JSON.stringify(variablesSchema),
           metaTemplateId,
           approvalStatus,
@@ -501,6 +518,10 @@ export async function POST(req: Request) {
       ok: true,
       templateId: targetId,
       approvalStatus,
+      effectiveCategory: tplDef.category,
+      effectiveBodyText: tplDef.bodyText,
+      effectiveFooterText: tplDef.footerText,
+      effectiveButtons: savedButtons,
       warnings: validation.warnings,
       message: feedbackMsg,
     });
@@ -650,6 +671,7 @@ export async function POST(req: Request) {
 
     const headerType = String(t.header_type || "NONE");
     const headerMediaUrl = t.header_media_url ? String(t.header_media_url) : "";
+    const tplBtns = parseJsonSafe<WhatsAppTemplateButton[]>(t.buttons_json, []);
     const comps: Record<string, unknown>[] = [];
     if (
       (headerType === "IMAGE" ||
@@ -662,6 +684,25 @@ export async function POST(req: Request) {
         type: "header",
         parameters: [{ type: mk, [mk]: { link: headerMediaUrl } }],
       });
+    } else if (headerType === "LOCATION") {
+      const loc = parseJsonSafe<WhatsAppTemplateLocation | null>(
+        t.header_location_json,
+        null
+      );
+      comps.push({
+        type: "header",
+        parameters: [
+          {
+            type: "location",
+            location: {
+              name: loc?.name || "Classic Concepts",
+              address: loc?.address || "Rani Gunj, Secunderabad, Hyderabad",
+              latitude: String(loc?.latitude ?? 17.4326),
+              longitude: String(loc?.longitude ?? 78.4913),
+            },
+          },
+        ],
+      });
     }
     if (varSpecs.length > 0) {
       comps.push({
@@ -671,6 +712,28 @@ export async function POST(req: Request) {
           .map((v) => ({ type: "text", text: v.sampleValue || "Sample" })),
       });
     }
+    tplBtns.forEach((b, idx) => {
+      if (b.type === "COPY_CODE") {
+        comps.push({
+          type: "button",
+          sub_type: "copy_code",
+          index: String(idx),
+          parameters: [
+            { type: "coupon_code", coupon_code: b.exampleCode || "CLASSIC10" },
+          ],
+        });
+      } else if (
+        b.type === "URL" &&
+        (b.urlType === "DYNAMIC" || /\{\{1\}\}/.test(b.url || ""))
+      ) {
+        comps.push({
+          type: "button",
+          sub_type: "url",
+          index: String(idx),
+          parameters: [{ type: "text", text: b.exampleSuffix || "CC-2026" }],
+        });
+      }
+    });
 
     const sendRes = await sendWhatsAppCloudMessage({
       toPhone,

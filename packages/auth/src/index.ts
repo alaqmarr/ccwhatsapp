@@ -124,25 +124,38 @@ export async function getSetupStatus(): Promise<{
   if (cfgRes.rows[0]?.value_json) {
     try {
       const dbCfg = JSON.parse(String(cfgRes.rows[0].value_json));
+      const isValidId = (v: unknown) => /^\d{8,25}$/.test(String(v || "").trim());
+      const isValidTok = (v: unknown) => {
+        const s = String(v || "").trim();
+        return s.length >= 40 && !/(stress|dummy|mock|_test|placeholder)/i.test(s);
+      };
+      const pick = (dbV: unknown, envV: string, check?: (v: unknown) => boolean) => {
+        const d = String(dbV || "").trim();
+        const e = String(envV || "").trim();
+        if (d && (!envMeta.hasLiveCredentials || !check || check(d))) return d;
+        return e || d;
+      };
+      const dbHasValidLivePair =
+        isValidId(dbCfg.phoneNumberId) && isValidTok(dbCfg.systemUserAccessToken);
+
       facebookConfig = {
         ...facebookConfig,
         ...dbCfg,
         mode:
-          envMeta.hasLiveCredentials && (!dbCfg.phoneNumberId || dbCfg.mode === "LIVE_META_CLOUD")
+          envMeta.hasLiveCredentials && (!dbHasValidLivePair || dbCfg.mode === "LIVE_META_CLOUD")
             ? "LIVE_META_CLOUD"
             : dbCfg.mode || facebookConfig.mode,
-        businessPortfolioId: dbCfg.businessPortfolioId || envMeta.businessPortfolioId,
+        businessPortfolioId: pick(dbCfg.businessPortfolioId, envMeta.businessPortfolioId, isValidId),
         verifiedName: dbCfg.verifiedName || envMeta.verifiedName,
-        metaAppId: dbCfg.metaAppId || envMeta.metaAppId,
+        metaAppId: pick(dbCfg.metaAppId, envMeta.metaAppId, isValidId),
         metaAppSecret: dbCfg.metaAppSecret || envMeta.metaAppSecret,
-        wabaId: dbCfg.wabaId || envMeta.wabaId,
-        phoneNumberId: dbCfg.phoneNumberId || envMeta.phoneNumberId,
+        wabaId: pick(dbCfg.wabaId, envMeta.wabaId, isValidId),
+        phoneNumberId: pick(dbCfg.phoneNumberId, envMeta.phoneNumberId, isValidId),
         businessDisplayPhone:
           !dbCfg.businessDisplayPhone || dbCfg.businessDisplayPhone === "+91 73372 22876"
             ? envMeta.businessDisplayPhone || "+91 73372 20568"
             : dbCfg.businessDisplayPhone,
-        systemUserAccessToken:
-          dbCfg.systemUserAccessToken || envMeta.systemUserAccessToken,
+        systemUserAccessToken: pick(dbCfg.systemUserAccessToken, envMeta.systemUserAccessToken, isValidTok),
         webhookVerifyToken:
           dbCfg.webhookVerifyToken || envMeta.webhookVerifyToken || "cc_whatsapp_verify_2026",
         stepsCompleted: {

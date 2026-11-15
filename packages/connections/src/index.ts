@@ -252,6 +252,28 @@ export interface OutboundWhatsAppSendResult {
   isRateOrSpamBlock?: boolean;
 }
 
+function isLikelyValidMetaNumericId(val: string): boolean {
+  return /^\d{8,25}$/.test(val);
+}
+
+function isLikelyValidMetaToken(val: string): boolean {
+  return val.length >= 40 && !/(stress|dummy|mock|_test|placeholder)/i.test(val);
+}
+
+function pickMetaConfigValue(
+  dbVal: unknown,
+  envVal: string,
+  envHasLive: boolean,
+  validator?: (v: string) => boolean
+): string {
+  const d = String(dbVal || "").trim();
+  const e = String(envVal || "").trim();
+  if (d && (!envHasLive || !validator || validator(d))) {
+    return d;
+  }
+  return e || d;
+}
+
 async function loadMetaWhatsAppSetupConfig(): Promise<Record<string, unknown>> {
   await ensureDatabasesBootstrapped();
   const envMeta = resolveEnvMetaWhatsAppConfig();
@@ -267,21 +289,56 @@ async function loadMetaWhatsAppSetupConfig(): Promise<Record<string, unknown>> {
       dbCfg = {};
     }
   }
+
+  const resolvedWabaId = pickMetaConfigValue(
+    dbCfg.wabaId,
+    envMeta.wabaId,
+    envMeta.hasLiveCredentials,
+    isLikelyValidMetaNumericId
+  );
+  const resolvedPhoneNumberId = pickMetaConfigValue(
+    dbCfg.phoneNumberId,
+    envMeta.phoneNumberId,
+    envMeta.hasLiveCredentials,
+    isLikelyValidMetaNumericId
+  );
+  const resolvedToken = pickMetaConfigValue(
+    dbCfg.systemUserAccessToken,
+    envMeta.systemUserAccessToken,
+    envMeta.hasLiveCredentials,
+    isLikelyValidMetaToken
+  );
+  const resolvedAppId = pickMetaConfigValue(
+    dbCfg.metaAppId,
+    envMeta.metaAppId,
+    envMeta.hasLiveCredentials,
+    isLikelyValidMetaNumericId
+  );
+  const resolvedPortfolioId = pickMetaConfigValue(
+    dbCfg.businessPortfolioId,
+    envMeta.businessPortfolioId,
+    envMeta.hasLiveCredentials,
+    isLikelyValidMetaNumericId
+  );
+
+  const dbHasValidLivePair =
+    isLikelyValidMetaNumericId(String(dbCfg.phoneNumberId || "").trim()) &&
+    isLikelyValidMetaToken(String(dbCfg.systemUserAccessToken || "").trim());
+
   return {
     ...dbCfg,
     mode:
-      envMeta.hasLiveCredentials && (!dbCfg.phoneNumberId || dbCfg.mode === "LIVE_META_CLOUD")
+      envMeta.hasLiveCredentials && (!dbHasValidLivePair || dbCfg.mode === "LIVE_META_CLOUD")
         ? "LIVE_META_CLOUD"
         : dbCfg.mode || envMeta.mode,
-    businessPortfolioId: dbCfg.businessPortfolioId || envMeta.businessPortfolioId,
+    businessPortfolioId: resolvedPortfolioId,
     verifiedName: dbCfg.verifiedName || envMeta.verifiedName,
-    wabaId: dbCfg.wabaId || envMeta.wabaId,
-    phoneNumberId: dbCfg.phoneNumberId || envMeta.phoneNumberId,
+    wabaId: resolvedWabaId,
+    phoneNumberId: resolvedPhoneNumberId,
     businessDisplayPhone: dbCfg.businessDisplayPhone || envMeta.businessDisplayPhone,
-    systemUserAccessToken:
-      dbCfg.systemUserAccessToken || envMeta.systemUserAccessToken,
+    systemUserAccessToken: resolvedToken,
     webhookVerifyToken: dbCfg.webhookVerifyToken || envMeta.webhookVerifyToken,
-    metaAppId: dbCfg.metaAppId || envMeta.metaAppId,
+    metaAppId: resolvedAppId,
     metaAppSecret: dbCfg.metaAppSecret || envMeta.metaAppSecret,
   };
 }
@@ -517,7 +574,10 @@ export function validateWhatsAppTemplateRules(
   }
 
   if (tpl.category !== "AUTHENTICATION" && body) {
-    if (/^\{\{\d+\}\}/.test(body) || /\{\{\d+\}\}$/.test(body)) {
+    if (
+      /^[*_~`]*\{\{\d+\}\}/.test(body) ||
+      /\{\{\d+\}\}[*_~`]*$/.test(body)
+    ) {
       errors.push(
         "Meta rejects templates that start or end directly with a {{variable}}. Add a greeting word before {{1}} or punctuation/words at the end."
       );
@@ -581,6 +641,11 @@ export function validateWhatsAppTemplateRules(
   if (copyButtons.length > 1) {
     errors.push("WhatsApp allows at most 1 copy-code button per template.");
   }
+  if (tpl.category === "UTILITY" && copyButtons.length > 0) {
+    errors.push(
+      "WhatsApp does not allow Copy Code buttons on Utility templates. Switch Category to Marketing for offer codes, or Authentication for OTP codes."
+    );
+  }
 
   for (const btn of tpl.buttons) {
     if (!btn.text.trim() && btn.type !== "OTP") {
@@ -599,7 +664,7 @@ export function validateWhatsAppTemplateRules(
       }
       if (btn.url && /\b(bit\.ly|tinyurl\.com|t\.co)\b/i.test(btn.url)) {
         warnings.push(
-          "Meta often rejects public URL shorteners like bit.ly. Use https://whatsapp.ccapl.cc/l/... short links instead."
+          "Meta often rejects public URL shorteners like bit.ly. Use https://ccapl.cc/... short links instead."
         );
       }
     }
@@ -627,8 +692,174 @@ export function validateWhatsAppTemplateRules(
   return { valid: errors.length === 0, errors, warnings };
 }
 
+const SAMPLE_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+function buildMinimalPdfBuffer(): Buffer {
+  return Buffer.from(
+    "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 200 200]/Parent 2 0 R>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000052 00000 n \n0000000101 00000 n \ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n168\n%%EOF\n",
+    "utf8"
+  );
+}
+
+function buildMinimalMp4Buffer(): Buffer {
+  // Minimal valid ISO-BMFF ftyp + empty moov header accepted as MP4 sample
+  return Buffer.from(
+    "00000018667479706d703432000000006d70343269736f6d000000086d646174",
+    "hex"
+  );
+}
+
+async function resolveMetaAppIdForUpload(
+  configuredAppId: string,
+  accessToken: string
+): Promise<string> {
+  if (/^\d{8,25}$/.test(configuredAppId)) {
+    return configuredAppId;
+  }
+  try {
+    const res = await fetch(
+      `https://graph.facebook.com/v21.0/debug_token?input_token=${encodeURIComponent(
+        accessToken
+      )}&access_token=${encodeURIComponent(accessToken)}`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) return "";
+    const json: any = await res.json().catch(() => null);
+    const appId = String(json?.data?.app_id || "").trim();
+    return /^\d{8,25}$/.test(appId) ? appId : "";
+  } catch {
+    return "";
+  }
+}
+
+async function uploadSampleMediaForTemplateHeader(params: {
+  mediaUrl: string;
+  headerType: "IMAGE" | "VIDEO" | "DOCUMENT";
+  accessToken: string;
+  metaAppId?: string;
+}): Promise<string> {
+  const raw = params.mediaUrl.trim();
+  if (!raw || raw.startsWith("4:")) {
+    return raw;
+  }
+
+  const appId = await resolveMetaAppIdForUpload(
+    String(params.metaAppId || "").trim(),
+    params.accessToken
+  );
+  if (!appId) {
+    return raw;
+  }
+
+  let fileBuf: Buffer | null = null;
+  let fileType =
+    params.headerType === "IMAGE"
+      ? "image/png"
+      : params.headerType === "DOCUMENT"
+      ? "application/pdf"
+      : "video/mp4";
+  let fileName =
+    params.headerType === "IMAGE"
+      ? "sample.png"
+      : params.headerType === "DOCUMENT"
+      ? "sample.pdf"
+      : "sample.mp4";
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const dl = await fetch(raw, { signal: AbortSignal.timeout(8000) });
+      if (dl.ok) {
+        const arr = await dl.arrayBuffer();
+        if (arr.byteLength > 0 && arr.byteLength <= 15 * 1024 * 1024) {
+          fileBuf = Buffer.from(arr);
+          const ct = String(dl.headers.get("content-type") || "")
+            .split(";")[0]
+            .trim()
+            .toLowerCase();
+          if (params.headerType === "IMAGE") {
+            if (ct === "image/jpeg" || ct === "image/jpg" || /\.jpe?g(\?|$)/i.test(raw)) {
+              fileType = "image/jpeg";
+              fileName = "sample.jpg";
+            } else {
+              fileType = "image/png";
+              fileName = "sample.png";
+            }
+          } else if (params.headerType === "DOCUMENT") {
+            fileType = "application/pdf";
+            fileName = "sample.pdf";
+          } else if (params.headerType === "VIDEO") {
+            fileType = "video/mp4";
+            fileName = "sample.mp4";
+          }
+        }
+      }
+    } catch {
+      fileBuf = null;
+    }
+  }
+
+  if (!fileBuf || fileBuf.length === 0) {
+    if (params.headerType === "IMAGE") {
+      fileBuf = Buffer.from(SAMPLE_PNG_BASE64, "base64");
+      fileType = "image/png";
+      fileName = "sample.png";
+    } else if (params.headerType === "DOCUMENT") {
+      fileBuf = buildMinimalPdfBuffer();
+      fileType = "application/pdf";
+      fileName = "sample.pdf";
+    } else {
+      fileBuf = buildMinimalMp4Buffer();
+      fileType = "video/mp4";
+      fileName = "sample.mp4";
+    }
+  }
+
+  try {
+    const sessionRes = await fetch(
+      `https://graph.facebook.com/v21.0/${encodeURIComponent(
+        appId
+      )}/uploads?file_name=${encodeURIComponent(
+        fileName
+      )}&file_length=${fileBuf.length}&file_type=${encodeURIComponent(fileType)}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${params.accessToken}`,
+        },
+        signal: AbortSignal.timeout(12000),
+      }
+    );
+    const sessionJson: any = await sessionRes.json().catch(() => null);
+    const sessionId = String(sessionJson?.id || "").trim();
+    if (!sessionRes.ok || !sessionId) {
+      return raw;
+    }
+
+    const uploadRes = await fetch(
+      `https://graph.facebook.com/v21.0/${sessionId}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `OAuth ${params.accessToken}`,
+          file_offset: "0",
+          "Content-Type": "application/octet-stream",
+        },
+        body: new Uint8Array(fileBuf),
+        signal: AbortSignal.timeout(20000),
+      }
+    );
+    const uploadJson: any = await uploadRes.json().catch(() => null);
+    const handle = String(uploadJson?.h || "").trim();
+    return uploadRes.ok && handle ? handle : raw;
+  } catch {
+    return raw;
+  }
+}
+
 export function buildMetaGraphTemplatePayload(
-  tpl: WhatsAppTemplateDefinition
+  tpl: WhatsAppTemplateDefinition,
+  resolvedHeaderHandle?: string
 ): Record<string, unknown> {
   const components: Record<string, unknown>[] = [];
 
@@ -649,7 +880,6 @@ export function buildMetaGraphTemplatePayload(
         {
           type: "OTP",
           otp_type: "COPY_CODE",
-          text: tpl.buttons[0]?.text || "Copy Code",
         },
       ],
     });
@@ -690,7 +920,7 @@ export function buildMetaGraphTemplatePayload(
       type: "HEADER",
       format: tpl.headerType,
       example: {
-        header_handle: [tpl.headerMediaUrl.trim()],
+        header_handle: [resolvedHeaderHandle || tpl.headerMediaUrl.trim()],
       },
     });
   } else if (tpl.headerType === "LOCATION") {
@@ -793,6 +1023,10 @@ export async function submitTemplateToMetaCloud(
   approvalStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED" | "DRAFT";
   message: string;
   error?: string;
+  effectiveCategory?: WhatsAppTemplateCategory;
+  effectiveBodyText?: string;
+  effectiveFooterText?: string | null;
+  effectiveButtons?: WhatsAppTemplateButton[];
 }> {
   const validation = validateWhatsAppTemplateRules(tpl);
   if (!validation.valid) {
@@ -810,39 +1044,91 @@ export async function submitTemplateToMetaCloud(
   const mode = String(cfg.mode || "SANDBOX_SIMULATOR");
   const wabaId = String(cfg.wabaId || "").trim();
   const accessToken = String(cfg.systemUserAccessToken || "").trim();
-  const metaPayload = buildMetaGraphTemplatePayload(tpl);
+  const metaAppId = String(cfg.metaAppId || "").trim();
 
   if (mode === "LIVE_META_CLOUD" && wabaId && accessToken) {
     try {
-      const res = await fetch(
-        `https://graph.facebook.com/v21.0/${encodeURIComponent(
-          wabaId
-        )}/message_templates`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(metaPayload),
-          signal: AbortSignal.timeout(20000),
-        }
+      let resolvedHeaderHandle: string | undefined;
+      if (
+        (tpl.headerType === "IMAGE" ||
+          tpl.headerType === "VIDEO" ||
+          tpl.headerType === "DOCUMENT") &&
+        tpl.headerMediaUrl?.trim()
+      ) {
+        resolvedHeaderHandle = await uploadSampleMediaForTemplateHeader({
+          mediaUrl: tpl.headerMediaUrl.trim(),
+          headerType: tpl.headerType,
+          accessToken,
+          metaAppId,
+        });
+      }
+
+      const metaPayload = buildMetaGraphTemplatePayload(
+        tpl,
+        resolvedHeaderHandle
       );
-      const data: any = await res.json().catch(() => ({}));
+
+      const postToMeta = async (payload: Record<string, unknown>) => {
+        const response = await fetch(
+          `https://graph.facebook.com/v21.0/${encodeURIComponent(
+            wabaId
+          )}/message_templates`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(20000),
+          }
+        );
+        const bodyJson: any = await response.json().catch(() => ({}));
+        return { response, bodyJson };
+      };
+
+      const { response: res, bodyJson: data } = await postToMeta(metaPayload);
+
       if (!res.ok) {
+        const subcode = Number(data?.error?.error_subcode || 0);
+        const rawErrMsg = String(
+          data?.error?.error_user_msg ||
+            data?.error?.message ||
+            `Meta Graph HTTP ${res.status}`
+        );
+
+        // Meta temporarily restricts AUTHENTICATION template creation via API on
+        // Tier-250 WABAs until display-name review completes (subcode 2388185).
+        // Do NOT disguise OTP wording as UTILITY (Meta auto-rejects OTP copy under
+        // UTILITY and penalizes WABA quality); instead save cleanly as DRAFT so it
+        // can be submitted as soon as Meta unlocks Authentication.
+        if (
+          tpl.category === "AUTHENTICATION" &&
+          (subcode === 2388185 ||
+            /permission to create message template/i.test(rawErrMsg))
+        ) {
+          return {
+            ok: true,
+            mode: "LIVE_META_CLOUD",
+            metaTemplateId: "",
+            approvalStatus: "DRAFT",
+            message:
+              "Saved as Draft: Meta has temporarily paused Authentication (OTP) template creation on this WhatsApp Business Account until display name approval completes. Marketing and Utility templates submit normally right now.",
+          };
+        }
+
+        const friendlyError =
+          subcode === 2388185
+            ? `${rawErrMsg}. Check in Meta Business Settings that your System User token has Full Control on WhatsApp Business Account ${wabaId}.`
+            : rawErrMsg;
+
         return {
           ok: false,
           mode: "LIVE_META_CLOUD",
           metaTemplateId: "",
           approvalStatus: "REJECTED",
-          message:
-            data?.error?.error_user_msg ||
-            data?.error?.message ||
-            `Meta Graph HTTP ${res.status}`,
-          error:
-            data?.error?.error_user_msg ||
-            data?.error?.message ||
-            `Meta Graph HTTP ${res.status}`,
+          message: friendlyError,
+          error: friendlyError,
         };
       }
 

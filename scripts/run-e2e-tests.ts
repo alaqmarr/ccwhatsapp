@@ -1,5 +1,15 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+
+// Guarantee live ./data/*.db is never touched even if a suite runs top-level DB imports
+if (!process.env.DATABASE_DATA_DIR) {
+  process.env.DATABASE_DATA_DIR = path.join(
+    os.tmpdir(),
+    `ccwa-test-boot-${process.pid}-${Date.now()}`
+  );
+}
+
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import {
