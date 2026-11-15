@@ -58,7 +58,7 @@ export async function GET() {
   await ensureDatabasesBootstrapped();
   const mkt = getRawLibSqlClient("marketing");
   const bill = getRawLibSqlClient("billing_ops");
-  const auth = getRawLibSqlClient("core_auth");
+  const conv = getRawLibSqlClient("conversations");
 
   const catalog = await getCachedEcosystemCatalog().catch(() => ({
     classicConceptsProducts: [],
@@ -71,7 +71,7 @@ export async function GET() {
     ),
     bill.execute(`SELECT * FROM pricing_config WHERE id = 'default' LIMIT 1`),
     listCustomAdminLinks(),
-    auth.execute(`SELECT id, name FROM teams ORDER BY name ASC`),
+    conv.execute(`SELECT id, name FROM teams ORDER BY priority_rank ASC, name ASC`),
   ]);
 
   const pRow = (pricingRes.rows[0] || {}) as Record<string, unknown>;
