@@ -2946,13 +2946,13 @@ const SEARCH_STOPWORDS = new Set([
 
 const DOMAIN_SYNONYM_GROUPS: string[][] = [
   ["podium", "podiums", "pulpit", "pulpits", "lectern", "lecterns", "rostrum", "speech", "stage", "auditorium", "ccp"],
-  ["trophy", "trophies", "award", "awards", "memento", "mementos", "plaque", "plaques", "shield", "shields", "medal"],
+  ["trophy", "trophies", "award", "awards", "memento", "mementos", "plaque", "plaques", "shield", "shields", "medal", "gift", "gifts", "gifting"],
   ["menu", "menus", "tent", "qr", "standee", "holder", "holders", "brochure", "leaflet", "pamphlet", "flyer"],
   ["donation", "charity", "ballot", "suggestion", "lottery", "drop"],
   ["saree", "garment", "showcase", "riser", "risers", "turntable", "merchandise", "retail"],
-  ["table", "tables", "chair", "chairs", "stool", "stools", "desk", "desks", "furniture", "bedside", "coffee", "dining"],
+  ["table", "tables", "chair", "chairs", "stool", "stools", "desk", "desks", "furniture", "bedside", "coffee", "dining", "interior", "interiors", "interiora", "furnishings"],
   ["tray", "trays", "dispenser", "dispensers", "candy", "lollipop", "beverage", "juice"],
-  ["signage", "sign", "nameplate", "board", "boards", "keychain", "keychains", "badge", "badges"],
+  ["signage", "signages", "sign", "nameplate", "nameplates", "board", "boards", "keychain", "keychains", "badge", "badges"],
   ["polisher", "polishing", "buffing", "diamond"],
   ["bender", "bending", "heater", "heating"],
   ["router", "cnc", "laser", "cutter", "cutting", "blade", "blades"],
@@ -2967,28 +2967,51 @@ export interface EcosystemSearchOptions {
   excludedItemTypes?: ("PRODUCT" | "MACHINE" | "CONSUMABLE")[];
   productFamily?: string | null;
   preferPremium?: boolean;
+  preferCheapest?: boolean;
   includeUnpricedOnBudget?: boolean;
+  excludeSlugs?: string[];
 }
 
 export function extractBudgetConstraintsFromQuery(rawQuery: string): {
   maxPrice: number | null;
   minPrice: number | null;
+  isPerPiece?: boolean;
+  isTotalProjectBudget?: boolean;
 } {
   const normalized = String(rawQuery || "").replace(/,/g, "").toLowerCase();
   let maxPrice: number | null = null;
   let minPrice: number | null = null;
 
-  const parseAmount = (numStr: string, kSuffix?: string): number | null => {
+  const isPerPiece = /\b(per\s*(?:piece|pc|unit|item|podium|chair|table|gift|memento|plate|sign)|each|apiece)\b/i.test(
+    normalized
+  );
+  const isTotalProjectBudget =
+    !isPerPiece &&
+    (/\b(total\s*budget|overall\s*budget|project\s*budget|renovat(?:e|ion)|all\s*together|combined|combinations?\s*accordingly)\b/i.test(
+      normalized
+    ) ||
+      /\b(lac|lacs|lakh|lakhs|cr|crore)\b/i.test(normalized));
+
+  const parseAmount = (numStr: string, unitSuffix?: string): number | null => {
     const val = parseFloat(numStr);
     if (!Number.isFinite(val) || val <= 0) return null;
-    const computed = kSuffix ? Math.round(val * 1000) : Math.round(val);
-    // Avoid mistaking small quantities (e.g. "need 5" or "10mm") for a Rupee budget unless "k" or currency symbol is present
-    if (!kSuffix && computed < 250) return null;
+    const suffix = (unitSuffix || "").toLowerCase().trim();
+    let multiplier = 1;
+    if (suffix === "k" || suffix === "thousand") {
+      multiplier = 1000;
+    } else if (/^(lac|lacs|lakh|lakhs)$/.test(suffix)) {
+      multiplier = 100000;
+    } else if (/^(cr|crore|crores)$/.test(suffix)) {
+      multiplier = 10000000;
+    }
+    const computed = Math.round(val * multiplier);
+    // Avoid mistaking small quantities (e.g. "need 5" or "10mm") for a Rupee budget unless unit suffix or currency symbol is present
+    if (multiplier === 1 && computed < 250) return null;
     return computed;
   };
 
   const maxRe =
-    /\b(?:under|below|within|upto|up\s*to|less\s*than|max|maximum|(?:increase|raise|extend|stretch|push|bump|change|update|set)?\s*(?:the\s*|my\s*|our\s*)?budget(?:\s*(?:of|is|to|upto|up\s*to|around))?|(?:stretch|go|increase|raise|make\s*it)(?:\s*up)?\s*to)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/gi;
+    /\b(?:under|below|within|upto|up\s*to|less\s*than|max|maximum|(?:increase|raise|extend|stretch|push|bump|change|update|set)?\s*(?:the\s*|my\s*|our\s*)?budget(?:\s*(?:of|is|to|upto|up\s*to|around|for))?|(?:stretch|go|increase|raise|make\s*it)(?:\s*up)?\s*to)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k|thousand|lac|lacs|lakh|lakhs|cr|crore|crores)?\b/gi;
   for (const m of normalized.matchAll(maxRe)) {
     if (m[1]) {
       const parsed = parseAmount(m[1], m[2]);
@@ -2996,22 +3019,22 @@ export function extractBudgetConstraintsFromQuery(rawQuery: string): {
     }
   }
 
-  // Also catch standalone currency ceiling like "around ₹30000" or "₹30,000 budget"
+  // Also catch standalone currency ceiling like "around ₹30000", "around 1 lac rupees", or "₹30,000 budget"
   if (maxPrice === null) {
     const altMaxRe =
-      /(?:(?:rs\.?|inr|₹)\s*(\d+(?:\.\d+)?)\s*(k)?\s*(?:max|maximum|budget|limit|or\s*less))|(?:\baround\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b)/gi;
+      /(?:(?:rs\.?|inr|₹)\s*(\d+(?:\.\d+)?)\s*(k|thousand|lac|lacs|lakh|lakhs)?\s*(?:max|maximum|budget|limit|or\s*less))|(?:\baround\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k|thousand|lac|lacs|lakh|lakhs)?\s*(?:rs\.?|inr|rupees|₹)?\b)|(?:\b(\d+(?:\.\d+)?)\s*(lac|lacs|lakh|lakhs)\s*(?:rs\.?|inr|rupees|budget)?\b)/gi;
     for (const m of normalized.matchAll(altMaxRe)) {
-      const num = m[1] || m[3];
-      const k = m[2] || m[4];
+      const num = m[1] || m[3] || m[5];
+      const unit = m[2] || m[4] || m[6];
       if (num) {
-        const parsed = parseAmount(num, k);
+        const parsed = parseAmount(num, unit);
         if (parsed !== null) maxPrice = parsed;
       }
     }
   }
 
   const minRe =
-    /\b(?:above|over|more\s*than|min|minimum|starting(?:\s*from)?|at\s*least)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/gi;
+    /\b(?:above|over|more\s*than|min|minimum|starting(?:\s*from)?|at\s*least)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k|thousand|lac|lacs|lakh|lakhs)?\b/gi;
   for (const m of normalized.matchAll(minRe)) {
     if (m[1]) {
       const parsed = parseAmount(m[1], m[2]);
@@ -3020,7 +3043,7 @@ export function extractBudgetConstraintsFromQuery(rawQuery: string): {
   }
 
   const rangeRe =
-    /\bbetween\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\s*(?:and|to|-)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/gi;
+    /\bbetween\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k|thousand|lac|lacs|lakh|lakhs)?\s*(?:and|to|-)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k|thousand|lac|lacs|lakh|lakhs)?\b/gi;
   for (const m of normalized.matchAll(rangeRe)) {
     if (m[1] && m[3]) {
       const pMin = parseAmount(m[1], m[2]);
@@ -3030,7 +3053,7 @@ export function extractBudgetConstraintsFromQuery(rawQuery: string): {
     }
   }
 
-  return { maxPrice, minPrice };
+  return { maxPrice, minPrice, isPerPiece, isTotalProjectBudget };
 }
 
 function tokenizeWords(text: string): string[] {
@@ -3175,11 +3198,20 @@ export function searchEcosystemItems(
     options?.maxPrice !== undefined ? options.maxPrice : extractedBudget.maxPrice;
   const minPrice =
     options?.minPrice !== undefined ? options.minPrice : extractedBudget.minPrice;
-  const preferPremium =
-    options?.preferPremium ??
-    /\b(most\s*premium|premium|high\s*end|best\s*quality|top\s*model|flagship|luxury|heaviest)\b/i.test(
+  const preferCheapest =
+    options?.preferCheapest ??
+    /\b(cheapest|lowest\s*price|least\s*expensive|minimum\s*price|starting\s*(?:price|model|range)|most\s*affordable|economy\s*model|sasta|sabse\s*sasta|kam\s*price|smaller\s*top\s*to\s*save|save\s*more|cheaper\s*alternative|cheaper\s*option|lower\s*cost)\b/i.test(
       q
     );
+  const preferPremium =
+    !preferCheapest &&
+    (options?.preferPremium ??
+      /\b(costliest|most\s*expensive|highest\s*price|most\s*premium|premium|high\s*end|best\s*quality|top\s*model|flagship|luxury|heaviest|mehenga|sabse\s*mehenga)\b/i.test(
+        q
+      ));
+  const excludeSlugSet = new Set<string>(
+    (options?.excludeSlugs || []).map((s) => s.toLowerCase().trim())
+  );
 
   // Strip currency amounts AND negated clauses ("not looking for tools") so negated terms never match positively
   const queryWithoutPricesAndNegations = q
@@ -3187,9 +3219,9 @@ export function searchEcosystemItems(
       /\b(?:not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|exclude|excluding|skip)\s+(?:any\s+)?(?:tools?|consumables?|blades?|cutters?|solvents?|accessories|machines?)\b/gi,
       " "
     )
-    .replace(/(?:rs\.?|inr|₹)\s*[\d,]+(?:\.\d+)?\s*k?\b/gi, " ")
+    .replace(/(?:rs\.?|inr|₹)\s*[\d,]+(?:\.\d+)?\s*(?:k|thousand|lac|lacs|lakh|lakhs|cr|crore|crores)?\b/gi, " ")
     .replace(
-      /\b(?:under|below|within|upto|up\s*to|above|over|budget(?:\s*(?:of|is|to))?|increase|raise|extend|stretch)\s*(?:the\s*|my\s*|our\s*)?(?:budget\s*(?:to|of|is)?\s*)?(?:rs\.?|inr|₹)?\s*[\d,]+(?:\.\d+)?\s*k?\b/gi,
+      /\b(?:under|below|within|upto|up\s*to|above|over|around|budget(?:\s*(?:of|is|to|around))?|increase|raise|extend|stretch)\s*(?:the\s*|my\s*|our\s*)?(?:budget\s*(?:to|of|is|around)?\s*)?(?:rs\.?|inr|₹)?\s*[\d,]+(?:\.\d+)?\s*(?:k|thousand|lac|lacs|lakh|lakhs|cr|crore|crores)?\s*(?:rupees|rs\.?|inr|₹)?\b/gi,
       " "
     );
 
@@ -3216,6 +3248,9 @@ export function searchEcosystemItems(
       t !== "raise" &&
       t !== "stretch" &&
       t !== "premium" &&
+      t !== "cheapest" &&
+      t !== "cheaper" &&
+      t !== "alternative" &&
       t !== "ones" &&
       t !== "actually" &&
       t !== "compare" &&
@@ -3234,7 +3269,7 @@ export function searchEcosystemItems(
       : [];
 
   if (directTokens.length === 0 && explicitCodes.length === 0) {
-    if (maxPrice !== null || minPrice !== null) {
+    if (maxPrice !== null || minPrice !== null || preferCheapest || preferPremium) {
       const pricedPool = cleanItems.filter((it) => {
         if (typeof it.basePrice !== "number" || it.basePrice <= 0) return false;
         if (maxPrice !== null && it.basePrice > maxPrice) return false;
@@ -3268,13 +3303,29 @@ export function searchEcosystemItems(
 
   const queryDims = extractCompactDimensionPairsFromText(searchQuery);
   const wantsTopSurface = /\b(top\s*surface|top\s*sheet|reading\s*top|reading\s*surface|top\s*panel|top\s*size|top)\b/i.test(q);
+  const wantsSmallerTop = /\b(smaller\s*top|compact\s*top|narrow\s*top|single\s*pillar|save\s*more|cheaper\s*alternative)\b/i.test(q);
   const hasExplicitEdgeModel = explicitCodes.some((c) =>
     /^(ynjw|abm|ce53|cw\d|f308|f500|sd\d|jw\d|zd\d|d30|celc|cecnc|cefp|ceto)/.test(c)
   );
   const hasExplicitCcCode = explicitCodes.some((c) => /^ccp\d/.test(c));
 
+  const wantsFurniture =
+    options?.productFamily === "furniture" ||
+    /\b(furniture|interior|interiors|interiora|decor|table|tables|chair|chairs|stool|stools|desk|desks|console|bench|seating|sit)\b/i.test(
+      queryWithoutPricesAndNegations
+    );
+  const wantsSignage =
+    options?.productFamily === "signage" ||
+    /\b(signage|signages|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|door\s*sign|directional\s*sign)\b/i.test(
+      queryWithoutPricesAndNegations
+    );
+  const wantsCorporateGift =
+    options?.productFamily === "corporate_gift" ||
+    /\b(gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|keychain|keychains|coaster|coasters|desk\s*organizer)\b/i.test(
+      queryWithoutPricesAndNegations
+    );
   const wantsPodium =
-    options?.productFamily === "podium" ||
+    (!wantsFurniture && !wantsSignage && !wantsCorporateGift && options?.productFamily === "podium") ||
     hasExplicitCcCode ||
     /\b(pulpit|pulpits|podium|podiums|lectern|lecterns|rostrum|rostrums)\b/i.test(
       queryWithoutPricesAndNegations
@@ -3282,12 +3333,13 @@ export function searchEcosystemItems(
   const wantsAward =
     options?.productFamily === "trophy" ||
     (!wantsPodium &&
+      !wantsFurniture &&
       /\b(trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|shield|shields)\b/i.test(
         queryWithoutPricesAndNegations
       ));
   const wantsTray =
     options?.productFamily === "tray_hospitality" ||
-    /\b(tray|trays|coaster|coasters)\b/i.test(queryWithoutPricesAndNegations);
+    (!wantsCorporateGift && /\b(tray|trays|coaster|coasters)\b/i.test(queryWithoutPricesAndNegations));
   const wantsStandOrHolder =
     options?.productFamily === "stand" ||
     /\b(menu|qr\s*stand|tent\s*card|table\s*stand|sign\s*holder|brochure|leaflet|pamphlet)\b/i.test(
@@ -3306,52 +3358,119 @@ export function searchEcosystemItems(
   const wantsDisplayProduct =
     options?.brand === "CLASSIC_CONCEPTS" ||
     wantsPodium ||
+    wantsFurniture ||
+    wantsSignage ||
+    wantsCorporateGift ||
     wantsAward ||
     wantsTray ||
     wantsStandOrHolder ||
-    /\b(saree|donation|ballot|table|chair|stool|furniture|riser|signage|nameplate|keychain|cake\s*stand|cosmetic|jewelry|jewellery|watch\s*stand|eyewear|book\s*stand|quran|rehal|bible)\b/i.test(
+    /\b(saree|donation|ballot|table|chair|stool|furniture|interior|interiora|riser|signage|nameplate|keychain|cake\s*stand|cosmetic|jewelry|jewellery|watch\s*stand|eyewear|book\s*stand|quran|rehal|bible)\b/i.test(
       queryWithoutPricesAndNegations
     );
 
   const scored: { item: MainWebsiteProduct; score: number }[] = [];
 
   for (const item of cleanItems) {
-    // 1. Strict business routing (CLASSIC_CONCEPTS vs CLASSIC_EDGE_53)
-    if (wantsDisplayProduct && !wantsMachineOrTool && item.brand !== "CLASSIC_CONCEPTS") {
-      continue;
-    }
-    if (wantsMachineOrTool && !wantsDisplayProduct && item.brand !== "CLASSIC_EDGE_53") {
-      continue;
+    const skuLower = (item.sku || "").toLowerCase();
+    const skuCompact = skuLower.replace(/[-_\s]+/g, "").replace(/^ccpo(\d)/, "ccp0$1");
+    const slugCompact = (item.slug || "").toLowerCase().replace(/[-_\s]+/g, "");
+    const modelLower = (
+      item.modelsSummary ||
+      (item.models || []).map((m) => m.modelName).join(" ") ||
+      ""
+    ).toLowerCase();
+    const modelCompact = modelLower.replace(/[-_\s]+/g, "");
+
+    const isExplicitCodeHit =
+      explicitCodes.length > 0 &&
+      explicitCodes.some(
+        (code) =>
+          skuCompact === code ||
+          skuCompact.includes(code) ||
+          slugCompact.includes(code) ||
+          modelCompact.includes(code)
+      );
+
+    // 1. Strict business routing (CLASSIC_CONCEPTS vs CLASSIC_EDGE_53) unless explicitly named by SKU
+    if (!isExplicitCodeHit) {
+      if (wantsDisplayProduct && !wantsMachineOrTool && item.brand !== "CLASSIC_CONCEPTS") {
+        continue;
+      }
+      if (wantsMachineOrTool && !wantsDisplayProduct && item.brand !== "CLASSIC_EDGE_53") {
+        continue;
+      }
     }
 
-    // 2. Strict category / product-family isolation
+    // 2. Strict category / product-family isolation (bypassed when item matches an explicit SKU in query)
     const combinedTaxonomy = `${item.name} ${item.categoryName} ${item.sku || ""}`;
-    if (wantsPodium && !/\b(podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum)\b|^ccp\d/i.test(combinedTaxonomy)) {
-      continue;
-    }
-    if (
-      wantsAward &&
-      (!/\b(trophy|trophies|award|awards|memento|mementos|plaque|plaques|medal|medals|shield|shields)\b/i.test(
-        combinedTaxonomy
-      ) ||
-        /\b(podium|pulpit|lectern|tray|machine|oven)\b/i.test(combinedTaxonomy))
-    ) {
-      continue;
-    }
-    if (
-      wantsTray &&
-      /\b(podium|pulpit|lectern|trophy|award|machine|oven|tube|keyway)\b/i.test(
-        combinedTaxonomy
-      )
-    ) {
-      continue;
+    if (!isExplicitCodeHit) {
+      if (wantsPodium && !wantsFurniture && !wantsSignage && !wantsCorporateGift) {
+        if (!/\b(podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum)\b|^ccp\d/i.test(combinedTaxonomy)) {
+          continue;
+        }
+      }
+      if (wantsFurniture && !wantsPodium) {
+        if (
+          !/\b(furniture|table|tables|chair|chairs|stool|stools|desk|console|bench|pedestal)\b/i.test(
+            combinedTaxonomy
+          ) ||
+          /\b(podium|pulpit|lectern|rostrum|machine|oven)\b/i.test(combinedTaxonomy)
+        ) {
+          continue;
+        }
+      }
+      if (wantsSignage && !wantsPodium && !wantsFurniture) {
+        if (
+          !/\b(sign|signage|name\s*plate|nameplate|name\s*board|frame|holder|display)\b/i.test(
+            combinedTaxonomy
+          ) ||
+          /\b(podium|pulpit|lectern|machine|oven)\b/i.test(combinedTaxonomy)
+        ) {
+          continue;
+        }
+      }
+      if (wantsCorporateGift && !wantsPodium && !wantsFurniture) {
+        if (
+          !/\b(trophy|trophies|memento|mementos|award|awards|plaque|gift|paper\s*weight|paperweight|pen\s*stand|keychain|coaster|tray|organizer|tissue|frame|stand|holder)\b/i.test(
+            combinedTaxonomy
+          ) ||
+          /\b(podium|pulpit|lectern|machine|oven|sheet|rod|tube)\b/i.test(combinedTaxonomy)
+        ) {
+          continue;
+        }
+      }
+      if (
+        wantsAward &&
+        !wantsCorporateGift &&
+        (!/\b(trophy|trophies|award|awards|memento|mementos|plaque|plaques|medal|medals|shield|shields)\b/i.test(
+          combinedTaxonomy
+        ) ||
+          /\b(podium|pulpit|lectern|tray|machine|oven)\b/i.test(combinedTaxonomy))
+      ) {
+        continue;
+      }
+      if (
+        wantsTray &&
+        /\b(podium|pulpit|lectern|trophy|award|machine|oven|tube|keyway)\b/i.test(
+          combinedTaxonomy
+        )
+      ) {
+        continue;
+      }
     }
 
-    // 3. Strict budget enforcement & unknown-price handling
-    if (maxPrice !== null || minPrice !== null) {
+    // 3. Strict budget enforcement & unknown-price handling (never filter out explicit SKU comparisons or quote-based gift/award/signage categories!)
+    if (!isExplicitCodeHit && (maxPrice !== null || minPrice !== null)) {
       const hasValidPrice = typeof item.basePrice === "number" && item.basePrice > 0;
       if (!hasValidPrice) {
-        if (!options?.includeUnpricedOnBudget) continue;
+        if (
+          !options?.includeUnpricedOnBudget &&
+          !wantsCorporateGift &&
+          !wantsAward &&
+          !wantsSignage
+        ) {
+          continue;
+        }
       } else {
         if (maxPrice !== null && item.basePrice! > maxPrice) continue;
         if (minPrice !== null && item.basePrice! < minPrice) continue;
@@ -3362,15 +3481,6 @@ export function searchEcosystemItems(
     const catWords = tokenizeWords(
       `${item.categoryName} ${(item.podiumSubCategoryNames || []).join(" ")}`
     );
-    const skuLower = (item.sku || "").toLowerCase();
-    const skuCompact = skuLower.replace(/[-_\s]+/g, "").replace(/^ccpo(\d)/, "ccp0$1");
-    const slugCompact = (item.slug || "").toLowerCase().replace(/[-_\s]+/g, "");
-    const modelLower = (
-      item.modelsSummary ||
-      (item.models || []).map((m) => m.modelName).join(" ") ||
-      ""
-    ).toLowerCase();
-    const modelCompact = modelLower.replace(/[-_\s]+/g, "");
     const deepText = `${item.description || ""} ${item.descriptionHtmlText || ""} ${item.importantNoteText || ""} ${item.specsSummary || ""} ${(item.features || []).join(" ")} ${(item.variants || []).map((v) => v.name).join(" ")} ${(item.industries || []).map((ind) => (typeof ind === "string" ? ind : `${ind.name} ${ind.description || ""}`)).join(" ")} ${(item.problemStatements || []).map((ps) => (typeof ps === "string" ? ps : `${ps.name} ${ps.description || ""}`)).join(" ")} ${(item.models || []).map((m) => m.specifications.map((s) => `${s.label || s.key || ""} ${s.value}`).join(" ")).join(" ")}`;
     const descWords = tokenizeWords(deepText);
 
@@ -3415,6 +3525,19 @@ export function searchEcosystemItems(
         if (allStructDims.ranges.includes(qRange) || allDescDims.ranges.includes(qRange)) {
           matchScore += 220;
         }
+      }
+    }
+
+    // Boost compact / smaller-top podiums when user asks for smaller top or cheaper alternative
+    if (wantsSmallerTop && wantsPodium) {
+      const topSpec = (item.dimensions || []).find((d) =>
+        /top\s*sheet|reading\s*top/i.test(d.label || d.key || "")
+      );
+      if (topSpec && /\b(18\s*[x×]\s*1[2456]|19\s*[x×]\s*15|20\s*[x×]\s*15|20\s*[x×]\s*16)\b/i.test(topSpec.value)) {
+        matchScore += 45;
+      }
+      if ((item.podiumSubCategoryNames || []).some((sub) => /essential/i.test(sub))) {
+        matchScore += 30;
       }
     }
 
@@ -3467,10 +3590,20 @@ export function searchEcosystemItems(
       matchScore += 10;
     }
 
-    if (maxPrice !== null || minPrice !== null) {
+    if (maxPrice !== null || minPrice !== null || preferCheapest || preferPremium) {
       if (typeof item.basePrice === "number" && item.basePrice > 0) {
         matchScore += 18;
       }
+    }
+
+    // Deprioritize already-shown slugs when user asks for "any more options" or "other models"
+    if (
+      !isExplicitCodeHit &&
+      excludeSlugSet.size > 0 &&
+      (excludeSlugSet.has((item.slug || "").toLowerCase()) ||
+        excludeSlugSet.has((item.sku || "").toLowerCase()))
+    ) {
+      matchScore -= 80;
     }
 
     scored.push({ item, score: matchScore });
@@ -3479,12 +3612,17 @@ export function searchEcosystemItems(
   scored.sort((a, b) => {
     const aHasPrice = typeof a.item.basePrice === "number" && a.item.basePrice > 0;
     const bHasPrice = typeof b.item.basePrice === "number" && b.item.basePrice > 0;
-    if ((maxPrice !== null || minPrice !== null) && aHasPrice !== bHasPrice) {
+    if ((maxPrice !== null || minPrice !== null || preferCheapest || preferPremium) && aHasPrice !== bHasPrice) {
       return aHasPrice ? -1 : 1;
     }
-    if (!preferPremium && b.score !== a.score) return b.score - a.score;
+    if (preferCheapest && aHasPrice && bHasPrice) {
+      const aExcluded = excludeSlugSet.has((a.item.slug || "").toLowerCase());
+      const bExcluded = excludeSlugSet.has((b.item.slug || "").toLowerCase());
+      if (aExcluded !== bExcluded) return aExcluded ? 1 : -1;
+      return (a.item.basePrice || 0) - (b.item.basePrice || 0);
+    }
     if (preferPremium && aHasPrice && bHasPrice) {
-      if (Math.abs(b.score - a.score) <= 24) {
+      if (Math.abs(b.score - a.score) <= 40) {
         return (b.item.basePrice || 0) - (a.item.basePrice || 0);
       }
     }
@@ -4692,7 +4830,18 @@ export function buildEcosystemDeepProductContextAndAnswer(params: {
 
   // Handle Multi-Product Comparisons & Superlative Follow-ups ("Compare CCP054 and CCP055", "Which one is wider?", "Which has the largest reading top?")
   if (isComparison && matchedItems.length >= 2) {
-    const candidates = matchedItems.slice(0, 4);
+    const explicitCodes = extractExplicitProductOrModelCodes(q);
+    const explicitMatched =
+      explicitCodes.length >= 2
+        ? matchedItems.filter((it) => {
+            const skuText = `${it.sku || ""} ${it.name} ${it.slug}`.toLowerCase();
+            return explicitCodes.some((c: string) =>
+              new RegExp(`\\b${c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(skuText)
+            );
+          })
+        : [];
+    const candidates =
+      explicitMatched.length >= 2 ? explicitMatched : matchedItems.slice(0, 3);
     const wantsReadingTop = /\b(reading\s*top|top\s*sheet|reading\s*surface|top\s*size)\b/i.test(q);
     const wantsWider = /\b(wider|widest|width|larger|largest|bigger|biggest)\b/i.test(q);
 
@@ -4772,35 +4921,73 @@ export function buildEcosystemDeepProductContextAndAnswer(params: {
     };
   }
 
-  // Single-product deep question (dimensions, variants, specs, features, notes)
+  // Single-product deep question: concise scannable Gist by default (full panel breakdown only when explicitly requested)
   const item = matchedItems[0];
+  const cleanTitle = cleanDisplayProductName(item.name);
   const hasMrp = item.regularPrice && item.basePrice && item.regularPrice > item.basePrice;
   const priceStr =
     typeof item.basePrice === "number" && item.basePrice > 0
-      ? `₹${item.basePrice.toLocaleString("en-IN")}${hasMrp ? ` (discounted from MRP ₹${item.regularPrice!.toLocaleString("en-IN")})` : ""}`
+      ? `₹${item.basePrice.toLocaleString("en-IN")}${hasMrp ? ` (MRP ₹${item.regularPrice!.toLocaleString("en-IN")})` : ""}`
       : "Custom Quote on Request";
+  const asksExhaustivePanelSpecs =
+    /\b(all\s*dimensions|full\s*dimensions|every\s*dimension|panel\s*sizes?|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|sheet\s*thickness|all\s*specs|complete\s*specs)\b/i.test(
+      q
+    );
+
   const detailLines: string[] = [
-    `Here are the verified catalog details for *${item.name}* (*${priceStr}*) at ${getLink(item)}:`,
+    `*${cleanTitle}* (${priceStr})`,
   ];
 
-  if (item.dimensions && item.dimensions.length > 0) {
-    detailLines.push(
-      `• *Dimensions*: ${item.dimensions.map((d) => `${d.label || d.key || ""}: ${d.value}`).join(" | ")}`
-    );
+  if (asksExhaustivePanelSpecs) {
+    if (item.dimensions && item.dimensions.length > 0) {
+      detailLines.push(
+        `• *Full Dimensions*: ${item.dimensions.map((d) => `${d.label || d.key || ""}: ${d.value}`).join(" | ")}`
+      );
+    }
+    const techSpecs = (item.specifications || []).filter((s) => s.type !== "dimension");
+    if (techSpecs.length > 0) {
+      detailLines.push(
+        `• *Technical Specs*: ${techSpecs.map((s) => `${s.label || s.key || ""}: ${s.value}`).join(" | ")}`
+      );
+    } else if (item.specsSummary) {
+      detailLines.push(`• *Specifications*: ${item.specsSummary}`);
+    }
+  } else {
+    // Scannable Gist: Height + Reading Top + Key Build/Warranty
+    const heightDim = (item.dimensions || []).find((d) => /height/i.test(d.label || d.key || ""));
+    const topDim = (item.dimensions || []).find((d) => /top\s*sheet|reading\s*top|top\s*surface|size/i.test(d.label || d.key || ""));
+    const otherDims = (item.dimensions || []).slice(0, 2);
+    const keySizeParts: string[] = [];
+    if (heightDim) keySizeParts.push(`Height ${heightDim.value}`);
+    if (topDim && topDim !== heightDim) keySizeParts.push(`Top ${topDim.value}`);
+    if (keySizeParts.length === 0 && otherDims.length > 0) {
+      for (const d of otherDims) {
+        keySizeParts.push(`${d.label || d.key || "Size"}: ${d.value}`);
+      }
+    }
+    if (keySizeParts.length > 0) {
+      detailLines.push(`• *Key Size*: ${keySizeParts.join(" | ")}`);
+    }
+
+    const techSpecs = (item.specifications || []).filter((s) => s.type !== "dimension");
+    const keyTech = techSpecs
+      .filter((s) => /material|pillar|warranty|power|work\s*area|thickness|finish|capacity/i.test(s.label || s.key || ""))
+      .slice(0, 3);
+    if (keyTech.length > 0) {
+      detailLines.push(
+        `• *Build & Specs*: ${keyTech.map((s) => `${s.label || s.key || ""}: ${s.value}`).join(" | ")}`
+      );
+    } else if (item.specsSummary) {
+      detailLines.push(`• *Specs*: ${item.specsSummary}`);
+    }
   }
-  const techSpecs = (item.specifications || []).filter((s) => s.type !== "dimension");
-  if (techSpecs.length > 0) {
-    detailLines.push(
-      `• *Technical Specifications*: ${techSpecs.map((s) => `${s.label || s.key || ""}: ${s.value}`).join(" | ")}`
-    );
-  } else if (item.specsSummary) {
-    detailLines.push(`• *Specifications*: ${item.specsSummary}`);
-  }
+
   if (item.variants && item.variants.length > 0) {
     detailLines.push(
-      `• *Available Variants & Pricing*: ${item.variants
+      `• *Options / Variants*: ${item.variants
+        .slice(0, 6)
         .map((v) =>
-          typeof v.price === "number" && v.price > 0
+          typeof v.price === "number" && v.price > 0 && v.price !== item.basePrice
             ? `${v.name} (₹${v.price.toLocaleString("en-IN")})`
             : v.name
         )
@@ -4808,23 +4995,411 @@ export function buildEcosystemDeepProductContextAndAnswer(params: {
     );
   }
   if (item.features && item.features.length > 0) {
-    detailLines.push(`• *Key Features*: ${item.features.slice(0, 6).join("; ")}`);
+    detailLines.push(`• *Highlights*: ${item.features.slice(0, 3).join("; ")}`);
   }
   if (item.models && item.models.length > 0) {
-    for (const m of item.models) {
+    for (const m of item.models.slice(0, 3)) {
       detailLines.push(
-        `• *Model ${m.modelName}*: ${m.specifications.map((s) => `${s.label || s.key || ""}: ${s.value}`).join(" | ")}`
+        `• *Model ${m.modelName}*: ${m.specifications.slice(0, 4).map((s) => `${s.label || s.key || ""}: ${s.value}`).join(" | ")}`
       );
     }
   }
-  if (item.importantNoteText) {
-    detailLines.push(`• *Important Note*: ${item.importantNoteText}`);
-  }
+  detailLines.push(`• *Link*: ${getLink(item)}`);
 
   return {
     promptCatalogContext,
     deterministicDeepAnswer: detailLines.join("\n"),
     isDeepQuestion: true,
+  };
+}
+
+export interface MultiItemProjectLine {
+  requestedLabel: string;
+  quantity: number;
+  categoryKey: "podium" | "signage" | "chair_furniture" | "table_furniture" | "trophy_gift" | "stand_display";
+  economyMatch?: MainWebsiteProduct;
+  economyUnitPrice: number;
+  standardMatch?: MainWebsiteProduct;
+  standardUnitPrice: number;
+}
+
+export interface MultiItemProjectPlanResult {
+  isMultiItemOrTotalling: boolean;
+  lines: MultiItemProjectLine[];
+  budgetLimit: number | null;
+  summaryText: string;
+  matchedProducts: MainWebsiteProduct[];
+  needsSalesTeamPing: boolean;
+}
+
+/**
+ * Multi-Item Quantity & Project Budget Totalling Engine.
+ * Handles queries like:
+ * - "We require 3 Acrylic podiums, 10 signages for office name plates and approximately 10 chairs. Our budget is around 1 lac rupees."
+ * - "What is the total cost for 5 CCP057S podiums?"
+ * - "Total price for 4 chairs and 2 podiums"
+ */
+export function buildMultiItemProjectPlan(
+  allItems: MainWebsiteProduct[],
+  rawQuery: string,
+  shortLinkMap?: Record<string, string>
+): MultiItemProjectPlanResult {
+  const q = String(rawQuery || "").trim();
+  const qLower = q.toLowerCase();
+  const budgetInfo = extractBudgetConstraintsFromQuery(q);
+  const budgetLimit = budgetInfo.maxPrice;
+
+  const getLink = (it: MainWebsiteProduct) => {
+    const kSlug = `PRODUCT:${it.slug}`.toLowerCase();
+    const kId = `PRODUCT:${it.id}`.toLowerCase();
+    return (
+      shortLinkMap?.[kSlug] ||
+      shortLinkMap?.[kId] ||
+      it.shortUrl ||
+      it.url ||
+      `https://www.classicconcepts.in/products/${it.slug}`
+    );
+  };
+
+  // Detect explicit SKU + quantity e.g. "5 CCP057S" or "3 units of CCP054"
+  const explicitCodes = extractExplicitProductOrModelCodes(q);
+  const qtyRegexes: Array<{
+    key: MultiItemProjectLine["categoryKey"];
+    label: string;
+    pattern: RegExp;
+  }> = [
+    {
+      key: "podium",
+      label: "Acrylic Podiums",
+      pattern: /\b(?:approx(?:imately)?\s*|around\s*|about\s*)?(\d{1,3})\s*(?:pcs?|pieces?|units?|nos?)?\s*(?:of\s*)?(?:acrylic\s*)?(?:podiums?|pulpits?|lecterns?|rostrums?)\b/i,
+    },
+    {
+      key: "signage",
+      label: "Acrylic Office Name Plates / Signages",
+      pattern: /\b(?:approx(?:imately)?\s*|around\s*|about\s*)?(\d{1,3})\s*(?:pcs?|pieces?|units?|nos?)?\s*(?:of\s*)?(?:acrylic\s*)?(?:signages?|signs?|office\s*name\s*plates?|name\s*plates?|nameplates?|name\s*boards?)\b/i,
+    },
+    {
+      key: "chair_furniture",
+      label: "Acrylic Chairs / Stools",
+      pattern: /\b(?:approx(?:imately)?\s*|around\s*|about\s*)?(\d{1,3})\s*(?:pcs?|pieces?|units?|nos?)?\s*(?:of\s*)?(?:acrylic\s*)?(?:chairs?|stools?|seating)\b/i,
+    },
+    {
+      key: "table_furniture",
+      label: "Acrylic Tables / Desks",
+      pattern: /\b(?:approx(?:imately)?\s*|around\s*|about\s*)?(\d{1,3})\s*(?:pcs?|pieces?|units?|nos?)?\s*(?:of\s*)?(?:acrylic\s*)?(?:tables?|desks?|consoles?)\b/i,
+    },
+    {
+      key: "trophy_gift",
+      label: "Acrylic Trophies / Corporate Gifts",
+      pattern: /\b(?:approx(?:imately)?\s*|around\s*|about\s*)?(\d{1,3})\s*(?:pcs?|pieces?|units?|nos?)?\s*(?:of\s*)?(?:acrylic\s*)?(?:trophies|trophy|mementos?|awards?|corporate\s*gifts?|gifts?)\b/i,
+    },
+    {
+      key: "stand_display",
+      label: "Acrylic Display / Menu Stands",
+      pattern: /\b(?:approx(?:imately)?\s*|around\s*|about\s*)?(\d{1,3})\s*(?:pcs?|pieces?|units?|nos?)?\s*(?:of\s*)?(?:acrylic\s*)?(?:menu\s*stands?|qr\s*stands?|sign\s*holders?|tent\s*cards?|display\s*stands?)\b/i,
+    },
+  ];
+
+  const lines: MultiItemProjectLine[] = [];
+  const matchedProducts: MainWebsiteProduct[] = [];
+  const addProductUnique = (p?: MainWebsiteProduct) => {
+    if (p && !matchedProducts.some((m) => m.slug === p.slug)) {
+      matchedProducts.push(p);
+    }
+  };
+
+  const pricedPodiums = allItems
+    .filter(
+      (i) =>
+        i.brand === "CLASSIC_CONCEPTS" &&
+        typeof i.basePrice === "number" &&
+        i.basePrice > 0 &&
+        /\b(podium|pulpit|lectern)\b|^ccp\d/i.test(`${i.name} ${i.categoryName} ${i.sku || ""}`)
+    )
+    .sort((a, b) => (a.basePrice || 0) - (b.basePrice || 0));
+
+  const chairsAndStools = allItems
+    .filter(
+      (i) =>
+        i.brand === "CLASSIC_CONCEPTS" &&
+        typeof i.basePrice === "number" &&
+        i.basePrice > 0 &&
+        /\b(chair|stool|bar\s*stool|seating)\b/i.test(`${i.name} ${i.categoryName}`)
+    )
+    .sort((a, b) => (a.basePrice || 0) - (b.basePrice || 0));
+
+  const tablesList = allItems
+    .filter(
+      (i) =>
+        i.brand === "CLASSIC_CONCEPTS" &&
+        typeof i.basePrice === "number" &&
+        i.basePrice > 0 &&
+        /\b(table|desk|console|pedestal)\b/i.test(`${i.name} ${i.categoryName}`) &&
+        !/\b(table\s*top|tent\s*card|sign\s*holder|menu)\b/i.test(i.name)
+    )
+    .sort((a, b) => (a.basePrice || 0) - (b.basePrice || 0));
+
+  const signagesList = allItems
+    .filter(
+      (i) =>
+        i.brand === "CLASSIC_CONCEPTS" &&
+        /\b(signage|name\s*plate|nameplate|sign\s*holder|frame)\b/i.test(`${i.name} ${i.categoryName}`)
+    )
+    .sort((a, b) => (a.basePrice || 999999) - (b.basePrice || 999999));
+
+  const trophiesList = allItems
+    .filter(
+      (i) =>
+        i.brand === "CLASSIC_CONCEPTS" &&
+        typeof i.basePrice === "number" &&
+        i.basePrice > 0 &&
+        /\b(trophy|memento|award|plaque)\b/i.test(`${i.name} ${i.categoryName}`)
+    )
+    .sort((a, b) => (a.basePrice || 0) - (b.basePrice || 0));
+
+  const standsList = allItems
+    .filter(
+      (i) =>
+        i.brand === "CLASSIC_CONCEPTS" &&
+        typeof i.basePrice === "number" &&
+        i.basePrice > 0 &&
+        /\b(sign\s*holder|menu|tent\s*card|qr\s*stand|brochure)\b/i.test(`${i.name} ${i.categoryName}`)
+    )
+    .sort((a, b) => (a.basePrice || 0) - (b.basePrice || 0));
+
+  for (const def of qtyRegexes) {
+    const m = q.match(def.pattern);
+    if (m && m[1]) {
+      const qty = parseInt(m[1], 10);
+      if (qty > 0 && qty <= 500) {
+        if (def.key === "podium") {
+          const econ = pricedPodiums[0]; // CCP057S ₹7,150
+          const std = pricedPodiums.find((p) => (p.basePrice || 0) >= 13500) || pricedPodiums[1] || econ;
+          addProductUnique(econ);
+          addProductUnique(std);
+          lines.push({
+            requestedLabel: def.label,
+            quantity: qty,
+            categoryKey: def.key,
+            economyMatch: econ,
+            economyUnitPrice: econ?.basePrice || 7150,
+            standardMatch: std,
+            standardUnitPrice: std?.basePrice || 13750,
+          });
+        } else if (def.key === "signage") {
+          const signMatch = signagesList.find((s) => /signage|name/i.test(s.name)) || signagesList[0];
+          const signHolder = standsList[0] || signagesList.find((s) => (s.basePrice || 0) > 0);
+          addProductUnique(signMatch);
+          addProductUnique(signHolder);
+          lines.push({
+            requestedLabel: def.label,
+            quantity: qty,
+            categoryKey: def.key,
+            economyMatch: signHolder || signMatch,
+            economyUnitPrice: signHolder?.basePrice || 550,
+            standardMatch: signMatch,
+            standardUnitPrice: 1200, // Custom acrylic office nameplate estimate per piece
+          });
+        } else if (def.key === "chair_furniture") {
+          const stoolMatch = chairsAndStools[0]; // Bar Stool ₹9,350
+          const chairMatch =
+            chairsAndStools.find((c) => /chair/i.test(c.name)) ||
+            chairsAndStools[1] ||
+            stoolMatch;
+          addProductUnique(chairMatch);
+          addProductUnique(stoolMatch);
+          lines.push({
+            requestedLabel: def.label,
+            quantity: qty,
+            categoryKey: def.key,
+            economyMatch: stoolMatch,
+            economyUnitPrice: stoolMatch?.basePrice || 9350,
+            standardMatch: chairMatch,
+            standardUnitPrice: chairMatch?.basePrice || 15950,
+          });
+        } else if (def.key === "table_furniture") {
+          const econTable = tablesList[0];
+          const stdTable = tablesList[1] || econTable;
+          addProductUnique(econTable);
+          addProductUnique(stdTable);
+          lines.push({
+            requestedLabel: def.label,
+            quantity: qty,
+            categoryKey: def.key,
+            economyMatch: econTable,
+            economyUnitPrice: econTable?.basePrice || 5500,
+            standardMatch: stdTable,
+            standardUnitPrice: stdTable?.basePrice || 8800,
+          });
+        } else if (def.key === "trophy_gift") {
+          const econTrophy = trophiesList[0];
+          const stdTrophy = trophiesList[Math.min(2, trophiesList.length - 1)] || econTrophy;
+          addProductUnique(econTrophy);
+          addProductUnique(stdTrophy);
+          lines.push({
+            requestedLabel: def.label,
+            quantity: qty,
+            categoryKey: def.key,
+            economyMatch: econTrophy,
+            economyUnitPrice: econTrophy?.basePrice || 950,
+            standardMatch: stdTrophy,
+            standardUnitPrice: stdTrophy?.basePrice || 1650,
+          });
+        } else if (def.key === "stand_display") {
+          const econStand = standsList[0];
+          const stdStand = standsList[1] || econStand;
+          addProductUnique(econStand);
+          addProductUnique(stdStand);
+          lines.push({
+            requestedLabel: def.label,
+            quantity: qty,
+            categoryKey: def.key,
+            economyMatch: econStand,
+            economyUnitPrice: econStand?.basePrice || 220,
+            standardMatch: stdStand,
+            standardUnitPrice: stdStand?.basePrice || 550,
+          });
+        }
+      }
+    }
+  }
+
+  // Also check single explicit SKU + quantity e.g. "5 CCP057S" or "total for 3 CCP054"
+  if (lines.length === 0 && explicitCodes.length === 1) {
+    const qtyMatch = q.match(/\b(\d{1,3})\s*(?:pcs?|pieces?|units?|nos?|of)?\b/i);
+    const asksTotal = /\b(total|cost\s*for|price\s*for|quote\s*for|amount\s*for)\b/i.test(qLower);
+    if (qtyMatch && asksTotal) {
+      const qty = parseInt(qtyMatch[1], 10);
+      const code = explicitCodes[0];
+      const hit = allItems.find((it) => {
+        const skuC = (it.sku || "").toLowerCase().replace(/[-_\s]+/g, "");
+        return skuC === code || skuC.includes(code);
+      });
+      if (hit && hit.basePrice && qty > 1 && qty <= 500) {
+        addProductUnique(hit);
+        const lineTotal = hit.basePrice * qty;
+        return {
+          isMultiItemOrTotalling: true,
+          lines: [
+            {
+              requestedLabel: cleanDisplayProductName(hit.name),
+              quantity: qty,
+              categoryKey: "podium",
+              economyMatch: hit,
+              economyUnitPrice: hit.basePrice,
+              standardMatch: hit,
+              standardUnitPrice: hit.basePrice,
+            },
+          ],
+          budgetLimit,
+          summaryText: [
+            `Here is the total calculation for *${qty} units* of *${cleanDisplayProductName(hit.name)}*:`,
+            `• Unit Price: *₹${hit.basePrice.toLocaleString("en-IN")}*`,
+            `• Quantity: *${qty} units*`,
+            `• *Estimated Total*: *₹${lineTotal.toLocaleString("en-IN")}* (${getLink(hit)})`,
+            `For ${qty} units, our sales team can also offer a bulk order discount. Tell me your delivery city and I will have our sales team share the discounted final quote right here.`,
+          ].join("\n"),
+          matchedProducts,
+          needsSalesTeamPing: qty >= 3,
+        };
+      }
+    }
+  }
+
+  const isMultiItem = lines.length >= 2 || (lines.length === 1 && lines[0].quantity >= 2 && (budgetLimit !== null || /\b(total|budget|renovation|package|combination|options)\b/i.test(qLower)));
+  if (!isMultiItem) {
+    return {
+      isMultiItemOrTotalling: false,
+      lines: [],
+      budgetLimit,
+      summaryText: "",
+      matchedProducts: [],
+      needsSalesTeamPing: false,
+    };
+  }
+
+  // Compute Option A (Economy / Catalog Standard Totals) and Option B (Within-Budget Adjusted Package if budget is tight)
+  let economyGrandTotal = 0;
+  let standardGrandTotal = 0;
+  const breakdownBullets: string[] = [];
+
+  for (const ln of lines) {
+    const econLineTotal = ln.economyUnitPrice * ln.quantity;
+    const stdLineTotal = ln.standardUnitPrice * ln.quantity;
+    economyGrandTotal += econLineTotal;
+    standardGrandTotal += stdLineTotal;
+
+    if (ln.categoryKey === "signage") {
+      const refLink = ln.standardMatch ? ` (${getLink(ln.standardMatch)})` : "";
+      breakdownBullets.push(
+        `• *${ln.quantity} × ${ln.requestedLabel}*: Standard Desk/Door Sign Holders at ₹${ln.economyUnitPrice.toLocaleString("en-IN")} each = *₹${econLineTotal.toLocaleString("en-IN")}*, or Custom Engraved Acrylic Office Name Plates (~₹1,000 to ₹1,500 each) = *₹${(ln.quantity * 1200).toLocaleString("en-IN")}*${refLink}`
+      );
+    } else {
+      const econTitle = ln.economyMatch ? cleanDisplayProductName(ln.economyMatch.name) : ln.requestedLabel;
+      const econLink = ln.economyMatch ? ` - ${getLink(ln.economyMatch)}` : "";
+      const stdTitle =
+        ln.standardMatch && ln.standardMatch.slug !== ln.economyMatch?.slug
+          ? cleanDisplayProductName(ln.standardMatch.name)
+          : null;
+      const stdNote = stdTitle
+        ? ` (or *${stdTitle}* at ₹${ln.standardUnitPrice.toLocaleString("en-IN")} × ${ln.quantity} = *₹${stdLineTotal.toLocaleString("en-IN")}*)`
+        : "";
+      breakdownBullets.push(
+        `• *${ln.quantity} × ${ln.requestedLabel}*: *${econTitle}* at ₹${ln.economyUnitPrice.toLocaleString("en-IN")} × ${ln.quantity} = *₹${econLineTotal.toLocaleString("en-IN")}*${stdNote}${econLink}`
+      );
+    }
+  }
+
+  const summaryParts: string[] = [];
+  if (budgetLimit !== null) {
+    summaryParts.push(
+      `Here is the itemized cost breakdown for your project against your *₹${budgetLimit.toLocaleString("en-IN")}* budget:`
+    );
+  } else {
+    summaryParts.push(`Here is the itemized quantity and price breakdown for your requirement:`);
+  }
+  summaryParts.push(...breakdownBullets);
+  summaryParts.push(
+    `\n*Standard Catalog Total*: *₹${economyGrandTotal.toLocaleString("en-IN")}*${standardGrandTotal > economyGrandTotal ? ` (up to *₹${standardGrandTotal.toLocaleString("en-IN")}* with full-size models)` : ""}`
+  );
+
+  // If budgetLimit is set and economyGrandTotal exceeds budgetLimit, build a smart Option 1 that fits inside budgetLimit!
+  if (budgetLimit !== null && economyGrandTotal > budgetLimit) {
+    const chairLine = lines.find((l) => l.categoryKey === "chair_furniture");
+    const podiumLine = lines.find((l) => l.categoryKey === "podium");
+    const signLine = lines.find((l) => l.categoryKey === "signage");
+
+    const fixedPodiumCost = podiumLine ? podiumLine.economyUnitPrice * podiumLine.quantity : 0;
+    const fixedSignCost = signLine ? 1000 * signLine.quantity : 0;
+    const remainingForChairs = Math.max(0, budgetLimit - fixedPodiumCost - fixedSignCost);
+
+    if (chairLine && chairLine.economyUnitPrice > 0) {
+      const affordableChairQty = Math.max(1, Math.floor(remainingForChairs / chairLine.economyUnitPrice));
+      const adjustedChairTotal = affordableChairQty * chairLine.economyUnitPrice;
+      const adjustedGrandTotal = fixedPodiumCost + fixedSignCost + adjustedChairTotal;
+      summaryParts.push(
+        `\n*2 Ways to Plan Within Your ₹${budgetLimit.toLocaleString("en-IN")} Budget:*`,
+        `1. *Within-Budget Ready Combination (~₹${adjustedGrandTotal.toLocaleString("en-IN")})*: ${podiumLine ? `${podiumLine.quantity} × ${cleanDisplayProductName(podiumLine.economyMatch?.name || "Acrylic Podium CCP057S")} (₹${fixedPodiumCost.toLocaleString("en-IN")}) + ` : ""}${signLine ? `${signLine.quantity} × Custom Office Name Plates (₹${fixedSignCost.toLocaleString("en-IN")}) + ` : ""}${affordableChairQty} × ${cleanDisplayProductName(chairLine.economyMatch?.name || "Acrylic Bar Stool / Chair")} (₹${adjustedChairTotal.toLocaleString("en-IN")}).`,
+        `2. *Full ${chairLine.quantity}-Chair Project Package (₹${economyGrandTotal.toLocaleString("en-IN")} list price)*: Take all ${lines.map((l) => `${l.quantity} ${l.requestedLabel.toLowerCase()}`).join(" + ")} and our sales team can work out a bulk corporate discount for your office renovation.`
+      );
+    } else {
+      summaryParts.push(
+        `\nSince the standard catalog total (*₹${economyGrandTotal.toLocaleString("en-IN")}*) is slightly above your *₹${budgetLimit.toLocaleString("en-IN")}* target, our sales team can offer a bulk package discount or customize sheet thickness to fit your budget.`
+      );
+    }
+  }
+
+  summaryParts.push(
+    `\nI have also pinged our Sales Team on this chat with your item list so they can share bulk pricing. Which option works best for you, and which city is the delivery for?`
+  );
+
+  return {
+    isMultiItemOrTotalling: true,
+    lines,
+    budgetLimit,
+    summaryText: summaryParts.join("\n"),
+    matchedProducts,
+    needsSalesTeamPing: true,
   };
 }
 
@@ -4979,7 +5554,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
     const inbox = getRawLibSqlClient("conversations");
     const crm = getRawLibSqlClient("crm_orders");
 
-    // 1. Specialist Teams & Team Members (from WhatsApp Hub + Classic Concepts DB)
+    // 1. Specialist Teams, Department Contacts, Leadership & Company Info (from WhatsApp Hub + Classic Concepts DB)
     const [teamsRes, membersRes, usersRes] = await Promise.all([
       inbox
         .execute(
@@ -4998,7 +5573,9 @@ export async function loadLiveDatabaseOperationalContext(params: {
         .catch(() => ({ rows: [] as any[] })),
     ]);
 
-    const teamLines: string[] = [];
+    const teamLines: string[] = [
+      `• Official Company Details: Classic Concepts (Acrylic Display & Custom Fabrication) & Classic Edge 53 (Industrial Acrylic Machines & Tools) | Factory & Head Office: 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad, Hyderabad, Telangana | Main Phone / WhatsApp: +91 73372 22876, +91 93467 63253 | Official Emails: sales@classicconcepts.in, alaqmarak0810@gmail.com | Websites: https://www.classicconcepts.in & https://classicedge.in`,
+    ];
     for (const t of teamsRes.rows) {
       const tMembers = membersRes.rows
         .filter(
@@ -5011,37 +5588,48 @@ export async function loadLiveDatabaseOperationalContext(params: {
             `${m.staff_name} (${m.tier || "P0"}, ${m.staff_email})`
         );
       teamLines.push(
-        `• ${t.name} [${t.brand_scope || "ALL"}]: ${t.description || ""}${tMembers.length > 0 ? ` | Active Members: ${tMembers.join(", ")}` : ""}`
+        `• Department Team — ${t.name} [${t.brand_scope || "ALL"}]: ${t.description || ""}${tMembers.length > 0 ? ` | Members: ${tMembers.join(", ")}` : ""}`
       );
     }
     if (usersRes.rows.length > 0) {
       teamLines.push(
-        `• Active Staff Directory: ` +
+        `• Department-Wise Staff & Leadership Contacts (share freely when customer asks for chairperson, director, marketing, sales, machine specialist, or department contacts): ` +
           usersRes.rows
             .map(
               (u) =>
-                `${u.name} (${u.department || u.role}, ${u.email}${u.whatsapp_number ? `, ${u.whatsapp_number}` : ""})`
+                `${u.name} — Role/Dept: ${u.department || u.role} | Email: ${u.email}${u.whatsapp_number ? ` | Phone/WhatsApp: ${u.whatsapp_number}` : ""}`
             )
-            .join("; ")
+            .join(" ; ")
       );
     }
 
     const ccClient = getMainCatalogClient();
     if (ccClient) {
-      const ccTeam = await ccClient
-        .execute(`SELECT name, role, bio FROM TeamMember ORDER BY "order" ASC`)
-        .catch(() => ({ rows: [] as any[] }));
+      const [ccTeam, ccSettings, ccRes] = await Promise.all([
+        ccClient
+          .execute(`SELECT * FROM TeamMember ORDER BY sortOrder ASC`)
+          .catch(() => ({ rows: [] as any[] })),
+        ccClient
+          .execute(`SELECT * FROM SiteSetting LIMIT 1`)
+          .catch(() => ({ rows: [] as any[] })),
+        ccClient
+          .execute(
+            `SELECT title, category, type, fileUrl FROM Resource ORDER BY createdAt DESC LIMIT 12`
+          )
+          .catch(() => ({ rows: [] as any[] })),
+      ]);
       for (const m of ccTeam.rows) {
+        if (m.isActive === 0 || m.isActive === false) continue;
         teamLines.push(
-          `• Leadership: ${m.name} (${m.role}) - ${String(m.bio || "").slice(0, 140)}`
+          `• Leadership / Key Person: ${m.name} (${m.position || m.role || "Leadership"})${m.email ? ` | Email: ${m.email}` : ""}${m.phone ? ` | Phone: ${m.phone}` : ""}${m.bio ? ` - ${String(m.bio).slice(0, 140)}` : ""}`
         );
       }
-
-      const ccRes = await ccClient
-        .execute(
-          `SELECT title, category, type, fileUrl FROM Resource ORDER BY createdAt DESC LIMIT 12`
-        )
-        .catch(() => ({ rows: [] as any[] }));
+      if (ccSettings.rows.length > 0) {
+        const s = ccSettings.rows[0];
+        teamLines.push(
+          `• Head Office & Direct Contact Numbers: Phone 1: ${s.phone1 || "+91 73372 22876"} | Phone 2: ${s.phone2 || "+91 93467 63253"} | WhatsApp: ${s.whatsappNumber || "+91 73372 22876"} | Email: ${s.email || "sales@classicconcepts.in"} | Address: ${String(s.address || "111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad, Hyderabad").replace(/\r?\n/g, ", ")}`
+        );
+      }
       if (ccRes.rows.length > 0) {
         sections.push(
           `DOWNLOADABLE CATALOGUES & RESOURCES:\n` +
@@ -5057,7 +5645,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
 
     if (teamLines.length > 0) {
       sections.push(
-        `COMPANY TEAMS, DEPARTMENTS & SPECIALISTS:\n${teamLines.join("\n")}`
+        `COMPANY DETAILS, LEADERSHIP, DEPARTMENTS & STAFF CONTACTS:\n${teamLines.join("\n")}`
       );
     }
 

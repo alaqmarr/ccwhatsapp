@@ -7,6 +7,7 @@ import {
   appendAiTraceLog,
   buildCompleteEcosystemDatabaseDirectory,
   buildEcosystemDeepProductContextAndAnswer,
+  buildMultiItemProjectPlan,
   cleanDisplayProductName,
   extractCompactDimensionPairsFromText,
   extractExplicitProductOrModelCodes,
@@ -145,10 +146,16 @@ export async function callClaudeHaikuMessagesDetailed(params: {
     };
   }
 
-  const sendPayload = async (includeLegacyTemp: boolean) => {
+  const sendPayload = async (
+    includeLegacyTemp: boolean,
+    overrideDisableThinking = false
+  ) => {
+    const requestedMax = params.maxTokens ?? 4096;
     const bodyObj: Record<string, unknown> = {
       model: LOCKED_CLAUDE_MODEL,
-      max_tokens: params.maxTokens ?? 2048,
+      max_tokens: overrideDisableThinking
+        ? Math.min(requestedMax, 2048)
+        : Math.max(requestedMax, 4096),
       system: [
         {
           type: "text",
@@ -158,7 +165,9 @@ export async function callClaudeHaikuMessagesDetailed(params: {
       ],
       messages: params.messages,
     };
-    if (includeLegacyTemp && typeof params.temperature === "number") {
+    if (overrideDisableThinking) {
+      // Fast non-thinking fallback so thinking token budget never truncates JSON output
+    } else if (includeLegacyTemp && typeof params.temperature === "number") {
       bodyObj.temperature = params.temperature;
     } else {
       bodyObj.thinking = { type: "adaptive" };
@@ -172,13 +181,13 @@ export async function callClaudeHaikuMessagesDetailed(params: {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(bodyObj),
-      signal: AbortSignal.timeout(params.timeoutMs ?? 24000),
+      signal: AbortSignal.timeout(params.timeoutMs ?? 26000),
     });
   };
 
   try {
     const useTempFirst = typeof params.temperature === "number";
-    let res = await sendPayload(useTempFirst);
+    let res = await sendPayload(useTempFirst, false);
     let json: any = await res.json().catch(() => null);
 
     // claude-haiku-5-5 deprecates `temperature` in favor of adaptive thinking + effort
@@ -188,8 +197,40 @@ export async function callClaudeHaikuMessagesDetailed(params: {
       res.status === 400 &&
       /temperature/i.test(String(json?.error?.message || ""))
     ) {
-      res = await sendPayload(false);
+      res = await sendPayload(false, false);
       json = await res.json().catch(() => null);
+    }
+
+    // If adaptive thinking fails or hits stop_reason max_tokens with empty/truncated text, retry once without thinking
+    const extractTextFromJson = (payload: any): string => {
+      const blks: any[] = Array.isArray(payload?.content) ? payload.content : [];
+      const tBlocks = blks
+        .filter((b) => b?.type === "text" && typeof b?.text === "string")
+        .map((b) => String(b.text));
+      return tBlocks.length > 0
+        ? tBlocks.join("\n").trim()
+        : typeof payload?.content?.[0]?.text === "string"
+        ? payload.content[0].text.trim()
+        : "";
+    };
+
+    let extracted = res.ok ? extractTextFromJson(json) : "";
+    if (
+      !res.ok ||
+      !extracted ||
+      json?.stop_reason === "max_tokens" ||
+      (extracted.includes("{") && !extracted.trim().endsWith("}"))
+    ) {
+      const retryRes = await sendPayload(false, true).catch(() => null);
+      if (retryRes && retryRes.ok) {
+        const retryJson = await retryRes.json().catch(() => null);
+        const retryText = extractTextFromJson(retryJson);
+        if (retryText) {
+          res = retryRes;
+          json = retryJson;
+          extracted = retryText;
+        }
+      }
     }
 
     const durationMs = Date.now() - started;
@@ -207,16 +248,6 @@ export async function callClaudeHaikuMessagesDetailed(params: {
     }
 
     const blocks: any[] = Array.isArray(json?.content) ? json.content : [];
-    const textBlocks = blocks
-      .filter((b) => b?.type === "text" && typeof b?.text === "string")
-      .map((b) => String(b.text));
-    const extracted =
-      textBlocks.length > 0
-        ? textBlocks.join("\n").trim()
-        : typeof json?.content?.[0]?.text === "string"
-        ? json.content[0].text.trim()
-        : "";
-
     const thinkingChars = blocks
       .filter((b) => b?.type === "thinking" && typeof b?.thinking === "string")
       .reduce((acc, b) => acc + String(b.thinking).length, 0);
@@ -1797,8 +1828,17 @@ export function buildGroupedProductShortLinksSection(params: {
   smartCategory: string;
   excludeConsumables?: boolean;
   hasStrictBudget?: boolean;
+  hidePrices?: boolean;
+  maxItems?: number;
 }): string {
-  const { matchedItems, smartCategory, excludeConsumables, hasStrictBudget } = params;
+  const {
+    matchedItems,
+    smartCategory,
+    excludeConsumables,
+    hasStrictBudget,
+    hidePrices = false,
+    maxItems = 3,
+  } = params;
   if (matchedItems.length === 0) return "";
 
   const usedKeys = new Set<string>();
@@ -1819,7 +1859,7 @@ export function buildGroupedProductShortLinksSection(params: {
     smartCategory === "Podiums & Stage"
       ? "Acrylic Podiums & Pulpits"
       : smartCategory === "Awards & Trophies"
-      ? "Acrylic Awards & Trophies"
+      ? "Acrylic Awards & Corporate Gifts"
       : smartCategory === "Hotel & Banquet"
       ? "Hotel & Display Stands"
       : smartCategory === "Acrylic Machines (CE53)"
@@ -1838,14 +1878,14 @@ export function buildGroupedProductShortLinksSection(params: {
     secondaryLabel = "Tools & Consumables";
     primaryGroup = uniqueMatches
       .filter((it) => it.itemType !== "CONSUMABLE")
-      .slice(0, 4);
+      .slice(0, maxItems);
     secondaryGroup = excludeConsumables
       ? []
       : uniqueMatches
           .filter((it) => it.itemType === "CONSUMABLE")
-          .slice(0, 3);
+          .slice(0, 2);
     if (primaryGroup.length === 0) {
-      primaryGroup = uniqueMatches.slice(0, 4);
+      primaryGroup = uniqueMatches.slice(0, maxItems);
       secondaryGroup = [];
     }
   } else {
@@ -1857,10 +1897,10 @@ export function buildGroupedProductShortLinksSection(params: {
     );
 
     if (pricedReady.length > 0) {
-      primaryGroup = pricedReady.slice(0, 5);
-      secondaryGroup = hasStrictBudget ? [] : customQuoteOnly.slice(0, 3);
+      primaryGroup = pricedReady.slice(0, maxItems);
+      secondaryGroup = hasStrictBudget || primaryGroup.length >= maxItems ? [] : customQuoteOnly.slice(0, 2);
     } else {
-      primaryGroup = uniqueMatches.slice(0, 5);
+      primaryGroup = uniqueMatches.slice(0, maxItems);
       secondaryGroup = [];
     }
   }
@@ -1868,23 +1908,27 @@ export function buildGroupedProductShortLinksSection(params: {
   const formatLine = (it: MainWebsiteProduct, idx: number) => {
     const cleanTitle = cleanDisplayProductName(it.name);
     const hasMrp = it.regularPrice && it.basePrice && it.regularPrice > it.basePrice;
-    const priceTag =
-      typeof it.basePrice === "number" && it.basePrice > 0
-        ? ` (₹${it.basePrice.toLocaleString("en-IN")}${hasMrp ? `, MRP ₹${it.regularPrice!.toLocaleString("en-IN")}` : ""})`
-        : " (Custom Quote)";
-    const dimTag =
-      it.dimensions && it.dimensions.length > 0
-        ? `\n   ${it.dimensions
-            .slice(0, 2)
-            .map((d) => `${d.label || d.key}: ${d.value}`)
-            .join(", ")}`
-        : "";
+    const priceTag = hidePrices
+      ? ""
+      : typeof it.basePrice === "number" && it.basePrice > 0
+      ? ` (₹${it.basePrice.toLocaleString("en-IN")}${hasMrp ? `, MRP ₹${it.regularPrice!.toLocaleString("en-IN")}` : ""})`
+      : " (Custom Quote)";
+    const heightDim = (it.dimensions || []).find((d) => /height/i.test(d.label || d.key || ""));
+    const topDim = (it.dimensions || []).find((d) => /top\s*sheet|reading\s*top|top\s*surface|size/i.test(d.label || d.key || ""));
+    const gistDims: string[] = [];
+    if (heightDim) gistDims.push(`Height: ${heightDim.value}`);
+    if (topDim && topDim !== heightDim) gistDims.push(`Top: ${topDim.value}`);
+    if (gistDims.length === 0 && it.dimensions && it.dimensions.length > 0) {
+      for (const d of it.dimensions.slice(0, 2)) {
+        gistDims.push(`${d.label || d.key}: ${d.value}`);
+      }
+    }
+    const dimTag = gistDims.length > 0 ? `\n   ${gistDims.join(" | ")}` : "";
     const link = it.shortUrl || it.url;
     return `${idx + 1}. *${cleanTitle}*${priceTag}${dimTag}\n   ${link}`;
   };
 
   const blocks: string[] = [
-    "Here are the matching options from our range:",
     `*${primaryLabel}:*\n${primaryGroup.map(formatLine).join("\n")}`,
   ];
 
@@ -1940,6 +1984,12 @@ export type AcrioTurnIntent =
   | "GREETING"
   | "IDENTITY_META"
   | "COMPANY_INFO"
+  | "LEADERSHIP_CONTACT_INFO"
+  | "CHAT_HISTORY_META"
+  | "MENU_SELECTION"
+  | "CATEGORY_OVERVIEW"
+  | "MULTI_ITEM_PROJECT"
+  | "CONVERSATIONAL_FOLLOWUP"
   | "TOPIC_RESET"
   | "HUMAN_HANDOFF_INFO"
   | "HUMAN_HANDOFF_REQUEST"
@@ -1959,18 +2009,96 @@ export interface AcrioIntentClassification {
   reason: string;
 }
 
+export interface AcrioCustomerProfileInfo {
+  customerProfile: "SIMPLE_LAYMAN" | "STUDENT_EXPLORER" | "EVERYDAY_BUYER" | "BUSINESS_INSTITUTIONAL" | "TECHNICAL_GRADUATE";
+  languageMode: "ENGLISH" | "HINDI_HINGLISH" | "OTHER_FALLBACK";
+  instructionNote: string;
+}
+
+/**
+ * Adaptive Customer Persona & Language Detector (Decision #1 + Universal Buyer Support):
+ * - Primary languages: English and Hindi/Hinglish. Uses another regional language ONLY if the customer writes in that script or clearly does not understand English/Hindi.
+ * - Adapts tone from simple layman/broken-English buyers ("they sit, do your hand Acrylic chair", "interiora") to students, corporate/institutional buyers, and technical graduates.
+ */
+export function detectAcrioCustomerProfile(
+  rawText: string,
+  recentInboundText = ""
+): AcrioCustomerProfileInfo {
+  const combined = `${recentInboundText} ${rawText}`.trim();
+  const lower = combined.toLowerCase();
+
+  // Language detection: Devanagari or Romanized Hindi/Hinglish vs non-Hindi regional scripts
+  const hasDevanagari = /[\u0900-\u097F]/.test(rawText);
+  const hasOtherIndianScript = /[\u0980-\u0DFF]/.test(rawText);
+  const hasHinglishTokens =
+    /\b(kya|hai|hain|chahiye|kitna|kitne|ka\s+hai|milega|batao|bataiye|dikhao|sasta|mehenga|aur\s+dikhao|humko|mujhe|dukaan|bhaiya|rate\s+kya|kaisa)\b/i.test(
+      rawText
+    );
+
+  const languageMode: AcrioCustomerProfileInfo["languageMode"] = hasOtherIndianScript
+    ? "OTHER_FALLBACK"
+    : hasDevanagari || hasHinglishTokens
+    ? "HINDI_HINGLISH"
+    : "ENGLISH";
+
+  // Persona detection
+  const isStudent = /\b(i\s+am\s+a\s+student|for\s+my\s+college\s+project|school\s+project|just\s+learning|student\s+here)\b/i.test(lower);
+  const isBusinessInstitutional =
+    /\b(renovation|office|corporate\s*clients?|bulk|gst|invoice|quotation|proforma|company|hospital|hotel|church|school|college|university|auditorium|\d+\s*(?:podiums?|signages?|chairs?|tables?|trophies))\b/i.test(
+      lower
+    );
+  const isTechnical =
+    /\b(ccp\d{2,4}|yn[-_\s]?jw|abm[-_\s]?\d|ce53|\d+\s*[x×]\s*\d+|mm\b|thickness|cast\s*acrylic|extruded|rpm|wattage)\b/i.test(
+      lower
+    );
+  const isBrokenOrShortLayman =
+    /\b(do\s+your\s+hand|interiora|they\s+sit)\b/i.test(lower) ||
+    (rawText.split(/\s+/).length <= 5 && !isTechnical);
+
+  const customerProfile: AcrioCustomerProfileInfo["customerProfile"] = isStudent
+    ? "STUDENT_EXPLORER"
+    : isBusinessInstitutional
+    ? "BUSINESS_INSTITUTIONAL"
+    : isTechnical
+    ? "TECHNICAL_GRADUATE"
+    : isBrokenOrShortLayman
+    ? "SIMPLE_LAYMAN"
+    : "EVERYDAY_BUYER";
+
+  const langRule =
+    languageMode === "HINDI_HINGLISH"
+      ? "Reply in simple, natural Hindi/Hinglish (or clear English with Hindi terms) so the customer understands effortlessly."
+      : languageMode === "OTHER_FALLBACK"
+      ? "The customer does not appear comfortable in English or Hindi; reply in their language alongside simple English."
+      : "Reply in clear, simple everyday English (never use other languages unless the customer asks or does not understand English/Hindi).";
+
+  const personaRule =
+    customerProfile === "SIMPLE_LAYMAN"
+      ? "Customer writes in short or broken phrases: infer their real meaning charitably (e.g. 'they sit, do your hand Acrylic chair' = asking if we have Acrylic Chairs for sitting), use very simple words, and show 2-3 clear options."
+      : customerProfile === "STUDENT_EXPLORER"
+      ? "Customer is a student: be warm, helpful, and educational without pressuring them for a delivery city or bulk order."
+      : customerProfile === "BUSINESS_INSTITUTIONAL"
+      ? "Customer is a business/institutional buyer: provide structured itemized numbers, unit price × quantity totals, and practical组合/package options."
+      : "Provide a concise, scannable gist with exact specs and prices.";
+
+  return {
+    customerProfile,
+    languageMode,
+    instructionNote: `${langRule} ${personaRule}`,
+  };
+}
+
 const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
-  /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|sign|nameplate|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|stool|chair|furniture|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
+  /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|signages|sign|signs|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keychains|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|tables|stool|stools|chair|chairs|desk|desks|furniture|interior|interiors|interiora|decor|furnishing|seating|sit|sitting|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
-  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*k\b|\d{4,6}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these)\b/i;
+  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
 
 /**
  * Deterministic Turn-Level Intent Classifier (Phase A).
  * Runs BEFORE any catalog fetch or product lookup so non-product turns
- * (greetings, "Who are you?", "Where is your factory?", "I have a different query",
- * "Whom will you connect me to?", human handoffs, order lookups, and off-topic turns)
- * never trigger unnecessary product retrieval or leak prior-turn products.
+ * never trigger unnecessary product retrieval or leak prior-turn products,
+ * while NEVER wiping conversation history on numbered replies ("1") or follow-ups!
  */
 export function classifyAcrioInboundIntent(
   rawText: string,
@@ -1991,8 +2119,22 @@ export function classifyAcrioInboundIntent(
 
   const hasDomainProductNoun = ACRIO_DOMAIN_PRODUCT_NOUN_RE.test(lower);
 
-  // 1. Informational question about human handoff ("Whom will you connect me to?", "Who handles custom quotes?", "Who is your sales manager?")
-  // Must be checked BEFORE HUMAN_HANDOFF_REQUEST so it does NOT falsely trigger handoff.
+  // 1. Leadership / Chairperson / Marketing / Department-wise staff contact lookup (Decision #7)
+  if (
+    /\b(chairperson|chairman|chairwoman|director|directors|founder|ceo|owner|proprietor|managing\s*director|president|marketing\s*(?:head|person|team|manager|contact|department|number|email|executive)|sales\s*(?:head|manager|person|contact|number|email|department)|department\s*(?:wise|contact|contacts|head|heads|people|number|numbers|email|emails|list)|contact\s*(?:person|details|number|email)\s*(?:for|of)\s*(?:marketing|sales|machines|dispatch|fabrication|management|chairperson|director)|who\s+(?:is|are)\s+(?:the|your)\s+(?:chairperson|chairman|director|founder|ceo|owner|marketing\s*head|sales\s*head|department\s*heads?))\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      intent: "LEADERSHIP_CONTACT_INFO",
+      requiresProductLookup: false,
+      allowRollingContextFallback: false,
+      needsImmediateHandoff: false,
+      reason: "Customer asked for chairperson, leadership, marketing, or department-wise contact details",
+    };
+  }
+
+  // 2. Informational question about human handoff ("Whom will you connect me to?", "Who handles custom quotes?")
   if (
     /\b(?:who|whom|which\s*(?:team|person|department|member|specialist)|what\s*(?:team|department))\s+(?:will|would|do|can|are)\s+you\s+(?:connect|transfer|assign|hand\s*over|forward)\b|\b(?:to\s+whom|with\s+whom)\s+(?:will|would|do|can)\s+you\s+connect\b|\b(?:who|whom)\s+(?:handles|takes\s*care\s*of|manages|looks\s*after|is\s+in|is\s+your)\s+(?:this|my\s*chat|custom|orders|sales|support|enquiries|inquiries|team|manager|executive)\b|\b(?:can\s+i\s+know|tell\s+me)\s+(?:who|whom)\s+(?:you\s+will\s+connect|i\s+will\s+(?:talk|speak)\s+(?:to|with))\b|\bhow\s+does\s+(?:the\s+)?(?:handoff|human\s*support|sales\s*team)\s+work\b/i.test(
       lower
@@ -2007,7 +2149,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 2. Explicit request to be connected to a human / sales person right now
+  // 3. Explicit request to be connected to a human / sales person right now
   if (
     !/^(?:who|whom|which\s+team|what\s+team|how\s+does)\b/i.test(lower) &&
     /\b(talk\s*to\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|speak\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|connect\s*me(?:\s*(?:now|right\s*away|please)|\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive))?|yes\s*,?\s*(?:please\s*)?connect\s*me|human\s*agent|real\s*person|call\s*me|can\s+someone\s+call|please\s*call|need\s*a\s*call|want\s*a\s*call|transfer\s*(?:me|chat)\s*to\s*(?:human|sales|team)|assign\s*(?:to\s*)?(?:human|sales|team))\b/i.test(
@@ -2023,7 +2165,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 3. Support / complaint / damaged delivery / refund / CAD file
+  // 4. Support / complaint / damaged delivery / refund / CAD file
   if (
     /\b(complaint|damaged|cracked\s*on\s*delivery|broken\s*item|wrong\s*item|refund|cancel\s*my\s*order|dispute|drawing\s*attached|cad\s*file|dxf\s*file|gst\s*mismatch|payment\s*stuck|payment\s*failed)\b/i.test(
       lower
@@ -2038,7 +2180,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 4. Specific order status / tracking lookup
+  // 5. Specific order status / tracking lookup
   if (
     /\b(?:order\s*(?:id|no|number|#)?\s*[:#-]?\s*[a-z0-9-]*\d{3,}|cc-\d+|ce-\d+|track\s+my\s+order|where\s+is\s+my\s+order|order\s+status|dispatch\s+status)\b/i.test(
       lower
@@ -2053,10 +2195,73 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 5. Topic reset / switching query ("I have a different query", "Forget that, let's start over")
+  // 6. Chat history / Meta / Feedback / Student declaration ("Tell me about my chat history with you", "You lost the context again", "Why do you keep asking the same city question", "I am a student")
+  if (
+    /\b(chat\s*history|my\s*history|our\s*chat|what\s+did\s+i\s+(?:ask|say)|what\s+have\s+we\s+discussed|summary\s+of\s+(?:our|my)\s+(?:chat|conversation)|you\s+lost\s+(?:the\s*)?context|lost\s+context|forgot\s+(?:the\s*)?context|keep\s+asking\s+(?:the\s*)?same|same\s+city\s+question|asking\s+the\s+same\s+question|excellent\s+reply\s+fool|you\s+are\s+a\s+fool|bad\s+reply|useless\s+bot|i\s+am\s+a\s+student|i'm\s+a\s+student)\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      intent: "CHAT_HISTORY_META",
+      requiresProductLookup: false,
+      allowRollingContextFallback: true,
+      needsImmediateHandoff: false,
+      reason: "Customer asked about conversation history, context continuity, repeated questions, or shared persona context",
+    };
+  }
+
+  // 7. Numbered menu / option selection ("1", "2", "Option 1", "the first one")
+  if (
+    hasConversationHistory &&
+    (/^[\s*#]*(?:option\s*|category\s*|number\s*|no\.?\s*)?([1-5])[\s.)*]*$/i.test(trimmed) ||
+      /^(?:the\s+)?(first|second|third|fourth|1st|2nd|3rd|4th)\s*(?:one|option|category|model)?[\s.!]*$/i.test(
+        trimmed
+      ))
+  ) {
+    return {
+      intent: "MENU_SELECTION",
+      requiresProductLookup: true,
+      allowRollingContextFallback: true,
+      needsImmediateHandoff: false,
+      reason: "Customer selected a numbered menu/category/product option from the previous turn",
+    };
+  }
+
+  // 8. Category / Sub-category overview ("What all categories do you have under the podiums category?")
+  if (
+    /\b(what\s+(?:all\s+)?(?:sub[-\s]*)?categories|which\s+(?:sub[-\s]*)?categories|all\s+categories\s+under|categories\s+(?:under|in|of)\s+(?:the\s+)?podiums?|types\s+of\s+podiums?\s+categories|podium\s+sub[-\s]*categories)\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      intent: "CATEGORY_OVERVIEW",
+      requiresProductLookup: true,
+      allowRollingContextFallback: true,
+      needsImmediateHandoff: false,
+      reason: "Customer asked for the sub-categories/types under a product category",
+    };
+  }
+
+  // 9. Multi-item project or bulk quantity + budget totalling ("3 Acrylic podiums, 10 signages ... and 10 chairs ... budget 1 lac")
+  const qtyMatches = lower.match(/\b\d{1,3}\s*(?:pcs?|pieces?|units?|nos?)?\s*(?:of\s*)?(?:acrylic\s*)?(?:podiums?|pulpits?|lecterns?|signages?|signs?|name\s*plates?|nameplates?|chairs?|stools?|tables?|trophies|awards?|stands?)\b/gi);
+  if (
+    (qtyMatches && qtyMatches.length >= 2) ||
+    (/\b(renovation|office\s+project|complete\s+package|total\s+cost|total\s+price)\b/i.test(lower) &&
+      Boolean(qtyMatches && qtyMatches.length >= 1))
+  ) {
+    return {
+      intent: "MULTI_ITEM_PROJECT",
+      requiresProductLookup: true,
+      allowRollingContextFallback: true,
+      needsImmediateHandoff: false,
+      reason: "Customer requested multi-item quantities or project budget totalling",
+    };
+  }
+
+  // 10. Explicit Topic Reset / switching query ("I have a different query", "Forget that, let's start over")
   if (
     !hasDomainProductNoun &&
-    /\b(different\s*(?:query|question|requirement|topic|thing|enquiry|inquiry)|another\s*(?:query|question|requirement|topic|enquiry|inquiry)|something\s*else|forget\s*(?:that|it|previous|the\s*last)|start\s*over|start\s*afresh|change\s*(?:of\s*)?(?:topic|subject)|leave\s*(?:that|it)|never\s*mind(?:\s*(?:that|it))?|new\s*(?:query|question|topic|requirement|enquiry|inquiry)|i\s+have\s+a\s+(?:query|question|doubt))\b/i.test(
+    /\b(different\s*(?:query|question|requirement|topic|thing|enquiry|inquiry)|another\s*(?:query|question|requirement|topic|enquiry|inquiry)|something\s*else|forget\s*(?:that|it|previous|the\s*last)|start\s*over|start\s*afresh|change\s*(?:of\s*)?(?:topic|subject)|leave\s*(?:that|it)|never\s*mind(?:\s*(?:that|it))?|new\s*(?:query|question|topic|requirement|enquiry|inquiry))\b/i.test(
       lower
     )
   ) {
@@ -2065,11 +2270,11 @@ export function classifyAcrioInboundIntent(
       requiresProductLookup: false,
       allowRollingContextFallback: false,
       needsImmediateHandoff: false,
-      reason: "Customer signalled a topic reset or new unspecified query",
+      reason: "Customer explicitly signalled a topic reset or new unspecified query",
     };
   }
 
-  // 6. Identity / AI / Bot capability questions ("Who are you?", "What can you help me with?", "Are you a bot?")
+  // 11. Identity / AI / Bot capability questions ("Who are you?", "What can you help me with?", "Are you a bot?")
   if (
     !hasDomainProductNoun &&
     /\b(who\s+are\s+you|what\s+are\s+you|what\s+is\s+your\s+name|your\s+name|are\s+you\s+(?:a\s+)?(?:bot|ai|human|real\s+person|robot|assistant|automated)|which\s+(?:ai|model|llm)|what\s+(?:ai|model|llm)|what\s+can\s+you\s+(?:do|help\s*(?:me\s*)?with)|how\s+can\s+you\s+help(?:\s+me)?|tell\s+me\s+about\s+yourself|what\s+is\s+acrio|who\s+is\s+acrio)\b/i.test(
@@ -2085,7 +2290,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 7. Company / Factory / Location / Brand info questions ("Where is your factory?", "What does Classic Concepts do?")
+  // 12. Company / Factory / Location / Brand info questions ("Where is your factory?", "What does Classic Concepts do?")
   if (
     /\b(where\s+(?:are\s+you|is\s+your)\s*(?:located|based|factory|office|workshop|shop|company|plant|unit|from)?|what\s+is\s+your\s+(?:location|address|factory\s+address|office\s+address|working\s+hours|timings)|your\s+(?:factory\s+location|office\s+location|company\s+address|working\s+hours|opening\s+hours)|what\s+(?:does|is)\s+classic\s+(?:concepts|edge(?:\s*53)?)(?:\s+do)?|difference\s+between\s+classic\s+concepts\s+and\s+classic\s+edge|tell\s+me\s+about\s+(?:your\s+company|classic\s+concepts|classic\s+edge(?:\s*53)?)|do\s+you\s+(?:ship|deliver)\s+(?:across|all\s+over|pan)\s+india|do\s+you\s+provide\s+gst(?:\s+invoice|\s+bill)?)\b/i.test(
       lower
@@ -2101,7 +2306,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 8. Pure greeting / pleasantry / thanks
+  // 13. Pure greeting / pleasantry / thanks
   if (
     /^[\s\W]*(hi+|hello+|hey+|hii+|heyy+|good\s*(?:morning|afternoon|evening|day)|namaste|greetings|hi\s+there|hello\s+there|hey\s+there|hi\s+acrio|hello\s+acrio|thanks|thank\s+you|thank\s+you\s+so\s+much|many\s+thanks|ok\s+thanks|okay\s+thanks|can\s+you\s+help(?:\s+me)?)[\s\W]*$/i.test(
       trimmed
@@ -2116,7 +2321,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 9. Obvious off-topic queries with zero domain nouns
+  // 14. Obvious off-topic queries with zero domain nouns
   if (
     !hasDomainProductNoun &&
     /\b(weather|forecast|cricket|ipl|football|soccer|movie|film|song|lyrics|recipe|biryani|pizza|burger|bitcoin|crypto|stock\s*market|nifty|sensex|python\s*code|javascript|leetcode|math\s*homework|election|minister|politics|tell\s*me\s*a\s*joke|write\s*a\s*poem|horoscope|astrology)\b/i.test(
@@ -2132,7 +2337,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 10. Custom fabrication quote with explicit 3D dimensions or custom fabrication phrasing
+  // 15. Custom fabrication quote with explicit 3D dimensions or custom fabrication phrasing
   if (
     /\b(\d+\s*(?:mm|cm|inch|in|ft)?\s*x\s*\d+\s*(?:mm|cm|inch|in|ft)?\s*x\s*\d+\s*(?:mm|cm|inch|in|ft)?)\b/i.test(
       lower
@@ -2150,7 +2355,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 11. Product comparison
+  // 16. Product comparison
   if (
     /\b(compare|comparison|vs\.?|versus|difference\s+between|differ\s+between|which\s+(?:one|of\s+these|of\s+them|model|podium|pulpit|machine)\s+(?:is|has)\s+(?:better|wider|widest|larger|largest|bigger|biggest|taller|tallest|more))\b/i.test(
       lower
@@ -2165,7 +2370,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 12. Follow-up refinement (budget change, color/material/size filter, "show me more", "price?")
+  // 17. Follow-up refinement (budget change, color/material/size filter, "show me more", "without mentioning prices", "cheaper alternative")
   if (!hasDomainProductNoun && ACRIO_FOLLOW_UP_REFINEMENT_RE.test(lower)) {
     return {
       intent: "FOLLOW_UP_REFINEMENT",
@@ -2176,10 +2381,10 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 13. Direct product search or problem/use-case description (e.g. "pulpits under 25000", "cloudy edges", "for school event")
+  // 18. Direct product search or problem/use-case description (e.g. "pulpits under 25000", "furniture and interiora", "small classroom", "corporate clients")
   if (
     hasDomainProductNoun ||
-    /\b(stage|auditorium|church|school|college|university|conference|seminar|hotel|restaurant|cafe|banquet|hospital|clinic|retail|shop|showroom|exhibition|event|ceremony|convocation|wedding|office|reception|counter|cloudy|rough\s*edge|white\s*edge|bubble|crack|warping|scratch|yellow)\b/i.test(
+    /\b(stage|auditorium|church|school|classroom|college|university|conference|seminar|hotel|restaurant|cafe|banquet|hospital|clinic|retail|shop|showroom|exhibition|event|ceremony|convocation|wedding|office|reception|counter|cloudy|rough\s*edge|white\s*edge|bubble|crack|warping|scratch|yellow)\b/i.test(
       lower
     )
   ) {
@@ -2192,8 +2397,7 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 14. Short or ambiguous message without domain nouns or refinement tokens:
-  // Do NOT blindly pull old products if it's a meta/conversational turn; only use rolling context if history exists and it looks like a short reply ("yes", "okay show me", "send links")
+  // 19. Short confirmation or follow-up in active conversation
   if (
     hasConversationHistory &&
     /\b(yes|yeah|yep|sure|ok|okay|please\s*share|send\s*(?:links|details|options|photos|catalogue|catalog)|show\s*(?:me|them|options)|tell\s*me\s*more)\b/i.test(
@@ -2209,21 +2413,18 @@ export function classifyAcrioInboundIntent(
     };
   }
 
+  // 20. Preserve context on any other conversational turn instead of wiping convState!
   return {
-    intent: "TOPIC_RESET",
+    intent: hasConversationHistory ? "CONVERSATIONAL_FOLLOWUP" : "GREETING",
     requiresProductLookup: false,
-    allowRollingContextFallback: false,
+    allowRollingContextFallback: hasConversationHistory,
     needsImmediateHandoff: false,
-    reason: "General or ambiguous message with no product or refinement terms; clarifying without dumping unrelated products",
+    reason: "Conversational follow-up or general turn; preserving conversation memory without dumping unrelated products",
   };
 }
 
 /**
  * Phase B: Structured Per-Conversation State Object (`AcrioConversationState`).
- * Replaces naive rolling string concatenation (`recentInboundWindow`) so ACRIO
- * accurately remembers customer requirements, budgets, product categories,
- * preferences, corrections, and follow-up turns while resetting cleanly on
- * genuine topic changes and isolating state strictly per customer conversation.
  */
 export interface AcrioConversationState {
   activeBrand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | "BOTH" | null;
@@ -2234,10 +2435,17 @@ export interface AcrioConversationState {
   excludedItemTypes: ("PRODUCT" | "MACHINE" | "CONSUMABLE")[];
   minPrice: number | null;
   maxPrice: number | null;
+  hidePrices?: boolean;
+  preferCheapest?: boolean;
   preferences: string[];
   applicationContext: string | null;
   dimensionsOrThickness: string | null;
   quantity: string | null;
+  shownProductSlugs?: string[];
+  lastMenuOptions?: string[];
+  askedQuestionsLog?: string[];
+  customerProfile?: string;
+  languageMode?: string;
   lastRecommendedProducts: {
     id: string;
     name: string;
@@ -2260,10 +2468,17 @@ export function createEmptyAcrioConversationState(): AcrioConversationState {
     excludedItemTypes: [],
     minPrice: null,
     maxPrice: null,
+    hidePrices: false,
+    preferCheapest: false,
     preferences: [],
     applicationContext: null,
     dimensionsOrThickness: null,
     quantity: null,
+    shownProductSlugs: [],
+    lastMenuOptions: [],
+    askedQuestionsLog: [],
+    customerProfile: "EVERYDAY_BUYER",
+    languageMode: "ENGLISH",
     lastRecommendedProducts: [],
     turnCount: 0,
     updatedAt: new Date().toISOString(),
@@ -2300,10 +2515,73 @@ function detectProductFamilyAndQuery(rawText: string): {
   const isCorrectionOnly =
     (excludesConsumables || excludesMachines) && strippedForCheck.length === 0;
 
-  if (/\b(pulpit|pulpits|podium|podiums|lectern|lecterns|rostrum|rostrums|ccpo?[-_\s]?\d{2,4})\b/i.test(lower)) {
+  // Furniture / Interiors / Chairs / Tables / Stools ("furniture and interiora", "they sit, do your hand Acrylic chair")
+  if (
+    /\b(furniture|interior|interiors|interiora|decor|furnishing|chair|chairs|stool|stools|bar\s*stool|table|tables|desk|desks|console|bench|seating|they\s+sit|for\s+sitting)\b/i.test(
+      lower
+    ) &&
+    !/\b(table\s*top\s*podium|table\s*stand|tent\s*card)\b/i.test(lower)
+  ) {
+    const wantsChairSpecifically = /\b(chair|chairs|stool|stools|seating|sit|sitting)\b/i.test(lower);
+    return {
+      productFamily: "furniture",
+      primaryProductQuery: wantsChairSpecifically
+        ? "acrylic chair bar stool furniture seating"
+        : "acrylic furniture table chair stool console interior",
+      activeCategory: "Custom Fabrication",
+      activeBrand: "CLASSIC_CONCEPTS",
+      itemTypeFilter: "PRODUCT",
+      excludedItemTypes: [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  // Signage / Name plates / Name boards
+  if (
+    /\b(signage|signages|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|door\s*sign|directional\s*sign)\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      productFamily: "signage",
+      primaryProductQuery: `${rawText.trim()} acrylic signage name plate sign holder`,
+      activeCategory: "Custom Fabrication",
+      activeBrand: "CLASSIC_CONCEPTS",
+      itemTypeFilter: "PRODUCT",
+      excludedItemTypes: [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  // Corporate Gifts / Souvenirs / Paperweights / Pen Stands / Keychains
+  if (
+    /\b(gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|keychain|keychains)\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      productFamily: "corporate_gift",
+      primaryProductQuery: `${rawText.trim()} acrylic memento trophy paperweight pen stand keychain coaster tray`,
+      activeCategory: "Awards & Trophies",
+      activeBrand: "CLASSIC_CONCEPTS",
+      itemTypeFilter: "PRODUCT",
+      excludedItemTypes: [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  // Podiums / Pulpits / Lecterns / Classroom Podium
+  if (
+    /\b(pulpit|pulpits|podium|podiums|lectern|lecterns|rostrum|rostrums|ccpo?[-_\s]?\d{2,4}|small\s+classroom|classroom|auditorium|church)\b/i.test(
+      lower
+    )
+  ) {
+    const isClassroom = /\b(classroom|school|teacher|compact)\b/i.test(lower);
     return {
       productFamily: "podium",
-      primaryProductQuery: `${rawText.trim()} pulpit podium`,
+      primaryProductQuery: isClassroom
+        ? "compact essential acrylic podium CCP057S CCP054 classroom"
+        : `${rawText.trim()} pulpit podium`,
       activeCategory: "Podiums & Stage",
       activeBrand: "CLASSIC_CONCEPTS",
       itemTypeFilter: "PRODUCT",
@@ -2445,8 +2723,11 @@ function detectProductFamilyAndQuery(rawText: string): {
 function extractPreferencesFromTurn(rawText: string): string[] {
   const lower = String(rawText || "").toLowerCase();
   const prefs: string[] = [];
-  if (/\b(most\s*premium|premium|high\s*end|flagship|top\s*end|best|luxury|heavy\s*duty)\b/i.test(lower)) {
+  if (/\b(most\s*premium|premium|high\s*end|flagship|top\s*end|best|luxury|heavy\s*duty|costliest|most\s*expensive)\b/i.test(lower)) {
     prefs.push("premium");
+  }
+  if (/\b(cheapest|lowest\s*price|least\s*expensive|cheaper|smaller\s*top|save\s*more|sasta|sabse\s*sasta)\b/i.test(lower)) {
+    prefs.push("cheapest");
   }
   if (/\b(transparent|clear|crystal\s*clear|see\s*through)\b/i.test(lower)) {
     prefs.push("transparent");
@@ -2478,7 +2759,7 @@ function extractMetadataFromTurn(rawText: string): {
 } {
   const lower = String(rawText || "").toLowerCase();
   const appMatch = lower.match(
-    /\b(church|school|college|university|auditorium|conference|seminar|hotel|restaurant|cafe|banquet|hospital|clinic|retail|showroom|exhibition|event|ceremony|convocation|wedding|office|reception)\b/i
+    /\b(church|school|classroom|college|university|auditorium|conference|seminar|hotel|restaurant|cafe|banquet|hospital|clinic|retail|showroom|exhibition|event|ceremony|convocation|wedding|office|reception)\b/i
   );
   const dimMatch =
     rawText.match(
@@ -2503,15 +2784,43 @@ export function applyTurnToAcrioConversationState(
 ): AcrioConversationState {
   const base = prevState
     ? {
+        ...createEmptyAcrioConversationState(),
         ...prevState,
         excludedItemTypes: [...(prevState.excludedItemTypes || [])],
         preferences: [...(prevState.preferences || [])],
+        shownProductSlugs: [...(prevState.shownProductSlugs || [])],
+        lastMenuOptions: [...(prevState.lastMenuOptions || [])],
+        askedQuestionsLog: [...(prevState.askedQuestionsLog || [])],
         lastRecommendedProducts: [...(prevState.lastRecommendedProducts || [])],
       }
     : createEmptyAcrioConversationState();
 
   base.turnCount = (base.turnCount || 0) + 1;
   base.updatedAt = new Date().toISOString();
+
+  const lower = String(rawText || "").toLowerCase();
+  const profileInfo = detectAcrioCustomerProfile(rawText);
+  base.customerProfile = profileInfo.customerProfile;
+  base.languageMode = profileInfo.languageMode;
+
+  // Track "without mentioning prices" / "hide prices" preference on the current turn and its immediate MENU_SELECTION follow-up
+  if (/\b(without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|don'?t\s*(?:mention|show)\s*prices?)\b/i.test(lower)) {
+    base.hidePrices = true;
+  } else if (intentInfo.intent !== "MENU_SELECTION" && intentInfo.intent !== "CATEGORY_OVERVIEW") {
+    base.hidePrices = false;
+  }
+
+  // Track cheapest / smaller top preference
+  if (/\b(cheapest|lowest\s*price|least\s*expensive|cheaper\s*alternative|cheaper\s*option|smaller\s*top\s*to\s*save|save\s*more|sasta|sabse\s*sasta)\b/i.test(lower)) {
+    base.preferCheapest = true;
+    base.preferences = base.preferences.filter((p) => p !== "premium");
+    // If customer had a high podium price or is asking for a cheaper alternative to a specific model, clear minPrice
+    base.minPrice = null;
+  } else if (/\b(costliest|most\s*expensive|most\s*premium|premium|flagship|luxury)\b/i.test(lower)) {
+    base.preferCheapest = false;
+  } else if (!/\b(any\s*more|more\s*options|other\s*options)\b/i.test(lower)) {
+    base.preferCheapest = false;
+  }
 
   // Explicit topic reset clears active product/budget state
   if (intentInfo.intent === "TOPIC_RESET") {
@@ -2520,6 +2829,46 @@ export function applyTurnToAcrioConversationState(
       turnCount: base.turnCount,
       updatedAt: base.updatedAt,
     };
+  }
+
+  // Handle CATEGORY_OVERVIEW (e.g. "What all categories do you have under the podiums category?")
+  if (intentInfo.intent === "CATEGORY_OVERVIEW") {
+    base.activeBrand = "CLASSIC_CONCEPTS";
+    base.activeCategory = "Podiums & Stage";
+    base.productFamily = "podium";
+    base.primaryProductQuery = "acrylic podium categories";
+    base.lastMenuOptions = [
+      "Essential Podiums",
+      "Classic Signature Podiums",
+      "Premium Podiums",
+      "Custom-Built Podiums",
+    ];
+    return base;
+  }
+
+  // Handle MENU_SELECTION ("1", "2", "Option 1")
+  if (intentInfo.intent === "MENU_SELECTION") {
+    const numMatch = rawText.trim().match(/^[\s*#]*(?:option\s*|category\s*|number\s*|no\.?\s*)?([1-5])[\s.)*]*$/i);
+    const wordMatch = rawText.trim().match(/^(?:the\s+)?(first|second|third|fourth|1st|2nd|3rd|4th)\b/i);
+    let idx = 0;
+    if (numMatch) {
+      idx = parseInt(numMatch[1], 10) - 1;
+    } else if (wordMatch) {
+      const w = wordMatch[1].toLowerCase();
+      idx = w === "second" || w === "2nd" ? 1 : w === "third" || w === "3rd" ? 2 : w === "fourth" || w === "4th" ? 3 : 0;
+    }
+    if (base.lastMenuOptions && base.lastMenuOptions[idx]) {
+      const chosenOption = base.lastMenuOptions[idx];
+      base.primaryProductQuery = `${chosenOption} acrylic podium`;
+      base.productFamily = "podium";
+      base.activeCategory = "Podiums & Stage";
+      base.activeBrand = "CLASSIC_CONCEPTS";
+      return base;
+    } else if (base.lastRecommendedProducts && base.lastRecommendedProducts[idx]) {
+      const chosenProd = base.lastRecommendedProducts[idx];
+      base.primaryProductQuery = chosenProd.name;
+      return base;
+    }
   }
 
   // Non-product informational/greeting turns do not mutate active product state
@@ -2531,6 +2880,7 @@ export function applyTurnToAcrioConversationState(
   const budget = extractBudgetConstraintsFromQuery(rawText);
   const turnPrefs = extractPreferencesFromTurn(rawText);
   const meta = extractMetadataFromTurn(rawText);
+  const explicitCodesInTurn = extractExplicitProductOrModelCodes(rawText);
 
   const isTopicSwitch =
     !detected.isCorrectionOnly &&
@@ -2560,20 +2910,44 @@ export function applyTurnToAcrioConversationState(
     base.dimensionsOrThickness = meta.dimensionsOrThickness;
     base.quantity = meta.quantity;
     base.lastRecommendedProducts = [];
+    base.shownProductSlugs = [];
     return base;
   }
 
-  // Merge product family & query if not already set or if this turn specifies a more specific family
+  // If customer explicitly names SKU codes (e.g. "CCP057S and CCP054" or "Tell me about CCP111") without a budget in this turn, clear any stale budget from an earlier turn!
+  if (explicitCodesInTurn.length > 0 && budget.maxPrice === null && budget.minPrice === null) {
+    base.maxPrice = null;
+    base.minPrice = null;
+  }
+
+  // If customer asks for a cheaper alternative after looking at a high-end product, set maxPrice below the last recommended product's price!
+  if (
+    /\b(cheaper\s*alternative|cheaper\s*option|smaller\s*top\s*to\s*save|save\s*more|lower\s*price\s*option)\b/i.test(
+      lower
+    ) &&
+    budget.maxPrice === null
+  ) {
+    const lastPrice = base.lastRecommendedProducts[0]?.priceInr;
+    if (typeof lastPrice === "number" && lastPrice > 8000) {
+      base.maxPrice = lastPrice - 1;
+    } else {
+      base.maxPrice = null;
+    }
+  }
+
+  // Merge product family & query if not already set or if this turn specifies a family
   if (detected.activeBrand) base.activeBrand = detected.activeBrand;
   if (detected.activeCategory) base.activeCategory = detected.activeCategory;
-  if (detected.productFamily && (!base.productFamily || base.productFamily === "machine")) {
+  if (detected.productFamily && (!base.productFamily || base.productFamily === "machine" || detected.productFamily !== base.productFamily)) {
     base.productFamily = detected.productFamily;
   }
   if (detected.primaryProductQuery && (!base.primaryProductQuery || !detected.isCorrectionOnly)) {
-    // Only overwrite primaryProductQuery if base has none, or if this isn't a bare "just machines" correction on an existing specific machine query
     if (
       !base.primaryProductQuery ||
       detected.productFamily === "podium" ||
+      detected.productFamily === "furniture" ||
+      detected.productFamily === "signage" ||
+      detected.productFamily === "corporate_gift" ||
       detected.productFamily === "trophy" ||
       detected.productFamily === "polishing_machine" ||
       detected.productFamily === "bending_machine"
@@ -2602,7 +2976,7 @@ export function applyTurnToAcrioConversationState(
   if (budget.maxPrice !== null || budget.minPrice !== null) {
     base.maxPrice = budget.maxPrice;
     base.minPrice = budget.minPrice;
-  } else if (/\b(no\s*budget|any\s*budget|without\s*budget|ignore\s*budget|no\s*price\s*limit)\b/i.test(rawText)) {
+  } else if (/\b(no\s*budget|any\s*budget|without\s*budget|ignore\s*budget|no\s*price\s*limit|cheapest|costliest|most\s*expensive)\b/i.test(rawText)) {
     base.maxPrice = null;
     base.minPrice = null;
   }
@@ -2711,7 +3085,7 @@ export function buildNormalizedSearchFromState(
   }
 
   const nonGenericPrefs = (state.preferences || []).filter(
-    (p) => p !== "premium"
+    (p) => p !== "premium" && p !== "cheapest"
   );
   if (nonGenericPrefs.length > 0) {
     parts.push(nonGenericPrefs.join(" "));
@@ -2721,7 +3095,18 @@ export function buildNormalizedSearchFromState(
   }
 
   const searchQuery = parts.join(" ").trim() || fallbackRawText.trim();
-  const preferPremium = (state.preferences || []).includes("premium");
+  const preferCheapest =
+    Boolean(state.preferCheapest) ||
+    (state.preferences || []).includes("cheapest") ||
+    /\b(cheapest|lowest\s*price|cheaper\s*alternative|smaller\s*top\s*to\s*save|save\s*more)\b/i.test(
+      rawTrimmed
+    );
+  const preferPremium =
+    !preferCheapest && (state.preferences || []).includes("premium");
+  const asksMoreOrAlternative =
+    /\b(any\s*more|more\s*options|other\s*options|any\s*other|another\s*model|cheaper\s*alternative|smaller\s*top\s*to\s*save|save\s*more)\b/i.test(
+      rawTrimmed
+    );
 
   const searchOptions: EcosystemSearchOptions = {
     minPrice: state.minPrice,
@@ -2735,6 +3120,8 @@ export function buildNormalizedSearchFromState(
     excludedItemTypes: state.excludedItemTypes,
     productFamily: state.productFamily,
     preferPremium,
+    preferCheapest,
+    excludeSlugs: asksMoreOrAlternative ? state.shownProductSlugs || [] : undefined,
   };
 
   const budgetLabel =
@@ -3082,6 +3469,8 @@ export async function runAcrioChatCopilot(params: {
 export interface AcrioAutonomousTurnResult {
   needsHumanHandoff: boolean;
   handoffReason: string;
+  needsSalesTeamPing?: boolean;
+  salesTeamPingNote?: string;
   customerReply: string;
   smartCategory: string;
   priority: "URGENT" | "HIGH" | "NORMAL";
@@ -3283,7 +3672,37 @@ export async function runAcrioAutonomousTurn(params: {
     rawQuery: rawText,
   });
 
-  if (intentInfo.requiresProductLookup) {
+  // Build shortlink map for multi-item project planner
+  const shortLinkMap: Record<string, string> = {};
+  for (const it of allItems) {
+    const u = it.shortUrl || it.url;
+    if (u) {
+      shortLinkMap[`product:${it.slug}`.toLowerCase()] = u;
+      shortLinkMap[`product:${it.id}`.toLowerCase()] = u;
+    }
+  }
+  const projectPlan = buildMultiItemProjectPlan(allItems, rawText, shortLinkMap);
+  const customerProfileInfo = detectAcrioCustomerProfile(rawText, recentInboundWindow);
+
+  // If MENU_SELECTION ("1", "2") and lastMenuOptions wasn't populated, inspect last outbound message for numbered list items!
+  if (intentInfo.intent === "MENU_SELECTION") {
+    const lastOutbound = [...history].reverse().find((m) => m.direction === "OUTBOUND")?.body || "";
+    const numMatch = rawText.trim().match(/^[\s*#]*(?:option\s*|category\s*|number\s*|no\.?\s*)?([1-5])[\s.)*]*$/i);
+    const chosenNum = numMatch ? parseInt(numMatch[1], 10) : 1;
+    const lineRegex = new RegExp(`(?:^|\\n)\\s*${chosenNum}[.)]\\s*\\*?([^\\n(*:]+)\\*?`, "i");
+    const mLine = lastOutbound.match(lineRegex);
+    if (mLine && mLine[1]) {
+      const extractedOptionTitle = mLine[1].trim();
+      convState.primaryProductQuery = extractedOptionTitle;
+      if (/essential|signature|premium|custom[-\s]*built|podium/i.test(extractedOptionTitle)) {
+        convState.productFamily = "podium";
+        convState.activeCategory = "Podiums & Stage";
+        convState.activeBrand = "CLASSIC_CONCEPTS";
+      }
+    }
+  }
+
+  if (intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling) {
     cacheMeta = fetchedCatalog.cacheMeta;
     addStep("Checked ecosystem catalog cache", cacheMeta.cacheSummary);
 
@@ -3300,7 +3719,37 @@ export async function runAcrioAutonomousTurn(params: {
       dimsInTurn.ranges.length > 0;
     const budgetChangedInTurn = prevMaxPrice !== convState.maxPrice;
 
-    if (
+    if (projectPlan.isMultiItemOrTotalling && projectPlan.matchedProducts.length > 0) {
+      contextMatches = projectPlan.matchedProducts;
+    } else if (intentInfo.intent === "MENU_SELECTION" && /essential\s*podium/i.test(convState.primaryProductQuery || "")) {
+      contextMatches = allItems
+        .filter(
+          (it) =>
+            it.brand === "CLASSIC_CONCEPTS" &&
+            ((it.podiumSubCategoryNames || []).some((s) => /essential/i.test(s)) ||
+              /\b(ccp057s|ccp054|ccp057|ccp058|ccp060)\b/i.test(it.sku || it.name))
+        )
+        .sort((a, b) => (a.basePrice || 999999) - (b.basePrice || 999999))
+        .slice(0, 6);
+    } else if (intentInfo.intent === "MENU_SELECTION" && /signature\s*podium/i.test(convState.primaryProductQuery || "")) {
+      contextMatches = allItems
+        .filter(
+          (it) =>
+            it.brand === "CLASSIC_CONCEPTS" &&
+            (it.podiumSubCategoryNames || []).some((s) => /signature/i.test(s))
+        )
+        .sort((a, b) => (a.basePrice || 999999) - (b.basePrice || 999999))
+        .slice(0, 6);
+    } else if (intentInfo.intent === "MENU_SELECTION" && /premium\s*podium/i.test(convState.primaryProductQuery || "")) {
+      contextMatches = allItems
+        .filter(
+          (it) =>
+            it.brand === "CLASSIC_CONCEPTS" &&
+            (it.podiumSubCategoryNames || []).some((s) => /premium/i.test(s))
+        )
+        .sort((a, b) => (b.basePrice || 0) - (a.basePrice || 0))
+        .slice(0, 6);
+    } else if (
       !hasExplicitCodeOrDimInTurn &&
       !budgetChangedInTurn &&
       convState.lastRecommendedProducts.length > 0 &&
@@ -3308,7 +3757,8 @@ export async function runAcrioAutonomousTurn(params: {
         intentInfo.intent === "FOLLOW_UP_REFINEMENT") &&
       /\b(first\s*two|top\s*two|both|these|those|them|which\s+one|which\s+of\s+these|wider|widest|larger|largest|bigger|biggest|taller|tallest|reading\s*top|top\s*sheet|dimension|dimensions|spec|specs|specification|specifications|variant|variants|color|colors|colour|colours|feature|features|pillar|pillars|warranty)\b/i.test(
         rawText
-      )
+      ) &&
+      !/\b(any\s*more|more\s*options|other\s*options|cheaper\s*alternative|smaller\s*top|save\s*more)\b/i.test(rawText)
     ) {
       const sliceCount = /\b(first\s*two|top\s*two|both|these\s*two|those\s*two)\b/i.test(
         rawText
@@ -3396,6 +3846,11 @@ export async function runAcrioAutonomousTurn(params: {
         shortUrl: it.shortUrl || it.url,
         itemType: it.itemType,
       }));
+      const mergedShown = new Set([
+        ...(convState.shownProductSlugs || []),
+        ...contextMatches.slice(0, 3).map((it) => (it.slug || "").toLowerCase()).filter(Boolean),
+      ]);
+      convState.shownProductSlugs = Array.from(mergedShown).slice(-18);
     }
     await saveConversationAiState(params.conversationId, convState);
 
@@ -3404,6 +3859,7 @@ export async function runAcrioAutonomousTurn(params: {
       `query="${usedLookupQuery.slice(0, 90)}"${budgetLabel ? `, budget="${budgetLabel}"` : ""}${convState.excludedItemTypes.length ? `, excluded=[${convState.excludedItemTypes.join(",")}]` : ""}, matched=${contextMatches.length} of ${allItems.length} items`
     );
   } else {
+    await saveConversationAiState(params.conversationId, convState);
     addStep(
       "Skipped catalog product lookup",
       `Non-product turn (${intentInfo.intent})`
@@ -3413,7 +3869,7 @@ export async function runAcrioAutonomousTurn(params: {
   let smartCategory = convState.activeCategory || "General Enquiry";
   let priority: "URGENT" | "HIGH" | "NORMAL" = "NORMAL";
 
-  if (intentInfo.requiresProductLookup) {
+  if (intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling) {
     const classificationProbe = `${convState.primaryProductQuery || ""} ${rawText}`.toLowerCase();
     if (
       convState.activeCategory === "Acrylic Machines (CE53)" ||
@@ -3433,7 +3889,7 @@ export async function runAcrioAutonomousTurn(params: {
       priority = /friday|urgent|tomorrow|today/i.test(lower) ? "URGENT" : "HIGH";
     } else if (
       convState.activeCategory === "Awards & Trophies" ||
-      /trophy|trophies|memento|award|student|convocation|plaque/i.test(classificationProbe)
+      /trophy|trophies|memento|award|student|convocation|plaque|gift|corporate\s*clients?/i.test(classificationProbe)
     ) {
       smartCategory = "Awards & Trophies";
     } else if (
@@ -3446,7 +3902,7 @@ export async function runAcrioAutonomousTurn(params: {
       priority = "HIGH";
     } else if (
       convState.activeCategory === "Custom Fabrication" ||
-      /cover|guard|enclosure|box|case|display\s*stand|riser|custom|mm|inch/i.test(
+      /cover|guard|enclosure|box|case|display\s*stand|riser|custom|mm|inch|furniture|interior|chair|stool|table|signage|name\s*plate/i.test(
         classificationProbe
       )
     ) {
@@ -3457,23 +3913,57 @@ export async function runAcrioAutonomousTurn(params: {
     }
   }
 
-  const prebuiltGroupedBlock = intentInfo.requiresProductLookup
-    ? buildGroupedProductShortLinksSection({
-        allItems,
-        matchedItems: contextMatches,
-        smartCategory,
-        excludeConsumables: convState.excludedItemTypes.includes("CONSUMABLE"),
-        hasStrictBudget: convState.maxPrice !== null || convState.minPrice !== null,
-      })
-    : "";
+  const hidePricesActive = Boolean(convState.hidePrices);
 
-  const deepProductInfo = intentInfo.requiresProductLookup
-    ? buildEcosystemDeepProductContextAndAnswer({
-        rawQuery: rawText,
-        matchedItems: contextMatches,
-        formatItemLink: (it) => it.shortUrl || it.url,
-      })
-    : null;
+  const prebuiltGroupedBlock =
+    intentInfo.requiresProductLookup && !projectPlan.isMultiItemOrTotalling
+      ? buildGroupedProductShortLinksSection({
+          allItems,
+          matchedItems: contextMatches,
+          smartCategory,
+          excludeConsumables: convState.excludedItemTypes.includes("CONSUMABLE"),
+          hasStrictBudget: convState.maxPrice !== null || convState.minPrice !== null,
+          hidePrices: hidePricesActive,
+          maxItems: 3,
+        })
+      : "";
+
+  const deepProductInfo =
+    intentInfo.requiresProductLookup && !projectPlan.isMultiItemOrTotalling
+      ? buildEcosystemDeepProductContextAndAnswer({
+          rawQuery: rawText,
+          matchedItems: contextMatches,
+          formatItemLink: (it) => it.shortUrl || it.url,
+        })
+      : null;
+
+  // Build Podium Sub-Categories Overview when CATEGORY_OVERVIEW is requested
+  const podiumSubCategoriesText =
+    intentInfo.intent === "CATEGORY_OVERVIEW"
+      ? [
+          `Here are the *4 sub-categories* under our *Acrylic Podiums & Pulpits* range:`,
+          `1. *Essential Podiums*${hidePricesActive ? "" : " (₹7,150 to ₹23,650)"}: Compact, lightweight single and double pillar podiums ideal for classrooms, offices, and daily seminars (such as *CCP057S*, *CCP054*, *CCP057*, *CCP060*).`,
+          `2. *Classic Signature Podiums*${hidePricesActive ? "" : " (₹19,250 to ₹28,600)"}: Wide-stage auditoria and church pulpits with generous reading tops and front logo panels (such as *CCP065*, *CCP055*, *CCP061*, *CCP064*).`,
+          `3. *Premium Podiums*${hidePricesActive ? "" : " (₹28,600 to ₹55,000)"}: Heavy-duty executive, motorized/height-adjustable, LED-lit, and acrylic-plus-wood flagship lecterns (such as *CCP074*, *CCP084*, *CCP094*, *CCP111*).`,
+          `4. *Custom-Built Podiums*: Made-to-order stage lecterns crafted to your exact dimensions, tint, LED backlighting, and institution crest.`,
+          `\nReply with *1*, *2*, *3*, or *4* (or tell me your venue type) to see the top models in that category!`,
+        ].join("\n")
+      : "";
+
+  // Determine if Consultative Sales Team Ping (without transferring chat away from ACRIO) is appropriate (Decision #4)
+  let needsSalesTeamPing = Boolean(projectPlan.needsSalesTeamPing);
+  let salesTeamPingNote = projectPlan.needsSalesTeamPing
+    ? `ACRIO Consultative Ping: Customer requested multi-item/bulk project pricing ("${rawText.slice(0, 140)}"). ACRIO shared itemized math and remains active on the chat; a single Sales Team reply with bulk discount can resolve this.`
+    : "";
+  if (
+    !needsSalesTeamPing &&
+    /\b(bulk\s*discount|discount|negotiate|best\s*rate|final\s*price|custom\s*quote|renovation|proforma|gst\s*quote|\d{2,}\s*(?:pcs|pieces|units|chairs|podiums|signages))\b/i.test(
+      rawText
+    )
+  ) {
+    needsSalesTeamPing = true;
+    salesTeamPingNote = `ACRIO Consultative Ping: Customer asked about bulk/custom pricing or discount ("${rawText.slice(0, 140)}"). ACRIO stays assigned; drop a single reply if special pricing applies.`;
+  }
 
   // 4. Multi-turn Claude Haiku 5.5 (Medium Effort) Diagnostic & Conversational Assistant
   const { apiKey, source: keySource } = await resolveSharedAnthropicApiKey("client");
@@ -3482,7 +3972,7 @@ export async function runAcrioAutonomousTurn(params: {
 
   if (apiKey) {
     try {
-      const trimmedHistory = history.slice(-14);
+      const trimmedHistory = history.slice(-16);
       const lastInHistory = trimmedHistory[trimmedHistory.length - 1];
       const historyWithoutDuplicateCurrent =
         lastInHistory &&
@@ -3509,30 +3999,67 @@ export async function runAcrioAutonomousTurn(params: {
         claudeMessages.shift();
       }
 
+      // Check which closing questions were already asked in the last 2 outbound messages so ACRIO never nags!
+      const recentOutboundText = historyWithoutDuplicateCurrent
+        .filter((m) => m.direction === "OUTBOUND")
+        .slice(-2)
+        .map((m) => m.body)
+        .join(" ")
+        .toLowerCase();
+      const alreadyAskedCityRecently = /\b(which\s+city|delivery\s+city|dispatch\s+to|event\s+in)\b/i.test(
+        recentOutboundText
+      );
+      const alreadyAskedLogoRecently = /\b(logo\s+printing|custom\s+front\s+logo|institution\s+logo)\b/i.test(
+        recentOutboundText
+      );
+      const antiRepeatRule =
+        alreadyAskedCityRecently || alreadyAskedLogoRecently || customerProfileInfo.customerProfile === "STUDENT_EXPLORER"
+          ? `CRITICAL ANTI-REPETITION RULE: You ALREADY asked about ${alreadyAskedCityRecently ? "delivery city" : ""}${alreadyAskedCityRecently && alreadyAskedLogoRecently ? " and " : ""}${alreadyAskedLogoRecently ? "logo printing" : ""} in recent messages (or customer is a student). DO NOT ask "which city" or "do you want logo printing" again in this reply! Instead, end with a fresh, helpful product-specific question or no question at all.`
+          : "";
+
       let catalogContext = "";
-      if (!intentInfo.requiresProductLookup) {
-        if (intentInfo.intent === "IDENTITY_META") {
+      if (projectPlan.isMultiItemOrTotalling) {
+        catalogContext = `Turn Intent: MULTI_ITEM_PROJECT (Multi-item quantity and budget totalling).
+Verified Multi-Item Project Calculation & Combinations (share these exact unit prices, quantities, line totals, shortlinks, and within-budget options clearly):
+${projectPlan.summaryText}`;
+      } else if (intentInfo.intent === "CATEGORY_OVERVIEW" && podiumSubCategoriesText) {
+        catalogContext = `Turn Intent: CATEGORY_OVERVIEW (Customer asked for the sub-categories under Acrylic Podiums).
+Use this exact verified sub-category breakdown:
+${podiumSubCategoriesText}`;
+      } else if (!intentInfo.requiresProductLookup) {
+        if (intentInfo.intent === "LEADERSHIP_CONTACT_INFO") {
+          catalogContext = `Turn Intent: LEADERSHIP_CONTACT_INFO (Customer is asking for company leadership, chairperson, marketing, sales, or department-wise contact details).
+Answer directly using the exact names, roles/departments, email addresses, and phone/WhatsApp numbers from the [Live Database Operational Context] below! Share all relevant contact numbers and emails clearly.`;
+        } else if (intentInfo.intent === "CHAT_HISTORY_META") {
+          catalogContext = `Turn Intent: CHAT_HISTORY_META (Customer is asking about their chat history with you, pointing out a context or repetition issue, or sharing that they are a student).
+Review the earlier messages in this conversation and answer directly, warmly, and honestly:
+- If they ask "Tell me about my chat history with you", summarize the exact topics and products you have discussed together in this chat (podiums, furniture/chairs, corporate gifts, comparisons, etc.) in 4-5 clear bullet points!
+- If they say "You lost the context again" or "Why do you keep asking the same city question", apologize briefly in 1 natural sentence, confirm what they were asking about from the previous turn, and answer it without repeating any city question!
+- If they say "I am a student", acknowledge warmly that they are welcome to explore all specs and prices for their study or project without any sales pressure.`;
+        } else if (intentInfo.intent === "IDENTITY_META") {
           catalogContext = `Turn Intent: IDENTITY_META (The customer is asking who you are or what you can help with).
-Answer directly in 2-3 short lines: you are *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, awards, stands, boxes: classicconcepts.in) and *Classic Edge 53* (acrylic bending, diamond edge polishing & cutting machines: classicedge53.com).
+Answer directly in 2-3 short lines: you are *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, furniture, signage, awards, stands, boxes: classicconcepts.in) and *Classic Edge 53* (acrylic bending, diamond edge polishing & cutting machines: classicedge.in).
 CRITICAL: Do NOT list or repeat specific products or links from earlier turns in this reply!`;
         } else if (intentInfo.intent === "COMPANY_INFO") {
-          catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about our company, factory location, or what we do).
-Answer directly: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, trophies, hotel/retail stands, custom boxes & covers) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility in Secunderabad / Hyderabad with pan-India delivery and GST billing.
-CRITICAL: Do NOT dump unrelated product links unless asked.`;
+          catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about our company, factory location, contact details, or what we do).
+Answer directly: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, acrylic furniture & chairs, office signages, trophies, hotel/retail stands, custom boxes) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility at 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad / Hyderabad (+91 73372 22876, +91 93467 63253, sales@classicconcepts.in) with pan-India delivery and GST billing.`;
         } else if (intentInfo.intent === "TOPIC_RESET") {
           catalogContext = `Turn Intent: TOPIC_RESET (The customer wants to ask a different query or start a new topic).
 Acknowledge warmly in 1-2 short lines and invite them to share their new question or requirement.
 CRITICAL: Do NOT carry over, repeat, or pitch any products from earlier messages in the conversation!`;
         } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
           catalogContext = `Turn Intent: HUMAN_HANDOFF_INFO (The customer is asking an informational question about who you will connect them to).
-Explain clearly that when they want human assistance, you connect their WhatsApp chat directly to our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (who handle custom size quotes, bulk orders, and dispatch checks), and ask if they would like to be connected now or keep exploring.
-CRITICAL: Set "needsHumanHandoff": false because they are only asking *whom* you connect to, not asking to be transferred yet!`;
+Explain clearly that when they want human assistance, you can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (including Rohan Kulkarni, Ananya Deshmukh, Priya Menon for Sales/Hospitality, and Karthik Nair for Classic Edge 53 Machines), and ask if they would like to be connected now or keep exploring.
+CRITICAL: Set "needsHumanHandoff": false because they are only asking *whom* you connect to!`;
         } else if (intentInfo.intent === "OFF_TOPIC") {
           catalogContext = `Turn Intent: OFF_TOPIC.
-Politely state in 1-2 lines that you only assist with *Classic Concepts* acrylic products and *Classic Edge 53* fabrication machines, and ask if they need any display, podium, custom box, or machine.`;
+Politely state in 1-2 lines that you only assist with *Classic Concepts* acrylic products and *Classic Edge 53* fabrication machines, and ask if they need any display, podium, furniture, signage, or machine.`;
+        } else if (intentInfo.intent === "CONVERSATIONAL_FOLLOWUP") {
+          catalogContext = `Turn Intent: CONVERSATIONAL_FOLLOWUP.
+Respond naturally and directly to the customer's message using the conversation history above. Keep it concise (2-4 lines) and do NOT dump a 5-product template list unless they asked for product options.`;
         } else {
           catalogContext = `Turn Intent: GREETING.
-Welcome the customer briefly and ask what they are looking to display, build, or fabricate today (stage podiums/pulpits, awards, custom acrylic boxes, or Classic Edge 53 machines). Do NOT dump specific product links yet.`;
+Welcome the customer briefly and ask what they are looking to display, build, or fabricate today (stage podiums/pulpits, acrylic furniture & chairs, office signages, awards, custom acrylic boxes, or Classic Edge 53 machines). Do NOT dump specific product links yet.`;
         }
       } else {
         const nearestHint =
@@ -3543,75 +4070,70 @@ Welcome the customer briefly and ask what they are looking to display, build, or
           ? `\n\nVerified Deep Product Specifications, Dimensions, Variants & Machine Models:\n${deepProductInfo.promptCatalogContext}`
           : "";
         const verifiedDeepReference = deepProductInfo?.deterministicDeepAnswer
-          ? `\n\nVerified Exact Answer Reference (include all exact measurements, variant prices, model codes, and links from this reference without inventing unverified numbers):\n${deepProductInfo.deterministicDeepAnswer}`
+          ? `\n\nVerified Concise Gist Reference (use these exact measurements, variant prices, model codes, and links without dumping unrequested panel sizes):\n${deepProductInfo.deterministicDeepAnswer}`
+          : "";
+        const priceSuppressionNote = hidePricesActive
+          ? `\nCRITICAL PRICE SUPPRESSION RULE: The customer explicitly asked NOT to mention prices ("without mentioning prices"). DO NOT include any ₹ prices, MRP, or rupee numbers anywhere in your reply!`
           : "";
         catalogContext = prebuiltGroupedBlock
-          ? `Turn Intent: ${intentInfo.intent}\nMatched Products strictly filtered for the customer's query${budgetLabel ? ` (Budget filter applied: ${budgetLabel})` : ""}:\n${prebuiltGroupedBlock}${deepBlock}${verifiedDeepReference}\n\nIMPORTANT: ONLY share products, dimensions, variant prices, and specifications from the verified data above. Never guess or invent unverified sheet thickness, wattage, or dimensions.`
-          : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}.${nearestHint} Explain honestly and helpfully without inventing prices, and ask if they would like to see our starting model or discuss a custom option.`;
+          ? `Turn Intent: ${intentInfo.intent}\nMatched Products strictly filtered for the customer's query${budgetLabel && !hidePricesActive ? ` (Budget filter applied: ${budgetLabel})` : ""}:\n${prebuiltGroupedBlock}${deepBlock}${verifiedDeepReference}${priceSuppressionNote}\n\nIMPORTANT: Format your reply as a crisp, scannable Gist (show at most 3 top matching products unless the user asked for all models; for a single product, show a 5-6 line gist with Height, Top size, Build/Warranty, Variants, 2-3 key highlights, and shortlink). Never dump raw database paragraphs!`
+          : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}.${nearestHint} Explain honestly and helpfully without inventing prices, and share the closest starting option or custom fabrication option.`;
       }
 
-      const stateSummaryLine = intentInfo.requiresProductLookup
-        ? `Active Conversation Memory: product="${convState.primaryProductQuery || "unspecified"}", category="${smartCategory}", budget="${budgetLabel || "open"}", preferences=[${convState.preferences.join(", ") || "none"}]${convState.excludedItemTypes.length ? `, excludedItemTypes=[${convState.excludedItemTypes.join(", ")}]` : ""}`
-        : "";
+      const stateSummaryLine = `Active Conversation Memory: product="${convState.primaryProductQuery || "unspecified"}", family="${convState.productFamily || "open"}", category="${smartCategory}", budget="${hidePricesActive ? "HIDE_PRICES_ACTIVE" : budgetLabel || "open"}", preferCheapest=${Boolean(convState.preferCheapest)}, customerProfile="${customerProfileInfo.customerProfile}", languageMode="${customerProfileInfo.languageMode}"`;
 
       const completeDatabaseDirectory = buildCompleteEcosystemDatabaseDirectory(allItems);
       const latestPromptPayload = `[Internal Context for ACRIO - never echo raw labels]
 Customer Name: ${params.customerName}
 Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Start directly with the helpful answer.)" : `NO (First reply: greet "${firstName}" warmly once in 1 short line.)`}
-Detected Category: ${smartCategory}
-${stateSummaryLine ? `${stateSummaryLine}\n` : ""}${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Teams, Staff, Resources, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
+Customer Persona & Language Instruction: ${customerProfileInfo.instructionNote}
+${antiRepeatRule ? `${antiRepeatRule}\n` : ""}${stateSummaryLine}
+${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Company Details, Leadership, Department Staff Contacts, Resources, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
 
 Customer's latest WhatsApp message:
 ${rawText}`;
 
-      if (!intentInfo.requiresProductLookup) {
-        claudeMessages.length = 0;
-        claudeMessages.push({ role: "user", content: latestPromptPayload });
+      // NEVER wipe claudeMessages! Preserving multi-turn chat history is essential for "1", "Tell me about my chat history", and natural follow-ups.
+      const lastTurn = claudeMessages[claudeMessages.length - 1];
+      if (lastTurn && lastTurn.role === "user") {
+        lastTurn.content = `${lastTurn.content}\n\n${latestPromptPayload}`;
       } else {
-        const lastTurn = claudeMessages[claudeMessages.length - 1];
-        if (lastTurn && lastTurn.role === "user") {
-          lastTurn.content = `${lastTurn.content}\n\n${latestPromptPayload}`;
-        } else {
-          claudeMessages.push({ role: "user", content: latestPromptPayload });
-        }
+        claudeMessages.push({ role: "user", content: latestPromptPayload });
       }
 
       const aiCall = await callClaudeHaikuMessagesDetailed({
         apiKey,
-        maxTokens: 2048,
+        maxTokens: 4096,
         effort: "medium",
-        timeoutMs: 24000,
-        system: `You are ACRIO, the WhatsApp product & fabrication specialist for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic fabrication machines, tools & hardware accessories: classicedge53.com).
+        timeoutMs: 26000,
+        system: `You are ACRIO, the intelligent WhatsApp product, project & fabrication specialist for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic fabrication machines, tools & hardware accessories: classicedge.in).
 
-CORE CONVERSATION, ACCURACY & WHATSAPP FORMATTING RULES:
+CORE CONVERSATION, ACCURACY, GIST FORMATTING & BUSINESS RULES:
 1. COMPLETE DATABASE VISIBILITY & ACCURATE PRODUCT MATCHING:
-   - You have access to the ENTIRE verified database below: all 189+ Classic Concepts products (including all 31 Acrylic & Wood Podiums CCP053 to CCP111 with exact Top Sheet, Height, Bottom Sheet, Logo Panel, and Name Panel sizes), all 18 Classic Edge 53 industrial machines & models, all 5 machine consumables, all 188 acrylic hardware accessories (hinges, camlocks, standoffs, spacers, screws, knobs, handles, latches, catches, brackets, rods, tubes, balls, rotating discs, specialty mirror/glitter/radeon sheets), podium optional add-ons, downloadable resources, specialist teams & team members, and customer enquiries/orders.
-   - ALWAYS check both the Matched Products section AND the Complete Verified Ecosystem Catalog Directory below before ever claiming a product or dimension does not exist!
-   - For example, if a customer asks for a pulpit/podium with a "22 x 16-inch top surface", *Acrylic Podium CCP065* (₹27,500, discounted from MRP ₹50,000) has an exact 22" x 16" Inches Top Sheet and 32" Min. to 44" Inches adjustable height! Never say none of our pulpits has a 22 x 16-inch top!
-   - If a customer asks "Tell me about <Product / SKU>" (such as "Tell me about Acrylic Podium CCP065"), share its full verified dimensions, features, available variants (e.g. Black, White), price, and shortlink!
-   - If Turn Intent is IDENTITY_META, COMPANY_INFO, TOPIC_RESET, HUMAN_HANDOFF_INFO, GREETING, or OFF_TOPIC, answer that question directly in 2-4 lines (using the Team/Company info when relevant) and NEVER list or repeat products from earlier turns!
-   - Know common terms: "pulpit" / "lectern" / "rostrum" = Acrylic Stage Podiums.
-   - Respect price budgets strictly (e.g. "under ₹25,000" -> ONLY show podiums priced at or below ₹25,000 from the Matched Products list, with their exact ₹ price!).
-   - NEVER include unrelated products (never suggest trays, ovens, machines, or tubes when someone asks for pulpits/podiums!).
-2. CLEAN, PROFESSIONAL WHATSAPP FORMATTING (CRITICAL):
+   - You have access to the ENTIRE verified database below: all 189+ Classic Concepts products (including all 31 Acrylic & Wood Podiums CCP053 to CCP111 with 4 sub-categories: Essential Podiums, Classic Signature Podiums, Premium Podiums, Custom-Built Podiums; Acrylic Furniture & Tables including Acrylic Chair ₹15,950 and Acrylic Bar Stool ₹9,350; Signages & Office Name Plates; Trophies, Mementos & Corporate Gifts under ₹5,000; Hotel & Retail Stands; Boxes & Enclosures), all 18 Classic Edge 53 industrial machines & models, all 5 machine consumables, all 188 acrylic hardware accessories, company details, and department-wise staff contacts.
+   - ALWAYS check both the Matched Products section AND the Complete Verified Ecosystem Catalog Directory below before ever claiming a product or category does not exist!
+   -Cheapest vs Costliest Podiums: Our most affordable ready podium is *Acrylic Podium CCP057S* (₹7,150, Top 18" x 14", Height 40"-42") followed by *Acrylic Podium CCP054* (₹14,999, Top 20" x 15"). Our most premium flagship podiums are *Acrylic & Wood Podium CCP111* (₹55,000, Top 27" x 18", 15mm clear acrylic + wood) and *Acrylic Podium CCP094* (₹52,800).
+   - If the customer asks for a "cheaper alternative" or "smaller top to save more", recommend compact lower-priced models (like *CCP057S* ₹7,150, *CCP054* ₹14,999, *CCP058* ₹18,150, *CCP057* ₹19,800) instead of repeating expensive models!
+   - If the customer asks about "furniture and interiors" or "they sit / Acrylic chair", show our *Acrylic Chair* (₹15,950), *Acrylic Bar Stool* (₹9,350), *Acrylic Console Table* (₹12,100), and *Acrylic Nesting Tables* (₹8,800) — NEVER show podiums when they ask for furniture or chairs!
+2. SCANNABLE GIST FORMATTING (NEVER DUMP RAW DATABASE WALLS):
    - NEVER repeat "Hi" or "Hello" if Already Greeted Earlier is YES.
-   - When sharing Matched Products, structure the reply with clean visual spacing so it reads beautifully on a mobile WhatsApp screen:
-     Short 1-sentence direct opening answer.
-
-     *<Category Heading>:*
-     1. *<Clean Product Name>* (₹<Price>)
-        <Key Dimensions or Specs>
-        https://ccapl.cc/<6-char-id>
-
-     Short 1-sentence practical follow-up question (e.g. event city, logo printing on front, or quantity needed).
+   - Never start every message with the robotic phrase "Here are the matching options from our range:". Vary your opening naturally based on what the user asked!
+   - For a single product ("Tell me about CCP111" or "CCP065"), give a crisp 5-6 line Gist: Price, Height & Top size, Build/Pillars/Warranty, Variants/Colours, 2-3 key highlights, and the https://ccapl.cc/... shortlink. Only list Bottom Sheet, Front Panel, Shelf, or Logo Panel sizes if the user specifically asks for full/panel dimensions.
+   - When listing multiple options, show at most 3 best matches (with 1-line key size + shortlink each) so the message is effortless to read on mobile.
+   - If "HIDE_PRICES_ACTIVE" is set (user asked "without mentioning prices"), DO NOT show any ₹ prices anywhere in the message!
    - Use single asterisks *like this* for WhatsApp bold (NEVER **double asterisks**, NEVER [markdown](links), NEVER ### headings).
-   - Use ₹ for Indian Rupees (e.g. ₹27,500).
-3. PLAIN EVERYDAY ENGLISH:
-   - Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
-   - NEVER add a robotic footer like "reply talk to team anytime".
-4. HUMAN HANDOFF RULE:
-   - Set "needsHumanHandoff": true ONLY if the customer explicitly asks for a human/call right now, reports a damaged order/refund issue, or has ALREADY confirmed final custom dimensions + quantity and wants a formal Sales proforma invoice.
-   - If the customer is only asking "Whom will you connect me to?" (HUMAN_HANDOFF_INFO), set "needsHumanHandoff": false!
+3. MULTI-ITEM PROJECT TOTALLING & BUDGET SOLVING:
+   - When a customer asks for multiple items with quantities and a budget (e.g. "3 Acrylic podiums, 10 signages for office name plates and 10 chairs within 1 lac rupees"), ALWAYS show the exact unit price × quantity = line total for each item, the grand total, and 2 smart combinations (Option 1: Within-budget combination; Option 2: Full-quantity package with bulk discount check from our Sales Team).
+4. COMPANY DETAILS, CHAIRPERSON/LEADERSHIP & DEPARTMENT CONTACTS:
+   - When asked about company details, leadership/chairperson/director, marketing, sales, or department contacts, share the exact names, roles, emails, and phone/WhatsApp numbers from the Live Database Operational Context (e.g., Head Office: +91 73372 22876 / +91 93467 63253, sales@classicconcepts.in; Platform & Leadership: AL AQMAR app@rapidshiftlabs.in +919618443558; Senior Sales & Hospitality: Ananya Deshmukh ananya.deshmukh@classiconcepts.in +919848022102; Corporate & Hotel Sales: Priya Menon priya.menon@classiconcepts.in +919848055110; Sales Team: Rohan Kulkarni rohan.kulkarni@classiconcepts.in +919848022101; Classic Edge 53 Machines: Karthik Nair karthik.nair@classiconcepts.in +919848022103).
+5. CONSULTATIVE SALES TEAM PING vs FULL HANDOFF (CRITICAL):
+   - You make the best decision possible autonomously and keep handling the conversation ("needsHumanHandoff": false).
+   - When a customer needs bulk discount confirmation, multi-item renovation pricing, or custom quote verification, set "needsSalesTeamPing": true and "needsHumanHandoff": false so our Sales Team gets pinged internally to drop a single reply while you remain active on the chat!
+   - Set "needsHumanHandoff": true ONLY if the customer explicitly asks to speak to a human/person right now or reports a damaged delivery/dispute.
+6. PLAIN EVERYDAY LANGUAGE & ANTI-REPETITION:
+   - Primary languages: English and Hindi/Hinglish. Use other languages only if the user clearly does not understand English or Hindi.
+   - Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords.
+   - Do NOT repeat "which city is the event/delivery in?" or "do you need logo printing?" if it was already asked in recent turns or if the user is a student/exploring.
 
 ${completeDatabaseDirectory}
 
@@ -3619,9 +4141,11 @@ Return ONLY valid JSON:
 {
   "needsHumanHandoff": false,
   "handoffReason": "",
+  "needsSalesTeamPing": false,
+  "salesTeamPingNote": "",
   "smartCategory": "Podiums & Stage | Awards & Trophies | Hotel & Banquet | Acrylic Machines (CE53) | Custom Fabrication | Order & Delivery | General Enquiry",
   "priority": "URGENT | HIGH | NORMAL",
-  "customerReply": "Cleanly formatted WhatsApp message using \\n line breaks, *bold* titles, ₹ prices, and https://ccapl.cc/... shortlinks"
+  "customerReply": "Cleanly formatted WhatsApp gist using \\n line breaks, *bold* titles, ₹ prices (unless hidden), and https://ccapl.cc/... shortlinks"
 }`,
         messages: claudeMessages,
       });
@@ -3636,6 +4160,12 @@ Return ONLY valid JSON:
         if (parsed && typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
           const handoff =
             intentInfo.intent === "HUMAN_HANDOFF_INFO" ||
+            intentInfo.intent === "LEADERSHIP_CONTACT_INFO" ||
+            intentInfo.intent === "CHAT_HISTORY_META" ||
+            intentInfo.intent === "MENU_SELECTION" ||
+            intentInfo.intent === "CATEGORY_OVERVIEW" ||
+            intentInfo.intent === "MULTI_ITEM_PROJECT" ||
+            intentInfo.intent === "CONVERSATIONAL_FOLLOWUP" ||
             intentInfo.intent === "IDENTITY_META" ||
             intentInfo.intent === "COMPANY_INFO" ||
             intentInfo.intent === "TOPIC_RESET" ||
@@ -3643,22 +4173,39 @@ Return ONLY valid JSON:
             intentInfo.intent === "OFF_TOPIC"
               ? false
               : Boolean(parsed.needsHumanHandoff);
-          const rawFormatted = stripRepeatedGreeting(
+
+          const pingSales =
+            !handoff && (needsSalesTeamPing || Boolean(parsed.needsSalesTeamPing));
+          const finalPingNote =
+            parsed.salesTeamPingNote ||
+            salesTeamPingNote ||
+            (pingSales
+              ? `ACRIO Consultative Ping: Customer enquiry ("${rawText.slice(0, 120)}") may benefit from a single Sales Team reply.`
+              : "");
+
+          let rawFormatted = stripRepeatedGreeting(
             formatWhatsAppOutboundText(parsed.customerReply),
             alreadyGreeted,
             params.customerName
           );
-          const cleanedReply = !intentInfo.requiresProductLookup
-            ? rawFormatted
-                .split("\n")
-                .filter((line) => !/https?:\/\/ccapl\.cc\/\S+/i.test(line))
-                .join("\n")
-                .replace(/\n{3,}/g, "\n\n")
-                .trim()
-            : rawFormatted;
+          if (hidePricesActive) {
+            rawFormatted = rawFormatted
+              .replace(/\s*\((?:₹|Rs\.?|INR)\s*[\d,]+(?:\s*,\s*MRP\s*₹[\d,]+)?\)/gi, "")
+              .replace(/\b(?:₹|Rs\.?)\s*[\d,]+(?:\s*to\s*(?:₹|Rs\.?)\s*[\d,]+)?/gi, "available on request");
+          }
+          const cleanedReply =
+            !intentInfo.requiresProductLookup && !projectPlan.isMultiItemOrTotalling
+              ? rawFormatted
+                  .split("\n")
+                  .filter((line) => !/https?:\/\/ccapl\.cc\/\S+/i.test(line))
+                  .join("\n")
+                  .replace(/\n{3,}/g, "\n\n")
+                  .trim()
+              : rawFormatted;
+
           addStep(
             "Parsed JSON & formatted WhatsApp outbound message",
-            `intent=${intentInfo.intent}, smartCategory="${parsed.smartCategory || smartCategory}", handoff=${handoff}, chars=${cleanedReply.length}`
+            `intent=${intentInfo.intent}, smartCategory="${parsed.smartCategory || smartCategory}", handoff=${handoff}, salesPing=${pingSales}, chars=${cleanedReply.length}`
           );
 
           recordAndBroadcastAiLog({
@@ -3673,10 +4220,13 @@ Return ONLY valid JSON:
             responseCacheStatus: "BYPASS",
             catalogCacheStatus: cacheMeta.catalogCacheStatus,
             cacheDetails: `${cacheMeta.cacheSummary} • intent=${intentInfo.intent} • Multi-turn live Claude Haiku 5.5 Medium`,
-            productLookupTriggered: intentInfo.requiresProductLookup,
+            productLookupTriggered: intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling,
             productLookupQuery: usedLookupQuery,
             productLookupBudget: budgetLabel,
-            productLookupTotalScanned: intentInfo.requiresProductLookup ? allItems.length : 0,
+            productLookupTotalScanned:
+              intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling
+                ? allItems.length
+                : 0,
             productsLookedUp: contextMatches.map(mapProductToLogItem),
             steps,
             response: cleanedReply,
@@ -3690,6 +4240,8 @@ Return ONLY valid JSON:
               ? parsed.handoffReason ||
                 `Customer ready for Sales Team follow-up ("${rawText.slice(0, 100)}").`
               : "",
+            needsSalesTeamPing: pingSales,
+            salesTeamPingNote: finalPingNote,
             customerReply: cleanedReply,
             smartCategory: parsed.smartCategory || smartCategory,
             priority: parsed.priority || priority,
@@ -3722,25 +4274,44 @@ Return ONLY valid JSON:
   let fallbackHandoff = false;
   let fallbackReason = "";
 
-  if (intentInfo.intent === "GREETING") {
+  if (projectPlan.isMultiItemOrTotalling && projectPlan.summaryText) {
+    fallbackReply = `${greetOnce}${projectPlan.summaryText}`;
+    priority = "HIGH";
+  } else if (intentInfo.intent === "CATEGORY_OVERVIEW" && podiumSubCategoriesText) {
+    fallbackReply = `${greetOnce}${podiumSubCategoriesText}`;
+    priority = "NORMAL";
+  } else if (intentInfo.intent === "LEADERSHIP_CONTACT_INFO") {
+    fallbackReply = `${greetOnce}Here are the direct contact details for our leadership and specialist departments at *Classic Concepts* & *Classic Edge 53*:\n\n• *Management & Platform Head:* AL AQMAR (app@rapidshiftlabs.in, +91 96184 43558)\n• *Senior Sales & Hospitality Head:* Ananya Deshmukh (ananya.deshmukh@classiconcepts.in, +91 98480 22102)\n• *Corporate, Office & Institutional Sales:* Priya Menon (priya.menon@classiconcepts.in, +91 98480 55110) & Rohan Kulkarni (rohan.kulkarni@classiconcepts.in, +91 98480 22101)\n• *Classic Edge 53 Machines & Technical Head:* Karthik Nair (karthik.nair@classiconcepts.in, +91 98480 22103)\n• *Main Factory & Sales Desk (Secunderabad, Hyderabad):* +91 73372 22876 / +91 93467 63253 | sales@classicconcepts.in`;
+    priority = "NORMAL";
+  } else if (intentInfo.intent === "CHAT_HISTORY_META") {
+    const prevUserTopics = history
+      .filter((m) => m.direction === "INBOUND")
+      .slice(-6)
+      .map((m) => `• "${m.body.slice(0, 80)}"`)
+      .join("\n");
+    fallbackReply = /student/i.test(lower)
+      ? `${greetOnce}Welcome! Since you are a student exploring our range, feel free to ask about any acrylic product dimensions, manufacturing methods, or prices anytime with zero obligation.`
+      : `${greetOnce}Here is a quick summary of what we have discussed in this chat:\n${prevUserTopics || "• Exploring Classic Concepts acrylic products and pricing"}\n\nActive focus: *${convState.primaryProductQuery || smartCategory}*. Tell me how you would like to proceed and I will help right away!`;
+    priority = "NORMAL";
+  } else if (intentInfo.intent === "GREETING") {
     fallbackReply = alreadyGreeted
-      ? `Tell me what you are looking to display, make, or solve today:\n\n• *Acrylic Podiums, Pulpits & Display Stands*\n• *Awards, Trophies & Hotel QR Stands*\n• *Custom-Size Acrylic Boxes & Covers*\n• *Classic Edge 53 Acrylic Machines & Tools*\n\nShare a few details and I will suggest the best options!`
-      : `Hello ${firstName}! Welcome to *Classic Concepts* & *Classic Edge 53*.\n\nHow can I help you today?\n• *Stage Podiums, Pulpits & Trophies*\n• *Custom-Size Acrylic Boxes & Machine Covers*\n• *Acrylic Bending, Polishing & Cutting Machines*\n\nTell me what you have in mind!`;
+      ? `Tell me what you are looking to display, make, or solve today:\n\n• *Acrylic Podiums, Pulpits & Display Stands*\n• *Acrylic Furniture, Chairs & Office Signages*\n• *Awards, Trophies & Corporate Gifts*\n• *Classic Edge 53 Acrylic Machines & Tools*\n\nShare a few details and I will suggest the best options!`
+      : `Hello ${firstName}! Welcome to *Classic Concepts* & *Classic Edge 53*.\n\nHow can I help you today?\n• *Stage Podiums, Pulpits & Trophies*\n• *Acrylic Furniture, Chairs & Office Signages*\n• *Custom-Size Acrylic Boxes & Machine Covers*\n• *Acrylic Bending, Polishing & Cutting Machines*\n\nTell me what you have in mind!`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "IDENTITY_META") {
-    fallbackReply = `${greetOnce}I am *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, awards, stands, and boxes) and *Classic Edge 53* (industrial acrylic bending, diamond edge polishing, and cutting machines).\n\nTell me what you want to display, build, or fabricate and I will share matching options and prices right away.`;
+    fallbackReply = `${greetOnce}I am *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, furniture, signages, awards, stands, and boxes) and *Classic Edge 53* (industrial acrylic bending, diamond edge polishing, and cutting machines).\n\nTell me what you want to display, build, or fabricate and I will share matching options and prices right away.`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "COMPANY_INFO") {
-    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our 16,000+ sq. ft. facility in Secunderabad / Hyderabad.\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
+    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, furniture, signages, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our 16,000+ sq. ft. facility at 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad / Hyderabad (+91 73372 22876, sales@classicconcepts.in).\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "TOPIC_RESET") {
     fallbackReply = `${greetOnce}Sure, let's start fresh! Tell me what you are looking for or what question you have, and I will help you right away.`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
-    fallbackReply = `${greetOnce}When you ask to speak with someone, I connect this WhatsApp chat directly to our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* so a specialist can help you with custom quotes, bulk pricing, or order dispatch.\n\nWould you like me to connect our *Sales Team* now, or would you like to check a product first?`;
+    fallbackReply = `${greetOnce}When you ask to speak with someone, I can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (Ananya Deshmukh, Priya Menon, Rohan Kulkarni, and Karthik Nair) so a specialist can help you with custom quotes, bulk pricing, or order dispatch.\n\nWould you like me to connect our *Sales Team* now, or would you like to check a product first?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "OFF_TOPIC") {
-    fallbackReply = `${greetOnce}I only help with *Classic Concepts* acrylic products (podiums, awards, stands, custom boxes) and *Classic Edge 53* acrylic fabrication machines.\n\nLet me know if you need options or pricing for any acrylic product or machine!`;
+    fallbackReply = `${greetOnce}I only help with *Classic Concepts* acrylic products (podiums, furniture, signages, awards, stands, custom boxes) and *Classic Edge 53* acrylic fabrication machines.\n\nLet me know if you need options or pricing for any acrylic product or machine!`;
     priority = "NORMAL";
   } else if (/\b(cloudy|white\s*edge|rough\s*edge|dull\s*edge|polish\s*problem|flame|burn|bubble|crack|bend\s*issue|warping|scratch|yellow)\b/i.test(lower)) {
     const issueSolutions: string[] = [];
@@ -3771,38 +4342,37 @@ Return ONLY valid JSON:
     /\b(\d+\s*(?:mm|cm|inch|in|ft)\s*x\s*\d+\s*(?:mm|cm|inch|in|ft)?\s*x\s*\d+)\b/i.test(lower) &&
     /\b(\d+\s*(?:pcs|pieces|nos|units|qty)|quote|price)\b/i.test(contextLower)
   ) {
-    fallbackReply = `${greetOnce}Got your custom size details! I am connecting our *Sales Team* right now so they can calculate sheet thickness, exact fabrication cost, and dispatch time for you.`;
-    fallbackHandoff = true;
-    fallbackReason = `Customer shared custom dimensions for Sales quotation ("${rawText.slice(0, 110)}").`;
+    fallbackReply = `${greetOnce}Got your custom size details! I have pinged our *Sales Team* on this chat with your dimensions so they can share exact sheet thickness, fabrication cost, and dispatch time.`;
+    needsSalesTeamPing = true;
+    salesTeamPingNote = `ACRIO Consultative Ping: Customer shared 3D custom dimensions for quote ("${rawText.slice(0, 120)}").`;
     smartCategory = "Custom Fabrication";
     priority = "HIGH";
   } else if (deepProductInfo?.deterministicDeepAnswer) {
     fallbackReply = `${greetOnce}${deepProductInfo.deterministicDeepAnswer}`;
   } else if (top && prebuiltGroupedBlock) {
-    const followUpPrompt =
-      smartCategory === "Acrylic Machines (CE53)"
-        ? `What *maximum sheet thickness* and *working width* do you handle most often?`
-        : smartCategory === "Podiums & Stage"
-        ? `Do you want *custom front logo printing* on the podium, and which *city* do we need to dispatch to?`
-        : `Roughly *how many pieces* do you need, and do you want *custom logo printing* or a specific size?`;
-    fallbackReply = `${greetOnce}${prebuiltGroupedBlock}\n\n${followUpPrompt}`;
+    fallbackReply = `${greetOnce}${prebuiltGroupedBlock}\n\nLet me know which option fits your requirement best, or if you would like to compare sizes!`;
   } else if (budgetLabel && budgetFallbackLowestPrice && budgetFallbackLowestItem) {
     const cleanTitle = cleanDisplayProductName(budgetFallbackLowestItem.name);
     const link = budgetFallbackLowestItem.shortUrl || budgetFallbackLowestItem.url;
-    fallbackReply = `${greetOnce}We do not have a ready model within *${budgetLabel}*. Our starting model in this category is:\n\n1. *${cleanTitle}* (₹${budgetFallbackLowestPrice.toLocaleString("en-IN")})\n   ${link}\n\nWould you like to check this model or stretch your budget slightly?`;
+    fallbackReply = `${greetOnce}Our starting ready model in this category is:\n\n1. *${cleanTitle}* (₹${budgetFallbackLowestPrice.toLocaleString("en-IN")})\n   ${link}\n\nWould you like to check this model or explore a custom-built option for your budget?`;
   } else {
-    fallbackReply = `${greetOnce}I would love to help find the right option for you.\n\nCould you share a little more about what you need?\n• *Stage & Events:* acrylic podiums/pulpits, awards, or plaques\n• *Hotels & Retail:* menu/QR stands, risers, or display boxes\n• *Custom Size Job:* share what goes inside and rough size\n• *Acrylic Machines:* cutting, bending, or diamond polishing`;
+    fallbackReply = `${greetOnce}I would love to help find the right option for you.\n\nCould you share a little more about what you need?\n• *Stage & Events:* acrylic podiums/pulpits, awards, or plaques\n• *Furniture & Offices:* acrylic chairs, bar stools, tables, or office name plates\n• *Hotels & Retail:* menu/QR stands, risers, or display boxes\n• *Acrylic Machines:* cutting, bending, or diamond polishing`;
     priority = "NORMAL";
   }
 
-  const finalFallback = stripRepeatedGreeting(
+  let finalFallback = stripRepeatedGreeting(
     formatWhatsAppOutboundText(fallbackReply),
     alreadyGreeted,
     params.customerName
   );
+  if (hidePricesActive) {
+    finalFallback = finalFallback
+      .replace(/\s*\((?:₹|Rs\.?|INR)\s*[\d,]+(?:\s*,\s*MRP\s*₹[\d,]+)?\)/gi, "")
+      .replace(/\b(?:₹|Rs\.?)\s*[\d,]+(?:\s*to\s*(?:₹|Rs\.?)\s*[\d,]+)?/gi, "available on request");
+  }
   addStep(
     "Generated deterministic fallback WhatsApp reply",
-    `intent=${intentInfo.intent}, matchedProducts=${contextMatches.length}, smartCategory="${smartCategory}"`
+    `intent=${intentInfo.intent}, matchedProducts=${contextMatches.length}, smartCategory="${smartCategory}", salesPing=${needsSalesTeamPing}`
   );
 
   recordAndBroadcastAiLog({
@@ -3817,10 +4387,13 @@ Return ONLY valid JSON:
     responseCacheStatus: "BYPASS",
     catalogCacheStatus: cacheMeta.catalogCacheStatus,
     cacheDetails: `${cacheMeta.cacheSummary} • intent=${intentInfo.intent}`,
-    productLookupTriggered: intentInfo.requiresProductLookup,
+    productLookupTriggered: intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling,
     productLookupQuery: usedLookupQuery,
     productLookupBudget: budgetLabel,
-    productLookupTotalScanned: intentInfo.requiresProductLookup ? allItems.length : 0,
+    productLookupTotalScanned:
+      intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling
+        ? allItems.length
+        : 0,
     productsLookedUp: contextMatches.map(mapProductToLogItem),
     steps,
     response: finalFallback,
@@ -3832,6 +4405,8 @@ Return ONLY valid JSON:
   return {
     needsHumanHandoff: fallbackHandoff,
     handoffReason: fallbackReason,
+    needsSalesTeamPing,
+    salesTeamPingNote,
     customerReply: finalFallback,
     smartCategory,
     priority,

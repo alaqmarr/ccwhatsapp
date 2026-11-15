@@ -1280,29 +1280,59 @@ export async function processInboundAutomations(params: {
 
   if (!acrioTurn.needsHumanHandoff) {
     // ACRIO answered the query automatically - keep assigned to ACRIO with zero customer wait!
+    // When needsSalesTeamPing is true (Decision #4), ping the Sales Team internally without transferring ownership away from ACRIO.
+    const teamLabel = acrioTurn.needsSalesTeamPing
+      ? "System (ACRIO) • Sales Pinged"
+      : "System (ACRIO)";
     await conv.execute({
       sql: `UPDATE conversations
             SET status = 'OPEN',
                 assigned_staff_id = 'ACRIO',
                 assigned_staff_name = 'ACRIO',
-                assigned_team_id = NULL,
-                assigned_team_name = 'System (ACRIO)',
+                assigned_team_id = ?,
+                assigned_team_name = ?,
                 smart_category = ?,
                 priority = ?,
                 escalation_level = 'P0',
                 waiting_since = NULL,
-                unread_count = 0,
+                unread_count = ?,
                 last_message_preview = ?,
                 last_message_at = ?
             WHERE id = ?`,
       args: [
+        acrioTurn.needsSalesTeamPing ? "team_sales" : null,
+        teamLabel,
         acrioTurn.smartCategory,
-        acrioTurn.priority,
+        acrioTurn.needsSalesTeamPing ? "HIGH" : acrioTurn.priority,
+        acrioTurn.needsSalesTeamPing ? 1 : 0,
         `ACRIO: ${acrioTurn.customerReply}`.slice(0, 140),
         replyIso,
         params.conversationId,
       ],
     });
+
+    if (acrioTurn.needsSalesTeamPing) {
+      const pingMsgId = `msg_ping_${crypto.randomUUID().slice(0, 8)}`;
+      const pingBody =
+        acrioTurn.salesTeamPingNote ||
+        `ACRIO Consultative Ping: Customer requested bulk/project pricing ("${params.inboundText.slice(0, 120)}"). ACRIO remains active on this chat; Sales Team can drop a single reply if special pricing applies.`;
+      await conv
+        .execute({
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, delivery_status, created_at
+          ) VALUES (?, ?, 'INTERNAL', 'SYSTEM', 'ACRIO • Sales Ping', 'INTERNAL_NOTE', 'FREE', ?, 'DELIVERED', ?)`,
+          args: [pingMsgId, params.conversationId, pingBody, replyIso],
+        })
+        .catch(() => {});
+
+      socketHub.emit("message:new", {
+        conversationId: params.conversationId,
+        senderName: "ACRIO • Sales Ping",
+        text: pingBody,
+      });
+    }
+
     socketHub.emit("message:new", {
       conversationId: params.conversationId,
       senderName: "ACRIO",
