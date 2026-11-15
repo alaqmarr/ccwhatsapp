@@ -1,8 +1,10 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   ExternalLink,
+  FileCode,
   HardDrive,
   IndianRupee,
   Play,
@@ -435,6 +437,13 @@ export default function DevProfitAndOpsPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          <Link
+            href="/dashboard/ai-logs"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium"
+          >
+            <FileCode className="w-3.5 h-3.5" />
+            <span>Open AI Logs (ai.logs)</span>
+          </Link>
           <button
             type="button"
             onClick={() => loadAllDevData(range)}

@@ -12,7 +12,8 @@ export type RealtimeEventType =
   | "broadcast:progress"
   | "template:updated"
   | "backup:completed"
-  | "queue:updated";
+  | "queue:updated"
+  | "ai:log";
 
 export interface RealtimeEvent<T = Record<string, unknown>> {
   id: string;

@@ -15,6 +15,7 @@ import {
   UserCheck,
   IndianRupee,
   HardDrive,
+  FileCode,
   Settings,
   LogOut,
   Menu,
@@ -187,6 +188,12 @@ export function AppShell({
           href: "/dashboard/dev",
           label: "Dev Profit & Ops",
           icon: HardDrive,
+          visible: isDev,
+        },
+        {
+          href: "/dashboard/ai-logs",
+          label: "AI Logs (ai.logs)",
+          icon: FileCode,
           visible: isDev,
         },
         {

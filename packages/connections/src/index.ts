@@ -4,7 +4,10 @@ import path from "node:path";
 import zlib from "node:zlib";
 import nodemailer from "nodemailer";
 import {
+  appendAiTraceLog,
+  cleanDisplayProductName,
   ensureDatabasesBootstrapped,
+  extractBudgetConstraintsFromQuery,
   getRawLibSqlClient,
   loadAllClassicConceptsProducts,
   loadAllClassicEdgeItems,
@@ -19,18 +22,225 @@ import {
   resolvePublicTrackingOrigin,
   resolveSharedAnthropicApiKey,
   resolveWhatsAppWebAppOrigin,
-  cleanDisplayProductName,
   searchEcosystemItems,
   snapshotAllDatabasesToFolder,
+  type AiLogWebsite,
+  type AiLookedUpProduct,
+  type AiTokenUsage,
+  type AiTraceLogEntry,
+  type AiTraceStep,
   type MainWebsiteProduct,
 } from "@cc/database";
 import { socketHub } from "@cc/sockets";
 import {
   invalidateWhatsAppCacheTags,
   rememberWhatsAppCache,
+  rememberWhatsAppCacheWithMeta,
 } from "@cc/storage";
 
 const LOCKED_CLAUDE_MODEL = "claude-haiku-5-5" as const;
+
+export interface DetailedClaudeCallResult {
+  ok: boolean;
+  text: string | null;
+  statusCode: number;
+  durationMs: number;
+  effort: string;
+  usage: AiTokenUsage | null;
+  error: string | null;
+}
+
+export function parseClaudeJson<T = any>(raw: string | null | undefined): T | null {
+  if (!raw) return null;
+  const unfenced = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  const tryParse = (candidate: string): T | null => {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // Repair literal unescaped newlines/tabs inside JSON string literals
+      let repaired = "";
+      let inStr = false;
+      let escaped = false;
+      for (let i = 0; i < candidate.length; i++) {
+        const ch = candidate[i];
+        if (escaped) {
+          repaired += ch;
+          escaped = false;
+          continue;
+        }
+        if (ch === "\\") {
+          repaired += ch;
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inStr = !inStr;
+          repaired += ch;
+          continue;
+        }
+        if (inStr && ch === "\n") {
+          repaired += "\\n";
+          continue;
+        }
+        if (inStr && ch === "\r") {
+          continue;
+        }
+        if (inStr && ch === "\t") {
+          repaired += " ";
+          continue;
+        }
+        repaired += ch;
+      }
+      try {
+        return JSON.parse(repaired) as T;
+      } catch {
+        return null;
+      }
+    }
+  };
+
+  const direct = tryParse(unfenced);
+  if (direct !== null) return direct;
+
+  const s = unfenced.indexOf("{");
+  const e = unfenced.lastIndexOf("}");
+  if (s !== -1 && e > s) {
+    return tryParse(unfenced.slice(s, e + 1));
+  }
+  return null;
+}
+
+export async function callClaudeHaikuMessagesDetailed(params: {
+  apiKey: string;
+  system: string;
+  messages: { role: "user" | "assistant"; content: string }[];
+  maxTokens?: number;
+  temperature?: number;
+  effort?: "low" | "medium" | "high";
+  timeoutMs?: number;
+}): Promise<DetailedClaudeCallResult> {
+  const started = Date.now();
+  const effort = params.effort || "medium";
+  if (!params.apiKey) {
+    return {
+      ok: false,
+      text: null,
+      statusCode: 0,
+      durationMs: 0,
+      effort,
+      usage: null,
+      error: "Anthropic API key is missing.",
+    };
+  }
+
+  const sendPayload = async (includeLegacyTemp: boolean) => {
+    const bodyObj: Record<string, unknown> = {
+      model: LOCKED_CLAUDE_MODEL,
+      max_tokens: params.maxTokens ?? 2048,
+      system: params.system,
+      messages: params.messages,
+    };
+    if (includeLegacyTemp && typeof params.temperature === "number") {
+      bodyObj.temperature = params.temperature;
+    } else {
+      bodyObj.thinking = { type: "adaptive" };
+      bodyObj.output_config = { effort };
+    }
+    return fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": params.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(bodyObj),
+      signal: AbortSignal.timeout(params.timeoutMs ?? 24000),
+    });
+  };
+
+  try {
+    const useTempFirst = typeof params.temperature === "number";
+    let res = await sendPayload(useTempFirst);
+    let json: any = await res.json().catch(() => null);
+
+    // claude-haiku-5-5 deprecates `temperature` in favor of adaptive thinking + effort
+    if (
+      !res.ok &&
+      useTempFirst &&
+      res.status === 400 &&
+      /temperature/i.test(String(json?.error?.message || ""))
+    ) {
+      res = await sendPayload(false);
+      json = await res.json().catch(() => null);
+    }
+
+    const durationMs = Date.now() - started;
+    if (!res.ok) {
+      return {
+        ok: false,
+        text: null,
+        statusCode: res.status,
+        durationMs,
+        effort,
+        usage: null,
+        error:
+          String(json?.error?.message || `Anthropic HTTP ${res.status}`),
+      };
+    }
+
+    const blocks: any[] = Array.isArray(json?.content) ? json.content : [];
+    const textBlocks = blocks
+      .filter((b) => b?.type === "text" && typeof b?.text === "string")
+      .map((b) => String(b.text));
+    const extracted =
+      textBlocks.length > 0
+        ? textBlocks.join("\n").trim()
+        : typeof json?.content?.[0]?.text === "string"
+        ? json.content[0].text.trim()
+        : "";
+
+    const thinkingChars = blocks
+      .filter((b) => b?.type === "thinking" && typeof b?.thinking === "string")
+      .reduce((acc, b) => acc + String(b.thinking).length, 0);
+
+    const usage: AiTokenUsage = {
+      inputTokens: Number(json?.usage?.input_tokens ?? 0),
+      outputTokens: Number(json?.usage?.output_tokens ?? 0),
+      thinkingTokens:
+        Number(json?.usage?.thinking_tokens ?? 0) ||
+        (thinkingChars > 0 ? Math.ceil(thinkingChars / 4) : 0),
+      cacheReadInputTokens: Number(json?.usage?.cache_read_input_tokens ?? 0),
+      cacheCreationInputTokens: Number(
+        json?.usage?.cache_creation_input_tokens ?? 0
+      ),
+    };
+
+    return {
+      ok: Boolean(extracted),
+      text: extracted || null,
+      statusCode: res.status,
+      durationMs,
+      effort,
+      usage,
+      error: extracted ? null : "Anthropic response contained empty text block.",
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      text: null,
+      statusCode: 0,
+      durationMs: Date.now() - started,
+      effort,
+      usage: null,
+      error: err?.message || "Network or timeout error calling Anthropic.",
+    };
+  }
+}
 
 export async function callClaudeHaikuMessages(params: {
   apiKey: string;
@@ -38,32 +248,38 @@ export async function callClaudeHaikuMessages(params: {
   messages: { role: "user" | "assistant"; content: string }[];
   maxTokens?: number;
   temperature?: number;
+  effort?: "low" | "medium" | "high";
   timeoutMs?: number;
 }): Promise<string | null> {
-  if (!params.apiKey) return null;
-  const sendWithModel = async (modelId: string) =>
-    fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": params.apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: modelId,
-        max_tokens: params.maxTokens ?? 480,
-        temperature: params.temperature ?? 0.25,
-        system: params.system,
-        messages: params.messages,
-      }),
-      signal: AbortSignal.timeout(params.timeoutMs ?? 11000),
-    });
+  const res = await callClaudeHaikuMessagesDetailed(params);
+  return res.text;
+}
 
-  const res = await sendWithModel(LOCKED_CLAUDE_MODEL);
-  if (!res.ok) return null;
-  const json: any = await res.json().catch(() => null);
-  const text = json?.content?.[0]?.text;
-  return typeof text === "string" && text.trim() ? text.trim() : null;
+function recordAndBroadcastAiLog(
+  input: Omit<AiTraceLogEntry, "id" | "timestampUtc" | "timestampIst"> & {
+    id?: string;
+    timestampUtc?: string;
+  }
+): AiTraceLogEntry {
+  const entry = appendAiTraceLog(input);
+  try {
+    socketHub.emit("ai:log", entry);
+  } catch {
+    // Non-blocking
+  }
+  return entry;
+}
+
+function mapProductToLogItem(item: MainWebsiteProduct): AiLookedUpProduct {
+  return {
+    name: cleanDisplayProductName(item.name),
+    slug: item.slug,
+    sku: item.sku || null,
+    brand: item.brandLabel || item.brand,
+    itemType: item.itemType,
+    priceInr: item.basePrice,
+    url: item.shortUrl || item.url,
+  };
 }
 
 export function formatWhatsAppOutboundText(text: string): string {
@@ -71,9 +287,11 @@ export function formatWhatsAppOutboundText(text: string): string {
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .replace(/\\n/g, "\n")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1: $2")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "*$1* - $2")
     .replace(/^#{1,6}\s+(.+)$/gm, "*$1*")
     .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")
+    .replace(/^[ \t]*[-*][ \t]+(?![*])/gm, "• ")
+    .replace(/\b(?:Rs\.?|INR)\s*(\d[\d,]*)/gi, "₹$1")
     .replace(/__([^_\n]+)__/g, "_$1_")
     .replace(/~~([^~\n]+)~~/g, "~$1~")
     .replace(/\u2014/g, ", ")
@@ -1510,101 +1728,122 @@ export interface AcrioChatCopilotResult {
   resolutionDraft: string;
 }
 
+export interface CatalogCacheMeta {
+  ccCacheTier: string;
+  ce53CacheTier: string;
+  catalogCacheStatus: "HIT" | "MISS";
+  cacheSummary: string;
+}
+
 export async function getCachedEcosystemCatalog(): Promise<{
   classicConceptsProducts: MainWebsiteProduct[];
   classicEdgeItems: MainWebsiteProduct[];
   allItems: MainWebsiteProduct[];
+  cacheMeta: CatalogCacheMeta;
 }> {
-  const [classicConceptsProducts, classicEdgeItems] = await Promise.all([
-    rememberWhatsAppCache(
-      "ecosystem:cc-products:v3",
+  const [ccRes, ceRes] = await Promise.all([
+    rememberWhatsAppCacheWithMeta(
+      "ecosystem:cc-products:v5",
       ["cc-products"],
       3600,
       () => loadAllClassicConceptsProducts()
     ),
-    rememberWhatsAppCache(
-      "ecosystem:ce53-items:v3",
+    rememberWhatsAppCacheWithMeta(
+      "ecosystem:ce53-items:v4",
       ["ce53-machines"],
       3600,
       () => loadAllClassicEdgeItems()
     ),
   ]);
 
+  const classicConceptsProducts = ccRes.value;
+  const classicEdgeItems = ceRes.value;
+  const bothHit = ccRes.cacheStatus !== "MISS" && ceRes.cacheStatus !== "MISS";
+
   return {
     classicConceptsProducts,
     classicEdgeItems,
     allItems: [...classicConceptsProducts, ...classicEdgeItems],
+    cacheMeta: {
+      ccCacheTier: ccRes.cacheStatus,
+      ce53CacheTier: ceRes.cacheStatus,
+      catalogCacheStatus: bothHit ? "HIT" : "MISS",
+      cacheSummary: `CC Catalog=${ccRes.cacheStatus} (${classicConceptsProducts.length} items) • CE53 Catalog=${ceRes.cacheStatus} (${classicEdgeItems.length} items)`,
+    },
   };
 }
 
 /**
- * Formats matched products/machines into a clean, grouped, numbered list using ultra-short
- * `https://ccapl.cc/<6-char-id>` links - never stuffing raw SEO titles into sentences.
+ * Formats ONLY genuinely matched products/machines into a clean, WhatsApp-ready grouped list
+ * using ultra-short `https://ccapl.cc/<6-char-id>` links and `₹` Indian Rupee formatting.
+ * Never pads with unrelated catalog items!
  */
 export function buildGroupedProductShortLinksSection(params: {
   allItems: MainWebsiteProduct[];
   matchedItems: MainWebsiteProduct[];
   smartCategory: string;
 }): string {
-  const { allItems, matchedItems, smartCategory } = params;
+  const { matchedItems, smartCategory } = params;
   if (matchedItems.length === 0) return "";
 
   const usedKeys = new Set<string>();
   const keyOf = (it: MainWebsiteProduct) => `${it.brand}:${it.slug || it.id}`;
 
-  const isCustomisableItem = (it: MainWebsiteProduct) =>
-    /custom|sheet|box|cover|frame|stand|award|memento|plaque|logo|cut/i.test(
-      `${it.name} ${it.categoryName} ${it.description || ""}`
-    );
+  const uniqueMatches: MainWebsiteProduct[] = [];
+  for (const item of matchedItems) {
+    const k = keyOf(item);
+    if (!usedKeys.has(k)) {
+      usedKeys.add(k);
+      uniqueMatches.push(item);
+    }
+  }
+  if (uniqueMatches.length === 0) return "";
 
   const primaryLabel =
     smartCategory === "Podiums & Stage"
-      ? "Premium Products (Podiums & Stage)"
+      ? "Acrylic Podiums & Pulpits"
       : smartCategory === "Awards & Trophies"
-      ? "Ready Awards & Trophies"
+      ? "Acrylic Awards & Trophies"
       : smartCategory === "Hotel & Banquet"
       ? "Hotel & Display Stands"
       : smartCategory === "Acrylic Machines (CE53)"
       ? "Classic Edge 53 Machines"
       : smartCategory === "Custom Fabrication"
       ? "Matching Acrylic Options"
-      : matchedItems[0]?.categoryName
-      ? cleanDisplayProductName(matchedItems[0].categoryName)
+      : uniqueMatches[0]?.categoryName
+      ? cleanDisplayProductName(uniqueMatches[0].categoryName)
       : "Matching Products";
 
-  const primaryGroup: MainWebsiteProduct[] = [];
-  for (const item of matchedItems) {
-    if (primaryGroup.length >= 3) break;
-    const k = keyOf(item);
-    if (!usedKeys.has(k)) {
-      usedKeys.add(k);
-      primaryGroup.push(item);
+  let primaryGroup: MainWebsiteProduct[] = [];
+  let secondaryGroup: MainWebsiteProduct[] = [];
+  let secondaryLabel = "Customisable Options";
+
+  if (smartCategory === "Acrylic Machines (CE53)") {
+    secondaryLabel = "Tools & Consumables";
+    primaryGroup = uniqueMatches
+      .filter((it) => it.itemType !== "CONSUMABLE")
+      .slice(0, 4);
+    secondaryGroup = uniqueMatches
+      .filter((it) => it.itemType === "CONSUMABLE")
+      .slice(0, 3);
+    if (primaryGroup.length === 0) {
+      primaryGroup = uniqueMatches.slice(0, 4);
+      secondaryGroup = [];
     }
-  }
+  } else {
+    const pricedReady = uniqueMatches.filter(
+      (it) => typeof it.basePrice === "number" && it.basePrice > 0
+    );
+    const customQuoteOnly = uniqueMatches.filter(
+      (it) => !(typeof it.basePrice === "number" && it.basePrice > 0)
+    );
 
-  const secondaryLabel =
-    smartCategory === "Acrylic Machines (CE53)"
-      ? "Machine Tools & Consumables"
-      : "Customisable Products";
-
-  const secondaryCandidates = [
-    ...matchedItems.slice(primaryGroup.length),
-    ...allItems.filter((it) => {
-      if (usedKeys.has(keyOf(it))) return false;
-      if (smartCategory === "Acrylic Machines (CE53)") {
-        return it.brand === "CLASSIC_EDGE_53";
-      }
-      return it.brand === "CLASSIC_CONCEPTS" && isCustomisableItem(it);
-    }),
-  ];
-
-  const secondaryGroup: MainWebsiteProduct[] = [];
-  for (const item of secondaryCandidates) {
-    if (secondaryGroup.length >= 3) break;
-    const k = keyOf(item);
-    if (!usedKeys.has(k)) {
-      usedKeys.add(k);
-      secondaryGroup.push(item);
+    if (pricedReady.length > 0) {
+      primaryGroup = pricedReady.slice(0, 5);
+      secondaryGroup = customQuoteOnly.slice(0, 3);
+    } else {
+      primaryGroup = uniqueMatches.slice(0, 5);
+      secondaryGroup = [];
     }
   }
 
@@ -1612,14 +1851,14 @@ export function buildGroupedProductShortLinksSection(params: {
     const cleanTitle = cleanDisplayProductName(it.name);
     const priceTag =
       typeof it.basePrice === "number" && it.basePrice > 0
-        ? ` (Rs ${it.basePrice.toLocaleString("en-IN")})`
-        : "";
+        ? ` (₹${it.basePrice.toLocaleString("en-IN")})`
+        : " (Custom Quote)";
     const link = it.shortUrl || it.url;
-    return `${idx + 1}. ${cleanTitle}${priceTag} - ${link}`;
+    return `${idx + 1}. *${cleanTitle}*${priceTag}\n   ${link}`;
   };
 
   const blocks: string[] = [
-    "I found a few products that match your description:",
+    "Here are the matching options from our range:",
     `*${primaryLabel}:*\n${primaryGroup.map(formatLine).join("\n")}`,
   ];
 
@@ -1656,6 +1895,7 @@ export async function runAcrioChatCopilot(params: {
   recentMessages: { direction: string; body: string }[];
   ordersSummary?: string[];
 }): Promise<AcrioChatCopilotResult> {
+  const started = Date.now();
   // Exclude internal team notes when suggesting customer replies
   const customerMessages = params.recentMessages.filter(
     (m) => m.direction === "INBOUND" || m.direction === "OUTBOUND"
@@ -1677,8 +1917,9 @@ export async function runAcrioChatCopilot(params: {
     .join(" ");
 
   const lower = `${recentInboundContext} ${lastInbound}`.toLowerCase();
-  const { allItems } = await getCachedEcosystemCatalog();
+  const { allItems, cacheMeta } = await getCachedEcosystemCatalog();
   const primaryMatches = searchEcosystemItems(allItems, lastInbound, 4);
+  const usedQuery = primaryMatches.length > 0 ? lastInbound : recentInboundContext;
   const catalog =
     primaryMatches.length > 0
       ? primaryMatches
@@ -1759,7 +2000,7 @@ export async function runAcrioChatCopilot(params: {
         : `${greetPrefix}For ceremonies and events, we make clear *acrylic awards and plaques* with custom logo and recipient name printing.`,
       `${greetPrefix}Please share:\n• *Quantity needed*\n• *Event date*\n• *Your logo file*\n\nWe will send matching trophy options with bulk pricing.`,
       topProduct
-        ? `${greetPrefix}Our *${cleanDisplayProductName(topProduct.name)}*${topProduct.basePrice ? ` (*Rs ${topProduct.basePrice}*)` : ""} is a popular choice:\n${topProduct.shortUrl || topProduct.url}\n\nWould you like a sample layout with your logo?`
+        ? `${greetPrefix}Our *${cleanDisplayProductName(topProduct.name)}*${topProduct.basePrice ? ` (*₹${topProduct.basePrice.toLocaleString("en-IN")}*)` : ""} is a popular choice:\n${topProduct.shortUrl || topProduct.url}\n\nWould you like a sample layout with your logo?`
         : `${greetPrefix}We can print your logo and recipient names cleanly on clear acrylic awards. Roughly how many pieces do you need?`
     );
   } else if (smartCategory === "Custom Fabrication") {
@@ -1780,13 +2021,53 @@ export async function runAcrioChatCopilot(params: {
     );
   }
 
+  const formattedSuggestions = localReplies.map((r) =>
+    stripRepeatedGreeting(formatWhatsAppOutboundText(r), alreadyGreeted, params.customerName)
+  );
+
+  if (lastInbound.trim()) {
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Staff Inbox Co-Pilot (0-Credit Local)",
+      actor: params.customerName,
+      question: lastInbound,
+      model: "local-catalog",
+      outcomeSource: "LOCAL_FALLBACK",
+      responseCacheStatus: "LOCAL_ONLY",
+      catalogCacheStatus: cacheMeta.catalogCacheStatus,
+      cacheDetails: `${cacheMeta.cacheSummary} • Zero AI credits used for staff suggestions`,
+      productLookupTriggered: true,
+      productLookupQuery: usedQuery,
+      productLookupTotalScanned: allItems.length,
+      productsLookedUp: catalog.map(mapProductToLogItem),
+      steps: [
+        {
+          stepNumber: 1,
+          label: "Loaded customer chat context",
+          detail: `${customerMessages.length} turns, alreadyGreeted=${alreadyGreeted}`,
+        },
+        {
+          stepNumber: 2,
+          label: "Fetched ecosystem catalog",
+          detail: cacheMeta.cacheSummary,
+        },
+        {
+          stepNumber: 3,
+          label: "Matched catalog items & generated 3 staff reply drafts",
+          detail: `smartCategory="${smartCategory}", matched=${catalog.length} products`,
+        },
+      ],
+      response: formattedSuggestions[0] || "",
+      durationMs: Date.now() - started,
+    });
+  }
+
   return {
     engineLabel: "ACRIO",
     smartCategory,
     priority,
-    suggestedReplies: localReplies.map((r) =>
-      stripRepeatedGreeting(formatWhatsAppOutboundText(r), alreadyGreeted, params.customerName)
-    ),
+    suggestedReplies: formattedSuggestions,
     recommendedProducts: mappedRecommendations,
     resolutionDraft: formatWhatsAppOutboundText(
       `Shared ${smartCategory.toLowerCase()} options and pricing details with ${params.customerName}, and updated customer follow-up notes.`
@@ -1805,12 +2086,11 @@ export interface AcrioAutonomousTurnResult {
 /**
  * Autonomous ACRIO Backend Handler:
  * Every new/reopened customer chat is initially assigned to ACRIO.
+ * - Powered by Claude Haiku 5.5 with Medium adaptive effort (`claude-haiku-5-5`).
  * - Maintains natural multi-turn continuity across messages without repeating "Hi {Name}".
- * - Diagnoses vague customer problems, suggests practical acrylic or machine solutions,
- *   and asks natural clarifying questions instead of abruptly ending the chat.
- * - Formats replies cleanly for WhatsApp (*bold*, _italic_, bullet points, line breaks).
- * - Hands off to Sales Team ONLY when requested by customer, for complaints/order disputes/specific order checks,
- *   or when final custom specs/bulk quote approval is ready for a human salesperson.
+ * - Understands synonyms (`pulpits` -> `podiums`, etc.) and strict budget constraints (`under ₹25,000`).
+ * - Formats replies cleanly for WhatsApp (*bold* headers, ₹ prices, numbered shortlinks, bullet points).
+ * - Logs every step, cache check, product lookup, and response to `ai.logs`.
  */
 export async function runAcrioAutonomousTurn(params: {
   customerName: string;
@@ -1818,6 +2098,22 @@ export async function runAcrioAutonomousTurn(params: {
   recentMessages?: { direction: string; senderType?: string; body: string }[];
   hasAlreadyGreeted?: boolean;
 }): Promise<AcrioAutonomousTurnResult> {
+  const started = Date.now();
+  const steps: AiTraceStep[] = [];
+  const addStep = (
+    label: string,
+    detail?: string,
+    status: AiTraceStep["status"] = "OK"
+  ) => {
+    steps.push({
+      stepNumber: steps.length + 1,
+      label,
+      detail,
+      durationMs: Date.now() - started,
+      status,
+    });
+  };
+
   const rawText = params.inboundText.trim();
   const lower = rawText.toLowerCase();
   const firstName = params.customerName.split(/[\s(]/)[0] || "there";
@@ -1832,7 +2128,7 @@ export async function runAcrioAutonomousTurn(params: {
     Boolean(params.hasAlreadyGreeted) ||
     history.some((m) => m.direction === "OUTBOUND");
 
-  // Build rolling context from recent inbound messages so short follow-ups ("price?", "need 5", "what about thicker?") keep full context
+  // Build rolling context from recent inbound messages so short follow-ups ("price?", "need 5", "under 20k?") keep full context
   const recentInboundWindow = [
     ...history
       .filter((m) => m.direction === "INBOUND")
@@ -1841,6 +2137,11 @@ export async function runAcrioAutonomousTurn(params: {
     rawText,
   ].join(" ");
   const contextLower = recentInboundWindow.toLowerCase();
+
+  addStep(
+    "Loaded conversation context",
+    `historyTurns=${history.length}, alreadyGreeted=${alreadyGreeted}`
+  );
 
   // 1. Explicit request to talk to human support / sales staff
   const explicitSupportRequest =
@@ -1860,77 +2161,115 @@ export async function runAcrioAutonomousTurn(params: {
       lower
     );
 
-  const { allItems } = await getCachedEcosystemCatalog();
+  const { allItems, cacheMeta } = await getCachedEcosystemCatalog();
+  addStep("Checked ecosystem catalog cache", cacheMeta.cacheSummary);
+
+  const directBudget = extractBudgetConstraintsFromQuery(rawText);
+  const windowBudget = extractBudgetConstraintsFromQuery(recentInboundWindow);
+  const activeBudget =
+    directBudget.maxPrice !== null || directBudget.minPrice !== null
+      ? directBudget
+      : windowBudget;
+  const budgetLabel =
+    activeBudget.maxPrice !== null && activeBudget.minPrice !== null
+      ? `₹${activeBudget.minPrice.toLocaleString("en-IN")} to ₹${activeBudget.maxPrice.toLocaleString("en-IN")}`
+      : activeBudget.maxPrice !== null
+      ? `<= ₹${activeBudget.maxPrice.toLocaleString("en-IN")}`
+      : activeBudget.minPrice !== null
+      ? `>= ₹${activeBudget.minPrice.toLocaleString("en-IN")}`
+      : null;
+
   const directMatches = searchEcosystemItems(allItems, rawText, 8);
+  // Only fall back to rolling multi-turn window when the current message has 0 direct matches (e.g. "under 20k?" or "need 3 pieces")
+  const usedLookupQuery = directMatches.length > 0 ? rawText : recentInboundWindow;
   const contextMatches =
-    directMatches.length >= 6
+    directMatches.length > 0
       ? directMatches
-      : [
-          ...directMatches,
-          ...searchEcosystemItems(allItems, recentInboundWindow, 8).filter(
-            (item) => !directMatches.some((d) => d.slug === item.slug && d.brand === item.brand)
-          ),
-        ].slice(0, 8);
+      : searchEcosystemItems(allItems, recentInboundWindow, 8);
   const top = contextMatches[0];
+
+  addStep(
+    "Executed catalog product lookup",
+    `query="${usedLookupQuery.slice(0, 90)}"${budgetLabel ? `, budget="${budgetLabel}"` : ""}, matched=${contextMatches.length} of ${allItems.length} items`
+  );
 
   let smartCategory = "General Enquiry";
   let priority: "URGENT" | "HIGH" | "NORMAL" = "NORMAL";
 
-  if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|classic edge|consumable|blade|cutter|flame|buffing|cloudy\s*edge|rough\s*edge/i.test(contextLower)) {
+  const classificationProbe = directMatches.length > 0 ? lower : contextLower;
+  if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|classic edge|consumable|blade|cutter|flame|buffing|cloudy\s*edge|rough\s*edge/i.test(classificationProbe)) {
     smartCategory = "Acrylic Machines (CE53)";
     priority = "HIGH";
-  } else if (/podium|lectern|pulpit|stage|auditorium|conference/i.test(contextLower)) {
+  } else if (/podium|podiums|lectern|lecterns|pulpit|pulpits|rostrum|stage|auditorium|conference/i.test(classificationProbe)) {
     smartCategory = "Podiums & Stage";
     priority = /friday|urgent|tomorrow|today/i.test(lower) ? "URGENT" : "HIGH";
-  } else if (/trophy|trophies|memento|award|student|convocation|plaque/i.test(contextLower)) {
+  } else if (/trophy|trophies|memento|award|student|convocation|plaque/i.test(classificationProbe)) {
     smartCategory = "Awards & Trophies";
-  } else if (/hotel|banquet|menu|qr|resort|hospitality|tent\s*card|table\s*stand|sign\s*holder/i.test(contextLower)) {
+  } else if (/hotel|banquet|menu|qr|resort|hospitality|tent\s*card|table\s*stand|sign\s*holder/i.test(classificationProbe)) {
     smartCategory = "Hotel & Banquet";
     priority = "HIGH";
-  } else if (/cover|guard|enclosure|box|case|display\s*stand|riser|custom|mm|inch/i.test(contextLower)) {
+  } else if (/cover|guard|enclosure|box|case|display\s*stand|riser|custom|mm|inch/i.test(classificationProbe)) {
     smartCategory = "Custom Fabrication";
     priority = "HIGH";
-  } else if (/order|dispatch|delivery|tracking|courier|invoice|advance|payment/i.test(contextLower)) {
+  } else if (/order|dispatch|delivery|tracking|courier|invoice|advance|payment/i.test(classificationProbe)) {
     smartCategory = "Order & Delivery";
   }
 
-  if (explicitSupportRequest) {
-    const reply = alreadyGreeted
-      ? `Sure, I am connecting you to our *Sales Team* right away. A team member will pick up this chat from here and help you shortly.`
-      : `Hi ${firstName}! Connecting you to our *Sales Team* right away. A team member will reply to you here shortly.`;
-    return {
-      needsHumanHandoff: true,
-      handoffReason: `Customer asked to speak with our team ("${rawText.slice(0, 120)}").`,
-      customerReply: formatWhatsAppOutboundText(reply),
-      smartCategory,
-      priority: "HIGH",
-    };
-  }
+  if (explicitSupportRequest || unresolvableByBot || mentionsSpecificOrderNumber) {
+    let reply = "";
+    let reason = "";
+    let outPri: "URGENT" | "HIGH" | "NORMAL" = "HIGH";
+    let outCat = smartCategory;
 
-  if (unresolvableByBot) {
-    const reply = alreadyGreeted
-      ? `I have flagged this directly for our *Sales & Support Team* so a senior team member can check it personally and resolve it for you right away.`
-      : `Hi ${firstName}, I am connecting your chat directly to our *Sales & Support Team* so they can check this personally and help you right away.`;
-    return {
-      needsHumanHandoff: true,
-      handoffReason: `Query needs personal assistance from Sales Team ("${rawText.slice(0, 120)}").`,
-      customerReply: formatWhatsAppOutboundText(reply),
-      smartCategory,
-      priority: "URGENT",
-    };
-  }
+    if (explicitSupportRequest) {
+      reply = alreadyGreeted
+        ? `Sure, I am connecting you to our *Sales Team* right away.\n\nA team member will pick up this chat from here and help you shortly.`
+        : `Hi ${firstName}! Connecting you to our *Sales Team* right away.\n\nA team member will reply to you here shortly.`;
+      reason = `Customer asked to speak with our team ("${rawText.slice(0, 120)}").`;
+    } else if (unresolvableByBot) {
+      reply = alreadyGreeted
+        ? `I have flagged this directly for our *Sales & Support Team* so a senior team member can check it personally and resolve it for you right away.`
+        : `Hi ${firstName}, I am connecting your chat directly to our *Sales & Support Team* so they can check this personally and help you right away.`;
+      reason = `Query needs personal assistance from Sales Team ("${rawText.slice(0, 120)}").`;
+      outPri = "URGENT";
+    } else {
+      const trackOrigin = resolvePublicTrackingOrigin();
+      reply = alreadyGreeted
+        ? `You can check live courier status anytime on our tracking portal:\n${trackOrigin}\n\nI am also connecting our *Sales Team* here so they can verify your dispatch details personally.`
+        : `Hi ${firstName}, you can check live courier status anytime here:\n${trackOrigin}\n\nI am also connecting our *Sales Team* so they can check your order status personally.`;
+      reason = `Customer asked about a specific order ("${rawText.slice(0, 120)}").`;
+      outCat = "Order & Delivery";
+    }
 
-  if (mentionsSpecificOrderNumber) {
-    const trackOrigin = resolvePublicTrackingOrigin();
-    const reply = alreadyGreeted
-      ? `You can check live courier status anytime on our tracking portal:\n${trackOrigin}\n\nI am also connecting our *Sales Team* here so they can verify your dispatch details personally.`
-      : `Hi ${firstName}, you can check live courier status anytime here:\n${trackOrigin}\n\nI am also connecting our *Sales Team* so they can check your order status personally.`;
+    const formatted = formatWhatsAppOutboundText(reply);
+    addStep("Triggered immediate human handoff", reason);
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: rawText,
+      model: "rule-handoff-guard",
+      outcomeSource: "HUMAN_HANDOFF",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: cacheMeta.catalogCacheStatus,
+      cacheDetails: `${cacheMeta.cacheSummary} • Direct human handoff rule matched`,
+      productLookupTriggered: true,
+      productLookupQuery: usedLookupQuery,
+      productLookupBudget: budgetLabel,
+      productLookupTotalScanned: allItems.length,
+      productsLookedUp: contextMatches.map(mapProductToLogItem),
+      steps,
+      response: formatted,
+      durationMs: Date.now() - started,
+    });
+
     return {
       needsHumanHandoff: true,
-      handoffReason: `Customer asked about a specific order ("${rawText.slice(0, 120)}").`,
-      customerReply: formatWhatsAppOutboundText(reply),
-      smartCategory: "Order & Delivery",
-      priority: "HIGH",
+      handoffReason: reason,
+      customerReply: formatted,
+      smartCategory: outCat,
+      priority: outPri,
     };
   }
 
@@ -1940,11 +2279,13 @@ export async function runAcrioAutonomousTurn(params: {
     smartCategory,
   });
 
-  // 3. Multi-turn Claude Haiku 5.5 Diagnostic & Conversational Assistant
-  const { apiKey } = await resolveSharedAnthropicApiKey("client");
+  // 3. Multi-turn Claude Haiku 5.5 (Medium Effort) Diagnostic & Conversational Assistant
+  const { apiKey, source: keySource } = await resolveSharedAnthropicApiKey("client");
+  let lastAiError: string | null = null;
+  let lastUsage: AiTokenUsage | null = null;
+
   if (apiKey) {
     try {
-      // Build true alternating user/assistant turns from history so Claude maintains real conversation memory
       const trimmedHistory = history.slice(-14);
       const lastInHistory = trimmedHistory[trimmedHistory.length - 1];
       const historyWithoutDuplicateCurrent =
@@ -1968,21 +2309,21 @@ export async function runAcrioAutonomousTurn(params: {
         }
       }
 
-      // Anthropic requires the first message to be role === "user"
       while (claudeMessages.length > 0 && claudeMessages[0].role !== "user") {
         claudeMessages.shift();
       }
 
       const catalogContext = prebuiltGroupedBlock
-        ? `Ready-Formatted Grouped Short-Link List (use these exact clean short titles & https://ccapl.cc/... shortlinks when sharing products!):\n${prebuiltGroupedBlock}`
-        : "- Ready catalog covers: acrylic stage podiums, awards & trophies, hotel/restaurant QR & menu stands, retail display risers, custom clear acrylic boxes/covers (classicconcepts.in), plus acrylic bending heaters, diamond edge polishers, routers, laser machines & blades/consumables (classicedge53.com).";
+        ? `Matched Products strictly filtered for the customer's query${budgetLabel ? ` (Budget filter applied: ${budgetLabel})` : ""}:\n${prebuiltGroupedBlock}\n\nIMPORTANT: ONLY share products from the list above. Do NOT invent or mention any product outside this list.`
+        : `No exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}. Explain honestly and helpfully what we do make (stage podiums/pulpits from ₹7,150 upwards, awards & trophies, hotel QR/menu stands, custom clear acrylic boxes/covers on classicconcepts.in, plus acrylic bending, diamond polishing & cutting machines on classicedge53.com) and ask 1 short clarifying question.`;
 
-      const latestPromptPayload = `[Context for ACRIO - do not repeat raw labels to customer]
+      const latestPromptPayload = `[Internal Context for ACRIO - never echo raw labels]
 Customer Name: ${params.customerName}
-Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Continue naturally from the conversation above.)" : `NO (First reply: you may greet "${firstName}" warmly once, briefly.)`}
+Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Start directly with the helpful answer.)" : `NO (First reply: greet "${firstName}" warmly once in 1 short line.)`}
+Detected Category: ${smartCategory}
 ${catalogContext}
 
-Customer's new message:
+Customer's latest WhatsApp message:
 ${rawText}`;
 
       const lastTurn = claudeMessages[claudeMessages.length - 1];
@@ -1992,40 +2333,38 @@ ${rawText}`;
         claudeMessages.push({ role: "user", content: latestPromptPayload });
       }
 
-      const text = await callClaudeHaikuMessages({
+      const aiCall = await callClaudeHaikuMessagesDetailed({
         apiKey,
-        maxTokens: 540,
-        temperature: 0.3,
-        timeoutMs: 11000,
-        system: `You are ACRIO, the helpful WhatsApp product & fabrication specialist for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic fabrication machines & tools: classicedge53.com).
+        maxTokens: 2048,
+        effort: "medium",
+        timeoutMs: 24000,
+        system: `You are ACRIO, the WhatsApp product & fabrication specialist for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic fabrication machines & tools: classicedge53.com).
 
-CORE CONVERSATION & PRODUCT SHARING RULES:
-1. NEVER repeat "Hi ${firstName}", "Hello", or any greeting if Already Greeted Earlier is YES. Talk like a real, attentive human continuing the same WhatsApp chat naturally.
-2. NEVER dump a long raw SEO product title mid-sentence, and NEVER share just 1 single lonely link!
-   When recommending products or machines, ALWAYS present a clean, grouped, numbered short-link list using the exact https://ccapl.cc/<6-char-id> links provided in context, formatted like:
+CORE CONVERSATION, ACCURACY & WHATSAPP FORMATTING RULES:
+1. UNDERSTAND CUSTOMER INTENT ACCURATELY:
+   - Know common terms: "pulpit" / "lectern" / "rostrum" = Acrylic Stage Podiums.
+   - Respect price budgets strictly (e.g. "under ₹25,000" -> ONLY show podiums priced at or below ₹25,000 from the Matched Products list, with their exact ₹ price!).
+   - NEVER include unrelated products (never suggest trays, ovens, machines, or tubes when someone asks for pulpits/podiums!).
+   - If the customer repeats or clarifies an earlier message (like "I said I am looking for pulpits"), apologize briefly in 5-6 words if needed and immediately show the exact pulpit/podium options!
+2. CLEAN, PROFESSIONAL WHATSAPP FORMATTING (CRITICAL):
+   - NEVER repeat "Hi ${firstName}" or "Hello" if Already Greeted Earlier is YES.
+   - Structure every product reply with clean visual spacing so it reads beautifully on a mobile WhatsApp screen:
+     Short 1-sentence direct opening answer.
 
-   I found a few products that match your description:
+     *<Category Heading>:*
+     1. *<Clean Product Name>* (₹<Price>)
+        https://ccapl.cc/<6-char-id>
+     2. *<Clean Product Name>* (₹<Price>)
+        https://ccapl.cc/<6-char-id>
 
-   *<Relevant Category Name>:*
-   1. <Short Clean Product Name> - https://ccapl.cc/<id>
-   2. <Short Clean Product Name> - https://ccapl.cc/<id>
-   3. <Short Clean Product Name> - https://ccapl.cc/<id>
-
-   *Customisable Products:*
-   1. <Short Clean Product Name> - https://ccapl.cc/<id>
-   2. <Short Clean Product Name> - https://ccapl.cc/<id>
-
-   Then ask 1-2 short, natural follow-up questions (such as size, thickness, or quantity needed).
-3. DO NOT end the chat or hand off to a human just because the customer's message is short, vague, or describes a problem!
-   - If they describe a fabrication issue (cloudy/white cut edges -> diamond edge polishing; cracking/bubbles when bending -> controlled strip heaters; yellowing/scratches -> cast clear acrylic), explain the practical solution in plain everyday English and include the grouped matching options.
-4. Set "needsHumanHandoff": true ONLY when:
-   - The customer explicitly asks to speak to a person/team/call, OR
-   - They have a damaged delivery, refund/payment issue, or specific existing order check, OR
-   - They have ALREADY shared final custom dimensions + quantity (or confirmed a bulk order) and now need a formal Sales quotation/proforma invoice.
-5. WHATSAPP FORMATTING & PLAIN LANGUAGE RULES:
-   - Use single asterisks *like this* for bold category headers or key points (NEVER double **asterisks**, NEVER [markdown](links)).
-   - Simple, warm, everyday layman English. Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
-   - NEVER add a robotic "or reply talk to team anytime" footer!
+     Short 1-sentence practical follow-up question (e.g. event city, logo printing on front, or quantity needed).
+   - Use single asterisks *like this* for WhatsApp bold (NEVER **double asterisks**, NEVER [markdown](links), NEVER ### headings).
+   - Use ₹ for Indian Rupees (e.g. ₹14,999).
+3. PLAIN EVERYDAY ENGLISH:
+   - Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
+   - NEVER add a robotic footer like "reply talk to team anytime".
+4. HUMAN HANDOFF RULE:
+   - Set "needsHumanHandoff": true ONLY if the customer explicitly asks for a human/call, reports a damaged order/refund issue, or has ALREADY confirmed final custom dimensions + quantity and wants a formal Sales proforma invoice.
 
 Return ONLY valid JSON:
 {
@@ -2033,165 +2372,183 @@ Return ONLY valid JSON:
   "handoffReason": "",
   "smartCategory": "Podiums & Stage | Awards & Trophies | Hotel & Banquet | Acrylic Machines (CE53) | Custom Fabrication | Order & Delivery | General Enquiry",
   "priority": "URGENT | HIGH | NORMAL",
-  "customerReply": "Your WhatsApp-formatted reply with \\n line breaks, grouped numbered shortlinks, and *bold* headers"
+  "customerReply": "Cleanly formatted WhatsApp message using \\n line breaks, *bold* titles, ₹ prices, and https://ccapl.cc/... shortlinks"
 }`,
         messages: claudeMessages,
       });
 
-      if (text) {
-        const s = text.indexOf("{");
-        const e = text.lastIndexOf("}");
-        if (s !== -1 && e > s) {
-          const parsed = JSON.parse(text.slice(s, e + 1));
-          if (typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
-            const handoff = Boolean(parsed.needsHumanHandoff);
-            const cleanedReply = stripRepeatedGreeting(
-              formatWhatsAppOutboundText(parsed.customerReply),
-              alreadyGreeted,
-              params.customerName
-            );
-            return {
-              needsHumanHandoff: handoff,
-              handoffReason:
-                parsed.handoffReason ||
-                (handoff
-                  ? `Customer ready for Sales Team follow-up ("${rawText.slice(0, 100)}").`
-                  : ""),
-              customerReply: cleanedReply,
-              smartCategory: parsed.smartCategory || smartCategory,
-              priority: parsed.priority || priority,
-            };
-          }
+      lastUsage = aiCall.usage;
+      if (aiCall.ok && aiCall.text) {
+        addStep(
+          "Called Anthropic claude-haiku-5-5 (effort=medium)",
+          `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms (keySource=${keySource}, in=${aiCall.usage?.inputTokens ?? 0}, think=${aiCall.usage?.thinkingTokens ?? 0}, out=${aiCall.usage?.outputTokens ?? 0})`
+        );
+        const parsed = parseClaudeJson<any>(aiCall.text);
+        if (parsed && typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
+          const handoff = Boolean(parsed.needsHumanHandoff);
+          const cleanedReply = stripRepeatedGreeting(
+            formatWhatsAppOutboundText(parsed.customerReply),
+            alreadyGreeted,
+            params.customerName
+          );
+          addStep(
+            "Parsed JSON & formatted WhatsApp outbound message",
+            `smartCategory="${parsed.smartCategory || smartCategory}", handoff=${handoff}, chars=${cleanedReply.length}`
+          );
+
+          recordAndBroadcastAiLog({
+            website: "WHATSAPP_HUB",
+            websiteLabel: "Classic Concepts WhatsApp Hub",
+            feature: "Autonomous WhatsApp Concierge (ACRIO)",
+            actor: params.customerName,
+            question: rawText,
+            model: LOCKED_CLAUDE_MODEL,
+            effort: "medium",
+            outcomeSource: handoff ? "HUMAN_HANDOFF" : "LIVE_AI",
+            responseCacheStatus: "BYPASS",
+            catalogCacheStatus: cacheMeta.catalogCacheStatus,
+            cacheDetails: `${cacheMeta.cacheSummary} • Multi-turn live Claude Haiku 5.5 Medium`,
+            productLookupTriggered: true,
+            productLookupQuery: usedLookupQuery,
+            productLookupBudget: budgetLabel,
+            productLookupTotalScanned: allItems.length,
+            productsLookedUp: contextMatches.map(mapProductToLogItem),
+            steps,
+            response: cleanedReply,
+            durationMs: Date.now() - started,
+            tokenUsage: aiCall.usage,
+          });
+
+          return {
+            needsHumanHandoff: handoff,
+            handoffReason:
+              parsed.handoffReason ||
+              (handoff
+                ? `Customer ready for Sales Team follow-up ("${rawText.slice(0, 100)}").`
+                : ""),
+            customerReply: cleanedReply,
+            smartCategory: parsed.smartCategory || smartCategory,
+            priority: parsed.priority || priority,
+          };
+        } else {
+          lastAiError = "Claude returned text that could not be parsed as JSON.";
+          addStep("JSON parse warning", lastAiError, "WARN");
         }
+      } else {
+        lastAiError = aiCall.error || "Anthropic call failed";
+        addStep(
+          "Anthropic claude-haiku-5-5 call failed",
+          `HTTP ${aiCall.statusCode}: ${lastAiError}`,
+          "ERROR"
+        );
       }
-    } catch {
-      // Fall back to conversational diagnostic engine below
+    } catch (err: any) {
+      lastAiError = err?.message || "Unexpected error in AI turn";
+      addStep("Exception during AI turn", lastAiError || undefined, "ERROR");
     }
+  } else {
+    lastAiError = "Client Anthropic API key is not configured.";
+    addStep("Skipped live AI call", lastAiError, "SKIP");
   }
 
-  // 4. Conversational & Diagnostic Fallback Engine (when offline or no API key)
-  const greetOnce = alreadyGreeted ? "" : `Hi ${firstName}! `;
+  // 4. Conversational & Diagnostic Fallback Engine (when offline or API error)
+  const greetOnce = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+  let fallbackReply = "";
+  let fallbackHandoff = false;
+  let fallbackReason = "";
 
   if (/^(hi|hello|hey|good\s*morning|good\s*afternoon|good\s*evening|namaste)\W*$/i.test(rawText)) {
-    const reply = alreadyGreeted
-      ? `Tell me what you are looking to display, make, or solve today:\n• *Acrylic Podiums, Awards & Display Stands*\n• *Custom-Size Acrylic Boxes & Covers*\n• *Classic Edge 53 Acrylic Machines & Tools*\n\nShare a few details and I will suggest the best options!`
-      : `Hello ${firstName}! Welcome to *Classic Concepts* & *Classic Edge 53*.\n\nHow can I help you today?\n• *Stage Podiums, Trophies & Display Stands*\n• *Custom-Size Acrylic Boxes & Machine Covers*\n• *Acrylic Bending, Polishing & Cutting Machines*\n\nTell me what you have in mind!`;
-    return {
-      needsHumanHandoff: false,
-      handoffReason: "",
-      customerReply: formatWhatsAppOutboundText(reply),
-      smartCategory,
-      priority: "NORMAL",
-    };
-  }
-
-  // Common acrylic / fabrication problem diagnosis (cloudy edges, bending cracks, glue marks, etc.)
-  if (/\b(cloudy|white\s*edge|rough\s*edge|dull\s*edge|polish\s*problem|flame|burn|bubble|crack|bend\s*issue|warping|scratch|yellow)\b/i.test(lower)) {
+    fallbackReply = alreadyGreeted
+      ? `Tell me what you are looking to display, make, or solve today:\n\n• *Acrylic Podiums, Pulpits & Display Stands*\n• *Awards, Trophies & Hotel QR Stands*\n• *Custom-Size Acrylic Boxes & Covers*\n• *Classic Edge 53 Acrylic Machines & Tools*\n\nShare a few details and I will suggest the best options!`
+      : `Hello ${firstName}! Welcome to *Classic Concepts* & *Classic Edge 53*.\n\nHow can I help you today?\n• *Stage Podiums, Pulpits & Trophies*\n• *Custom-Size Acrylic Boxes & Machine Covers*\n• *Acrylic Bending, Polishing & Cutting Machines*\n\nTell me what you have in mind!`;
+    priority = "NORMAL";
+  } else if (/\b(cloudy|white\s*edge|rough\s*edge|dull\s*edge|polish\s*problem|flame|burn|bubble|crack|bend\s*issue|warping|scratch|yellow)\b/i.test(lower)) {
     const issueSolutions: string[] = [];
     if (/cloudy|white|rough|dull|polish/i.test(lower)) {
       issueSolutions.push(
-        `• *Cloudy or rough cut edges:* A *Diamond Edge Polishing Machine* gives a crystal-clear flat edge in one pass without flame stress marks (which often cause micro-cracks when solvent glue is applied later).`
+        `• *Cloudy or rough cut edges:* A *Diamond Edge Polishing Machine* gives a crystal-clear flat edge in one pass without flame stress marks.`
       );
     }
     if (/crack|bubble|bend|warp/i.test(lower)) {
       issueSolutions.push(
-        `• *Bubbles or cracking while bending:* Usually caused by heating too fast or too close. Using a temperature-controlled *Acrylic Bending Heater* with even top-and-bottom heating for sheets 5mm and thicker solves this cleanly.`
+        `• *Bubbles or cracking while bending:* Using a temperature-controlled *Acrylic Bending Heater* with even heating solves this cleanly.`
       );
     }
     if (issueSolutions.length === 0) {
       issueSolutions.push(
-        `• Using *cast clear acrylic* instead of extruded sheet prevents yellowing, melting burrs, and hairline cracks during fabrication.`
+        `• Using *cast clear acrylic* instead of extruded sheet prevents yellowing, burrs, and hairline cracks during fabrication.`
       );
     }
     const machineBlock = prebuiltGroupedBlock
       ? `\n\n${prebuiltGroupedBlock}`
       : top
-      ? `\n\nMatching option:\n1. ${cleanDisplayProductName(top.name)} - ${top.shortUrl || top.url}`
+      ? `\n\n*Matching Machine:*\n1. *${cleanDisplayProductName(top.name)}*\n   ${top.shortUrl || top.url}`
       : "";
-    const reply = `${greetOnce}Here is what usually causes that and how to fix it:\n\n${issueSolutions.join("\n\n")}${machineBlock}\n\nWhat *sheet thickness* are you working with, and are you cutting by laser or router?`;
-    return {
-      needsHumanHandoff: false,
-      handoffReason: "",
-      customerReply: stripRepeatedGreeting(
-        formatWhatsAppOutboundText(reply),
-        alreadyGreeted,
-        params.customerName
-      ),
-      smartCategory: "Acrylic Machines (CE53)",
-      priority: "HIGH",
-    };
-  }
-
-  // Confirmed exact 3D measurements + quantity -> connect to Sales Team for exact custom fabrication quote
-  if (
+    fallbackReply = `${greetOnce}Here is what usually causes that and how to fix it:\n\n${issueSolutions.join("\n\n")}${machineBlock}\n\nWhat *sheet thickness* are you working with, and are you cutting by laser or router?`;
+    smartCategory = "Acrylic Machines (CE53)";
+    priority = "HIGH";
+  } else if (
     /\b(\d+\s*(?:mm|cm|inch|in|ft)\s*x\s*\d+\s*(?:mm|cm|inch|in|ft)?\s*x\s*\d+)\b/i.test(lower) &&
     /\b(\d+\s*(?:pcs|pieces|nos|units|qty)|quote|price)\b/i.test(contextLower)
   ) {
-    const reply = `${greetOnce}Got your custom size details! I am connecting our *Sales Team* right now so they can calculate sheet thickness, exact fabrication cost, and dispatch time for you.`;
-    return {
-      needsHumanHandoff: true,
-      handoffReason: `Customer shared custom dimensions for Sales quotation ("${rawText.slice(0, 110)}").`,
-      customerReply: stripRepeatedGreeting(
-        formatWhatsAppOutboundText(reply),
-        alreadyGreeted,
-        params.customerName
-      ),
-      smartCategory: "Custom Fabrication",
-      priority: "HIGH",
-    };
+    fallbackReply = `${greetOnce}Got your custom size details! I am connecting our *Sales Team* right now so they can calculate sheet thickness, exact fabrication cost, and dispatch time for you.`;
+    fallbackHandoff = true;
+    fallbackReason = `Customer shared custom dimensions for Sales quotation ("${rawText.slice(0, 110)}").`;
+    smartCategory = "Custom Fabrication";
+    priority = "HIGH";
+  } else if (top && prebuiltGroupedBlock) {
+    const followUpPrompt =
+      smartCategory === "Acrylic Machines (CE53)"
+        ? `What *maximum sheet thickness* and *working width* do you handle most often?`
+        : smartCategory === "Podiums & Stage"
+        ? `Do you want *custom front logo printing* on the podium, and which *city* do we need to dispatch to?`
+        : `Roughly *how many pieces* do you need, and do you want *custom logo printing* or a specific size?`;
+    fallbackReply = `${greetOnce}${prebuiltGroupedBlock}\n\n${followUpPrompt}`;
+  } else {
+    fallbackReply = `${greetOnce}I would love to help find the right option for you.\n\nCould you share a little more about what you need?\n• *Stage & Events:* acrylic podiums/pulpits, awards, or plaques\n• *Hotels & Retail:* menu/QR stands, risers, or display boxes\n• *Custom Size Job:* share what goes inside and rough size\n• *Acrylic Machines:* cutting, bending, or diamond polishing`;
+    priority = "NORMAL";
   }
 
-  if (smartCategory === "Acrylic Machines (CE53)" && top && prebuiltGroupedBlock) {
-    const reply = `${greetOnce}${prebuiltGroupedBlock}\n\nWhat *maximum sheet thickness* and *working width* do you handle most often? I can help narrow down the right model.`;
-    return {
-      needsHumanHandoff: false,
-      handoffReason: "",
-      customerReply: stripRepeatedGreeting(
-        formatWhatsAppOutboundText(reply),
-        alreadyGreeted,
-        params.customerName
-      ),
-      smartCategory,
-      priority,
-    };
-  }
+  const finalFallback = stripRepeatedGreeting(
+    formatWhatsAppOutboundText(fallbackReply),
+    alreadyGreeted,
+    params.customerName
+  );
+  addStep(
+    "Generated deterministic fallback WhatsApp reply",
+    `matchedProducts=${contextMatches.length}, smartCategory="${smartCategory}"`
+  );
 
-  if (top && prebuiltGroupedBlock) {
-    const words = contextLower.split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
-    const hasCatalogMatch = contextMatches.some((item) => {
-      const hay = `${item.name} ${item.categoryName} ${item.sku || ""} ${item.description || ""}`.toLowerCase();
-      return words.some((w) => hay.includes(w));
-    });
-
-    if (hasCatalogMatch) {
-      const reply = `${greetOnce}${prebuiltGroupedBlock}\n\nRoughly *how many pieces* do you need, and do you want *custom logo printing* or a specific size?`;
-      return {
-        needsHumanHandoff: false,
-        handoffReason: "",
-        customerReply: stripRepeatedGreeting(
-          formatWhatsAppOutboundText(reply),
-          alreadyGreeted,
-          params.customerName
-        ),
-        smartCategory,
-        priority,
-      };
-    }
-  }
-
-  // Vague / open-ended message -> DO NOT end chat! Ask helpful clarifying questions to understand their problem or goal.
-  const exploratoryReply = `${greetOnce}I would love to help figure out the best option for you.\n\nCould you share a little more about what you need?\n• *Display or Event Product:* podium, trophy/award, menu/QR stand, retail riser, or protective acrylic box\n• *Custom Size Job:* share what item goes inside and rough size\n• *Fabrication Machine / Issue:* cutting, bending, diamond polishing, or edge finishing\n\nEven a short description of your use case works!`;
+  recordAndBroadcastAiLog({
+    website: "WHATSAPP_HUB",
+    websiteLabel: "Classic Concepts WhatsApp Hub",
+    feature: "Autonomous WhatsApp Concierge (ACRIO)",
+    actor: params.customerName,
+    question: rawText,
+    model: lastAiError ? `${LOCKED_CLAUDE_MODEL} -> local-fallback` : "local-catalog",
+    effort: "medium",
+    outcomeSource: fallbackHandoff ? "HUMAN_HANDOFF" : "LOCAL_FALLBACK",
+    responseCacheStatus: "BYPASS",
+    catalogCacheStatus: cacheMeta.catalogCacheStatus,
+    cacheDetails: cacheMeta.cacheSummary,
+    productLookupTriggered: true,
+    productLookupQuery: usedLookupQuery,
+    productLookupBudget: budgetLabel,
+    productLookupTotalScanned: allItems.length,
+    productsLookedUp: contextMatches.map(mapProductToLogItem),
+    steps,
+    response: finalFallback,
+    durationMs: Date.now() - started,
+    tokenUsage: lastUsage,
+    error: lastAiError,
+  });
 
   return {
-    needsHumanHandoff: false,
-    handoffReason: "",
-    customerReply: stripRepeatedGreeting(
-      formatWhatsAppOutboundText(exploratoryReply),
-      alreadyGreeted,
-      params.customerName
-    ),
+    needsHumanHandoff: fallbackHandoff,
+    handoffReason: fallbackReason,
+    customerReply: finalFallback,
     smartCategory,
-    priority: "NORMAL",
+    priority,
   };
 }
 
@@ -2209,6 +2566,8 @@ export async function buildAcrioSmartMarketingSegment(prompt: string): Promise<{
   }[];
   filterExplanation: string;
 }> {
+  const started = Date.now();
+  const steps: AiTraceStep[] = [];
   await ensureDatabasesBootstrapped();
   const crm = getRawLibSqlClient("crm_orders");
   const res = await crm.execute(
@@ -2227,6 +2586,14 @@ export async function buildAcrioSmartMarketingSegment(prompt: string): Promise<{
     notes: String(r.notes || ""),
     lifetimeValueInr: Number(r.lifetime_value_inr ?? 0),
   }));
+
+  steps.push({
+    stepNumber: 1,
+    label: "Loaded opted-in CRM contacts",
+    detail: `${all.length} opted-in contacts scanned`,
+    durationMs: Date.now() - started,
+    status: "OK",
+  });
 
   const minLtvMatch = p.match(/(?:over|above|more than)\s*(?:rs\.?|inr|₹)?\s*(\d{3,7})/i);
   const minLtv = minLtvMatch ? Number(minLtvMatch[1]) : 0;
@@ -2264,54 +2631,91 @@ export async function buildAcrioSmartMarketingSegment(prompt: string): Promise<{
   else if (/vip|repeat/.test(p)) suggestedName = "ACRIO: High-Value Repeat Clients";
 
   let filterExplanation = `Matched ${filtered.length} opted-in contacts based on organization category, past order history, and ACRIO conversation tags.`;
+  let usedLiveAi = false;
+  let usage: AiTokenUsage | null = null;
+  let aiErr: string | null = null;
 
-  // Optional Admin-key Claude Haiku 5.5 refinement for internal marketing segmentation
   const { apiKey: adminApiKey } = await resolveSharedAnthropicApiKey("admin");
   if (adminApiKey && prompt.trim().length > 6 && all.length > 0) {
-    try {
-      const text = await callClaudeHaikuMessages({
-        apiKey: adminApiKey,
-        maxTokens: 220,
-        temperature: 0.1,
-        timeoutMs: 6500,
-        system: `You are ACRIO Admin Assistant for Classic Concepts. Write in plain everyday English (zero em-dashes, zero buzzwords). Given a marketing list prompt and CRM contacts, pick matching contact IDs and return ONLY valid JSON: {"suggestedName": "Short Clear List Name", "matchedIds": ["id1"], "explanation": "Short plain explanation"}`,
-        messages: [
-          {
-            role: "user",
-            content: `Prompt: ${prompt.trim()}\nOpted-in contacts:\n${all
-              .slice(0, 40)
-              .map(
-                (c) =>
-                  `${c.id} | ${c.name} | ${c.organizationType || ""} | ${c.acrioSegment} | Rs ${c.lifetimeValueInr}`
-              )
-              .join("\n")}`,
-          },
-        ],
-      });
-      if (text) {
-        const s = text.indexOf("{");
-        const e = text.lastIndexOf("}");
-        if (s !== -1 && e > s) {
-          const parsed = JSON.parse(text.slice(s, e + 1));
-          if (Array.isArray(parsed.matchedIds) && parsed.matchedIds.length > 0) {
-            const idSet = new Set(parsed.matchedIds.map(String));
-            const aiMatched = all.filter((c) => idSet.has(c.id));
-            if (aiMatched.length > 0) {
-              filtered = aiMatched;
-            }
-          }
-          if (typeof parsed.suggestedName === "string" && parsed.suggestedName.trim()) {
-            suggestedName = sanitizePlainEnglish(parsed.suggestedName.trim());
-          }
-          if (typeof parsed.explanation === "string" && parsed.explanation.trim()) {
-            filterExplanation = sanitizePlainEnglish(parsed.explanation.trim());
+    const aiCall = await callClaudeHaikuMessagesDetailed({
+      apiKey: adminApiKey,
+      maxTokens: 1600,
+      effort: "medium",
+      timeoutMs: 20000,
+      system: `You are ACRIO Admin Assistant for Classic Concepts. Write in plain everyday English (zero em-dashes, zero buzzwords). Given a marketing list prompt and CRM contacts, pick matching contact IDs and return ONLY valid JSON: {"suggestedName": "Short Clear List Name", "matchedIds": ["id1"], "explanation": "Short plain explanation"}`,
+      messages: [
+        {
+          role: "user",
+          content: `Prompt: ${prompt.trim()}\nOpted-in contacts:\n${all
+            .slice(0, 40)
+            .map(
+              (c) =>
+                `${c.id} | ${c.name} | ${c.organizationType || ""} | ${c.acrioSegment} | ₹${c.lifetimeValueInr}`
+            )
+            .join("\n")}`,
+        },
+      ],
+    });
+    usage = aiCall.usage;
+    if (aiCall.ok && aiCall.text) {
+      const parsed = parseClaudeJson<any>(aiCall.text);
+      if (parsed) {
+        usedLiveAi = true;
+        if (Array.isArray(parsed.matchedIds) && parsed.matchedIds.length > 0) {
+          const idSet = new Set(parsed.matchedIds.map(String));
+          const aiMatched = all.filter((c) => idSet.has(c.id));
+          if (aiMatched.length > 0) {
+            filtered = aiMatched;
           }
         }
+        if (typeof parsed.suggestedName === "string" && parsed.suggestedName.trim()) {
+          suggestedName = sanitizePlainEnglish(parsed.suggestedName.trim());
+        }
+        if (typeof parsed.explanation === "string" && parsed.explanation.trim()) {
+          filterExplanation = sanitizePlainEnglish(parsed.explanation.trim());
+        }
+        steps.push({
+          stepNumber: 2,
+          label: "Refined segment with Claude Haiku 5.5 (effort=medium)",
+          detail: `Selected ${filtered.length} contacts ("${suggestedName}")`,
+          durationMs: Date.now() - started,
+          status: "OK",
+        });
       }
-    } catch {
-      // Keep deterministic segment fallback
+    } else {
+      aiErr = aiCall.error;
+      steps.push({
+        stepNumber: 2,
+        label: "Claude segment refinement fallback",
+        detail: aiErr || "Used deterministic CRM filter",
+        durationMs: Date.now() - started,
+        status: "WARN",
+      });
     }
   }
+
+  recordAndBroadcastAiLog({
+    website: "WHATSAPP_HUB",
+    websiteLabel: "Classic Concepts WhatsApp Hub",
+    feature: "ACRIO Smart Audience Segmenter",
+    actor: "Marketing Admin",
+    question: prompt.trim(),
+    model: usedLiveAi ? LOCKED_CLAUDE_MODEL : "local-crm-filter",
+    effort: usedLiveAi ? "medium" : undefined,
+    outcomeSource: usedLiveAi ? "LIVE_AI" : "LOCAL_FALLBACK",
+    responseCacheStatus: "BYPASS",
+    catalogCacheStatus: "BYPASS",
+    cacheDetails: `Scanned ${all.length} opted-in CRM contacts directly`,
+    productLookupTriggered: false,
+    productLookupQuery: "",
+    productLookupTotalScanned: 0,
+    productsLookedUp: [],
+    steps,
+    response: `${suggestedName} (${filtered.length} contacts): ${filterExplanation}`,
+    durationMs: Date.now() - started,
+    tokenUsage: usage,
+    error: aiErr,
+  });
 
   return {
     suggestedName,
@@ -2598,6 +3002,29 @@ export async function executeMultiDatabaseBackup(
 // ============================================================================
 // 4. META-COMPLIANT AI TEMPLATE DRAFTER + GUARDED BUTTON AI + WEBSITE ENQUIRY AI
 // ============================================================================
+const TEMPLATE_SLUG_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "can", "create", "customers",
+  "customer", "draft", "for", "from", "future", "generate", "in", "into", "is",
+  "it", "make", "message", "messages", "of", "on", "or", "our", "please", "send",
+  "sending", "template", "that", "the", "their", "them", "this", "to", "use",
+  "usecase", "usecases", "we", "which", "with", "write",
+]);
+
+function buildCleanTemplateSlug(rawInput: string, brandPrefix: "cc" | "ce53"): string {
+  const cleaned = String(rawInput || "")
+    .toLowerCase()
+    .replace(new RegExp(`^${brandPrefix}_+`), "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+  const words = cleaned
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && !TEMPLATE_SLUG_STOPWORDS.has(w));
+
+  const chosen = (words.length > 0 ? words : ["official", "update"]).slice(0, 4);
+  return `${brandPrefix}_${chosen.join("_")}`.slice(0, 42);
+}
+
 export async function draftMetaCompliantTemplateWithAi(params: {
   prompt: string;
   category?: WhatsAppTemplateCategory;
@@ -2613,49 +3040,90 @@ export async function draftMetaCompliantTemplateWithAi(params: {
   buttons: WhatsAppTemplateButton[];
   complianceNotes: string[];
 }> {
+  const started = Date.now();
+  const steps: AiTraceStep[] = [];
   const category: WhatsAppTemplateCategory =
     params.category === "UTILITY" || params.category === "AUTHENTICATION"
       ? params.category
       : "MARKETING";
   const brand =
     params.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS";
+  const brandPrefix = brand === "CLASSIC_EDGE_53" ? "ce53" : "cc";
   const brandName =
     brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts";
   const shortOrigin = resolvePublicShortLinkOrigin();
+  const cleanPrompt = params.prompt.trim();
 
-  const { allItems } = await getCachedEcosystemCatalog();
-  const matches = searchEcosystemItems(allItems, params.prompt || brandName, 3);
-  const topLink =
-    matches[0]?.shortUrl ||
-    (brand === "CLASSIC_EDGE_53"
-      ? `${shortOrigin}/ce53mc`
-      : `${shortOrigin}/podium`);
+  const { allItems, cacheMeta } = await getCachedEcosystemCatalog();
+  steps.push({
+    stepNumber: 1,
+    label: "Checked ecosystem catalog cache",
+    detail: cacheMeta.cacheSummary,
+    durationMs: Date.now() - started,
+    status: "OK",
+  });
+
+  const isGeneralAnnouncementPrompt =
+    /\b(new\s+whatsapp|new\s+number|official\s+number|save\s+this\s+number|introduce\s+our|future\s+use|contact\s+number|helpline|office\s+hours|holiday|address\s+change)\b/i.test(
+      cleanPrompt
+    ) &&
+    !/\b(podium|pulpit|lectern|trophy|award|machine|polisher|bender|router|tray|stand|box|price\s+list)\b/i.test(
+      cleanPrompt
+    );
+
+  const matches = isGeneralAnnouncementPrompt
+    ? []
+    : searchEcosystemItems(allItems, cleanPrompt, 3);
+  const topLink = matches[0]?.shortUrl || "";
+
+  steps.push({
+    stepNumber: 2,
+    label: isGeneralAnnouncementPrompt
+      ? "Skipped product catalog injection (general announcement/update prompt)"
+      : "Ran catalog lookup for template context",
+    detail: isGeneralAnnouncementPrompt
+      ? "Prompt is an announcement/number introduction; keeping copy strictly focused on the prompt."
+      : `Matched ${matches.length} catalog items${topLink ? ` (topLink=${topLink})` : ""}`,
+    durationMs: Date.now() - started,
+    status: "OK",
+  });
 
   const adminKeyInfo = await resolveSharedAnthropicApiKey("admin");
   const clientKeyInfo = await resolveSharedAnthropicApiKey("client");
   const apiKey = adminKeyInfo.apiKey || clientKeyInfo.apiKey;
+  let lastAiError: string | null = null;
+  let lastUsage: AiTokenUsage | null = null;
 
   if (apiKey) {
     try {
-      const text = await callClaudeHaikuMessages({
+      const aiCall = await callClaudeHaikuMessagesDetailed({
         apiKey,
-        maxTokens: 520,
-        temperature: 0.2,
-        timeoutMs: 9500,
-        system: `You design Meta WhatsApp Cloud API compliant templates for ${brandName}.
-STRICT META APPROVAL RULES:
-1. Template name: lowercase letters, numbers, underscores only (e.g. podium_quote_followup_2026).
-2. Body text MUST NOT start or end with a {{variable}} and MUST NOT place {{1}} {{2}} side by side.
-3. Number variables sequentially starting at {{1}}. Keep body concise (under 420 chars), plain everyday English, zero em-dashes ("—"), zero "--", zero AI buzzwords.
-4. For MARKETING: include polite opt-out footer ("Reply STOP to opt out"). For UTILITY: strictly transactional/service wording with zero promotional hype so Meta approves it as Utility.
-5. Include 2 or 3 useful QUICK_REPLY buttons (<= 22 chars each) and map each button to a deterministic flowAction ("AUTO_REPLY", "ASSIGN_TEAM", "SEND_ORDER_TRACKING", or "OPT_OUT_DND") so AI never hijacks button clicks!
+        maxTokens: 2048,
+        effort: "medium",
+        timeoutMs: 24000,
+        system: `You design executive, high-converting, Meta WhatsApp Cloud API compliant templates for ${brandName}.
+
+STRICT TEMPLATE DESIGN & META APPROVAL RULES:
+1. TAILOR DIRECTLY TO THE ADMIN'S GOAL:
+   - Write the exact message the admin asked for! Never fall back to generic "Explore our product range" copy if the admin asked for something specific (such as introducing our new official WhatsApp number, an event invite, dispatch update, etc.).
+2. SHORT, MEANINGFUL TEMPLATE NAME (CRITICAL):
+   - "name" MUST be a short 2 to 4 word descriptive identifier in lowercase_snake_case prefixed with "${brandPrefix}_" (for example: "${brandPrefix}_official_whatsapp_intro" or "${brandPrefix}_podium_festival_offer").
+   - NEVER copy the admin's prompt sentence into "name" (NEVER output "${brandPrefix}_create_a_message...").
+3. EXECUTIVE WHATSAPP FORMATTING & META VARIABLE RULES:
+   - Body text MUST NOT start or end with a {{variable}} and MUST NOT place {{1}} {{2}} side by side.
+   - Number variables sequentially starting at {{1}} (usually {{1}} = Customer First Name).
+   - Format the body cleanly for WhatsApp mobile screens using *single-asterisk bold* for key highlights, clean paragraph breaks, and bullet points (•) where helpful. Keep body under 480 characters.
+   - Plain, warm, everyday English. Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
+4. FOOTER & QUICK REPLY BUTTONS:
+   - For MARKETING: footerText MUST include opt-out ("${brandName} • Reply STOP to opt out"). For UTILITY: "${brandName}".
+   - Include 2 or 3 relevant QUICK_REPLY buttons (<= 22 chars each) that match the message topic, each mapped to a deterministic flowAction ("AUTO_REPLY", "ASSIGN_TEAM", "SEND_ORDER_TRACKING", or "OPT_OUT_DND").
 
 Return ONLY valid JSON:
 {
-  "name": "snake_case_template_name",
+  "name": "${brandPrefix}_short_topic_slug",
   "category": "${category}",
-  "headerText": "Short Header <= 55 chars",
-  "bodyText": "Hello {{1}}, ... thank you.",
+  "headerText": "Clean Title <= 55 chars (no variables, no emojis)",
+  "bodyText": "Hello {{1}},\\n\\nClean WhatsApp-formatted body tailored to the prompt...",
   "footerText": "${category === "MARKETING" ? `${brandName} • Reply STOP to opt out` : brandName}",
   "variablesSchema": [
     { "index": 1, "label": "Customer First Name", "sourceField": "customer.firstName", "sampleValue": "Rahul" }
@@ -2663,19 +3131,19 @@ Return ONLY valid JSON:
   "buttons": [
     {
       "type": "QUICK_REPLY",
-      "text": "Get Price List",
+      "text": "Relevant Button <=22c",
       "flowAction": {
         "actionType": "AUTO_REPLY",
-        "replyText": "Here is the catalog & price guide: ${topLink}\\n\\nShare your required quantity if you need bulk pricing!"
+        "replyText": "Helpful instant reply matching this button"
       }
     },
     {
       "type": "QUICK_REPLY",
-      "text": "Talk to Sales",
+      "text": "Talk to Our Team",
       "flowAction": {
         "actionType": "ASSIGN_TEAM",
         "teamId": "team_sales",
-        "replyText": "Connecting you with our *Sales Team* right away. A specialist will reply here shortly."
+        "replyText": "Connecting you with our *Sales Team* right away. A team member will assist you shortly."
       }
     }
   ]
@@ -2683,24 +3151,41 @@ Return ONLY valid JSON:
         messages: [
           {
             role: "user",
-            content: `Goal: ${params.prompt.trim()}\nCategory: ${category}\nBrand: ${brandName}\nRelevant link if needed: ${topLink}`,
+            content: `Admin Prompt: ${cleanPrompt}\nCategory: ${category}\nBrand: ${brandName}${
+              topLink ? `\nOptional catalog shortlink (include ONLY if relevant to the prompt): ${topLink}` : "\nDo NOT insert random product catalog links unless requested."
+            }`,
           },
         ],
       });
 
-      if (text) {
-        const s = text.indexOf("{");
-        const e = text.lastIndexOf("}");
-        if (s !== -1 && e > s) {
-          const parsed = JSON.parse(text.slice(s, e + 1));
-          const rawName = String(parsed.name || "cc_template_2026")
+      lastUsage = aiCall.usage;
+      if (aiCall.ok && aiCall.text) {
+        steps.push({
+          stepNumber: 3,
+          label: "Called Anthropic claude-haiku-5-5 (effort=medium)",
+          detail: `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms (in=${aiCall.usage?.inputTokens ?? 0}, think=${aiCall.usage?.thinkingTokens ?? 0}, out=${aiCall.usage?.outputTokens ?? 0})`,
+          durationMs: Date.now() - started,
+          status: "OK",
+        });
+
+        const parsed = parseClaudeJson<any>(aiCall.text);
+        if (parsed && parsed.bodyText) {
+          let rawName = String(parsed.name || "")
             .toLowerCase()
             .replace(/[^a-z0-9_]+/g, "_")
-            .replace(/^_+|_+$/g, "")
-            .slice(0, 64);
-          let cleanBody = formatWhatsAppOutboundText(
-            String(parsed.bodyText || "")
-          );
+            .replace(/^_+|_+$/g, "");
+          const nameWords = rawName.split("_").filter(Boolean);
+          if (
+            !rawName ||
+            nameWords.length > 6 ||
+            /create_a_message|write_a_message|send_to_our/.test(rawName)
+          ) {
+            rawName = buildCleanTemplateSlug(rawName || cleanPrompt, brandPrefix);
+          } else if (!rawName.startsWith(`${brandPrefix}_`)) {
+            rawName = `${brandPrefix}_${rawName}`.slice(0, 48);
+          }
+
+          let cleanBody = formatWhatsAppOutboundText(String(parsed.bodyText || ""));
           if (/^\{\{\d+\}\}/.test(cleanBody)) cleanBody = `Hello ${cleanBody}`;
           if (/\{\{\d+\}\}$/.test(cleanBody)) cleanBody = `${cleanBody}.`;
 
@@ -2729,6 +3214,12 @@ Return ONLY valid JSON:
             }
           );
 
+          const fallbackUrl =
+            topLink ||
+            (brand === "CLASSIC_EDGE_53"
+              ? `${shortOrigin}/ce53mc`
+              : `${shortOrigin}/podium`);
+
           const rawBtns: any[] = Array.isArray(parsed.buttons)
             ? parsed.buttons
             : [];
@@ -2737,11 +3228,10 @@ Return ONLY valid JSON:
             .map((b, i) => ({
               id: `btn_ai_${i}_${Date.now().toString(36)}`,
               type: b.type === "URL" ? "URL" : "QUICK_REPLY",
-              text: sanitizePlainEnglish(String(b.text || "Learn More")).slice(
-                0,
-                24
-              ),
-              url: b.type === "URL" ? String(b.url || topLink) : undefined,
+              text: sanitizePlainEnglish(String(b.text || "Learn More"))
+                .replace(/\*/g, "")
+                .slice(0, 24),
+              url: b.type === "URL" ? String(b.url || fallbackUrl) : undefined,
               flowAction:
                 b.type !== "URL" && b.flowAction
                   ? {
@@ -2758,13 +3248,47 @@ Return ONLY valid JSON:
                   : undefined,
             }));
 
+          const headerText = sanitizePlainEnglish(
+            String(parsed.headerText || "")
+          )
+            .replace(/\*/g, "")
+            .slice(0, 58);
+
+          steps.push({
+            stepNumber: 4,
+            label: "Validated Meta template schema & button flows",
+            detail: `name="${rawName}", vars=${variablesSchema.length}, buttons=${buttons.length}`,
+            durationMs: Date.now() - started,
+            status: "OK",
+          });
+
+          recordAndBroadcastAiLog({
+            website: "WHATSAPP_HUB",
+            websiteLabel: "Classic Concepts WhatsApp Hub",
+            feature: "Meta Template AI Drafter",
+            actor: "Templates Studio Admin",
+            question: cleanPrompt,
+            model: LOCKED_CLAUDE_MODEL,
+            effort: "medium",
+            outcomeSource: "LIVE_AI",
+            responseCacheStatus: "BYPASS",
+            catalogCacheStatus: cacheMeta.catalogCacheStatus,
+            cacheDetails: cacheMeta.cacheSummary,
+            productLookupTriggered: !isGeneralAnnouncementPrompt,
+            productLookupQuery: isGeneralAnnouncementPrompt ? "" : cleanPrompt,
+            productLookupTotalScanned: isGeneralAnnouncementPrompt ? 0 : allItems.length,
+            productsLookedUp: matches.map(mapProductToLogItem),
+            steps,
+            response: `[${rawName}] Header: ${headerText}\n\n${cleanBody}`,
+            durationMs: Date.now() - started,
+            tokenUsage: aiCall.usage,
+          });
+
           return {
-            name: rawName || `cc_${category.toLowerCase()}_draft`,
+            name: rawName,
             category,
-            headerType: parsed.headerText ? "TEXT" : "NONE",
-            headerText: sanitizePlainEnglish(
-              String(parsed.headerText || "")
-            ).slice(0, 58),
+            headerType: headerText ? "TEXT" : "NONE",
+            headerText,
             bodyText: cleanBody,
             footerText: sanitizePlainEnglish(
               String(
@@ -2773,43 +3297,91 @@ Return ONLY valid JSON:
                     ? `${brandName} • Reply STOP to opt out`
                     : brandName)
               )
-            ).slice(0, 58),
+            )
+              .replace(/\*/g, "")
+              .slice(0, 58),
             variablesSchema,
             buttons,
             complianceNotes: [
-              "Variables verified sequential with sample values for Meta review.",
+              "Drafted by Claude Haiku 5.5 (Medium effort) with sequential Meta variables.",
               "Quick Reply buttons pre-mapped to deterministic Flow Actions so AI credits are protected.",
             ],
           };
         }
+        lastAiError = "Claude output could not be parsed as template JSON.";
+      } else {
+        lastAiError = aiCall.error || "Anthropic template call failed";
       }
-    } catch {
-      // Fall back to deterministic compliant draft below
+    } catch (err: any) {
+      lastAiError = err?.message || "Template AI exception";
     }
+  } else {
+    lastAiError = "Anthropic API key is not configured.";
   }
 
-  const slugBase =
-    params.prompt
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 36) || "customer_update";
+  steps.push({
+    stepNumber: steps.length + 1,
+    label: "Used smart deterministic template fallback",
+    detail: lastAiError || "Fallback template generated",
+    durationMs: Date.now() - started,
+    status: "WARN",
+  });
 
+  const cleanSlug = buildCleanTemplateSlug(cleanPrompt, brandPrefix);
   const isUtility = category === "UTILITY";
+  const fallbackLink =
+    topLink ||
+    (brand === "CLASSIC_EDGE_53"
+      ? `${shortOrigin}/ce53mc`
+      : `${shortOrigin}/podium`);
+
+  const fallbackHeader = isGeneralAnnouncementPrompt
+    ? `Official ${brandName} WhatsApp`
+    : isUtility
+    ? `${brandName} Service Update`
+    : `${brandName} Updates`;
+
+  const fallbackBody = isGeneralAnnouncementPrompt
+    ? `Hello {{1}},\n\nPlease save this number as our *official ${brandName} WhatsApp desk* for all future enquiries, custom quotes, and live order updates.\n\nTap an option below anytime you need assistance from our team.`
+    : isUtility
+    ? `Hello {{1}}, we have reviewed your request with *${brandName}* (Ref {{2}}). Tap an option below to check status or connect directly with our team.`
+    : `Hello {{1}}, thank you for connecting with *${brandName}*.${
+        topLink ? ` Explore matching options here:\n${fallbackLink}\n\n` : "\n\n"
+      }Tap a button below for pricing details or to speak directly with our Sales Team.`;
+
+  recordAndBroadcastAiLog({
+    website: "WHATSAPP_HUB",
+    websiteLabel: "Classic Concepts WhatsApp Hub",
+    feature: "Meta Template AI Drafter",
+    actor: "Templates Studio Admin",
+    question: cleanPrompt,
+    model: `${LOCKED_CLAUDE_MODEL} -> local-fallback`,
+    effort: "medium",
+    outcomeSource: "LOCAL_FALLBACK",
+    responseCacheStatus: "BYPASS",
+    catalogCacheStatus: cacheMeta.catalogCacheStatus,
+    cacheDetails: cacheMeta.cacheSummary,
+    productLookupTriggered: !isGeneralAnnouncementPrompt,
+    productLookupQuery: isGeneralAnnouncementPrompt ? "" : cleanPrompt,
+    productLookupTotalScanned: isGeneralAnnouncementPrompt ? 0 : allItems.length,
+    productsLookedUp: matches.map(mapProductToLogItem),
+    steps,
+    response: `[${cleanSlug}] Header: ${fallbackHeader}\n\n${fallbackBody}`,
+    durationMs: Date.now() - started,
+    tokenUsage: lastUsage,
+    error: lastAiError,
+  });
+
   return {
-    name: `${brand === "CLASSIC_EDGE_53" ? "ce53" : "cc"}_${slugBase}`,
+    name: cleanSlug,
     category,
     headerType: "TEXT",
-    headerText: isUtility
-      ? `${brandName} Enquiry Update`
-      : `${brandName} Product Options`,
-    bodyText: isUtility
-      ? `Hello {{1}}, we have reviewed your request with ${brandName} (Ref {{2}}). Tap an option below to view details or connect directly with our team.`
-      : `Hello {{1}}, thank you for checking ${brandName}. Explore our ready range here: ${topLink}\n\nTap a button below for pricing or to speak with our Sales Team.`,
+    headerText: fallbackHeader,
+    bodyText: fallbackBody,
     footerText: isUtility
       ? brandName
       : `${brandName} • Reply STOP to opt out`,
-    variablesSchema: isUtility
+    variablesSchema: isUtility && !isGeneralAnnouncementPrompt
       ? [
           {
             index: 1,
@@ -2836,12 +3408,18 @@ Return ONLY valid JSON:
       {
         id: "btn_qr_1",
         type: "QUICK_REPLY",
-        text: isUtility ? "Track Order" : "Share Price List",
-        flowAction: isUtility
+        text: isGeneralAnnouncementPrompt
+          ? "Save & Say Hi"
+          : isUtility
+          ? "Track Order"
+          : "Get Price List",
+        flowAction: isUtility && !isGeneralAnnouncementPrompt
           ? { actionType: "SEND_ORDER_TRACKING" }
           : {
               actionType: "AUTO_REPLY",
-              replyText: `Here is the direct link to view models and specifications:\n${topLink}\n\nLet us know the quantity you need!`,
+              replyText: isGeneralAnnouncementPrompt
+                ? `Thank you for saving our new *${brandName}* WhatsApp number! Let us know anytime you need product options, custom sizes, or order updates.`
+                : `Here is the direct link to view models and specifications:\n${fallbackLink}\n\nLet us know the quantity you need!`,
             },
       },
       {
@@ -2861,7 +3439,7 @@ Return ONLY valid JSON:
             {
               id: "btn_qr_3",
               type: "QUICK_REPLY",
-              text: "Stop Offers",
+              text: "Stop Updates",
               flowAction: { actionType: "OPT_OUT_DND" },
             },
           ] as WhatsAppTemplateButton[])),
@@ -2878,42 +3456,87 @@ export async function runGuardedButtonFlowAiReply(params: {
   buttonText: string;
   aiInstruction: string;
 }): Promise<string> {
+  const started = Date.now();
   const firstName = params.customerName.split(/[\s(]/)[0] || "there";
-  const { allItems } = await getCachedEcosystemCatalog();
-  const matches = searchEcosystemItems(
-    allItems,
-    `${params.buttonText} ${params.aiInstruction}`,
-    3
-  );
+  const { allItems, cacheMeta } = await getCachedEcosystemCatalog();
+  const lookupQuery = `${params.buttonText} ${params.aiInstruction}`.trim();
+  const matches = searchEcosystemItems(allItems, lookupQuery, 3);
   const catalogLines = matches
     .map(
       (m) =>
-        `- ${m.name}${m.basePrice ? ` (Rs ${m.basePrice})` : ""}: ${m.shortUrl || m.url}`
+        `• *${cleanDisplayProductName(m.name)}*${m.basePrice ? ` (₹${m.basePrice.toLocaleString("en-IN")})` : ""}: ${m.shortUrl || m.url}`
     )
     .join("\n");
 
   const { apiKey } = await resolveSharedAnthropicApiKey("client");
   if (apiKey) {
-    const out = await callClaudeHaikuMessages({
+    const aiCall = await callClaudeHaikuMessagesDetailed({
       apiKey,
-      maxTokens: 200,
-      temperature: 0.2,
-      timeoutMs: 7000,
-      system: `You are ACRIO for Classic Concepts & Classic Edge 53. Reply strictly to the button action below in under 75 words using simple everyday English, WhatsApp *bold* formatting, and zero em-dashes or buzzwords.`,
+      maxTokens: 1600,
+      effort: "medium",
+      timeoutMs: 18000,
+      system: `You are ACRIO for Classic Concepts & Classic Edge 53. Reply strictly to the button action below in under 75 words using simple everyday English, clean WhatsApp *bold* formatting, ₹ prices, and zero em-dashes or buzzwords.`,
       messages: [
         {
           role: "user",
-          content: `Customer: ${firstName}\nClicked Template Button: "${params.buttonText}"\nButton Action Instruction: ${params.aiInstruction}\nCatalog links:\n${catalogLines}`,
+          content: `Customer: ${firstName}\nClicked Template Button: "${params.buttonText}"\nButton Action Instruction: ${params.aiInstruction}\nCatalog links:\n${catalogLines || "(none)"}`,
         },
       ],
     });
-    if (out) return formatWhatsAppOutboundText(out);
+    if (aiCall.ok && aiCall.text) {
+      const formatted = formatWhatsAppOutboundText(aiCall.text);
+      recordAndBroadcastAiLog({
+        website: "WHATSAPP_HUB",
+        websiteLabel: "Classic Concepts WhatsApp Hub",
+        feature: "Guarded Template Button AI Reply",
+        actor: params.customerName,
+        question: `[Button: ${params.buttonText}] ${params.aiInstruction}`,
+        model: LOCKED_CLAUDE_MODEL,
+        effort: "medium",
+        outcomeSource: "LIVE_AI",
+        responseCacheStatus: "BYPASS",
+        catalogCacheStatus: cacheMeta.catalogCacheStatus,
+        cacheDetails: cacheMeta.cacheSummary,
+        productLookupTriggered: true,
+        productLookupQuery: lookupQuery,
+        productLookupTotalScanned: allItems.length,
+        productsLookedUp: matches.map(mapProductToLogItem),
+        steps: [
+          { stepNumber: 1, label: "Matched products for button context", detail: `${matches.length} items` },
+          { stepNumber: 2, label: "Generated reply with Claude Haiku 5.5 (effort=medium)", detail: `${aiCall.durationMs}ms` },
+        ],
+        response: formatted,
+        durationMs: Date.now() - started,
+        tokenUsage: aiCall.usage,
+      });
+      return formatted;
+    }
   }
 
   const top = matches[0];
-  return formatWhatsAppOutboundText(
-    `Thanks for selecting *${params.buttonText}*!${top ? `\n\nTake a look at *${top.name}*:\n${top.shortUrl || top.url}` : ""}\n\nShare your required quantity or size and we will help right away.`
+  const fallback = formatWhatsAppOutboundText(
+    `Thanks for selecting *${params.buttonText}*!${top ? `\n\nTake a look at *${cleanDisplayProductName(top.name)}*:\n${top.shortUrl || top.url}` : ""}\n\nShare your required quantity or size and we will help right away.`
   );
+  recordAndBroadcastAiLog({
+    website: "WHATSAPP_HUB",
+    websiteLabel: "Classic Concepts WhatsApp Hub",
+    feature: "Guarded Template Button AI Reply",
+    actor: params.customerName,
+    question: `[Button: ${params.buttonText}] ${params.aiInstruction}`,
+    model: "local-fallback",
+    outcomeSource: "LOCAL_FALLBACK",
+    responseCacheStatus: "BYPASS",
+    catalogCacheStatus: cacheMeta.catalogCacheStatus,
+    cacheDetails: cacheMeta.cacheSummary,
+    productLookupTriggered: true,
+    productLookupQuery: lookupQuery,
+    productLookupTotalScanned: allItems.length,
+    productsLookedUp: matches.map(mapProductToLogItem),
+    steps: [{ stepNumber: 1, label: "Returned deterministic button reply", detail: `${matches.length} items` }],
+    response: fallback,
+    durationMs: Date.now() - started,
+  });
+  return fallback;
 }
 
 export interface EvaluatedWebsiteEnquiryResult {
@@ -2939,12 +3562,37 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
   productName?: string;
   sourcePage?: string;
 }): Promise<EvaluatedWebsiteEnquiryResult> {
+  const started = Date.now();
+  const steps: AiTraceStep[] = [];
   const firstName = params.customerName.split(/[\s(]/)[0] || "there";
   const combinedQuery = `${params.productName || ""} ${params.message || ""}`.trim();
   const lower = combinedQuery.toLowerCase();
+  const logWebsite: AiLogWebsite =
+    params.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS";
+  const logWebsiteLabel =
+    params.brand === "CLASSIC_EDGE_53"
+      ? "Classic Edge 53 (classicedge53.com -> Hub)"
+      : "Classic Concepts (classicconcepts.in -> Hub)";
 
-  const { allItems } = await getCachedEcosystemCatalog();
-  const matches = searchEcosystemItems(allItems, combinedQuery, 3);
+  const { allItems, cacheMeta } = await getCachedEcosystemCatalog();
+  const matches = searchEcosystemItems(allItems, combinedQuery, 4);
+
+  steps.push(
+    {
+      stepNumber: 1,
+      label: "Checked ecosystem catalog cache",
+      detail: cacheMeta.cacheSummary,
+      durationMs: Date.now() - started,
+      status: "OK",
+    },
+    {
+      stepNumber: 2,
+      label: "Looked up matching products for website enquiry",
+      detail: `query="${combinedQuery.slice(0, 80)}", matched=${matches.length} of ${allItems.length}`,
+      durationMs: Date.now() - started,
+      status: "OK",
+    }
+  );
 
   let smartCategory =
     params.brand === "CLASSIC_EDGE_53"
@@ -2985,19 +3633,21 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
   const clientKey = await resolveSharedAnthropicApiKey("client");
   const adminKey = await resolveSharedAnthropicApiKey("admin");
   const apiKey = clientKey.apiKey || adminKey.apiKey;
+  let lastAiError: string | null = null;
+  let lastUsage: AiTokenUsage | null = null;
 
   if (apiKey) {
     try {
-      const text = await callClaudeHaikuMessages({
+      const aiCall = await callClaudeHaikuMessagesDetailed({
         apiKey,
-        maxTokens: 480,
-        temperature: 0.25,
-        timeoutMs: 9000,
+        maxTokens: 2048,
+        effort: "medium",
+        timeoutMs: 24000,
         system: `You handle new website form enquiries for ${brandName} (Classic Concepts acrylic products & Classic Edge 53 acrylic machines).
 Your job is to give the customer a genuinely helpful, specific first answer right away before our Sales Team follows up!
 RULES:
 1. Address "${firstName}" warmly in simple, clear, everyday English.
-2. Directly answer what they asked about, and when sharing matching products, format them cleanly as a grouped numbered list using the exact https://ccapl.cc/<id> shortlinks provided (never dump raw long titles mid-sentence).
+2. Directly answer what they asked about, and when sharing matching products, ONLY use the exact https://ccapl.cc/<id> shortlinks and ₹ prices provided in context (never invent links or unrelated items).
 3. Ask 1-2 practical details (like required quantity, delivery city, sheet thickness, or custom size) so our Sales Team can send the final quote immediately.
 4. Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
 Return ONLY valid JSON:
@@ -3005,42 +3655,77 @@ Return ONLY valid JSON:
   "smartCategory": "${smartCategory}",
   "priority": "${priority}",
   "smartReplyText": "Email-friendly plain text reply with clear paragraphs and numbered product links",
-  "whatsappSummaryText": "Concise WhatsApp-formatted (*bold* + grouped numbered shortlinks) version of the same helpful reply"
+  "whatsappSummaryText": "Clean WhatsApp-formatted (*bold* + ₹ prices + grouped numbered shortlinks) version of the same helpful reply"
 }`,
         messages: [
           {
             role: "user",
-            content: `Brand: ${brandName}\nCustomer: ${params.customerName}\nProduct Selected: ${params.productName ? cleanDisplayProductName(params.productName) : "General"}\nCustomer Enquiry: ${params.message}\n${groupedEnquiryBlock || "Standard custom fabrication & machine range"}`,
+            content: `Brand: ${brandName}\nCustomer: ${params.customerName}\nProduct Selected: ${params.productName ? cleanDisplayProductName(params.productName) : "General"}\nCustomer Enquiry: ${params.message}\n${groupedEnquiryBlock || "No direct ready catalog match; standard custom fabrication & machine range"}`,
           },
         ],
       });
 
-      if (text) {
-        const s = text.indexOf("{");
-        const e = text.lastIndexOf("}");
-        if (s !== -1 && e > s) {
-          const parsed = JSON.parse(text.slice(s, e + 1));
-          if (parsed.smartReplyText) {
-            const cleanEmailText = sanitizePlainEnglish(
-              String(parsed.smartReplyText)
-            ).replace(/\*/g, "");
-            const cleanWaText = formatWhatsAppOutboundText(
-              String(parsed.whatsappSummaryText || parsed.smartReplyText)
-            );
-            return {
-              smartReplyText: cleanEmailText,
-              whatsappSummaryText: cleanWaText,
-              smartCategory: parsed.smartCategory || smartCategory,
-              priority: parsed.priority || priority,
-              recommendedTeamId: "team_sales",
-              matchedItems,
-            };
-          }
+      lastUsage = aiCall.usage;
+      if (aiCall.ok && aiCall.text) {
+        const parsed = parseClaudeJson<any>(aiCall.text);
+        if (parsed && parsed.smartReplyText) {
+          const cleanEmailText = sanitizePlainEnglish(
+            String(parsed.smartReplyText)
+          ).replace(/\*/g, "");
+          const cleanWaText = formatWhatsAppOutboundText(
+            String(parsed.whatsappSummaryText || parsed.smartReplyText)
+          );
+
+          steps.push({
+            stepNumber: 3,
+            label: "Evaluated enquiry with Claude Haiku 5.5 (effort=medium)",
+            detail: `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms -> category="${parsed.smartCategory || smartCategory}"`,
+            durationMs: Date.now() - started,
+            status: "OK",
+          });
+
+          recordAndBroadcastAiLog({
+            website: logWebsite,
+            websiteLabel: logWebsiteLabel,
+            feature: "Website Form Enquiry AI Evaluator",
+            actor: `${params.customerName}${params.customerPhone ? ` (${params.customerPhone})` : ""}`,
+            question: params.productName
+              ? `[Product: ${params.productName}] ${params.message}`
+              : params.message,
+            model: LOCKED_CLAUDE_MODEL,
+            effort: "medium",
+            outcomeSource: "LIVE_AI",
+            responseCacheStatus: "BYPASS",
+            catalogCacheStatus: cacheMeta.catalogCacheStatus,
+            cacheDetails: cacheMeta.cacheSummary,
+            productLookupTriggered: true,
+            productLookupQuery: combinedQuery,
+            productLookupTotalScanned: allItems.length,
+            productsLookedUp: matches.map(mapProductToLogItem),
+            steps,
+            response: cleanWaText,
+            durationMs: Date.now() - started,
+            tokenUsage: aiCall.usage,
+          });
+
+          return {
+            smartReplyText: cleanEmailText,
+            whatsappSummaryText: cleanWaText,
+            smartCategory: parsed.smartCategory || smartCategory,
+            priority: parsed.priority || priority,
+            recommendedTeamId: "team_sales",
+            matchedItems,
+          };
         }
+        lastAiError = "Claude website enquiry JSON parse failed.";
+      } else {
+        lastAiError = aiCall.error || "Anthropic enquiry evaluation failed.";
       }
-    } catch {
-      // Fallback below
+    } catch (err: any) {
+      lastAiError = err?.message || "Enquiry AI exception";
     }
+  } else {
+    lastAiError = "Anthropic API key not configured.";
   }
 
   const cleanSelectedProd = params.productName
@@ -3055,6 +3740,39 @@ Return ONLY valid JSON:
         : "\n• *Any custom size or logo printing needed*"
     }\n\nOur *Sales Team* has also received your enquiry and is ready to assist you.`
   );
+
+  steps.push({
+    stepNumber: steps.length + 1,
+    label: "Generated deterministic website enquiry reply",
+    detail: lastAiError || "Fallback used",
+    durationMs: Date.now() - started,
+    status: "WARN",
+  });
+
+  recordAndBroadcastAiLog({
+    website: logWebsite,
+    websiteLabel: logWebsiteLabel,
+    feature: "Website Form Enquiry AI Evaluator",
+    actor: `${params.customerName}${params.customerPhone ? ` (${params.customerPhone})` : ""}`,
+    question: params.productName
+      ? `[Product: ${params.productName}] ${params.message}`
+      : params.message,
+    model: `${LOCKED_CLAUDE_MODEL} -> local-fallback`,
+    effort: "medium",
+    outcomeSource: "LOCAL_FALLBACK",
+    responseCacheStatus: "BYPASS",
+    catalogCacheStatus: cacheMeta.catalogCacheStatus,
+    cacheDetails: cacheMeta.cacheSummary,
+    productLookupTriggered: true,
+    productLookupQuery: combinedQuery,
+    productLookupTotalScanned: allItems.length,
+    productsLookedUp: matches.map(mapProductToLogItem),
+    steps,
+    response: fallbackWa,
+    durationMs: Date.now() - started,
+    tokenUsage: lastUsage,
+    error: lastAiError,
+  });
 
   return {
     smartReplyText: fallbackWa.replace(/\*/g, ""),

@@ -1626,7 +1626,12 @@ function appendWhatsAppShortLinkUtm(
 function isDummyPlaceholderRow(id: unknown, name: unknown): boolean {
   const cleanId = String(id || "").trim().toLowerCase();
   const cleanName = String(name || "").trim().toLowerCase();
-  return cleanId === "test" && (cleanName === "test" || cleanName === "test product");
+  return (
+    cleanId === "test" ||
+    cleanName === "test" ||
+    cleanName === "test product" ||
+    /^test\s+product\b/i.test(cleanName)
+  );
 }
 
 let shortLinkTableReady = false;
@@ -1906,7 +1911,12 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
               sku: p.sku ? String(p.sku) : null,
               categoryName: String(p.categoryName || "Acrylic Products"),
               description: p.description ? String(p.description) : null,
-              basePrice: typeof p.basePrice === "number" ? p.basePrice : null,
+              basePrice:
+                typeof p.discountPrice === "number" && p.discountPrice > 0
+                  ? p.discountPrice
+                  : typeof p.basePrice === "number" && p.basePrice > 0
+                  ? p.basePrice
+                  : null,
               mainImage: p.mainImage ? String(p.mainImage) : null,
               url: String(p.url || `https://classicconcepts.in/shop/p/${p.slug}`),
               specsSummary: Array.isArray(p.specifications)
@@ -2135,51 +2145,248 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
   }
 }
 
+const SEARCH_STOPWORDS = new Set([
+  "i", "im", "am", "is", "are", "was", "were", "be", "been", "being",
+  "a", "an", "the", "and", "or", "but", "if", "so", "as", "at", "by",
+  "for", "from", "in", "into", "of", "on", "onto", "to", "up", "with",
+  "about", "above", "after", "again", "all", "also", "any", "around",
+  "asking", "asked", "below", "between", "both", "budget", "buy", "can",
+  "check", "classic", "concepts", "cost", "costs", "could", "details",
+  "do", "does", "doing", "each", "few", "find", "get", "give", "good",
+  "best", "great", "had", "has", "have", "having", "hello", "hey", "hi",
+  "how", "inr", "item", "items", "just", "know", "less", "like", "list",
+  "look", "looking", "make", "many", "max", "maximum", "may", "me", "min",
+  "minimum", "more", "most", "much", "must", "my", "need", "needed", "new",
+  "no", "not", "now", "only", "option", "options", "order", "our", "out",
+  "over", "per", "piece", "pieces", "please", "pls", "plz", "price",
+  "priced", "prices", "pricing", "product", "products", "purchase",
+  "quote", "range", "rate", "rates", "rs", "rupee", "rupees", "said",
+  "same", "say", "see", "send", "share", "show", "some", "something",
+  "still", "such", "take", "tell", "than", "thank", "thanks", "that",
+  "their", "them", "then", "there", "these", "they", "this", "those",
+  "through", "told", "too", "under", "until", "upto", "us", "use", "very",
+  "want", "wanted", "we", "what", "when", "where", "which", "while", "who",
+  "will", "within", "would", "you", "your", "namaste", "sir", "madam",
+]);
+
+const DOMAIN_SYNONYM_GROUPS: string[][] = [
+  ["podium", "podiums", "pulpit", "pulpits", "lectern", "lecterns", "rostrum", "speech", "stage", "auditorium", "ccp"],
+  ["trophy", "trophies", "award", "awards", "memento", "mementos", "plaque", "plaques", "shield", "shields", "medal"],
+  ["menu", "menus", "tent", "qr", "standee", "holder", "holders", "brochure", "leaflet", "pamphlet", "flyer"],
+  ["donation", "charity", "ballot", "suggestion", "lottery", "drop"],
+  ["saree", "garment", "showcase", "riser", "risers", "turntable", "merchandise", "retail"],
+  ["table", "tables", "chair", "chairs", "stool", "stools", "desk", "desks", "furniture", "bedside", "coffee", "dining"],
+  ["tray", "trays", "dispenser", "dispensers", "candy", "lollipop", "beverage", "juice"],
+  ["signage", "sign", "nameplate", "board", "boards", "keychain", "keychains", "badge", "badges"],
+  ["polisher", "polishing", "buffing", "diamond"],
+  ["bender", "bending", "heater", "heating"],
+  ["router", "cnc", "laser", "cutter", "cutting", "blade", "blades"],
+  ["sheet", "sheets", "mirror", "tube", "tubes", "rod", "rods"],
+];
+
+export function extractBudgetConstraintsFromQuery(rawQuery: string): {
+  maxPrice: number | null;
+  minPrice: number | null;
+} {
+  const normalized = rawQuery.replace(/,/g, "").toLowerCase();
+  let maxPrice: number | null = null;
+  let minPrice: number | null = null;
+
+  const parseAmount = (numStr: string, kSuffix?: string): number | null => {
+    const val = parseFloat(numStr);
+    if (!Number.isFinite(val) || val <= 0) return null;
+    return kSuffix ? Math.round(val * 1000) : Math.round(val);
+  };
+
+  const maxMatch = normalized.match(
+    /\b(?:under|below|within|upto|up\s*to|less\s*than|max|maximum|budget(?:\s*of|\s*is)?)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/i
+  );
+  if (maxMatch?.[1]) {
+    maxPrice = parseAmount(maxMatch[1], maxMatch[2]);
+  }
+
+  const minMatch = normalized.match(
+    /\b(?:above|over|more\s*than|min|minimum|starting(?:\s*from)?)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/i
+  );
+  if (minMatch?.[1]) {
+    minPrice = parseAmount(minMatch[1], minMatch[2]);
+  }
+
+  const rangeMatch = normalized.match(
+    /\bbetween\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\s*(?:and|to|-)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/i
+  );
+  if (rangeMatch?.[1] && rangeMatch?.[3]) {
+    minPrice = parseAmount(rangeMatch[1], rangeMatch[2]);
+    maxPrice = parseAmount(rangeMatch[3], rangeMatch[4]);
+  }
+
+  return { maxPrice, minPrice };
+}
+
+function tokenizeWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function wordMatchesToken(word: string, token: string): boolean {
+  if (word === token) return true;
+  if (token.length >= 4 && word.length >= 4) {
+    if (word === `${token}s` || token === `${word}s`) return true;
+    if (word === `${token}es` || token === `${word}es`) return true;
+    if (
+      token.length >= 5 &&
+      (word.startsWith(token) || (word.length >= 5 && token.startsWith(word)))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function searchEcosystemItems(
   items: MainWebsiteProduct[],
   searchQuery: string,
   limit = 6
 ): MainWebsiteProduct[] {
+  const cleanItems = items.filter((i) => !isDummyPlaceholderRow(i.id, i.name));
   const q = searchQuery.trim().toLowerCase();
-  if (!q) return items.slice(0, limit);
+  if (!q) return cleanItems.slice(0, limit);
 
-  const tokens = q
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length >= 2 && !["the", "and", "for", "with", "have", "need", "want", "please", "hello", "classic", "concepts"].includes(t));
+  const { maxPrice, minPrice } = extractBudgetConstraintsFromQuery(searchQuery);
 
-  if (tokens.length === 0) return items.slice(0, limit);
+  // Strip currency amounts so price digits ("25", "000", "25000") do not match random SKUs or sizes
+  const queryWithoutPrices = q
+    .replace(/(?:rs\.?|inr|₹)\s*[\d,]+(?:\.\d+)?\s*k?\b/gi, " ")
+    .replace(/\b(?:under|below|within|upto|up\s*to|above|over|budget)\s*[\d,]+(?:\.\d+)?\s*k?\b/gi, " ");
 
-  const wantsMachine = /machine|laser|cnc|router|polish|diamond|bending|bender|heater|blade|cutter|tool|ce53|edge|yn-|model/i.test(q);
+  const rawTokens = tokenizeWords(queryWithoutPrices).filter(
+    (t) =>
+      t.length >= 2 &&
+      !SEARCH_STOPWORDS.has(t) &&
+      !/^\d+$/.test(t) &&
+      t !== "acrylic"
+  );
 
-  const scored = items.map((item) => {
-    const haystack = [
-      item.name,
-      item.sku || "",
-      item.categoryName,
-      item.description || "",
-      item.modelsSummary || "",
-      item.specsSummary || "",
-    ]
-      .join(" ")
-      .toLowerCase();
+  // If user literally only typed "acrylic", allow "acrylic" as fallback token
+  const directTokens =
+    rawTokens.length > 0
+      ? rawTokens
+      : q.includes("acrylic")
+      ? ["acrylic"]
+      : [];
 
-    let score = 0;
-    if (haystack.includes(q)) score += 25;
-    for (const tok of tokens) {
-      if (item.name.toLowerCase().includes(tok)) score += 10;
-      else if ((item.sku || "").toLowerCase().includes(tok)) score += 12;
-      else if ((item.modelsSummary || "").toLowerCase().includes(tok)) score += 11;
-      else if (haystack.includes(tok)) score += 4;
+  if (directTokens.length === 0) {
+    if (maxPrice !== null || minPrice !== null) {
+      return cleanItems
+        .filter((it) => {
+          if (typeof it.basePrice !== "number" || it.basePrice <= 0) return false;
+          if (maxPrice !== null && it.basePrice > maxPrice) return false;
+          if (minPrice !== null && it.basePrice < minPrice) return false;
+          return true;
+        })
+        .slice(0, limit);
     }
-    if (wantsMachine && item.brand === "CLASSIC_EDGE_53") score += 8;
-    if (!wantsMachine && item.brand === "CLASSIC_CONCEPTS") score += 2;
+    return [];
+  }
 
-    return { item, score };
+  // Expand domain synonyms (e.g., "pulpits" -> "podium", "lectern", "ccp")
+  const expandedSynonyms = new Set<string>();
+  for (const tok of directTokens) {
+    for (const grp of DOMAIN_SYNONYM_GROUPS) {
+      if (grp.some((g) => wordMatchesToken(g, tok))) {
+        for (const syn of grp) {
+          if (!directTokens.includes(syn)) expandedSynonyms.add(syn);
+        }
+      }
+    }
+  }
+
+  const wantsMachine =
+    /\b(machine|machines|laser|cnc|router|polisher|polishing|diamond|bending|bender|heater|blade|blades|cutter|ce53|yn-)\b/i.test(
+      q
+    );
+
+  const scored: { item: MainWebsiteProduct; score: number }[] = [];
+
+  for (const item of cleanItems) {
+    // Enforce budget constraints strictly on priced items
+    if (typeof item.basePrice === "number" && item.basePrice > 0) {
+      if (maxPrice !== null && item.basePrice > maxPrice) continue;
+      if (minPrice !== null && item.basePrice < minPrice) continue;
+    }
+
+    const nameWords = tokenizeWords(item.name);
+    const catWords = tokenizeWords(item.categoryName);
+    const skuLower = (item.sku || "").toLowerCase();
+    const modelLower = (item.modelsSummary || "").toLowerCase();
+    const descWords = tokenizeWords(
+      `${item.description || ""} ${item.specsSummary || ""}`
+    );
+
+    let matchScore = 0;
+
+    for (const tok of directTokens) {
+      if (skuLower && skuLower.includes(tok) && tok.length >= 3) {
+        matchScore += 30;
+      } else if (modelLower && modelLower.includes(tok) && tok.length >= 3) {
+        matchScore += 26;
+      }
+      if (nameWords.some((w) => wordMatchesToken(w, tok))) {
+        matchScore += 24;
+      }
+      if (catWords.some((w) => wordMatchesToken(w, tok))) {
+        matchScore += 18;
+      }
+      if (descWords.some((w) => wordMatchesToken(w, tok))) {
+        matchScore += 5;
+      }
+    }
+
+    for (const syn of expandedSynonyms) {
+      if (nameWords.some((w) => wordMatchesToken(w, syn))) {
+        matchScore += 18;
+      } else if (catWords.some((w) => wordMatchesToken(w, syn))) {
+        matchScore += 14;
+      } else if (skuLower && syn.length >= 3 && skuLower.startsWith(syn)) {
+        matchScore += 12;
+      }
+    }
+
+    // Do NOT include items with zero topical match!
+    if (matchScore <= 0) continue;
+
+    if (wantsMachine && item.brand === "CLASSIC_EDGE_53") {
+      matchScore += 10;
+    } else if (!wantsMachine && item.brand === "CLASSIC_EDGE_53") {
+      // Prevent machines/ovens from polluting product searches like "pulpits" or "stands"
+      matchScore -= 16;
+    }
+
+    if (maxPrice !== null || minPrice !== null) {
+      if (typeof item.basePrice === "number" && item.basePrice > 0) {
+        matchScore += 12;
+      } else {
+        // Keep unpriced customisable models in the same category below confirmed-budget items
+        matchScore -= 4;
+      }
+    }
+
+    if (matchScore > 0) {
+      scored.push({ item, score: matchScore });
+    }
+  }
+
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    // When customer gave a budget, prefer priced items sorted closest-to-budget / ascending
+    const aP = typeof a.item.basePrice === "number" && a.item.basePrice > 0 ? a.item.basePrice : Infinity;
+    const bP = typeof b.item.basePrice === "number" && b.item.basePrice > 0 ? b.item.basePrice : Infinity;
+    return aP - bP;
   });
 
-  scored.sort((a, b) => b.score - a.score);
-  const positive = scored.filter((s) => s.score > 0).map((s) => s.item);
-  return (positive.length > 0 ? positive : items).slice(0, limit);
+  return scored.slice(0, limit).map((s) => s.item);
 }
 
 export async function fetchClassicCatalogProducts(

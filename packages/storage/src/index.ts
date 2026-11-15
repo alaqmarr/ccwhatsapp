@@ -193,7 +193,9 @@ export {
   WHATSAPP_REDIS_MAX_BYTES,
   WHATSAPP_CACHE_TAGS,
   type WhatsAppCacheTag,
+  type WhatsAppCacheHitTier,
   rememberWhatsAppCache,
+  rememberWhatsAppCacheWithMeta,
   invalidateWhatsAppCacheTags,
   getWhatsAppCacheSummary,
 } from "./redis-cache";

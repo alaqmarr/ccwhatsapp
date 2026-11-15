@@ -174,12 +174,14 @@ function readMemoryLru<T>(state: WhatsAppCacheEngineState, fullKey: string): T |
   }
 }
 
-export async function rememberWhatsAppCache<T>(
+export type WhatsAppCacheHitTier = "HIT_MEMORY" | "HIT_REDIS" | "MISS";
+
+export async function rememberWhatsAppCacheWithMeta<T>(
   key: string,
   tags: WhatsAppCacheTag[],
   ttlSeconds: number,
   fetcher: () => Promise<T>
-): Promise<T> {
+): Promise<{ value: T; cacheStatus: WhatsAppCacheHitTier }> {
   const state = getCacheState();
   initRedisIfNeeded(state);
 
@@ -189,7 +191,7 @@ export async function rememberWhatsAppCache<T>(
   const fromMem = readMemoryLru<T>(state, fullKey);
   if (fromMem !== null) {
     state.hits++;
-    return fromMem;
+    return { value: fromMem, cacheStatus: "HIT_MEMORY" };
   }
 
   // 2. Check Redis if online
@@ -200,7 +202,7 @@ export async function rememberWhatsAppCache<T>(
         const parsed = JSON.parse(raw) as T;
         writeMemoryLru(state, fullKey, raw, ttlSeconds, tags);
         state.hits++;
-        return parsed;
+        return { value: parsed, cacheStatus: "HIT_REDIS" };
       }
     } catch {
       // Fall through to fetcher
@@ -210,7 +212,8 @@ export async function rememberWhatsAppCache<T>(
   // 3. Deduplicate concurrent fetches
   const existingFlight = state.inflight.get(fullKey) as Promise<T> | undefined;
   if (existingFlight) {
-    return existingFlight;
+    const val = await existingFlight;
+    return { value: val, cacheStatus: "MISS" };
   }
 
   state.misses++;
@@ -238,7 +241,18 @@ export async function rememberWhatsAppCache<T>(
   })();
 
   state.inflight.set(fullKey, promise);
-  return promise;
+  const value = await promise;
+  return { value, cacheStatus: "MISS" };
+}
+
+export async function rememberWhatsAppCache<T>(
+  key: string,
+  tags: WhatsAppCacheTag[],
+  ttlSeconds: number,
+  fetcher: () => Promise<T>
+): Promise<T> {
+  const res = await rememberWhatsAppCacheWithMeta(key, tags, ttlSeconds, fetcher);
+  return res.value;
 }
 
 export async function invalidateWhatsAppCacheTags(
