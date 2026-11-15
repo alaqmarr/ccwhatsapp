@@ -1878,16 +1878,37 @@ export function buildGroupedProductShortLinksSection(params: {
   return blocks.join("\n\n");
 }
 
-export async function syncEcosystemRedisCache(): Promise<{
+export async function syncEcosystemRedisCache(options?: {
+  brand?: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | "ALL";
+}): Promise<{
+  invalidatedBrand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | "ALL";
   classicConceptsCount: number;
   classicEdgeMachinesCount: number;
   classicEdgeConsumablesCount: number;
   autoShortLinksCount: number;
   syncedAt: string;
 }> {
-  await invalidateWhatsAppCacheTags(["cc-products", "ce53-machines", "acrio-replies"]);
+  const brand =
+    options?.brand === "CLASSIC_CONCEPTS" || options?.brand === "CLASSIC_EDGE_53"
+      ? options.brand
+      : "ALL";
+
+  const tagsToInvalidate: (
+    | "cc-products"
+    | "ce53-machines"
+    | "customer-history"
+    | "acrio-replies"
+  )[] =
+    brand === "CLASSIC_CONCEPTS"
+      ? ["cc-products", "acrio-replies"]
+      : brand === "CLASSIC_EDGE_53"
+      ? ["ce53-machines", "acrio-replies"]
+      : ["cc-products", "ce53-machines", "acrio-replies"];
+
+  await invalidateWhatsAppCacheTags(tagsToInvalidate);
   const { classicConceptsProducts, classicEdgeItems, allItems } = await getCachedEcosystemCatalog();
   return {
+    invalidatedBrand: brand,
     classicConceptsCount: classicConceptsProducts.length,
     classicEdgeMachinesCount: classicEdgeItems.filter((i) => i.itemType === "MACHINE").length,
     classicEdgeConsumablesCount: classicEdgeItems.filter((i) => i.itemType === "CONSUMABLE").length,

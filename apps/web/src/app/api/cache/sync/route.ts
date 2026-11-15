@@ -10,7 +10,7 @@ import {
 } from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
 import { getWhatsAppCacheSummary } from "@cc/storage";
-import { getCurrentUser } from "@/lib/session";
+import { getCurrentUser } from "../../../../lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -42,9 +42,23 @@ export async function GET() {
   });
 }
 
+const CC_BRIDGE_KEY = (
+  process.env.CC_ECOSYSTEM_BRIDGE_KEY || "cc_internal_bridge_2026"
+).trim();
+
+function isAuthorizedEcosystemBridge(req: Request): boolean {
+  const headerKey = (
+    req.headers.get("x-cc-bridge-key") ||
+    req.headers.get("x-bridge-secret") ||
+    ""
+  ).trim();
+  return Boolean(headerKey && headerKey === CC_BRIDGE_KEY);
+}
+
 export async function POST(req: Request) {
-  const user = await getCurrentUser();
-  if (!user || user.status !== "ACTIVE") {
+  const isBridge = isAuthorizedEcosystemBridge(req);
+  const user = isBridge ? null : await getCurrentUser().catch(() => null);
+  if (!isBridge && (!user || user.status !== "ACTIVE")) {
     return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
@@ -53,7 +67,7 @@ export async function POST(req: Request) {
   const action = String(body.action || "sync");
 
   if (action === "save_ai_key") {
-    if (!["DEV", "SUPERADMIN", "ADMIN"].includes(user.role)) {
+    if (isBridge || !user || !["DEV", "SUPERADMIN", "ADMIN"].includes(user.role)) {
       return NextResponse.json({ ok: false, error: "Admin access required." }, { status: 403 });
     }
     const rawKey = String(body.anthropicApiKey || "").trim();
@@ -75,6 +89,16 @@ export async function POST(req: Request) {
     });
   }
 
-  const synced = await syncEcosystemRedisCache();
-  return NextResponse.json({ ok: true, ...synced });
+  const rawBrand = String(body.brand || "ALL").toUpperCase();
+  const brand =
+    rawBrand === "CLASSIC_CONCEPTS" || rawBrand === "CLASSIC_EDGE_53"
+      ? rawBrand
+      : "ALL";
+
+  const synced = await syncEcosystemRedisCache({ brand });
+  return NextResponse.json({
+    ok: true,
+    source: isBridge ? "ecosystem-bridge" : "admin-session",
+    ...synced,
+  });
 }
