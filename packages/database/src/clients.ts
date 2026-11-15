@@ -2239,7 +2239,9 @@ export interface EcosystemSearchOptions {
   brand?: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | null;
   itemType?: "PRODUCT" | "MACHINE" | "CONSUMABLE" | null;
   excludedItemTypes?: ("PRODUCT" | "MACHINE" | "CONSUMABLE")[];
+  productFamily?: string | null;
   preferPremium?: boolean;
+  includeUnpricedOnBudget?: boolean;
 }
 
 export function extractBudgetConstraintsFromQuery(rawQuery: string): {
@@ -2333,19 +2335,38 @@ export function searchEcosystemItems(
   limit = 6,
   options?: EcosystemSearchOptions
 ): MainWebsiteProduct[] {
+  const q = searchQuery.trim().toLowerCase();
+
+  // Detect inline negations even when searchEcosystemItems is called directly without options
+  const inlineExcludeConsumables =
+    /\b(?:not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|exclude|excluding|skip)\s+(?:any\s+)?(?:tools?|consumables?|blades?|cutters?|solvents?|accessories)\b|\b(?:just|only)\s+machines?\b/i.test(
+      q
+    );
+  const inlineExcludeMachines =
+    /\b(?:not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|exclude)\s+(?:any\s+)?machines?\b|\b(?:just|only)\s+(?:tools?|consumables?|blades?|cutters?)\b/i.test(
+      q
+    );
+
   let cleanItems = items.filter((i) => !isDummyPlaceholderRow(i.id, i.name));
   if (options?.brand) {
     cleanItems = cleanItems.filter((i) => i.brand === options.brand);
   }
-  if (options?.itemType) {
-    cleanItems = cleanItems.filter((i) => i.itemType === options.itemType);
+  const effectiveItemType =
+    options?.itemType ??
+    (inlineExcludeConsumables ? "MACHINE" : inlineExcludeMachines ? "CONSUMABLE" : null);
+  if (effectiveItemType) {
+    cleanItems = cleanItems.filter((i) => i.itemType === effectiveItemType);
   }
-  if (options?.excludedItemTypes && options.excludedItemTypes.length > 0) {
-    const excludedSet = new Set(options.excludedItemTypes);
+
+  const excludedSet = new Set<"PRODUCT" | "MACHINE" | "CONSUMABLE">(
+    options?.excludedItemTypes || []
+  );
+  if (inlineExcludeConsumables) excludedSet.add("CONSUMABLE");
+  if (inlineExcludeMachines) excludedSet.add("MACHINE");
+  if (excludedSet.size > 0) {
     cleanItems = cleanItems.filter((i) => !excludedSet.has(i.itemType));
   }
 
-  const q = searchQuery.trim().toLowerCase();
   if (!q && options?.maxPrice === undefined && options?.minPrice === undefined) {
     return cleanItems.slice(0, limit);
   }
@@ -2361,15 +2382,19 @@ export function searchEcosystemItems(
       q
     );
 
-  // Strip currency amounts so price digits ("25", "000", "25000") do not match random SKUs or sizes
-  const queryWithoutPrices = q
+  // Strip currency amounts AND negated clauses ("not looking for tools") so negated terms never match positively
+  const queryWithoutPricesAndNegations = q
+    .replace(
+      /\b(?:not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|exclude|excluding|skip)\s+(?:any\s+)?(?:tools?|consumables?|blades?|cutters?|solvents?|accessories|machines?)\b/gi,
+      " "
+    )
     .replace(/(?:rs\.?|inr|₹)\s*[\d,]+(?:\.\d+)?\s*k?\b/gi, " ")
     .replace(
       /\b(?:under|below|within|upto|up\s*to|above|over|budget(?:\s*(?:of|is|to))?|increase|raise|extend|stretch)\s*(?:the\s*|my\s*|our\s*)?(?:budget\s*(?:to|of|is)?\s*)?(?:rs\.?|inr|₹)?\s*[\d,]+(?:\.\d+)?\s*k?\b/gi,
       " "
     );
 
-  const rawTokens = tokenizeWords(queryWithoutPrices).filter(
+  const rawTokens = tokenizeWords(queryWithoutPricesAndNegations).filter(
     (t) =>
       t.length >= 2 &&
       !SEARCH_STOPWORDS.has(t) &&
@@ -2380,7 +2405,8 @@ export function searchEcosystemItems(
       t !== "raise" &&
       t !== "stretch" &&
       t !== "premium" &&
-      t !== "ones"
+      t !== "ones" &&
+      t !== "actually"
   );
 
   // If user literally only typed "acrylic", allow "acrylic" as fallback token
@@ -2406,6 +2432,9 @@ export function searchEcosystemItems(
       );
       return pricedPool.slice(0, limit);
     }
+    if (effectiveItemType === "MACHINE" || effectiveItemType === "CONSUMABLE") {
+      return cleanItems.slice(0, limit);
+    }
     return [];
   }
 
@@ -2421,20 +2450,85 @@ export function searchEcosystemItems(
     }
   }
 
-  const wantsMachine =
+  const wantsPodium =
+    options?.productFamily === "podium" ||
+    /\b(pulpit|pulpits|podium|podiums|lectern|lecterns|rostrum|rostrums)\b/i.test(
+      queryWithoutPricesAndNegations
+    );
+  const wantsAward =
+    options?.productFamily === "trophy" ||
+    (!wantsPodium &&
+      /\b(trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|shield|shields)\b/i.test(
+        queryWithoutPricesAndNegations
+      ));
+  const wantsTray =
+    options?.productFamily === "tray_hospitality" ||
+    /\b(tray|trays|coaster|coasters)\b/i.test(queryWithoutPricesAndNegations);
+  const wantsStandOrHolder =
+    options?.productFamily === "stand" ||
+    /\b(menu|qr\s*stand|tent\s*card|table\s*stand|sign\s*holder|brochure|leaflet|pamphlet)\b/i.test(
+      queryWithoutPricesAndNegations
+    );
+  const wantsMachineOrTool =
     options?.brand === "CLASSIC_EDGE_53" ||
-    options?.itemType === "MACHINE" ||
-    /\b(machine|machines|laser|cnc|router|polisher|polishing|diamond|bending|bender|heater|blade|blades|cutter|ce53|yn-)\b/i.test(
-      q
+    effectiveItemType === "MACHINE" ||
+    effectiveItemType === "CONSUMABLE" ||
+    /\b(machine|machines|laser|cnc|router|polisher|polishing|diamond|bending|bender|heater|blade|blades|cutter|consumable|consumables|ce53|yn-|thermoforming|oven)\b/i.test(
+      queryWithoutPricesAndNegations
+    );
+  const wantsDisplayProduct =
+    options?.brand === "CLASSIC_CONCEPTS" ||
+    wantsPodium ||
+    wantsAward ||
+    wantsTray ||
+    wantsStandOrHolder ||
+    /\b(saree|donation|ballot|table|chair|stool|furniture|riser|signage|nameplate|keychain|cake\s*stand|cosmetic|jewelry|jewellery|watch\s*stand|eyewear|book\s*stand|quran|rehal|bible)\b/i.test(
+      queryWithoutPricesAndNegations
     );
 
   const scored: { item: MainWebsiteProduct; score: number }[] = [];
 
   for (const item of cleanItems) {
-    // Enforce budget constraints strictly on priced items
-    if (typeof item.basePrice === "number" && item.basePrice > 0) {
-      if (maxPrice !== null && item.basePrice > maxPrice) continue;
-      if (minPrice !== null && item.basePrice < minPrice) continue;
+    // 1. Strict business routing (CLASSIC_CONCEPTS vs CLASSIC_EDGE_53)
+    if (wantsDisplayProduct && !wantsMachineOrTool && item.brand !== "CLASSIC_CONCEPTS") {
+      continue;
+    }
+    if (wantsMachineOrTool && !wantsDisplayProduct && item.brand !== "CLASSIC_EDGE_53") {
+      continue;
+    }
+
+    // 2. Strict category / product-family isolation
+    const combinedTaxonomy = `${item.name} ${item.categoryName} ${item.sku || ""}`;
+    if (wantsPodium && !/\b(podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum)\b|^ccp\d/i.test(combinedTaxonomy)) {
+      continue;
+    }
+    if (
+      wantsAward &&
+      (!/\b(trophy|trophies|award|awards|memento|mementos|plaque|plaques|medal|medals|shield|shields)\b/i.test(
+        combinedTaxonomy
+      ) ||
+        /\b(podium|pulpit|lectern|tray|machine|oven)\b/i.test(combinedTaxonomy))
+    ) {
+      continue;
+    }
+    if (
+      wantsTray &&
+      /\b(podium|pulpit|lectern|trophy|award|machine|oven|tube|keyway)\b/i.test(
+        combinedTaxonomy
+      )
+    ) {
+      continue;
+    }
+
+    // 3. Strict budget enforcement & unknown-price handling
+    if (maxPrice !== null || minPrice !== null) {
+      const hasValidPrice = typeof item.basePrice === "number" && item.basePrice > 0;
+      if (!hasValidPrice) {
+        if (!options?.includeUnpricedOnBudget) continue;
+      } else {
+        if (maxPrice !== null && item.basePrice! > maxPrice) continue;
+        if (minPrice !== null && item.basePrice! < minPrice) continue;
+      }
     }
 
     const nameWords = tokenizeWords(item.name);
@@ -2474,31 +2568,22 @@ export function searchEcosystemItems(
       }
     }
 
-    // Do NOT include items with zero topical match!
-    if (matchScore <= 0) continue;
+    // Reject weak description-only matches (require at least 14 topical points)
+    if (matchScore < 14) continue;
 
-    if (wantsMachine && item.brand === "CLASSIC_EDGE_53") {
+    if (wantsMachineOrTool && item.brand === "CLASSIC_EDGE_53") {
       matchScore += 10;
-    } else if (!wantsMachine && item.brand === "CLASSIC_EDGE_53") {
-      // Prevent machines/ovens from polluting product searches like "pulpits" or "stands"
-      matchScore -= 40;
     }
 
     if (maxPrice !== null || minPrice !== null) {
       if (typeof item.basePrice === "number" && item.basePrice > 0) {
         matchScore += 18;
-      } else {
-        // Keep unpriced customisable models in the same category below confirmed-budget items
-        matchScore -= 8;
       }
     }
 
-    if (matchScore > 0) {
-      scored.push({ item, score: matchScore });
-    }
+    scored.push({ item, score: matchScore });
   }
 
-  // When a budget constraint is active and we have verified priced matches, prefer verified priced matches first
   scored.sort((a, b) => {
     const aHasPrice = typeof a.item.basePrice === "number" && a.item.basePrice > 0;
     const bHasPrice = typeof b.item.basePrice === "number" && b.item.basePrice > 0;
@@ -2507,7 +2592,6 @@ export function searchEcosystemItems(
     }
     if (!preferPremium && b.score !== a.score) return b.score - a.score;
     if (preferPremium && aHasPrice && bHasPrice) {
-      // When customer asks for "most premium" within budget, rank higher-tier priced matches within the same category first
       if (Math.abs(b.score - a.score) <= 24) {
         return (b.item.basePrice || 0) - (a.item.basePrice || 0);
       }
@@ -2519,6 +2603,38 @@ export function searchEcosystemItems(
   });
 
   return scored.slice(0, limit).map((s) => s.item);
+}
+
+/**
+ * When a strict budget query (e.g. "pulpits under ₹5,000") yields 0 verified within-budget matches,
+ * returns the lowest verified starting price in that category and any custom-quote alternatives
+ * so ACRIO can explain honestly without returning over-budget or unpriced items as false matches.
+ */
+export function getEcosystemBudgetFallbackInfo(
+  items: MainWebsiteProduct[],
+  searchQuery: string,
+  options?: EcosystemSearchOptions
+): {
+  lowestAvailablePrice: number | null;
+  lowestAvailableItem: MainWebsiteProduct | null;
+  customQuoteCount: number;
+} {
+  const withoutBudgetMatches = searchEcosystemItems(items, searchQuery, 25, {
+    ...options,
+    minPrice: null,
+    maxPrice: null,
+  });
+  const priced = withoutBudgetMatches
+    .filter((it) => typeof it.basePrice === "number" && it.basePrice > 0)
+    .sort((a, b) => (a.basePrice || 0) - (b.basePrice || 0));
+  const unpriced = withoutBudgetMatches.filter(
+    (it) => !(typeof it.basePrice === "number" && it.basePrice > 0)
+  );
+  return {
+    lowestAvailablePrice: priced[0]?.basePrice ?? null,
+    lowestAvailableItem: priced[0] ?? null,
+    customQuoteCount: unpriced.length,
+  };
 }
 
 export async function fetchClassicCatalogProducts(

@@ -8,6 +8,7 @@ import {
   cleanDisplayProductName,
   ensureDatabasesBootstrapped,
   extractBudgetConstraintsFromQuery,
+  getEcosystemBudgetFallbackInfo,
   getRawLibSqlClient,
   loadAllClassicConceptsProducts,
   loadAllClassicEdgeItems,
@@ -2668,6 +2669,7 @@ export function buildNormalizedSearchFromState(
         : undefined,
     itemType: state.itemTypeFilter,
     excludedItemTypes: state.excludedItemTypes,
+    productFamily: state.productFamily,
     preferPremium,
   };
 
@@ -3155,6 +3157,8 @@ export async function runAcrioAutonomousTurn(params: {
   let usedLookupQuery = "";
   let contextMatches: MainWebsiteProduct[] = [];
   let top: MainWebsiteProduct | undefined;
+  let budgetFallbackLowestPrice: number | null = null;
+  let budgetFallbackLowestItem: MainWebsiteProduct | null = null;
 
   if (intentInfo.requiresProductLookup) {
     const fetched = await getCachedEcosystemCatalog();
@@ -3199,6 +3203,19 @@ export async function runAcrioAutonomousTurn(params: {
         contextMatches = directFallback;
         usedLookupQuery = rawText;
       }
+    }
+
+    if (
+      contextMatches.length === 0 &&
+      (convState.maxPrice !== null || convState.minPrice !== null)
+    ) {
+      const fbInfo = getEcosystemBudgetFallbackInfo(
+        allItems,
+        usedLookupQuery,
+        normalizedSearch.searchOptions
+      );
+      budgetFallbackLowestPrice = fbInfo.lowestAvailablePrice;
+      budgetFallbackLowestItem = fbInfo.lowestAvailableItem;
     }
 
     top = contextMatches[0];
@@ -3343,9 +3360,13 @@ Politely state in 1-2 lines that you only assist with *Classic Concepts* acrylic
 Welcome the customer briefly and ask what they are looking to display, build, or fabricate today (stage podiums/pulpits, awards, custom acrylic boxes, or Classic Edge 53 machines). Do NOT dump specific product links yet.`;
         }
       } else {
+        const nearestHint =
+          budgetFallbackLowestPrice && budgetFallbackLowestItem
+            ? ` The lowest verified price in this category is ₹${budgetFallbackLowestPrice.toLocaleString("en-IN")} (*${cleanDisplayProductName(budgetFallbackLowestItem.name)}* - ${budgetFallbackLowestItem.shortUrl || budgetFallbackLowestItem.url}).`
+            : "";
         catalogContext = prebuiltGroupedBlock
           ? `Turn Intent: ${intentInfo.intent}\nMatched Products strictly filtered for the customer's query${budgetLabel ? ` (Budget filter applied: ${budgetLabel})` : ""}:\n${prebuiltGroupedBlock}\n\nIMPORTANT: ONLY share products from the list above. Do NOT invent or mention any product outside this list.`
-          : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}. Explain honestly and helpfully what we do make (stage podiums/pulpits from ₹7,150 upwards, awards & trophies, hotel QR/menu stands, custom clear acrylic boxes/covers on classicconcepts.in, plus acrylic bending, diamond polishing & cutting machines on classicedge53.com) and ask 1 short clarifying question.`;
+          : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}.${nearestHint} Explain honestly and helpfully without inventing prices, and ask if they would like to see our starting model or discuss a custom option.`;
       }
 
       const stateSummaryLine = intentInfo.requiresProductLookup
@@ -3564,6 +3585,10 @@ Return ONLY valid JSON:
         ? `Do you want *custom front logo printing* on the podium, and which *city* do we need to dispatch to?`
         : `Roughly *how many pieces* do you need, and do you want *custom logo printing* or a specific size?`;
     fallbackReply = `${greetOnce}${prebuiltGroupedBlock}\n\n${followUpPrompt}`;
+  } else if (budgetLabel && budgetFallbackLowestPrice && budgetFallbackLowestItem) {
+    const cleanTitle = cleanDisplayProductName(budgetFallbackLowestItem.name);
+    const link = budgetFallbackLowestItem.shortUrl || budgetFallbackLowestItem.url;
+    fallbackReply = `${greetOnce}We do not have a ready model within *${budgetLabel}*. Our starting model in this category is:\n\n1. *${cleanTitle}* (₹${budgetFallbackLowestPrice.toLocaleString("en-IN")})\n   ${link}\n\nWould you like to check this model or stretch your budget slightly?`;
   } else {
     fallbackReply = `${greetOnce}I would love to help find the right option for you.\n\nCould you share a little more about what you need?\n• *Stage & Events:* acrylic podiums/pulpits, awards, or plaques\n• *Hotels & Retail:* menu/QR stands, risers, or display boxes\n• *Custom Size Job:* share what goes inside and rough size\n• *Acrylic Machines:* cutting, bending, or diamond polishing`;
     priority = "NORMAL";
