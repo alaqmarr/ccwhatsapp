@@ -1611,11 +1611,48 @@ function buildPreferredProductShortCode(item: MainWebsiteProduct, salt = 0): str
   return generateSixCharShortCode(seed, salt);
 }
 
+/**
+ * Rewrites any localhost / 127.0.0.1 / 0.0.0.0 target URL (:3003 or :3002)
+ * to its canonical production domain (`https://classicconcepts.in` or `https://classicedge53.com`).
+ */
+export function normalizePublicEcosystemUrl(
+  rawUrl: string,
+  brandHint?: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | string | null
+): string {
+  const clean = String(rawUrl || "").trim();
+  if (!clean) return "https://classicconcepts.in/shop";
+
+  const isEdge =
+    brandHint === "CLASSIC_EDGE_53" ||
+    /:3002\b/i.test(clean) ||
+    /classicedge53\.com/i.test(clean) ||
+    /auto_classicedge53/i.test(clean) ||
+    /^\/?(?:products|consumables)\//i.test(clean.replace(/^https?:\/\/[^/]+/i, ""));
+
+  const prodOrigin = isEdge
+    ? "https://classicedge53.com"
+    : "https://classicconcepts.in";
+
+  if (clean.startsWith("/")) {
+    return `${prodOrigin}${clean}`;
+  }
+
+  if (/^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?(\/.*|$)/i.test(clean)) {
+    return clean.replace(
+      /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?/i,
+      prodOrigin
+    );
+  }
+
+  // Also upgrade www.classicconcepts.in -> classicconcepts.in for consistency if needed, or preserve valid https URLs
+  return clean;
+}
+
 function appendWhatsAppShortLinkUtm(
   rawUrl: string,
   brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53"
 ): string {
-  const clean = String(rawUrl || "").trim();
+  const clean = normalizePublicEcosystemUrl(rawUrl, brand);
   if (!clean || /[?&]utm_source=/i.test(clean)) return clean;
   const sep = clean.includes("?") ? "&" : "?";
   const campaign =
@@ -1693,12 +1730,23 @@ export async function ensureEcosystemProductShortLinks(
         const rawCode = String(row.code || "").trim();
         if (rawCode) usedCodes.add(rawCode.toLowerCase());
         const pSlug = row.product_slug ? String(row.product_slug).trim() : "";
+        const rawTarget = String(row.target_url || "");
+        const normalizedExistingTarget = normalizePublicEcosystemUrl(
+          rawTarget,
+          pSlug.startsWith("ce53:") ? "CLASSIC_EDGE_53" : undefined
+        );
+        if (rawTarget && normalizedExistingTarget !== rawTarget) {
+          await conv.execute({
+            sql: `UPDATE custom_links SET target_url = ? WHERE id = ?`,
+            args: [normalizedExistingTarget, String(row.id)],
+          });
+        }
         if (pSlug && !byProductKey.has(pSlug)) {
           byProductKey.set(pSlug, {
             id: String(row.id),
             code: rawCode,
             title: String(row.title || ""),
-            targetUrl: String(row.target_url || ""),
+            targetUrl: normalizedExistingTarget,
             utmCampaign: String(row.utm_campaign || ""),
           });
         }
@@ -1808,6 +1856,7 @@ export async function ensureEcosystemProductShortLinks(
     const code = codeByIndex.get(idx) || buildPreferredProductShortCode(item, 0);
     return {
       ...item,
+      url: normalizePublicEcosystemUrl(item.url, item.brand),
       name: cleanDisplayProductName(item.name),
       shortCode: code,
       shortUrl: `${origin}/${code}`,

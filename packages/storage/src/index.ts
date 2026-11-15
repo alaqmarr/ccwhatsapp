@@ -6,6 +6,7 @@ import {
   ensureDatabasesBootstrapped,
   generateSixCharShortCode,
   getRawLibSqlClient,
+  normalizePublicEcosystemUrl,
   resolveMonorepoRoot,
 } from "@cc/database";
 
@@ -24,13 +25,19 @@ export interface CustomAdminLinkItem {
 }
 
 function mapLinkRow(r: Record<string, unknown>): CustomAdminLinkItem {
+  const productSlug = r.product_slug ? String(r.product_slug) : null;
+  const brandHint = productSlug?.startsWith("ce53:")
+    ? "CLASSIC_EDGE_53"
+    : productSlug?.startsWith("cc:")
+    ? "CLASSIC_CONCEPTS"
+    : undefined;
   return {
     id: String(r.id),
     code: String(r.code),
     title: String(r.title),
-    targetUrl: String(r.target_url),
+    targetUrl: normalizePublicEcosystemUrl(String(r.target_url || ""), brandHint),
     linkType: String(r.link_type || "PRODUCT") as CustomAdminLinkItem["linkType"],
-    productSlug: r.product_slug ? String(r.product_slug) : null,
+    productSlug,
     utmCampaign: r.utm_campaign ? String(r.utm_campaign) : null,
     createdByName: String(r.created_by_name || "Admin"),
     clicksCount: Number(r.clicks_count ?? 0),
@@ -166,16 +173,36 @@ export async function resolveAndTrackCustomLink(
       args: [decoded],
     });
   }
+  if (!res.rows[0]) {
+    // Also support resolving by product slug if someone visits ccapl.cc/<product-slug>
+    res = await conv.execute({
+      sql: `SELECT * FROM custom_links
+            WHERE LOWER(product_slug) = LOWER(?)
+               OR LOWER(product_slug) = LOWER(?)
+               OR LOWER(product_slug) = LOWER(?)
+               OR LOWER(target_url) LIKE LOWER(?)
+            LIMIT 1`,
+      args: [
+        decoded,
+        `cc:product:${decoded}`,
+        `ce53:machine:${decoded}`,
+        `%/${decoded}%`,
+      ],
+    });
+  }
 
   if (!res.rows[0]) return null;
-  const item = mapLinkRow(res.rows[0] as Record<string, unknown>);
+  const rawRow = res.rows[0] as Record<string, unknown>;
+  const item = mapLinkRow(rawRow);
+  const rawTarget = String(rawRow.target_url || "");
 
   await conv.execute({
     sql: `UPDATE custom_links
           SET clicks_count = clicks_count + 1,
-              last_clicked_at = ?
+              last_clicked_at = ?,
+              target_url = ?
           WHERE id = ?`,
-    args: [new Date().toISOString(), item.id],
+    args: [new Date().toISOString(), item.targetUrl || rawTarget, item.id],
   });
 
   return { ...item, clicksCount: item.clicksCount + 1 };

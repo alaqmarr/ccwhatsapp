@@ -1743,13 +1743,13 @@ export async function getCachedEcosystemCatalog(): Promise<{
 }> {
   const [ccRes, ceRes] = await Promise.all([
     rememberWhatsAppCacheWithMeta(
-      "ecosystem:cc-products:v5",
+      "ecosystem:cc-products:v6",
       ["cc-products"],
       3600,
       () => loadAllClassicConceptsProducts()
     ),
     rememberWhatsAppCacheWithMeta(
-      "ecosystem:ce53-items:v4",
+      "ecosystem:ce53-items:v5",
       ["ce53-machines"],
       3600,
       () => loadAllClassicEdgeItems()
