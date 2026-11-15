@@ -2893,7 +2893,7 @@ export async function runAcrioChatCopilot(params: {
     );
   } else if (intentInfo.intent === "COMPANY_INFO") {
     localReplies.push(
-      `${greetPrefix}*Classic Concepts* manufactures clear acrylic podiums, awards, hotel/retail stands, and custom acrylic fabrication, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our Mumbai facility with pan-India dispatch.`,
+      `${greetPrefix}*Classic Concepts* manufactures clear acrylic podiums, awards, hotel/retail stands, and custom acrylic fabrication, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our Secunderabad / Hyderabad facility with pan-India dispatch.`,
       `${greetPrefix}We dispatch pan-India with full GST billing. Let us know which product or machine you are looking for and your delivery city.`
     );
   } else if (intentInfo.intent === "TOPIC_RESET") {
@@ -3230,13 +3230,29 @@ export async function runAcrioAutonomousTurn(params: {
       );
     }
 
+    const prevMaxPrice = storedState?.maxPrice ?? null;
     if (contextMatches.length === 0) {
-      contextMatches = searchEcosystemItems(
+      const budgetRaised =
+        prevMaxPrice !== null &&
+        convState.maxPrice !== null &&
+        convState.maxPrice > prevMaxPrice;
+      const rawMatches = searchEcosystemItems(
         allItems,
         usedLookupQuery,
-        8,
+        budgetRaised ? 16 : 8,
         normalizedSearch.searchOptions
       );
+      if (budgetRaised) {
+        const newlyUnlocked = rawMatches.filter(
+          (it) => typeof it.basePrice === "number" && it.basePrice > prevMaxPrice
+        );
+        const existingTier = rawMatches.filter(
+          (it) => !(typeof it.basePrice === "number" && it.basePrice > prevMaxPrice)
+        );
+        contextMatches = [...newlyUnlocked, ...existingTier].slice(0, 8);
+      } else {
+        contextMatches = rawMatches;
+      }
     }
 
     if (contextMatches.length === 0 && usedLookupQuery !== rawText) {
@@ -3389,7 +3405,7 @@ Answer directly in 2-3 short lines: you are *ACRIO*, the WhatsApp product & fabr
 CRITICAL: Do NOT list or repeat specific products or links from earlier turns in this reply!`;
         } else if (intentInfo.intent === "COMPANY_INFO") {
           catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about our company, factory location, or what we do).
-Answer directly: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, trophies, hotel/retail stands, custom boxes & covers) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility in Mumbai with pan-India delivery and GST billing.
+Answer directly: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, trophies, hotel/retail stands, custom boxes & covers) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility in Secunderabad / Hyderabad with pan-India delivery and GST billing.
 CRITICAL: Do NOT dump unrelated product links unless asked.`;
         } else if (intentInfo.intent === "TOPIC_RESET") {
           catalogContext = `Turn Intent: TOPIC_RESET (The customer wants to ask a different query or start a new topic).
@@ -3592,7 +3608,7 @@ Return ONLY valid JSON:
     fallbackReply = `${greetOnce}I am *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, awards, stands, and boxes) and *Classic Edge 53* (industrial acrylic bending, diamond edge polishing, and cutting machines).\n\nTell me what you want to display, build, or fabricate and I will share matching options and prices right away.`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "COMPANY_INFO") {
-    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our 16,000+ sq. ft. facility in Mumbai.\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
+    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our 16,000+ sq. ft. facility in Secunderabad / Hyderabad.\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "TOPIC_RESET") {
     fallbackReply = `${greetOnce}Sure, let's start fresh! Tell me what you are looking for or what question you have, and I will help you right away.`;
