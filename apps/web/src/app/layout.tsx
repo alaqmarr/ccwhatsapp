@@ -1,27 +1,5 @@
 import type { Metadata } from "next";
-import localFont from "next/font/local";
 import "./globals.css";
-
-const plusJakarta = localFont({
-  src: "./fonts/PlusJakartaSans-Variable.woff2",
-  variable: "--font-jakarta",
-  display: "swap",
-  weight: "200 800",
-});
-
-const outfit = localFont({
-  src: "./fonts/Outfit-Variable.woff2",
-  variable: "--font-outfit",
-  display: "swap",
-  weight: "100 900",
-});
-
-const jetbrainsMono = localFont({
-  src: "./fonts/JetBrainsMono-Variable.woff2",
-  variable: "--font-jetbrains-mono",
-  display: "swap",
-  weight: "100 800",
-});
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://whatsapp.ccapl.cc"),
@@ -36,10 +14,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html
-      lang="en"
-      className={`${plusJakarta.variable} ${outfit.variable} ${jetbrainsMono.variable}`}
-    >
+    <html lang="en">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          rel="preconnect"
+          href="https://fonts.gstatic.com"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+        />
+      </head>
       <body className="min-h-screen w-full bg-neutral-50 text-slate-900 font-sans antialiased selection:bg-[#00a884]/15 selection:text-[#006d57]">
         {children}
       </body>

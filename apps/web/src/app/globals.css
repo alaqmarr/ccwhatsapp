@@ -10,6 +10,9 @@
 }
 
 :root {
+  --font-jakarta: "Plus Jakarta Sans";
+  --font-outfit: "Outfit";
+  --font-jetbrains-mono: "JetBrains Mono";
   --cc-scrollbar-thumb: rgba(100, 116, 139, 0.36);
   --cc-scrollbar-thumb-hover: rgba(71, 85, 105, 0.62);
   --cc-scrollbar-thumb-active: #00a884;
