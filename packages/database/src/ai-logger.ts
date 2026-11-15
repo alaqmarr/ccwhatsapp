@@ -93,9 +93,9 @@ export function formatUtcToIstServer(utcIso?: string): string {
 
 export function resolveMasterAiLogFilePath(): string {
   if (process.env.AI_LOGS_FILE_PATH) {
-    return path.resolve(process.env.AI_LOGS_FILE_PATH);
+    return path.resolve(/*turbopackIgnore: true*/ process.env.AI_LOGS_FILE_PATH);
   }
-  return path.join(resolveMonorepoRoot(), "ai.logs");
+  return path.join(/*turbopackIgnore: true*/ resolveMonorepoRoot(), "ai.logs");
 }
 
 function resolveSiblingAiLogFilePaths(): string[] {
@@ -105,32 +105,32 @@ function resolveSiblingAiLogFilePaths(): string[] {
   const ccDb = resolveMainWebsiteDbPath();
   if (ccDb) {
     const ccDir = path.basename(ccDb).toLowerCase() === "dev.db"
-      ? path.dirname(ccDb)
-      : path.dirname(path.dirname(ccDb));
-    candidates.add(path.join(ccDir, "ai.logs"));
+      ? path.dirname(/*turbopackIgnore: true*/ ccDb)
+      : path.dirname(/*turbopackIgnore: true*/ path.dirname(/*turbopackIgnore: true*/ ccDb));
+    candidates.add(path.join(/*turbopackIgnore: true*/ ccDir, "ai.logs"));
   }
 
   const ceDb = resolveClassicEdgeDbPath();
   if (ceDb) {
     const ceDir = path.basename(ceDb).toLowerCase() === "dev.db"
-      ? path.dirname(ceDb)
-      : path.dirname(path.dirname(ceDb));
-    candidates.add(path.join(ceDir, "ai.logs"));
+      ? path.dirname(/*turbopackIgnore: true*/ ceDb)
+      : path.dirname(/*turbopackIgnore: true*/ path.dirname(/*turbopackIgnore: true*/ ceDb));
+    candidates.add(path.join(/*turbopackIgnore: true*/ ceDir, "ai.logs"));
   }
 
   // Common sibling & desktop workspaces
   for (const rel of [
-    path.resolve(root, "..", "classicconcepts", "ai.logs"),
-    path.resolve(root, "..", "classicedge", "ai.logs"),
+    path.resolve(/*turbopackIgnore: true*/ root, "..", "classicconcepts", "ai.logs"),
+    path.resolve(/*turbopackIgnore: true*/ root, "..", "classicedge", "ai.logs"),
     "C:/Users/DELL/Desktop/classicconcepts/ai.logs",
     "C:/Users/DELL/Desktop/classicedge/ai.logs",
   ]) {
-    candidates.add(path.resolve(rel));
+    candidates.add(path.resolve(/*turbopackIgnore: true*/ rel));
   }
 
-  const master = path.resolve(resolveMasterAiLogFilePath());
+  const master = path.resolve(/*turbopackIgnore: true*/ resolveMasterAiLogFilePath());
   candidates.delete(master);
-  return Array.from(candidates).filter((p) => fs.existsSync(p));
+  return Array.from(candidates).filter((p) => fs.existsSync(/*turbopackIgnore: true*/ p));
 }
 
 export function formatAiTraceBlock(entry: AiTraceLogEntry): string {
@@ -204,11 +204,11 @@ export function formatAiTraceBlock(entry: AiTraceLogEntry): string {
 }
 
 function ensureLogFileInitialized(filePath: string): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) {
+  const dir = path.dirname(/*turbopackIgnore: true*/ filePath);
+  if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  if (!fs.existsSync(filePath)) {
+  if (!fs.existsSync(/*turbopackIgnore: true*/ filePath)) {
     const header = [
       "# ==============================================================================",
       "# CLASSIC CONCEPTS ECOSYSTEM — UNIFIED AI & PRODUCT LOOKUP FLIGHT LOG (ai.logs)",
@@ -217,16 +217,16 @@ function ensureLogFileInitialized(filePath: string): void {
       "# ==============================================================================",
       "",
     ].join("\n");
-    fs.writeFileSync(filePath, header, "utf8");
+    fs.writeFileSync(/*turbopackIgnore: true*/ filePath, header, "utf8");
   }
 }
 
 function rotateLogFileIfNeeded(filePath: string): void {
   try {
-    if (!fs.existsSync(filePath)) return;
-    const stat = fs.statSync(filePath);
+    if (!fs.existsSync(/*turbopackIgnore: true*/ filePath)) return;
+    const stat = fs.statSync(/*turbopackIgnore: true*/ filePath);
     if (stat.size <= MAX_AI_LOG_BYTES) return;
-    const raw = fs.readFileSync(filePath, "utf8");
+    const raw = fs.readFileSync(/*turbopackIgnore: true*/ filePath, "utf8");
     // Keep newest ~60% of the log file aligned to block separator
     const sliceStart = Math.floor(raw.length * 0.4);
     const nextBoundary = raw.indexOf(
@@ -236,7 +236,7 @@ function rotateLogFileIfNeeded(filePath: string): void {
     const trimmed =
       nextBoundary !== -1 ? raw.slice(nextBoundary) : raw.slice(sliceStart);
     fs.writeFileSync(
-      filePath,
+      /*turbopackIgnore: true*/ filePath,
       `# [Rotated ai.logs at ${new Date().toISOString()}]\n\n${trimmed}`,
       "utf8"
     );
@@ -266,15 +266,15 @@ export function appendAiTraceLog(
     rotateLogFileIfNeeded(filePath);
 
     // Prevent duplicate IDs when both HTTP bridge push and sibling file sync run
-    if (input.id && fs.existsSync(filePath)) {
-      const existingRaw = fs.readFileSync(filePath, "utf8");
+    if (input.id && fs.existsSync(/*turbopackIgnore: true*/ filePath)) {
+      const existingRaw = fs.readFileSync(/*turbopackIgnore: true*/ filePath, "utf8");
       if (existingRaw.includes(`"id":"${entry.id}"`)) {
         return entry;
       }
     }
 
     const block = formatAiTraceBlock(entry);
-    fs.appendFileSync(filePath, `${block}\n`, "utf8");
+    fs.appendFileSync(/*turbopackIgnore: true*/ filePath, `${block}\n`, "utf8");
   } catch {
     // Never crash caller on logging I/O
   }
@@ -310,7 +310,7 @@ export function syncSiblingWebsiteAiLogs(): number {
   try {
     const masterPath = resolveMasterAiLogFilePath();
     ensureLogFileInitialized(masterPath);
-    const masterRaw = fs.readFileSync(masterPath, "utf8");
+    const masterRaw = fs.readFileSync(/*turbopackIgnore: true*/ masterPath, "utf8");
     const knownIds = new Set(
       extractEntriesFromRawContent(masterRaw).map((e) => e.id)
     );
@@ -320,7 +320,7 @@ export function syncSiblingWebsiteAiLogs(): number {
 
     for (const sibPath of siblingPaths) {
       try {
-        const sibRaw = fs.readFileSync(sibPath, "utf8");
+        const sibRaw = fs.readFileSync(/*turbopackIgnore: true*/ sibPath, "utf8");
         const sibEntries = extractEntriesFromRawContent(sibRaw);
         for (const entry of sibEntries) {
           if (!knownIds.has(entry.id)) {
@@ -335,7 +335,7 @@ export function syncSiblingWebsiteAiLogs(): number {
     }
 
     if (blocksToAppend.length > 0) {
-      fs.appendFileSync(masterPath, `${blocksToAppend.join("\n")}\n`, "utf8");
+      fs.appendFileSync(/*turbopackIgnore: true*/ masterPath, `${blocksToAppend.join("\n")}\n`, "utf8");
     }
   } catch {
     // Non-blocking
@@ -388,8 +388,8 @@ export function readAiTraceLogs(filters?: {
   const filePath = resolveMasterAiLogFilePath();
   ensureLogFileInitialized(filePath);
 
-  const raw = fs.readFileSync(filePath, "utf8");
-  const stat = fs.statSync(filePath);
+  const raw = fs.readFileSync(/*turbopackIgnore: true*/ filePath, "utf8");
+  const stat = fs.statSync(/*turbopackIgnore: true*/ filePath);
   const allLines = raw.split(/\r?\n/);
 
   const allEntries = extractEntriesFromRawContent(raw).sort((a, b) =>
@@ -530,19 +530,19 @@ export function readRawAiLogFile(): { filePath: string; content: string } {
   ensureLogFileInitialized(filePath);
   return {
     filePath,
-    content: fs.readFileSync(filePath, "utf8"),
+    content: fs.readFileSync(/*turbopackIgnore: true*/ filePath, "utf8"),
   };
 }
 
 export function clearAiTraceLogs(): { filePath: string } {
   const filePath = resolveMasterAiLogFilePath();
-  if (fs.existsSync(filePath)) {
-    fs.unlinkSync(filePath);
+  if (fs.existsSync(/*turbopackIgnore: true*/ filePath)) {
+    fs.unlinkSync(/*turbopackIgnore: true*/ filePath);
   }
   // Also clear sibling files so syncSiblingWebsiteAiLogs doesn't immediately re-import cleared logs
   for (const sib of resolveSiblingAiLogFilePaths()) {
     try {
-      fs.unlinkSync(sib);
+      fs.unlinkSync(/*turbopackIgnore: true*/ sib);
     } catch {
       // Ignore
     }

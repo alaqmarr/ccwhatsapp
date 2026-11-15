@@ -36,9 +36,9 @@ export const DATABASE_DESCRIPTIONS: Record<DatabaseDomain, string> = {
 let dotEnvLoadedForRoot: string | null = null;
 
 function parseAndPopulateDotEnvFile(filePath: string): void {
-  if (!fs.existsSync(filePath)) return;
+  if (!fs.existsSync(/*turbopackIgnore: true*/ filePath)) return;
   try {
-    const content = fs.readFileSync(filePath, "utf8");
+    const content = fs.readFileSync(/*turbopackIgnore: true*/ filePath, "utf8");
     for (const rawLine of content.split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line || line.startsWith("#")) continue;
@@ -65,18 +65,18 @@ function parseAndPopulateDotEnvFile(filePath: string): void {
 export function resolveMonorepoRoot(): string {
   let root = process.cwd();
   if (process.env.CCWHATSAPP_ROOT) {
-    root = path.resolve(process.env.CCWHATSAPP_ROOT);
+    root = path.resolve(/*turbopackIgnore: true*/ process.env.CCWHATSAPP_ROOT);
   } else if (root.endsWith(path.join("apps", "web"))) {
-    root = path.resolve(root, "..", "..");
-  } else if (fs.existsSync(path.join(root, "ccwhatsapp"))) {
-    root = path.join(root, "ccwhatsapp");
+    root = path.resolve(/*turbopackIgnore: true*/ root, "..", "..");
+  } else if (fs.existsSync(/*turbopackIgnore: true*/ path.join(/*turbopackIgnore: true*/ root, "ccwhatsapp"))) {
+    root = path.join(/*turbopackIgnore: true*/ root, "ccwhatsapp");
   }
 
   if (dotEnvLoadedForRoot !== root) {
     dotEnvLoadedForRoot = root;
-    parseAndPopulateDotEnvFile(path.join(root, ".env.local"));
-    parseAndPopulateDotEnvFile(path.join(root, ".env"));
-    parseAndPopulateDotEnvFile(path.join(root, ".env.production"));
+    parseAndPopulateDotEnvFile(path.join(/*turbopackIgnore: true*/ root, ".env.local"));
+    parseAndPopulateDotEnvFile(path.join(/*turbopackIgnore: true*/ root, ".env"));
+    parseAndPopulateDotEnvFile(path.join(/*turbopackIgnore: true*/ root, ".env.production"));
   }
 
   return root;
@@ -152,24 +152,24 @@ export function resolveEnvMetaWhatsAppConfig(): EnvMetaWhatsAppConfig {
 
 export function resolveDataDirectory(): string {
   const dir = process.env.DATABASE_DATA_DIR
-    ? path.resolve(process.env.DATABASE_DATA_DIR)
-    : path.join(resolveMonorepoRoot(), "data");
-  if (!fs.existsSync(dir)) {
+    ? path.resolve(/*turbopackIgnore: true*/ process.env.DATABASE_DATA_DIR)
+    : path.join(/*turbopackIgnore: true*/ resolveMonorepoRoot(), "data");
+  if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
   return dir;
 }
 
 export function resolveBackupDirectory(): string {
-  const dir = path.join(resolveMonorepoRoot(), "backups");
-  if (!fs.existsSync(dir)) {
+  const dir = path.join(/*turbopackIgnore: true*/ resolveMonorepoRoot(), "backups");
+  if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
   return dir;
 }
 
 export function getDatabaseFilePath(domain: DatabaseDomain): string {
-  return path.join(resolveDataDirectory(), DATABASE_FILES[domain]);
+  return path.join(/*turbopackIgnore: true*/ resolveDataDirectory(), DATABASE_FILES[domain]);
 }
 
 function toLibSqlFileUrl(absPath: string): string {
@@ -1827,32 +1827,32 @@ export interface MainWebsiteEnquiry {
 }
 
 export function resolveMainWebsiteDbPath(): string | null {
-  if (process.env.CLASSIC_CONCEPTS_MAIN_DB && fs.existsSync(process.env.CLASSIC_CONCEPTS_MAIN_DB)) {
-    return path.resolve(process.env.CLASSIC_CONCEPTS_MAIN_DB);
+  if (process.env.CLASSIC_CONCEPTS_MAIN_DB && fs.existsSync(/*turbopackIgnore: true*/ process.env.CLASSIC_CONCEPTS_MAIN_DB)) {
+    return path.resolve(/*turbopackIgnore: true*/ process.env.CLASSIC_CONCEPTS_MAIN_DB);
   }
   const root = resolveMonorepoRoot();
   const candidates = [
     "C:/Users/DELL/Desktop/classicconcepts/dev.db",
-    path.resolve(root, "..", "classicconcepts", "dev.db"),
-    path.resolve(root, "..", "dev.db"),
+    path.resolve(/*turbopackIgnore: true*/ root, "..", "classicconcepts", "dev.db"),
+    path.resolve(/*turbopackIgnore: true*/ root, "..", "dev.db"),
   ];
   for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
+    if (fs.existsSync(/*turbopackIgnore: true*/ c)) return c;
   }
   return null;
 }
 
 export function resolveClassicEdgeDbPath(): string | null {
-  if (process.env.CLASSIC_EDGE_MAIN_DB && fs.existsSync(process.env.CLASSIC_EDGE_MAIN_DB)) {
-    return path.resolve(process.env.CLASSIC_EDGE_MAIN_DB);
+  if (process.env.CLASSIC_EDGE_MAIN_DB && fs.existsSync(/*turbopackIgnore: true*/ process.env.CLASSIC_EDGE_MAIN_DB)) {
+    return path.resolve(/*turbopackIgnore: true*/ process.env.CLASSIC_EDGE_MAIN_DB);
   }
   const root = resolveMonorepoRoot();
   const candidates = [
     "C:/Users/DELL/Desktop/classicedge/dev.db",
-    path.resolve(root, "..", "classicedge", "dev.db"),
+    path.resolve(/*turbopackIgnore: true*/ root, "..", "classicedge", "dev.db"),
   ];
   for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
+    if (fs.existsSync(/*turbopackIgnore: true*/ c)) return c;
   }
   return null;
 }
@@ -2615,9 +2615,9 @@ export async function resolveSharedAnthropicApiKey(
   try {
     const root = resolveMonorepoRoot();
     const ccEnvPaths = [
-      path.resolve(root, "..", "classicconcepts", ".env.production"),
-      path.resolve(root, "..", "classicconcepts", ".env"),
-      path.resolve(root, "..", "classicconcepts", ".env.local"),
+      path.resolve(/*turbopackIgnore: true*/ root, "..", "classicconcepts", ".env.production"),
+      path.resolve(/*turbopackIgnore: true*/ root, "..", "classicconcepts", ".env"),
+      path.resolve(/*turbopackIgnore: true*/ root, "..", "classicconcepts", ".env.local"),
       "C:/Users/DELL/Desktop/classicconcepts/.env",
       "C:/Users/DELL/Desktop/classicconcepts/.env.local",
     ];
@@ -2628,8 +2628,8 @@ export async function resolveSharedAnthropicApiKey(
     const fallbackVar =
       /ANTHROPIC_API_KEY\s*=\s*["']?(sk-ant-[A-Za-z0-9_-]+)["']?/;
     for (const p of ccEnvPaths) {
-      if (fs.existsSync(p)) {
-        const content = fs.readFileSync(p, "utf8");
+      if (fs.existsSync(/*turbopackIgnore: true*/ p)) {
+        const content = fs.readFileSync(/*turbopackIgnore: true*/ p, "utf8");
         const match = content.match(targetVar) || content.match(fallbackVar);
         if (match?.[1]) {
           return { apiKey: match[1], source: "classicconcepts_env" };
@@ -2698,7 +2698,7 @@ export async function snapshotAllDatabasesToFolder(
   targetFolder: string,
   includeMainWebsiteDb = true
 ): Promise<{ files: { domain: string; filePath: string; sizeBytes: number }[]; totalBytes: number }> {
-  if (!fs.existsSync(targetFolder)) {
+  if (!fs.existsSync(/*turbopackIgnore: true*/ targetFolder)) {
     fs.mkdirSync(targetFolder, { recursive: true });
   }
 
@@ -2707,28 +2707,28 @@ export async function snapshotAllDatabasesToFolder(
 
   for (const domain of Object.keys(DATABASE_FILES) as DatabaseDomain[]) {
     const client = getRawLibSqlClient(domain);
-    const outFile = path.join(targetFolder, DATABASE_FILES[domain]);
-    if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
+    const outFile = path.join(/*turbopackIgnore: true*/ targetFolder, DATABASE_FILES[domain]);
+    if (fs.existsSync(/*turbopackIgnore: true*/ outFile)) fs.unlinkSync(/*turbopackIgnore: true*/ outFile);
     const escapedPath = outFile.replace(/\\/g, "/").replace(/'/g, "''");
     await client.execute(`VACUUM INTO '${escapedPath}'`);
-    const stat = fs.statSync(outFile);
+    const stat = fs.statSync(/*turbopackIgnore: true*/ outFile);
     files.push({ domain, filePath: outFile, sizeBytes: stat.size });
     totalBytes += stat.size;
   }
 
   if (includeMainWebsiteDb) {
     const mainDbPath = resolveMainWebsiteDbPath();
-    if (mainDbPath && fs.existsSync(mainDbPath)) {
+    if (mainDbPath && fs.existsSync(/*turbopackIgnore: true*/ mainDbPath)) {
       const mainClient = getMainCatalogClient();
-      const outMain = path.join(targetFolder, "classicconcepts_website.db");
-      if (fs.existsSync(outMain)) fs.unlinkSync(outMain);
+      const outMain = path.join(/*turbopackIgnore: true*/ targetFolder, "classicconcepts_website.db");
+      if (fs.existsSync(/*turbopackIgnore: true*/ outMain)) fs.unlinkSync(/*turbopackIgnore: true*/ outMain);
       if (mainClient) {
         const escapedMain = outMain.replace(/\\/g, "/").replace(/'/g, "''");
         await mainClient.execute(`VACUUM INTO '${escapedMain}'`);
       } else {
-        fs.copyFileSync(mainDbPath, outMain);
+        fs.copyFileSync(/*turbopackIgnore: true*/ mainDbPath, /*turbopackIgnore: true*/ outMain);
       }
-      const stat = fs.statSync(outMain);
+      const stat = fs.statSync(/*turbopackIgnore: true*/ outMain);
       files.push({
         domain: "classicconcepts_website",
         filePath: outMain,
@@ -2738,17 +2738,17 @@ export async function snapshotAllDatabasesToFolder(
     }
 
     const edgeDbPath = resolveClassicEdgeDbPath();
-    if (edgeDbPath && fs.existsSync(edgeDbPath)) {
+    if (edgeDbPath && fs.existsSync(/*turbopackIgnore: true*/ edgeDbPath)) {
       const edgeClient = getClassicEdgeClient();
-      const outEdge = path.join(targetFolder, "classicedge53_machines.db");
-      if (fs.existsSync(outEdge)) fs.unlinkSync(outEdge);
+      const outEdge = path.join(/*turbopackIgnore: true*/ targetFolder, "classicedge53_machines.db");
+      if (fs.existsSync(/*turbopackIgnore: true*/ outEdge)) fs.unlinkSync(/*turbopackIgnore: true*/ outEdge);
       if (edgeClient) {
         const escapedEdge = outEdge.replace(/\\/g, "/").replace(/'/g, "''");
         await edgeClient.execute(`VACUUM INTO '${escapedEdge}'`);
       } else {
-        fs.copyFileSync(edgeDbPath, outEdge);
+        fs.copyFileSync(/*turbopackIgnore: true*/ edgeDbPath, /*turbopackIgnore: true*/ outEdge);
       }
-      const stat = fs.statSync(outEdge);
+      const stat = fs.statSync(/*turbopackIgnore: true*/ outEdge);
       files.push({
         domain: "classicedge53_machines",
         filePath: outEdge,
@@ -2775,7 +2775,7 @@ export async function getMultiDatabaseDiagnostics(): Promise<
   for (const domain of Object.keys(DATABASE_FILES) as DatabaseDomain[]) {
     const filePath = getDatabaseFilePath(domain);
     const client = getRawLibSqlClient(domain);
-    const sizeBytes = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+    const sizeBytes = fs.existsSync(/*turbopackIgnore: true*/ filePath) ? fs.statSync(/*turbopackIgnore: true*/ filePath).size : 0;
 
     const tblRes = await client.execute(
       `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`

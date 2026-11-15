@@ -2820,7 +2820,7 @@ export async function executeMultiDatabaseBackup(
   const startedAt = new Date().toISOString();
   const stamp = startedAt.replace(/[:.]/g, "-");
   const backupRoot = resolveBackupDirectory();
-  const runFolder = path.join(backupRoot, `snapshot_${stamp}`);
+  const runFolder = path.join(/*turbopackIgnore: true*/ backupRoot, `snapshot_${stamp}`);
 
   try {
     const cfgRes = await bill.execute(
@@ -2838,17 +2838,17 @@ export async function executeMultiDatabaseBackup(
       triggerSource,
       databases: snap.files.map((f) => ({
         domain: f.domain,
-        fileName: path.basename(f.filePath),
+        fileName: path.basename(/*turbopackIgnore: true*/ f.filePath),
         sizeBytes: f.sizeBytes,
-        base64: fs.readFileSync(f.filePath).toString("base64"),
+        base64: fs.readFileSync(/*turbopackIgnore: true*/ f.filePath).toString("base64"),
       })),
     };
     const compressedArchive = zlib.gzipSync(
       Buffer.from(JSON.stringify(bundlePayload), "utf8")
     );
     const archiveName = `ccwhatsapp_libsql_backup_${stamp}.json.gz`;
-    const archivePath = path.join(runFolder, archiveName);
-    fs.writeFileSync(archivePath, compressedArchive);
+    const archivePath = path.join(/*turbopackIgnore: true*/ runFolder, archiveName);
+    fs.writeFileSync(/*turbopackIgnore: true*/ archivePath, compressedArchive);
 
     let status: "UPLOADED_TO_GDRIVE" | "SAVED_LOCAL_SNAPSHOT" =
       "SAVED_LOCAL_SNAPSHOT";
@@ -2914,12 +2914,12 @@ export async function executeMultiDatabaseBackup(
 
     // Prune local snapshots older than retentionDays
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-    for (const entry of fs.readdirSync(backupRoot, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(/*turbopackIgnore: true*/ backupRoot, { withFileTypes: true })) {
       if (entry.isDirectory() && entry.name.startsWith("snapshot_")) {
-        const full = path.join(backupRoot, entry.name);
-        const st = fs.statSync(full);
+        const full = path.join(/*turbopackIgnore: true*/ backupRoot, entry.name);
+        const st = fs.statSync(/*turbopackIgnore: true*/ full);
         if (st.mtimeMs < cutoffMs) {
-          fs.rmSync(full, { recursive: true, force: true });
+          fs.rmSync(/*turbopackIgnore: true*/ full, { recursive: true, force: true });
         }
       }
     }
@@ -3853,7 +3853,7 @@ async function resolveDirectSmtpCredentials(): Promise<SmtpResolvedConfig> {
   // 3. Check sibling classicconcepts/dev.db SiteSetting SMTP credentials
   try {
     const mainDbPath = resolveMainWebsiteDbPath();
-    if (mainDbPath && fs.existsSync(mainDbPath)) {
+    if (mainDbPath && fs.existsSync(/*turbopackIgnore: true*/ mainDbPath)) {
       const { createClient } = await import("@libsql/client");
       const normalized = mainDbPath.replace(/\\/g, "/");
       const url = normalized.startsWith("/")
