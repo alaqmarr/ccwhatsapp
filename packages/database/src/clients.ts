@@ -1934,6 +1934,194 @@ function getClassicEdgeClient(): Client | null {
   return holder.classicEdgeClient;
 }
 
+export interface EcosystemSpecItem {
+  key?: string;
+  label?: string;
+  value: string;
+  type?: "dimension" | "specification" | string;
+}
+
+export interface EcosystemVariantItem {
+  id?: string;
+  name: string;
+  price: number | null;
+  imageUrl?: string | null;
+}
+
+export interface EcosystemModelItem {
+  id: string;
+  modelName: string;
+  specifications: { key?: string; label?: string; value: string }[];
+  resources?: { name?: string; title?: string; type?: string; url: string }[];
+  consumables?: (
+    | {
+        id: string;
+        name: string;
+        category?: string | null;
+        description?: string | null;
+      }
+    | string
+  )[];
+}
+
+export interface MainWebsiteProduct {
+  features?: string[];
+  dimensions?: EcosystemSpecItem[];
+  specifications?: EcosystemSpecItem[];
+  variants?: EcosystemVariantItem[];
+  descriptionHtmlText?: string | null;
+  importantNoteText?: string | null;
+  searchKeywords?: string | null;
+  podiumSubCategory?: string | null;
+  podiumSubCategoryNames?: string[];
+  regularPrice?: number | null;
+  isRegisteredDesign?: boolean;
+  designRegistrationNo?: string | null;
+  ipProtectionText?: string | null;
+  videoUrl?: string | null;
+  industries?: ({ name: string; slug: string; description?: string } | string)[];
+  problemStatements?: ({ name: string; slug: string; description?: string } | string)[];
+  resources?: { name?: string; title?: string; type?: string; url: string }[];
+  models?: EcosystemModelItem[];
+  relatedConsumables?: (
+    | {
+        id: string;
+        name: string;
+        category?: string | null;
+        description?: string | null;
+      }
+    | string
+  )[];
+  searchBlob?: string;
+}
+
+export function normalizeCatalogHtmlToText(
+  html: string | null | undefined
+): string {
+  if (!html) return "";
+  let text = String(html);
+  text = text
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\s*li[^>]*>/gi, "\n• ")
+    .replace(/<\s*\/\s*li\s*>/gi, "\n")
+    .replace(/<\s*\/\s*(?:td|th)\s*>/gi, " | ")
+    .replace(
+      /<\s*\/\s*(?:tr|p|div|h[1-6]|ul|ol|table|blockquote|section)\s*>/gi,
+      "\n"
+    )
+    .replace(/<[^>]+>/g, " ");
+
+  text = text
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&times;/gi, "×")
+    .replace(/&ndash;|&mdash;|[—–]/gi, "-")
+    .replace(/&#8377;/gi, "₹")
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const code = Number.parseInt(dec, 10);
+      return Number.isFinite(code) ? String.fromCharCode(code) : " ";
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const code = Number.parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCharCode(code) : " ";
+    });
+
+  return text
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/\s*\|\s*\|\s*/g, " | ")
+        .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
+        .replace(/[ \t\u00A0]+/g, " ")
+        .trim()
+    )
+    .filter((line) => line.length > 0 && line !== "•")
+    .join("\n");
+}
+
+function isEcosystemDimensionSpec(spec: {
+  key?: string;
+  label?: string;
+  value: string;
+  type?: string | null;
+}): boolean {
+  const k = String(spec.label || spec.key || "").trim();
+  const v = String(spec.value || "").trim();
+  if (/^model$/i.test(k)) return false;
+  if (String(spec.type || "").toLowerCase() === "dimension") return true;
+  if (
+    /\b(height|width|depth|length|size|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|base\s*size|reading\s*top|overall\s*size|dimension|dimensions|diameter|thickness)\b/i.test(
+      k
+    )
+  ) {
+    return true;
+  }
+  return /\b\d+(?:\.\d+)?\s*(?:×|x|\*)\s*\d+(?:\.\d+)?\s*(?:inch|inches|in|mm|cm|ft|")\b/i.test(
+    v
+  );
+}
+
+function buildEcosystemItemSearchBlob(item: MainWebsiteProduct): string {
+  const featStr = (item.features || []).join(" ");
+  const dimStr = (item.dimensions || [])
+    .map((d) => `${d.label || d.key || ""} ${d.value}`)
+    .join(" ");
+  const specStr = (item.specifications || [])
+    .map((s) => `${s.label || s.key || ""} ${s.value}`)
+    .join(" ");
+  const varStr = (item.variants || [])
+    .map((v) => `${v.name} ${v.price ? `₹${v.price} ${v.price}` : ""}`)
+    .join(" ");
+  const modelStr = (item.models || [])
+    .map(
+      (m) =>
+        `${m.modelName} ${(m.specifications || [])
+          .map((s) => `${s.label || s.key || ""} ${s.value}`)
+          .join(" ")}`
+    )
+    .join(" ");
+  const indStr = (item.industries || [])
+    .map((i) => (typeof i === "string" ? i : `${i.name} ${i.description || ""}`))
+    .join(" ");
+  const probStr = (item.problemStatements || [])
+    .map((ps) => (typeof ps === "string" ? ps : `${ps.name} ${ps.description || ""}`))
+    .join(" ");
+  const resStr = (item.resources || [])
+    .map((r) => r.title || r.name || "")
+    .join(" ");
+
+  return [
+    item.name,
+    item.slug.replace(/-/g, " "),
+    item.sku || "",
+    item.categoryName,
+    item.podiumSubCategory || "",
+    item.description || "",
+    item.descriptionHtmlText || "",
+    item.importantNoteText || "",
+    item.searchKeywords || "",
+    item.modelsSummary || "",
+    item.specsSummary || "",
+    featStr,
+    dimStr,
+    specStr,
+    varStr,
+    modelStr,
+    indStr,
+    probStr,
+    resStr,
+    item.designRegistrationNo || "",
+    item.ipProtectionText || "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 /**
  * Loads the complete Classic Concepts acrylic product catalog (`classicconcepts.in`)
  * via API if configured, or directly from the local SQLite database.
@@ -1950,28 +2138,91 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         if (Array.isArray(data?.products) && data.products.length > 0) {
           const apiItems: MainWebsiteProduct[] = data.products
             .filter((p: any) => !isDummyPlaceholderRow(p?.id, p?.name))
-            .map((p: any) => ({
-              id: String(p.id),
-              brand: "CLASSIC_CONCEPTS" as const,
-              brandLabel: "Classic Concepts",
-              itemType: "PRODUCT" as const,
-              name: String(p.name),
-              slug: String(p.slug),
-              sku: p.sku ? String(p.sku) : null,
-              categoryName: String(p.categoryName || "Acrylic Products"),
-              description: p.description ? String(p.description) : null,
-              basePrice:
-                typeof p.discountPrice === "number" && p.discountPrice > 0
-                  ? p.discountPrice
-                  : typeof p.basePrice === "number" && p.basePrice > 0
-                  ? p.basePrice
+            .map((p: any) => {
+              const allSpecs: EcosystemSpecItem[] = Array.isArray(p.specifications)
+                ? p.specifications
+                    .map((s: any) => ({
+                      key: String(s.key || s.name || "").trim(),
+                      value: String(s.value || "").trim(),
+                      type: String(s.type || "specification"),
+                    }))
+                    .filter((s: EcosystemSpecItem) => Boolean(s.key && s.value))
+                : [];
+              const dimensions = allSpecs.filter((s) => isEcosystemDimensionSpec(s));
+              const specifications = allSpecs.filter((s) => !isEcosystemDimensionSpec(s));
+              const variants: EcosystemVariantItem[] = Array.isArray(p.variants)
+                ? p.variants
+                    .map((v: any) => ({
+                      id: v.id ? String(v.id) : undefined,
+                      name: String(v.name || "").trim(),
+                      price:
+                        typeof v.price === "number" && v.price > 0
+                          ? v.price
+                          : null,
+                      imageUrl: v.imageUrl ? String(v.imageUrl) : null,
+                    }))
+                    .filter((v: EcosystemVariantItem) => Boolean(v.name))
+                : [];
+              const features: string[] = Array.isArray(p.features)
+                ? p.features.map((f: any) => String(f || "").trim()).filter(Boolean)
+                : [];
+              const descriptionHtmlText =
+                p.descriptionText ||
+                normalizeCatalogHtmlToText(p.descriptionHtml) ||
+                normalizeCatalogHtmlToText(p.description);
+              const importantNoteText =
+                p.importantNoteText ||
+                normalizeCatalogHtmlToText(p.importantNoteHtml);
+
+              const item: MainWebsiteProduct = {
+                id: String(p.id),
+                brand: "CLASSIC_CONCEPTS" as const,
+                brandLabel: "Classic Concepts",
+                itemType: "PRODUCT" as const,
+                name: String(p.name),
+                slug: String(p.slug),
+                sku: p.sku ? String(p.sku) : null,
+                categoryName: String(p.categoryName || "Acrylic Products"),
+                podiumSubCategory: p.podiumSubCategory
+                  ? String(p.podiumSubCategory)
                   : null,
-              mainImage: p.mainImage ? String(p.mainImage) : null,
-              url: String(p.url || `https://classicconcepts.in/shop/p/${p.slug}`),
-              specsSummary: Array.isArray(p.specifications)
-                ? p.specifications.slice(0, 3).map((s: any) => `${s.key}: ${s.value}`).join(", ")
-                : null,
-            }));
+                description: p.description ? String(p.description) : null,
+                descriptionHtmlText,
+                importantNoteText,
+                searchKeywords: p.searchKeywords ? String(p.searchKeywords) : null,
+                basePrice:
+                  typeof p.discountPrice === "number" && p.discountPrice > 0
+                    ? p.discountPrice
+                    : typeof p.basePrice === "number" && p.basePrice > 0
+                    ? p.basePrice
+                    : null,
+                mainImage: p.mainImage ? String(p.mainImage) : null,
+                url: String(p.url || `https://classicconcepts.in/shop/p/${p.slug}`),
+                features,
+                dimensions,
+                specifications,
+                variants,
+                isRegisteredDesign: Boolean(p.isRegisteredDesign),
+                designRegistrationNo: p.designRegistrationNo
+                  ? String(p.designRegistrationNo)
+                  : null,
+                ipProtectionText: p.ipProtectionText
+                  ? String(p.ipProtectionText)
+                  : null,
+                videoUrl: p.videoUrl ? String(p.videoUrl) : null,
+                industries: Array.isArray(p.industries) ? p.industries : [],
+                problemStatements: Array.isArray(p.problemStatements)
+                  ? p.problemStatements
+                  : [],
+                resources: Array.isArray(p.resources) ? p.resources : [],
+                specsSummary:
+                  allSpecs.length > 0
+                    ? allSpecs.map((s) => `${s.key}: ${s.value}`).join(", ")
+                    : null,
+              };
+              item.searchBlob = buildEcosystemItemSearchBlob(item);
+              return item;
+            });
           if (apiItems.length > 0) {
             return ensureEcosystemProductShortLinks(apiItems);
           }
@@ -1986,28 +2237,63 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
     const client = getMainCatalogClient();
     if (!client) return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_CATALOG);
 
-    const res = await client.execute({
-      sql: `
-        SELECT
-          p.id,
-          p.name,
-          p.slug,
-          p.sku,
-          p.description,
-          p.basePrice,
-          p.discountPrice,
-          p.isPodium,
-          c.name AS categoryName,
-          sc.name AS subCategoryName,
-          (SELECT url FROM ProductImage pi WHERE pi.productId = p.id ORDER BY pi.isMain DESC, pi.createdAt ASC LIMIT 1) AS mainImage
-        FROM Product p
-        LEFT JOIN Category c ON p.categoryId = c.id
-        LEFT JOIN SubCategory sc ON p.subCategoryId = sc.id
-        ORDER BY p.isPodium DESC, p.updatedAt DESC
-        LIMIT 250
-      `,
-      args: [],
-    });
+    const [
+      res,
+      featsRes,
+      specsRes,
+      varsRes,
+      resLinks,
+      indLinks,
+      probLinks,
+    ] = await Promise.all([
+      client.execute({
+        sql: `
+          SELECT
+            p.id,
+            p.name,
+            p.slug,
+            p.sku,
+            p.description,
+            p.descriptionHtml,
+            p.importantNoteHtml,
+            p.searchKeywords,
+            p.basePrice,
+            p.discountPrice,
+            p.isPodium,
+            p.isRegisteredDesign,
+            p.designRegistrationNo,
+            p.ipProtectionText,
+            p.videoUrl,
+            c.name AS categoryName,
+            sc.name AS subCategoryName,
+            psc.name AS podiumSubCategoryName,
+            (SELECT url FROM ProductImage pi WHERE pi.productId = p.id ORDER BY pi.isMain DESC, pi.createdAt ASC LIMIT 1) AS mainImage
+          FROM Product p
+          LEFT JOIN Category c ON p.categoryId = c.id
+          LEFT JOIN SubCategory sc ON p.subCategoryId = sc.id
+          LEFT JOIN PodiumSubCategory psc ON p.podiumSubCategoryId = psc.id
+          ORDER BY p.isPodium DESC, p.updatedAt DESC
+          LIMIT 300
+        `,
+        args: [],
+      }),
+      client.execute(`SELECT productId, text FROM ProductFeature`),
+      client.execute(`SELECT productId, name, value, type FROM ProductSpecification`),
+      client.execute(`SELECT id, productId, name, price, imageUrl FROM ProductVariant`),
+      client
+        .execute(`SELECT title, fileUrl, type FROM Resource LIMIT 30`)
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
+      client
+        .execute(
+          `SELECT ip.B AS productId, i.name, i.slug, i.description FROM _IndustryToProduct ip JOIN Industry i ON ip.A = i.id`
+        )
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
+      client
+        .execute(
+          `SELECT pp.B AS productId, ps.name, ps.slug, ps.description FROM _ProblemStatementToProduct pp JOIN ProblemStatement ps ON pp.A = ps.id`
+        )
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
+    ]);
 
     const validRows = res.rows.filter(
       (r) => !isDummyPlaceholderRow(r.id, r.name)
@@ -2016,17 +2302,120 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
       return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_CATALOG);
     }
 
+    const featsByProd = new Map<string, string[]>();
+    for (const f of featsRes.rows) {
+      const pid = String(f.productId || "");
+      const txt = String(f.text || "").trim();
+      if (!pid || !txt) continue;
+      if (!featsByProd.has(pid)) featsByProd.set(pid, []);
+      featsByProd.get(pid)!.push(txt);
+    }
+
+    const specsByProd = new Map<string, EcosystemSpecItem[]>();
+    for (const s of specsRes.rows) {
+      const pid = String(s.productId || "");
+      const key = String(s.name || "").trim();
+      const value = String(s.value || "").trim();
+      const type = String(s.type || "specification").trim();
+      if (!pid || !key || !value) continue;
+      if (!specsByProd.has(pid)) specsByProd.set(pid, []);
+      specsByProd.get(pid)!.push({ key, value, type });
+    }
+
+    const varsByProd = new Map<string, EcosystemVariantItem[]>();
+    for (const v of varsRes.rows) {
+      const pid = String(v.productId || "");
+      const name = String(v.name || "").trim();
+      if (!pid || !name) continue;
+      const price =
+        v.price !== null && v.price !== undefined && Number(v.price) > 0
+          ? Number(v.price)
+          : null;
+      if (!varsByProd.has(pid)) varsByProd.set(pid, []);
+      varsByProd.get(pid)!.push({
+        id: String(v.id || ""),
+        name,
+        price,
+        imageUrl: v.imageUrl ? String(v.imageUrl) : null,
+      });
+    }
+
+    const globalResourcesList: { name: string; url: string }[] = [];
+    for (const r of resLinks.rows) {
+      const name = String(r.title || r.name || "").trim();
+      const url = String(r.fileUrl || r.url || "").trim();
+      if (!name || !url) continue;
+      globalResourcesList.push({ name, url });
+    }
+    const resByProd = new Map<string, { name: string; url: string }[]>();
+
+    const indByProd = new Map<
+      string,
+      { name: string; slug: string; description?: string }[]
+    >();
+    for (const i of indLinks.rows) {
+      const pid = String(i.productId || "");
+      const name = String(i.name || "").trim();
+      if (!pid || isDummyPlaceholderRow(i.slug, name)) continue;
+      if (!indByProd.has(pid)) indByProd.set(pid, []);
+      indByProd.get(pid)!.push({
+        name,
+        slug: String(i.slug || ""),
+        description: normalizeCatalogHtmlToText(String(i.description || "")),
+      });
+    }
+
+    const probByProd = new Map<
+      string,
+      { name: string; slug: string; description?: string }[]
+    >();
+    for (const ps of probLinks.rows) {
+      const pid = String(ps.productId || "");
+      const name = String(ps.name || "").trim();
+      if (!pid || isDummyPlaceholderRow(ps.slug, name)) continue;
+      if (!probByProd.has(pid)) probByProd.set(pid, []);
+      probByProd.get(pid)!.push({
+        name,
+        slug: String(ps.slug || ""),
+        description: normalizeCatalogHtmlToText(String(ps.description || "")),
+      });
+    }
+
     const dbItems: MainWebsiteProduct[] = validRows.map((r) => {
+      const id = String(r.id);
       const slug = String(r.slug);
       const effectivePrice =
-        r.discountPrice !== null && r.discountPrice !== undefined && Number(r.discountPrice) > 0
+        r.discountPrice !== null &&
+        r.discountPrice !== undefined &&
+        Number(r.discountPrice) > 0
           ? Number(r.discountPrice)
-          : r.basePrice !== null && r.basePrice !== undefined && Number(r.basePrice) > 0
+          : r.basePrice !== null &&
+            r.basePrice !== undefined &&
+            Number(r.basePrice) > 0
           ? Number(r.basePrice)
           : null;
 
-      return {
-        id: String(r.id),
+      const allSpecs = specsByProd.get(id) || [];
+      const dimensions = allSpecs.filter((s) => isEcosystemDimensionSpec(s));
+      const specifications = allSpecs.filter((s) => !isEcosystemDimensionSpec(s));
+      const features = featsByProd.get(id) || [];
+      const variants = varsByProd.get(id) || [];
+      const plainDesc = normalizeCatalogHtmlToText(
+        r.description ? String(r.description) : ""
+      );
+      const htmlDesc = normalizeCatalogHtmlToText(
+        r.descriptionHtml ? String(r.descriptionHtml) : ""
+      );
+      const descriptionHtmlText = [plainDesc, htmlDesc]
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      const importantNoteText = normalizeCatalogHtmlToText(
+        r.importantNoteHtml ? String(r.importantNoteHtml) : ""
+      );
+
+      const item: MainWebsiteProduct = {
+        id,
         brand: "CLASSIC_CONCEPTS" as const,
         brandLabel: "Classic Concepts",
         itemType: "PRODUCT" as const,
@@ -2036,11 +2425,38 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         categoryName: r.subCategoryName
           ? `${String(r.categoryName || "Acrylic")} - ${String(r.subCategoryName)}`
           : String(r.categoryName || "Acrylic Products"),
-        description: r.description ? String(r.description).slice(0, 220) : null,
+        podiumSubCategory: r.podiumSubCategoryName
+          ? String(r.podiumSubCategoryName)
+          : null,
+        description: r.description ? String(r.description) : null,
+        descriptionHtmlText: descriptionHtmlText || null,
+        importantNoteText: importantNoteText || null,
+        searchKeywords: r.searchKeywords ? String(r.searchKeywords) : null,
         basePrice: effectivePrice,
         mainImage: r.mainImage ? String(r.mainImage) : null,
         url: `https://classicconcepts.in/shop/p/${slug}`,
+        features,
+        dimensions,
+        specifications,
+        variants,
+        isRegisteredDesign: Boolean(r.isRegisteredDesign),
+        designRegistrationNo: r.designRegistrationNo
+          ? String(r.designRegistrationNo)
+          : null,
+        ipProtectionText: r.ipProtectionText
+          ? String(r.ipProtectionText)
+          : null,
+        videoUrl: r.videoUrl ? String(r.videoUrl) : null,
+        industries: indByProd.get(id) || [],
+        problemStatements: probByProd.get(id) || [],
+        resources: resByProd.get(id) || [],
+        specsSummary:
+          allSpecs.length > 0
+            ? allSpecs.map((s) => `${s.key}: ${s.value}`).join(", ")
+            : null,
       };
+      item.searchBlob = buildEcosystemItemSearchBlob(item);
+      return item;
     });
 
     return ensureEcosystemProductShortLinks(dbItems);
@@ -2050,8 +2466,8 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
 }
 
 /**
- * Loads all Classic Edge 53 machines, models (`YN-JW1200`, CNC, laser, polishing, bending),
- * specifications, and consumables (`classicedge53.com`) via API or direct LibSQL read.
+ * Loads all Classic Edge 53 machines, models (`YN-JW1200`, `YN-JW1600`, `ABM-1250`, `ABM-2400`, CNC, laser, polishing, bending),
+ * product-level and model-specific specifications, features, resources, and consumables (`classicedge53.com`) via API or direct LibSQL read.
  */
 export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
   const apiUrl = resolveClassicEdgeInternalUrl();
@@ -2065,32 +2481,73 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
         const combined: MainWebsiteProduct[] = [];
         for (const m of data?.machines || []) {
           if (isDummyPlaceholderRow(m?.id, m?.name)) continue;
-          combined.push({
+          const prodSpecs: EcosystemSpecItem[] = Array.isArray(m.specifications)
+            ? m.specifications
+                .map((s: any) => ({
+                  key: String(s.key || "").trim(),
+                  value: String(s.value || "").trim(),
+                  type: "specification",
+                }))
+                .filter((s: EcosystemSpecItem) => Boolean(s.key && s.value))
+            : [];
+          const models: EcosystemModelItem[] = Array.isArray(m.models)
+            ? m.models.map((md: any) => ({
+                id: String(md.id || md.modelName || ""),
+                modelName: String(md.modelName || ""),
+                specifications: Array.isArray(md.specifications)
+                  ? md.specifications
+                      .map((s: any) => ({
+                        key: String(s.key || "").trim(),
+                        value: String(s.value || "").trim(),
+                      }))
+                      .filter((s: { key: string; value: string }) =>
+                        Boolean(s.key && s.value)
+                      )
+                  : [],
+                resources: Array.isArray(md.resources) ? md.resources : [],
+                consumables: Array.isArray(md.consumables) ? md.consumables : [],
+              }))
+            : [];
+
+          const item: MainWebsiteProduct = {
             id: String(m.id),
             brand: "CLASSIC_EDGE_53",
             brandLabel: "Classic Edge 53",
             itemType: "MACHINE",
             name: String(m.name),
             slug: String(m.id),
-            sku: Array.isArray(m.models) && m.models.length > 0
-              ? m.models.map((md: any) => md.modelName).join(" / ")
-              : null,
+            sku:
+              models.length > 0
+                ? models.map((md) => md.modelName).join(" / ")
+                : null,
             categoryName: "Classic Edge 53 Machine",
-            description: m.description ? String(m.description).slice(0, 220) : null,
+            description: m.description ? String(m.description) : null,
+            searchKeywords: m.keywords ? String(m.keywords) : null,
             basePrice: null,
             mainImage: m.coverImage ? String(m.coverImage) : null,
             url: String(m.url || `https://classicedge53.com/products/${m.id}`),
-            modelsSummary: Array.isArray(m.models)
-              ? m.models.map((md: any) => md.modelName).join(", ")
-              : null,
-            specsSummary: Array.isArray(m.specifications)
-              ? m.specifications.slice(0, 4).map((s: any) => `${s.key}: ${s.value}`).join(", ")
-              : null,
-          });
+            features: Array.isArray(m.features)
+              ? m.features.map((f: any) => String(f || "").trim()).filter(Boolean)
+              : [],
+            specifications: prodSpecs,
+            models,
+            resources: Array.isArray(m.resources) ? m.resources : [],
+            relatedConsumables: Array.isArray(m.consumables) ? m.consumables : [],
+            modelsSummary:
+              models.length > 0
+                ? models.map((md) => md.modelName).join(", ")
+                : null,
+            specsSummary:
+              prodSpecs.length > 0
+                ? prodSpecs.map((s) => `${s.key}: ${s.value}`).join(", ")
+                : null,
+          };
+          item.searchBlob = buildEcosystemItemSearchBlob(item);
+          combined.push(item);
         }
         for (const c of data?.consumables || []) {
           if (isDummyPlaceholderRow(c?.id, c?.name)) continue;
-          combined.push({
+          const item: MainWebsiteProduct = {
             id: String(c.id),
             brand: "CLASSIC_EDGE_53",
             brandLabel: "Classic Edge 53",
@@ -2099,11 +2556,17 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
             slug: String(c.id),
             sku: null,
             categoryName: String(c.categoryName || "Machine Consumables"),
-            description: c.description ? String(c.description).slice(0, 200) : null,
+            description: c.description ? String(c.description) : null,
+            searchKeywords: c.keywords ? String(c.keywords) : null,
             basePrice: null,
             mainImage: c.mainImage ? String(c.mainImage) : null,
-            url: String(c.url || `https://classicedge53.com/consumables/${c.id}`),
-          });
+            url: String(
+              c.url || `https://classicedge53.com/consumables/${c.id}`
+            ),
+            specsSummary: c.keywords ? String(c.keywords) : null,
+          };
+          item.searchBlob = buildEcosystemItemSearchBlob(item);
+          combined.push(item);
         }
         if (combined.length > 0) {
           return ensureEcosystemProductShortLinks(combined);
@@ -2118,28 +2581,139 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
     const client = getClassicEdgeClient();
     if (!client) return ensureEcosystemProductShortLinks(FALLBACK_CLASSIC_EDGE_MACHINES);
 
-    const [machinesRes, modelsRes, specsRes, consRes] = await Promise.all([
-      client.execute(`SELECT id, name, description, keywords, coverImage FROM Product ORDER BY updatedAt DESC`),
+    const [
+      machinesRes,
+      featsRes,
+      modelsRes,
+      specsRes,
+      resRows,
+      consRes,
+      prodConsLinks,
+      modelConsLinks,
+    ] = await Promise.all([
+      client.execute(
+        `SELECT id, name, description, keywords, coverImage FROM Product ORDER BY updatedAt DESC`
+      ),
+      client
+        .execute(`SELECT productId, text FROM ProductFeature`)
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
       client.execute(`SELECT id, productId, modelName FROM ProductModel`),
-      client.execute(`SELECT productId, productModelId, key, value FROM Specification`),
-      client.execute(`SELECT id, name, description, keywords, image, category FROM Consumable ORDER BY updatedAt DESC`),
+      client.execute(
+        `SELECT productId, productModelId, key, value FROM Specification`
+      ),
+      client
+        .execute(`SELECT productId, productModelId, name, url FROM Resource`)
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
+      client.execute(
+        `SELECT id, name, description, keywords, image, category FROM Consumable ORDER BY updatedAt DESC`
+      ),
+      client
+        .execute(`SELECT A AS consumableId, B AS productId FROM _ConsumableToProduct`)
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
+      client
+        .execute(
+          `SELECT A AS consumableId, B AS modelId FROM _ConsumableToProductModel`
+        )
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
     ]);
 
-    const modelsByProd = new Map<string, string[]>();
-    for (const m of modelsRes.rows) {
-      const pid = String(m.productId || "");
-      if (!modelsByProd.has(pid)) modelsByProd.set(pid, []);
-      modelsByProd.get(pid)!.push(String(m.modelName));
+    const consById = new Map<
+      string,
+      { id: string; name: string; category: string | null; description: string | null }
+    >();
+    for (const c of consRes.rows) {
+      if (isDummyPlaceholderRow(c.id, c.name)) continue;
+      consById.set(String(c.id), {
+        id: String(c.id),
+        name: String(c.name),
+        category: c.category ? String(c.category) : null,
+        description: c.description ? String(c.description) : null,
+      });
     }
 
-    const specsByProd = new Map<string, string[]>();
+    const featsByProd = new Map<string, string[]>();
+    for (const f of featsRes.rows) {
+      const pid = String(f.productId || "");
+      const txt = String(f.text || "").trim();
+      if (!pid || !txt) continue;
+      if (!featsByProd.has(pid)) featsByProd.set(pid, []);
+      featsByProd.get(pid)!.push(txt);
+    }
+
+    const prodLevelSpecs = new Map<string, EcosystemSpecItem[]>();
+    const modelLevelSpecs = new Map<string, { key: string; value: string }[]>();
     for (const s of specsRes.rows) {
-      const pid = String(s.productId || "");
-      if (!pid) continue;
-      if (!specsByProd.has(pid)) specsByProd.set(pid, []);
-      if (specsByProd.get(pid)!.length < 4) {
-        specsByProd.get(pid)!.push(`${String(s.key)}: ${String(s.value || "")}`);
+      const pid = s.productId ? String(s.productId) : "";
+      const mid = s.productModelId ? String(s.productModelId) : "";
+      const key = String(s.key || "").trim();
+      const value = String(s.value || "").trim();
+      if (!key || !value) continue;
+      if (mid) {
+        if (!modelLevelSpecs.has(mid)) modelLevelSpecs.set(mid, []);
+        modelLevelSpecs.get(mid)!.push({ key, value });
+      } else if (pid) {
+        if (!prodLevelSpecs.has(pid)) prodLevelSpecs.set(pid, []);
+        prodLevelSpecs.get(pid)!.push({ key, value, type: "specification" });
       }
+    }
+
+    const prodLevelRes = new Map<string, { name: string; url: string }[]>();
+    const modelLevelRes = new Map<string, { name: string; url: string }[]>();
+    for (const r of resRows.rows) {
+      const pid = r.productId ? String(r.productId) : "";
+      const mid = r.productModelId ? String(r.productModelId) : "";
+      const name = String(r.name || "").trim();
+      const url = String(r.url || "").trim();
+      if (!name || !url) continue;
+      if (mid) {
+        if (!modelLevelRes.has(mid)) modelLevelRes.set(mid, []);
+        modelLevelRes.get(mid)!.push({ name, url });
+      } else if (pid) {
+        if (!prodLevelRes.has(pid)) prodLevelRes.set(pid, []);
+        prodLevelRes.get(pid)!.push({ name, url });
+      }
+    }
+
+    const consByModel = new Map<
+      string,
+      { id: string; name: string; category?: string | null; description?: string | null }[]
+    >();
+    for (const link of modelConsLinks.rows) {
+      const cid = String(link.consumableId || "");
+      const mid = String(link.modelId || "");
+      const cObj = consById.get(cid);
+      if (!mid || !cObj) continue;
+      if (!consByModel.has(mid)) consByModel.set(mid, []);
+      consByModel.get(mid)!.push(cObj);
+    }
+
+    const consByProd = new Map<
+      string,
+      { id: string; name: string; category?: string | null; description?: string | null }[]
+    >();
+    for (const link of prodConsLinks.rows) {
+      const cid = String(link.consumableId || "");
+      const pid = String(link.productId || "");
+      const cObj = consById.get(cid);
+      if (!pid || !cObj) continue;
+      if (!consByProd.has(pid)) consByProd.set(pid, []);
+      consByProd.get(pid)!.push(cObj);
+    }
+
+    const modelsByProd = new Map<string, EcosystemModelItem[]>();
+    for (const m of modelsRes.rows) {
+      const mid = String(m.id || "");
+      const pid = String(m.productId || "");
+      const modelName = String(m.modelName || "").trim();
+      if (!pid || !modelName) continue;
+      if (!modelsByProd.has(pid)) modelsByProd.set(pid, []);
+      modelsByProd.get(pid)!.push({
+        id: mid,
+        modelName,
+        specifications: modelLevelSpecs.get(mid) || [],
+        resources: modelLevelRes.get(mid) || [],
+        consumables: consByModel.get(mid) || [],
+      });
     }
 
     const items: MainWebsiteProduct[] = [];
@@ -2147,29 +2721,47 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
       if (isDummyPlaceholderRow(r.id, r.name)) continue;
       const id = String(r.id);
       const models = modelsByProd.get(id) || [];
-      const specs = specsByProd.get(id) || [];
-      items.push({
+      const specs = prodLevelSpecs.get(id) || [];
+      const features = featsByProd.get(id) || [];
+      const item: MainWebsiteProduct = {
         id,
         brand: "CLASSIC_EDGE_53",
         brandLabel: "Classic Edge 53",
         itemType: "MACHINE",
         name: String(r.name),
         slug: id,
-        sku: models.length > 0 ? models.slice(0, 3).join(" / ") : null,
+        sku:
+          models.length > 0
+            ? models.map((md) => md.modelName).join(" / ")
+            : null,
         categoryName: "Acrylic Machine (Classic Edge 53)",
-        description: r.description ? String(r.description).slice(0, 220) : null,
+        description: r.description ? String(r.description) : null,
+        searchKeywords: r.keywords ? String(r.keywords) : null,
         basePrice: null,
         mainImage: r.coverImage ? String(r.coverImage) : null,
         url: `https://classicedge53.com/products/${id}`,
-        modelsSummary: models.join(", ") || null,
-        specsSummary: [specs.join(", "), r.keywords ? String(r.keywords) : ""].filter(Boolean).join(" | ") || null,
-      });
+        features,
+        specifications: specs,
+        models,
+        resources: prodLevelRes.get(id) || [],
+        relatedConsumables: consByProd.get(id) || [],
+        modelsSummary: models.map((md) => md.modelName).join(", ") || null,
+        specsSummary:
+          [
+            specs.map((s) => `${s.key}: ${s.value}`).join(", "),
+            r.keywords ? String(r.keywords) : "",
+          ]
+            .filter(Boolean)
+            .join(" | ") || null,
+      };
+      item.searchBlob = buildEcosystemItemSearchBlob(item);
+      items.push(item);
     }
 
     for (const c of consRes.rows) {
       if (isDummyPlaceholderRow(c.id, c.name)) continue;
       const id = String(c.id);
-      items.push({
+      const item: MainWebsiteProduct = {
         id,
         brand: "CLASSIC_EDGE_53",
         brandLabel: "Classic Edge 53",
@@ -2177,13 +2769,18 @@ export async function loadAllClassicEdgeItems(): Promise<MainWebsiteProduct[]> {
         name: String(c.name),
         slug: id,
         sku: null,
-        categoryName: c.category ? `Consumable - ${String(c.category)}` : "Machine Consumables",
-        description: c.description ? String(c.description).slice(0, 200) : null,
+        categoryName: c.category
+          ? `Consumable - ${String(c.category)}`
+          : "Machine Consumables",
+        description: c.description ? String(c.description) : null,
+        searchKeywords: c.keywords ? String(c.keywords) : null,
         basePrice: null,
         mainImage: c.image ? String(c.image) : null,
         url: `https://classicedge53.com/consumables/${id}`,
         specsSummary: c.keywords ? String(c.keywords) : null,
-      });
+      };
+      item.searchBlob = buildEcosystemItemSearchBlob(item);
+      items.push(item);
     }
 
     return ensureEcosystemProductShortLinks(
@@ -2329,6 +2926,22 @@ function wordMatchesToken(word: string, token: string): boolean {
   return false;
 }
 
+function extractExplicitProductOrModelCodes(query: string): string[] {
+  const codes = new Set<string>();
+  const matches = query.matchAll(
+    /\b(ccp[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce[-_\s]?[a-z]{2,4}[-_\s]?\d{2,4}[a-z]*|a[345][-_\s]?t[-_\s]?stand[-_\s]?\d*)\b/gi
+  );
+  for (const m of matches) {
+    if (m[1]) {
+      codes.add(m[1].toLowerCase().replace(/[-_\s]+/g, ""));
+    }
+  }
+  if (/\bc[-\s]*podium\b|\bc[-\s]*shaped\s+pillar/i.test(query)) {
+    codes.add("ccp053");
+  }
+  return Array.from(codes);
+}
+
 export function searchEcosystemItems(
   items: MainWebsiteProduct[],
   searchQuery: string,
@@ -2336,6 +2949,7 @@ export function searchEcosystemItems(
   options?: EcosystemSearchOptions
 ): MainWebsiteProduct[] {
   const q = searchQuery.trim().toLowerCase();
+  const explicitCodes = extractExplicitProductOrModelCodes(searchQuery);
 
   // Detect inline negations even when searchEcosystemItems is called directly without options
   const inlineExcludeConsumables =
@@ -2346,6 +2960,14 @@ export function searchEcosystemItems(
     /\b(?:not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|exclude)\s+(?:any\s+)?machines?\b|\b(?:just|only)\s+(?:tools?|consumables?|blades?|cutters?)\b/i.test(
       q
     );
+  const mentionsMachineExplicitly =
+    /\b(machine|machines|polisher|polishing\s+machine|bender|bending\s+machine|line\s+bender|laser\s+cutter|laser\s+cutting|cnc\s+router|flame\s+polish|thermoforming\s+oven|yn[-_\s]?jw\d+|abm[-_\s]?\d+|ce[-_\s]?(?:lc|cnc|fp|to)\d+)\b/i.test(
+      q
+    );
+  const mentionsConsumablesExplicitly =
+    /\b(consumable|consumables|tool|tools|blade|blades|cutter|cutters|solvent|glue|bonding|buffing|heating\s+wire|spare\s+part|accessories)\b/i.test(
+      q
+    );
 
   let cleanItems = items.filter((i) => !isDummyPlaceholderRow(i.id, i.name));
   if (options?.brand) {
@@ -2353,7 +2975,13 @@ export function searchEcosystemItems(
   }
   const effectiveItemType =
     options?.itemType ??
-    (inlineExcludeConsumables ? "MACHINE" : inlineExcludeMachines ? "CONSUMABLE" : null);
+    (inlineExcludeConsumables
+      ? "MACHINE"
+      : inlineExcludeMachines
+      ? "CONSUMABLE"
+      : mentionsMachineExplicitly && !mentionsConsumablesExplicitly
+      ? "MACHINE"
+      : null);
   if (effectiveItemType) {
     cleanItems = cleanItems.filter((i) => i.itemType === effectiveItemType);
   }
@@ -2361,7 +2989,9 @@ export function searchEcosystemItems(
   const excludedSet = new Set<"PRODUCT" | "MACHINE" | "CONSUMABLE">(
     options?.excludedItemTypes || []
   );
-  if (inlineExcludeConsumables) excludedSet.add("CONSUMABLE");
+  if (inlineExcludeConsumables || (mentionsMachineExplicitly && !mentionsConsumablesExplicitly)) {
+    excludedSet.add("CONSUMABLE");
+  }
   if (inlineExcludeMachines) excludedSet.add("MACHINE");
   if (excludedSet.size > 0) {
     cleanItems = cleanItems.filter((i) => !excludedSet.has(i.itemType));
@@ -2394,6 +3024,18 @@ export function searchEcosystemItems(
       " "
     );
 
+  // Extract measurement numbers like "24 x 20" or "1600mm" when present
+  const measurementTokens: string[] = [];
+  for (const m of queryWithoutPricesAndNegations.matchAll(
+    /\b(\d{2,4})\s*(?:x|×|by)\s*(\d{2,4})\b|\b(\d{3,4})\s*mm\b/gi
+  )) {
+    if (m[1] && m[2]) {
+      measurementTokens.push(m[1], m[2]);
+    } else if (m[3]) {
+      measurementTokens.push(m[3]);
+    }
+  }
+
   const rawTokens = tokenizeWords(queryWithoutPricesAndNegations).filter(
     (t) =>
       t.length >= 2 &&
@@ -2406,18 +3048,23 @@ export function searchEcosystemItems(
       t !== "stretch" &&
       t !== "premium" &&
       t !== "ones" &&
-      t !== "actually"
+      t !== "actually" &&
+      t !== "compare" &&
+      t !== "difference" &&
+      t !== "between"
   );
 
   // If user literally only typed "acrylic", allow "acrylic" as fallback token
   const directTokens =
     rawTokens.length > 0
       ? rawTokens
+      : explicitCodes.length > 0
+      ? explicitCodes
       : q.includes("acrylic")
       ? ["acrylic"]
       : [];
 
-  if (directTokens.length === 0) {
+  if (directTokens.length === 0 && explicitCodes.length === 0) {
     if (maxPrice !== null || minPrice !== null) {
       const pricedPool = cleanItems.filter((it) => {
         if (typeof it.basePrice !== "number" || it.basePrice <= 0) return false;
@@ -2450,8 +3097,14 @@ export function searchEcosystemItems(
     }
   }
 
+  const hasExplicitEdgeModel = explicitCodes.some((c) =>
+    /^(ynjw|abm|celc|cecnc|cefp|ceto)/.test(c)
+  );
+  const hasExplicitCcCode = explicitCodes.some((c) => /^ccp\d/.test(c));
+
   const wantsPodium =
     options?.productFamily === "podium" ||
+    hasExplicitCcCode ||
     /\b(pulpit|pulpits|podium|podiums|lectern|lecterns|rostrum|rostrums)\b/i.test(
       queryWithoutPricesAndNegations
     );
@@ -2471,9 +3124,10 @@ export function searchEcosystemItems(
     );
   const wantsMachineOrTool =
     options?.brand === "CLASSIC_EDGE_53" ||
+    hasExplicitEdgeModel ||
     effectiveItemType === "MACHINE" ||
     effectiveItemType === "CONSUMABLE" ||
-    /\b(machine|machines|laser|cnc|router|polisher|polishing|diamond|bending|bender|heater|blade|blades|cutter|consumable|consumables|ce53|yn-|thermoforming|oven)\b/i.test(
+    /\b(machine|machines|laser|cnc|router|polisher|polishing|diamond|bending|bender|heater|blade|blades|cutter|consumable|consumables|ce53|yn-|abm-|thermoforming|oven)\b/i.test(
       queryWithoutPricesAndNegations
     );
   const wantsDisplayProduct =
@@ -2532,20 +3186,43 @@ export function searchEcosystemItems(
     }
 
     const nameWords = tokenizeWords(item.name);
-    const catWords = tokenizeWords(item.categoryName);
-    const skuLower = (item.sku || "").toLowerCase();
-    const modelLower = (item.modelsSummary || "").toLowerCase();
-    const descWords = tokenizeWords(
-      `${item.description || ""} ${item.specsSummary || ""}`
+    const catWords = tokenizeWords(
+      `${item.categoryName} ${(item.podiumSubCategoryNames || []).join(" ")}`
     );
+    const skuLower = (item.sku || "").toLowerCase();
+    const skuCompact = skuLower.replace(/[-_\s]+/g, "");
+    const slugCompact = (item.slug || "").toLowerCase().replace(/[-_\s]+/g, "");
+    const modelLower = (
+      item.modelsSummary ||
+      (item.models || []).map((m) => m.modelName).join(" ") ||
+      ""
+    ).toLowerCase();
+    const modelCompact = modelLower.replace(/[-_\s]+/g, "");
+    const deepText = `${item.description || ""} ${item.descriptionHtmlText || ""} ${item.importantNoteText || ""} ${item.specsSummary || ""} ${(item.features || []).join(" ")} ${(item.variants || []).map((v) => v.name).join(" ")} ${(item.industries || []).map((ind) => (typeof ind === "string" ? ind : `${ind.name} ${ind.description || ""}`)).join(" ")} ${(item.problemStatements || []).map((ps) => (typeof ps === "string" ? ps : `${ps.name} ${ps.description || ""}`)).join(" ")} ${(item.models || []).map((m) => m.specifications.map((s) => `${s.label || s.key || ""} ${s.value}`).join(" ")).join(" ")}`;
+    const descWords = tokenizeWords(deepText);
 
     let matchScore = 0;
 
+    // Boost exact product/model codes (e.g., CCP054, CCP055, YN-JW1200, ABM-1250)
+    if (explicitCodes.length > 0) {
+      for (const code of explicitCodes) {
+        if (
+          skuCompact === code ||
+          skuCompact.includes(code) ||
+          slugCompact.includes(code) ||
+          modelCompact.includes(code)
+        ) {
+          matchScore += 180;
+        }
+      }
+    }
+
     for (const tok of directTokens) {
-      if (skuLower && skuLower.includes(tok) && tok.length >= 3) {
+      const tokCompact = tok.replace(/[-_\s]+/g, "");
+      if (skuLower && (skuLower.includes(tok) || skuCompact.includes(tokCompact)) && tok.length >= 3) {
+        matchScore += 32;
+      } else if (modelLower && (modelLower.includes(tok) || modelCompact.includes(tokCompact)) && tok.length >= 3) {
         matchScore += 30;
-      } else if (modelLower && modelLower.includes(tok) && tok.length >= 3) {
-        matchScore += 26;
       }
       if (nameWords.some((w) => wordMatchesToken(w, tok))) {
         matchScore += 24;
@@ -2554,7 +3231,21 @@ export function searchEcosystemItems(
         matchScore += 18;
       }
       if (descWords.some((w) => wordMatchesToken(w, tok))) {
-        matchScore += 5;
+        matchScore += 7;
+      }
+    }
+
+    // Score specific measurement tokens ("24", "20", "1600") against dimensions/model specs
+    if (measurementTokens.length > 0) {
+      const dimAndModelBlob = `${(item.dimensions || []).map((d) => `${d.label || d.key || ""} ${d.value}`).join(" ")} ${item.descriptionHtmlText || ""} ${modelLower} ${(item.models || []).map((m) => m.specifications.map((s) => `${s.label || s.key || ""} ${s.value}`).join(" ")).join(" ")}`.toLowerCase();
+      let matchedMeasurements = 0;
+      for (const mTok of measurementTokens) {
+        if (dimAndModelBlob.includes(mTok)) {
+          matchedMeasurements++;
+        }
+      }
+      if (matchedMeasurements > 0) {
+        matchScore += matchedMeasurements * 14;
       }
     }
 
@@ -3091,7 +3782,7 @@ const FALLBACK_CLASSIC_CATALOG: MainWebsiteProduct[] = [
 
 const FALLBACK_CLASSIC_EDGE_MACHINES: MainWebsiteProduct[] = [
   {
-    id: "diamond-edge-polisher",
+    id: "ce53-diamond-edge-polisher",
     brand: "CLASSIC_EDGE_53",
     brandLabel: "Classic Edge 53",
     itemType: "MACHINE",
@@ -3102,20 +3793,824 @@ const FALLBACK_CLASSIC_EDGE_MACHINES: MainWebsiteProduct[] = [
     basePrice: null,
     mainImage: null,
     url: "https://classicedge53.com/products",
+    description:
+      "Industrial high-speed diamond cutter edge polishing machine for thick cast acrylic sheets up to 100mm, delivering crystal-clear mirror edges in a single pass.",
+    features: [
+      "Single-pass optical mirror edge finish on cast and extruded acrylic",
+      "Precision PCD and natural diamond cutter spindle with low vibration",
+      "Adjustable feed speed and cutter depth for thin to extra-thick blocks",
+      "Pneumatic clamping beam for distortion-free workpiece holding",
+    ],
+    specifications: [
+      { label: "Max Sheet Thickness", value: "3mm to 100mm", type: "specification" },
+      { label: "Spindle Speed", value: "0 - 9000 RPM Variable", type: "specification" },
+      { label: "Polishing Angle", value: "0 to 45 Degrees Bevel & Straight", type: "specification" },
+      { label: "Power Supply", value: "380V 3-Phase 50Hz", type: "specification" },
+    ],
+    models: [
+      {
+        id: "model-yn-jw1200",
+        modelName: "YN-JW1200",
+        specifications: [
+          { label: "Working Length", value: "1200 mm" },
+          { label: "Max Sheet Thickness", value: "3mm to 80mm" },
+          { label: "Main Spindle Power", value: "1.8 kW" },
+          { label: "Polishing Angle", value: "0 degrees straight edge" },
+        ],
+        resources: [
+          {
+            title: "YN-JW1200 Technical Datasheet",
+            type: "Specification Sheet",
+            url: "https://classicedge53.com/products",
+          },
+        ],
+        consumables: ["PCD & Natural Single-Crystal Diamond Polishing Cutters"],
+      },
+      {
+        id: "model-yn-jw1600",
+        modelName: "YN-JW1600",
+        specifications: [
+          { label: "Working Length", value: "1600 mm" },
+          { label: "Max Sheet Thickness", value: "3mm to 100mm" },
+          { label: "Main Spindle Power", value: "2.2 kW" },
+          { label: "Polishing Angle", value: "0 to 45 degrees bevel and straight" },
+        ],
+        resources: [
+          {
+            title: "YN-JW1600 Technical Datasheet",
+            type: "Specification Sheet",
+            url: "https://classicedge53.com/products",
+          },
+        ],
+        consumables: ["PCD & Natural Single-Crystal Diamond Polishing Cutters"],
+      },
+    ],
+    resources: [
+      {
+        title: "Diamond Edge Polisher Operation & Maintenance Guide",
+        type: "User Manual",
+        url: "https://classicedge53.com/products",
+      },
+    ],
+    relatedConsumables: ["PCD & Natural Single-Crystal Diamond Polishing Cutters"],
     modelsSummary: "YN-JW1200, YN-JW1600",
-    specsSummary: "Mirror finish on thick cast acrylic sheets",
+    specsSummary:
+      "Max Sheet Thickness: 3mm to 100mm, Spindle Speed: 0 - 9000 RPM Variable, Polishing Angle: 0 to 45 Degrees Bevel & Straight, Power Supply: 380V 3-Phase 50Hz | YN-JW1200: Working Length: 1200 mm, Max Sheet Thickness: 3mm to 80mm, Main Spindle Power: 1.8 kW | YN-JW1600: Working Length: 1600 mm, Max Sheet Thickness: 3mm to 100mm, Main Spindle Power: 2.2 kW",
+    searchBlob:
+      "acrylic diamond edge polishing machine yn-jw1200 yn-jw1600 1200mm 1600mm 3mm to 100mm 80mm 1.8 kw 2.2 kw 0 to 45 degrees bevel mirror finish pcd diamond cutters",
   },
   {
-    id: "acrylic-heat-bender",
+    id: "ce53-acrylic-line-bender",
     brand: "CLASSIC_EDGE_53",
     brandLabel: "Classic Edge 53",
     itemType: "MACHINE",
     name: "Acrylic Sheet Line Bending & Heating Machine",
     slug: "acrylic-heat-bender",
-    sku: "CE-ABM-1250",
+    sku: "ABM-1250 / ABM-2400",
     categoryName: "Acrylic Machine (Classic Edge 53)",
     basePrice: null,
     mainImage: null,
     url: "https://classicedge53.com/products",
+    description:
+      "Precision water-circulated infrared heating and line bending machine for folding acrylic, polycarbonate, PVC, and PETG sheets without surface bubbling or warping.",
+    features: [
+      "Water-cooled aluminium heating table prevents surrounding sheet warping",
+      "Digital PID temperature control for uniform heat distribution",
+      "Angle-locking folding jig for repeatable podium, stand, and display bends",
+      "Supports single-line and multi-line simultaneous heating",
+    ],
+    specifications: [
+      { label: "Bending Width", value: "1250mm / 2400mm", type: "specification" },
+      { label: "Sheet Thickness", value: "1mm to 15mm", type: "specification" },
+      { label: "Cooling System", value: "Closed-Loop Water Circulation", type: "specification" },
+      { label: "Applicable Materials", value: "Acrylic, PC, PVC, PETG, ABS", type: "specification" },
+    ],
+    models: [
+      {
+        id: "model-abm-1250",
+        modelName: "ABM-1250",
+        specifications: [
+          { label: "Effective Bending Width", value: "1250 mm (4 Feet)" },
+          { label: "Sheet Thickness Range", value: "1mm to 10mm" },
+          { label: "Heating Zones", value: "Single Upper Heating Tube" },
+          { label: "Power Consumption", value: "1.5 kW (220V Single Phase)" },
+        ],
+        resources: [],
+        consumables: ["Nichrome & Quartz Heating Tubes for Line Benders"],
+      },
+      {
+        id: "model-abm-2400",
+        modelName: "ABM-2400",
+        specifications: [
+          { label: "Effective Bending Width", value: "2400 mm (8 Feet)" },
+          { label: "Sheet Thickness Range", value: "1mm to 15mm" },
+          { label: "Heating Zones", value: "Dual Upper & Lower Heating Tubes" },
+          { label: "Power Consumption", value: "3.6 kW (220V Single Phase)" },
+        ],
+        resources: [],
+        consumables: ["Nichrome & Quartz Heating Tubes for Line Benders"],
+      },
+    ],
+    resources: [
+      {
+        title: "ABM Series Acrylic Line Bender Setup Guide",
+        type: "Setup Guide",
+        url: "https://classicedge53.com/products",
+      },
+    ],
+    relatedConsumables: ["Nichrome & Quartz Heating Tubes for Line Benders"],
+    modelsSummary: "ABM-1250, ABM-2400",
+    specsSummary:
+      "Bending Width: 1250mm / 2400mm, Sheet Thickness: 1mm to 15mm, Cooling System: Closed-Loop Water Circulation | ABM-1250: Effective Bending Width: 1250 mm (4 Feet), Sheet Thickness Range: 1mm to 10mm, Power Consumption: 1.5 kW | ABM-2400: Effective Bending Width: 2400 mm (8 Feet), Sheet Thickness Range: 1mm to 15mm, Dual Upper & Lower Heating Tubes, Power Consumption: 3.6 kW",
+    searchBlob:
+      "acrylic sheet line bending heating machine abm-1250 abm-2400 1250mm 2400mm 4 feet 8 feet 1mm to 10mm 1mm to 15mm 1.5 kw 3.6 kw water cooled pid temperature",
+  },
+  {
+    id: "ce53-laser-cutting-system",
+    brand: "CLASSIC_EDGE_53",
+    brandLabel: "Classic Edge 53",
+    itemType: "MACHINE",
+    name: "CO2 Acrylic Laser Cutting & Engraving Machine",
+    slug: "co2-acrylic-laser-cutter",
+    sku: "CE-LC1390 / CE-LC1325",
+    categoryName: "Acrylic Machine (Classic Edge 53)",
+    basePrice: null,
+    mainImage: null,
+    url: "https://classicedge53.com/products",
+    description:
+      "Heavy-duty CO2 laser cutting and engraving system engineered for cast acrylic fabrication, trophies, podium panels, signage letters, and precision display parts.",
+    features: [
+      "Flame-polished crystal clear cut edges on cast acrylic up to 25mm",
+      "Knife-blade bed designed to minimize back-reflection marks on clear sheets",
+      "Ruida digital controller compatible with LightBurn and CorelDraw",
+      "Industrial CW-5200 water chiller and exhaust blower included",
+    ],
+    specifications: [
+      { label: "Working Bed Size", value: "1300x900mm / 1300x2500mm", type: "specification" },
+      { label: "Laser Power", value: "100W / 130W / 150W RECI CO2", type: "specification" },
+      { label: "Max Acrylic Cutting Thickness", value: "Up to 25mm Cast Acrylic", type: "specification" },
+      { label: "Table Type", value: "Anodized Knife Blade & Honeycomb", type: "specification" },
+    ],
+    models: [
+      {
+        id: "model-ce-lc1390",
+        modelName: "CE-LC1390",
+        specifications: [
+          { label: "Working Area", value: "1300 x 900 mm" },
+          { label: "Laser Tube Options", value: "100W / 130W RECI CO2" },
+          { label: "Max Acrylic Thickness", value: "20 mm" },
+        ],
+        resources: [],
+        consumables: [],
+      },
+      {
+        id: "model-ce-lc1325",
+        modelName: "CE-LC1325",
+        specifications: [
+          { label: "Working Area", value: "1300 x 2500 mm (Full 8x4 Sheet)" },
+          { label: "Laser Tube Options", value: "130W / 150W RECI CO2" },
+          { label: "Max Acrylic Thickness", value: "25 mm" },
+        ],
+        resources: [],
+        consumables: [],
+      },
+    ],
+    resources: [],
+    relatedConsumables: [],
+    modelsSummary: "CE-LC1390, CE-LC1325",
+    specsSummary:
+      "Working Bed Size: 1300x900mm / 1300x2500mm, Laser Power: 100W / 130W / 150W RECI CO2, Max Acrylic Cutting Thickness: Up to 25mm | CE-LC1390: 1300 x 900 mm, Max 20 mm | CE-LC1325: 1300 x 2500 mm, Max 25 mm",
+    searchBlob:
+      "co2 acrylic laser cutting engraving machine ce-lc1390 ce-lc1325 1300x900mm 1300x2500mm 100w 130w 150w reci 20mm 25mm",
+  },
+  {
+    id: "ce53-cnc-router-acrylic",
+    brand: "CLASSIC_EDGE_53",
+    brandLabel: "Classic Edge 53",
+    itemType: "MACHINE",
+    name: "3-Axis Acrylic & Sign Making CNC Router",
+    slug: "acrylic-cnc-router-1325",
+    sku: "CE-CNC1325",
+    categoryName: "Acrylic Machine (Classic Edge 53)",
+    basePrice: null,
+    mainImage: null,
+    url: "https://classicedge53.com/products",
+    description:
+      "High-rigidity 8x4 ft CNC router with mist cooling for heavy acrylic block routing, chamfering, grooving, LED letter housing, and composite sheet cutting.",
+    features: [
+      "Heavy welded tubular steel frame for vibration-free thick acrylic routing",
+      "Dual-zone vacuum table with T-slot clamps for small and full-sheet parts",
+      "Mist coolant sprayer prevents chip re-welding on acrylic edges",
+    ],
+    specifications: [
+      { label: "Working Area", value: "1300mm x 2500mm x 200mm", type: "specification" },
+      { label: "Spindle", value: "3.5kW / 4.5kW Water or Air Cooled", type: "specification" },
+      { label: "Table Structure", value: "Vacuum Bed + T-Slot Aluminium Table", type: "specification" },
+    ],
+    models: [
+      {
+        id: "model-ce-cnc1325",
+        modelName: "CE-CNC1325",
+        specifications: [
+          { label: "Working Area", value: "1300 x 2500 x 200 mm" },
+          { label: "Spindle Power", value: "3.5 kW / 4.5 kW" },
+          { label: "Drive System", value: "Helical Rack & Pinion + Linear Guides" },
+        ],
+        resources: [],
+        consumables: ["Single-Flute Spiral Carbide CNC Router Bits for Acrylic"],
+      },
+    ],
+    resources: [],
+    relatedConsumables: ["Single-Flute Spiral Carbide CNC Router Bits for Acrylic"],
+    modelsSummary: "CE-CNC1325",
+    specsSummary:
+      "Working Area: 1300mm x 2500mm x 200mm, Spindle: 3.5kW / 4.5kW Water or Air Cooled, Table Structure: Vacuum Bed + T-Slot Aluminium Table",
+    searchBlob:
+      "3-axis acrylic sign making cnc router ce-cnc1325 1300x2500mm 3.5kw 4.5kw vacuum bed",
+  },
+  {
+    id: "ce53-flame-polishing-unit",
+    brand: "CLASSIC_EDGE_53",
+    brandLabel: "Classic Edge 53",
+    itemType: "MACHINE",
+    name: "HHO Oxy-Hydrogen Acrylic Flame Polishing Machine",
+    slug: "hho-acrylic-flame-polisher",
+    sku: "CE-FP160 / CE-FP260",
+    categoryName: "Acrylic Machine (Classic Edge 53)",
+    basePrice: null,
+    mainImage: null,
+    url: "https://classicedge53.com/products",
+    description:
+      "Portable oxy-hydrogen water-electrolysis flame polishing generator for rapid crystal-clear polishing of curved, internal, and intricate acrylic edges.",
+    features: [
+      "Produces clean oxy-hydrogen flame on demand using distilled water",
+      "Ideal for curved edges, internal cutouts, and letters where diamond polishers cannot reach",
+      "Multi-stage flashback arrestor and over-pressure safety cut-off",
+    ],
+    specifications: [
+      { label: "Gas Output", value: "160 L/H to 260 L/H", type: "specification" },
+      { label: "Max Acrylic Thickness", value: "Up to 12mm Curved & Internal Edges", type: "specification" },
+      { label: "Consumable Medium", value: "Distilled Water + KOH Electrolyte", type: "specification" },
+    ],
+    models: [
+      {
+        id: "model-ce-fp160",
+        modelName: "CE-FP160",
+        specifications: [
+          { label: "Gas Output", value: "160 L/H (Single Torch)" },
+          { label: "Recommended Sheet Thickness", value: "1mm to 8mm" },
+          { label: "Power", value: "600W 220V" },
+        ],
+        resources: [],
+        consumables: [],
+      },
+      {
+        id: "model-ce-fp260",
+        modelName: "CE-FP260",
+        specifications: [
+          { label: "Gas Output", value: "260 L/H (Single or Dual Torch)" },
+          { label: "Recommended Sheet Thickness", value: "1mm to 12mm" },
+          { label: "Power", value: "1000W 220V" },
+        ],
+        resources: [],
+        consumables: [],
+      },
+    ],
+    resources: [],
+    relatedConsumables: [],
+    modelsSummary: "CE-FP160, CE-FP260",
+    specsSummary:
+      "Gas Output: 160 L/H to 260 L/H, Max Acrylic Thickness: Up to 12mm Curved & Internal Edges | CE-FP160: 160 L/H, 1mm to 8mm, 600W | CE-FP260: 260 L/H, 1mm to 12mm, 1000W",
+    searchBlob:
+      "hho oxy-hydrogen acrylic flame polishing machine ce-fp160 ce-fp260 160 l/h 260 l/h 12mm curved internal edges",
+  },
+  {
+    id: "ce53-thermoforming-oven",
+    brand: "CLASSIC_EDGE_53",
+    brandLabel: "Classic Edge 53",
+    itemType: "MACHINE",
+    name: "Industrial Acrylic Sheet Thermoforming & Softening Oven",
+    slug: "acrylic-thermoforming-oven",
+    sku: "CE-TO1525",
+    categoryName: "Acrylic Machine (Classic Edge 53)",
+    basePrice: null,
+    mainImage: null,
+    url: "https://classicedge53.com/products",
+    description:
+      "Hot-air circulation industrial baking and softening oven for uniform heating of full acrylic sheets prior to 3D dome blowing, drape molding, and curved podium forming.",
+    features: [
+      "Dual-convection hot-air circulation keeps temperature uniform within +/- 2 C",
+      "Pull-out PTFE-coated drawers prevent surface marks on softened acrylic sheets",
+      "Digital timer and PID temperature controller up to 250 C",
+    ],
+    specifications: [
+      { label: "Chamber Size", value: "1500mm x 2500mm", type: "specification" },
+      { label: "Temperature Control", value: "PID Digital (Room Temp to 250°C)", type: "specification" },
+    ],
+    models: [
+      {
+        id: "model-ce-to1525",
+        modelName: "CE-TO1525",
+        specifications: [
+          { label: "Internal Chamber Size", value: "1500 x 2500 x 450 mm" },
+          { label: "Heating Power", value: "18 kW 3-Phase" },
+          { label: "Temperature Range", value: "Room Temp to 250°C" },
+        ],
+        resources: [],
+        consumables: [],
+      },
+    ],
+    resources: [],
+    relatedConsumables: [],
+    modelsSummary: "CE-TO1525",
+    specsSummary:
+      "Chamber Size: 1500mm x 2500mm, Temperature Control: PID Digital (Room Temp to 250°C), Heating Power: 18 kW 3-Phase",
+    searchBlob:
+      "industrial acrylic sheet thermoforming softening oven ce-to1525 1500x2500mm 250c 18 kw",
+  },
+  {
+    id: "ce53-pcd-diamond-cutters",
+    brand: "CLASSIC_EDGE_53",
+    brandLabel: "Classic Edge 53",
+    itemType: "CONSUMABLE",
+    name: "PCD & Natural Single-Crystal Diamond Polishing Cutters",
+    slug: "pcd-natural-diamond-polishing-blades",
+    sku: "CE-PCD-SET",
+    categoryName: "Acrylic Fabrication Consumables & Tools",
+    basePrice: null,
+    mainImage: null,
+    url: "https://classicedge53.com/consumables",
+    description:
+      "Replacement pre-milling PCD and natural monocrystalline diamond finish cutters for YN-JW series acrylic diamond edge polishing machines.",
+    specsSummary:
+      "Compatibility: YN-JW1200, YN-JW1600 & Standard Edge Polishers, Blade Types: Roughing PCD + Finishing Natural Diamond",
+    searchBlob:
+      "pcd natural single-crystal diamond polishing cutters ce-pcd-set yn-jw1200 yn-jw1600 consumable blades",
+  },
+  {
+    id: "ce53-acrylic-cnc-bits",
+    brand: "CLASSIC_EDGE_53",
+    brandLabel: "Classic Edge 53",
+    itemType: "CONSUMABLE",
+    name: "Single-Flute Spiral Carbide CNC Router Bits for Acrylic",
+    slug: "single-flute-acrylic-cnc-bits",
+    sku: "CE-BIT-OFLUTE",
+    categoryName: "Acrylic Fabrication Consumables & Tools",
+    basePrice: null,
+    mainImage: null,
+    url: "https://classicedge53.com/consumables",
+    description:
+      "Mirror-polished O-flute solid carbide spiral end mills designed for chip-free upward evacuation and smooth edge cutting on cast and extruded acrylic.",
+    specsSummary: "Shank Sizes: 3.175mm, 4mm, 6mm, 8mm, Flute Geometry: Mirror-Polished O-Flute Upcut",
+    searchBlob:
+      "single-flute spiral carbide cnc router bits for acrylic ce-bit-oflute 3.175mm 4mm 6mm 8mm consumable",
+  },
+  {
+    id: "ce53-chloroform-bonding-applicators",
+    brand: "CLASSIC_EDGE_53",
+    brandLabel: "Classic Edge 53",
+    itemType: "CONSUMABLE",
+    name: "Bubble-Free Acrylic Solvent Bonding Glue & Needle Applicators",
+    slug: "acrylic-bonding-solvent-applicators",
+    sku: "CE-BOND-KIT",
+    categoryName: "Acrylic Fabrication Consumables & Tools",
+    basePrice: null,
+    mainImage: null,
+    url: "https://classicedge53.com/consumables",
+    description:
+      "Optical-clarity capillary acrylic welding adhesive, UV curing crystal glue, and precision stainless-steel needle applicator bottles for invisible podium and display joints.",
+    specsSummary: "Application: Capillary Seam Welding & Heavy Block Bonding",
+    searchBlob:
+      "bubble-free acrylic solvent bonding glue needle applicators ce-bond-kit capillary welding consumable",
+  },
+  {
+    id: "ce53-buffing-wheels-compounds",
+    brand: "CLASSIC_EDGE_53",
+    brandLabel: "Classic Edge 53",
+    itemType: "CONSUMABLE",
+    name: "Cotton Buffing Wheels, Heating Wires & Polishing Compounds",
+    slug: "acrylic-buffing-wheels-heating-wires",
+    sku: "CE-BUFF-KIT",
+    categoryName: "Acrylic Fabrication Consumables & Tools",
+    basePrice: null,
+    mainImage: null,
+    url: "https://classicedge53.com/consumables",
+    description:
+      "Layered unbleached cotton buffing wheels, white/brown acrylic polishing wax bars, and replacement nichrome/quartz heating elements for acrylic line benders.",
+    specsSummary: "Use Case: Final Gloss Buffing & Line Bender Maintenance",
+    searchBlob:
+      "cotton buffing wheels heating wires polishing compounds ce-buff-kit nichrome quartz consumable",
   },
 ];
+
+function parseMeasurementValuesFromSpec(val: string): {
+  numbers: number[];
+  area: number | null;
+  maxNumber: number | null;
+} {
+  const nums = Array.from(val.matchAll(/\d+(?:\.\d+)?/g))
+    .map((m) => Number(m[0]))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (nums.length === 0) return { numbers: [], area: null, maxNumber: null };
+  const areaMatch = val.match(/(\d+(?:\.\d+)?)\s*(?:x|×|by|\*)\s*(\d+(?:\.\d+)?)/i);
+  const area = areaMatch ? Number(areaMatch[1]) * Number(areaMatch[2]) : null;
+  const maxNumber = Math.max(...nums);
+  return { numbers: nums, area, maxNumber };
+}
+
+/**
+ * Stage 2 Question-Aware Deep Product Context & Deterministic Answer Builder for WhatsApp & Admin Copilot.
+ * Formats only the relevant deep fields (dimensions, specifications, variants, features, models, notes, resources)
+ * for Claude Haiku 5.5 and produces a verified factual answer for comparisons, dimensions, variants, and unverified specs.
+ */
+export function buildEcosystemDeepProductContextAndAnswer(params: {
+  rawQuery: string;
+  matchedItems: MainWebsiteProduct[];
+  formatItemLink?: (item: MainWebsiteProduct) => string;
+}): {
+  promptCatalogContext: string;
+  deterministicDeepAnswer: string | null;
+  isDeepQuestion: boolean;
+} {
+  const { rawQuery, matchedItems, formatItemLink } = params;
+  const q = rawQuery.trim().toLowerCase();
+  const getLink = (it: MainWebsiteProduct) =>
+    formatItemLink ? formatItemLink(it) : it.url;
+
+  const isComparison =
+    /\b(compare|comparison|difference|differences|differ|vs\.?|versus|between|wider|widest|larger|largest|bigger|biggest|taller|tallest|heavier|heaviest|which\s+one|which\s+of\s+these|which\s+podium|which\s+machine|which\s+model)\b/i.test(
+      q
+    );
+  const isDimensionQuery =
+    /\b(dimension|dimensions|size|sizes|height|width|wide|wider|depth|length|top\s*sheet|reading\s*top|reading\s*surface|bottom\s*sheet|base\s*size|front\s*panel|shelf\s*size|logo\s*panel|inch|inches|mm|cm|feet|ft|footprint)\b/i.test(
+      q
+    );
+  const isVariantQuery =
+    /\b(variant|variants|color|colors|colour|colours|finish|finishes|led|frosted|black|white|clear|silver|golden|gold|stainless|price\s+difference)\b/i.test(
+      q
+    );
+  const isFeatureOrSpecQuery =
+    /\b(spec|specs|specification|specifications|feature|features|material|pillar|pillars|wheel|wheels|warranty|weight|assembly|diy|note|notes|packaging|delivery|application|applications|industry|industries|brochure|manual|datasheet|video|consumable|consumables|model|models|spindle|power|thickness|working\s*length|working\s*area|bending\s*width)\b/i.test(
+      q
+    );
+  const unverifiedThicknessOrSpecMatch = q.match(
+    /\b(?:can\s+(?:this|the|it)|does\s+(?:this|the|it)|process|bend|cut|polish|support|handle)\b.*?\b(\d+)\s*(mm|inch|inches|kw|w|rpm|v|volt)\b|\b(motor\s+brand|power\s+consumption|exact\s+sheet\s+thickness|sheet\s+thickness\s+of\s+ccp\d+)\b/i
+  );
+
+  const isDeepQuestion =
+    isComparison ||
+    isDimensionQuery ||
+    isVariantQuery ||
+    isFeatureOrSpecQuery ||
+    Boolean(unverifiedThicknessOrSpecMatch);
+
+  // Build Stage 2 Question-Aware Prompt Context
+  const promptLines = matchedItems.slice(0, 6).map((it, idx) => {
+    const priceLabel =
+      typeof it.basePrice === "number" && it.basePrice > 0
+        ? `₹${it.basePrice.toLocaleString("en-IN")}${
+            it.regularPrice && it.regularPrice > it.basePrice
+              ? ` (MRP ₹${it.regularPrice.toLocaleString("en-IN")})`
+              : ""
+          }`
+        : "Custom Quote on Request";
+    const lines: string[] = [
+      `${idx + 1}. [${it.brandLabel}] *${it.name}*${it.sku ? ` (SKU/Model: ${it.sku})` : ""} | Category: ${it.categoryName} | Price: ${priceLabel} | Link: ${getLink(it)}`,
+    ];
+
+    if (it.dimensions && it.dimensions.length > 0) {
+      lines.push(
+        `   - Verified Dimensions: ${it.dimensions.map((d) => `${d.label || d.key || ""}: ${d.value}`).join("; ")}`
+      );
+    }
+    const techSpecs = (it.specifications || []).filter((s) => s.type !== "dimension");
+    if (techSpecs.length > 0) {
+      lines.push(
+        `   - Verified Technical Specifications: ${techSpecs.map((s) => `${s.label || s.key || ""}: ${s.value}`).join("; ")}`
+      );
+    } else if (it.specsSummary && (!it.dimensions || it.dimensions.length === 0)) {
+      lines.push(`   - Verified Specifications: ${it.specsSummary}`);
+    }
+    if (it.variants && it.variants.length > 0) {
+      lines.push(
+        `   - Variants & Option Prices: ${it.variants
+          .map((v) =>
+            typeof v.price === "number" && v.price > 0
+              ? `${v.name} (₹${v.price.toLocaleString("en-IN")})`
+              : v.name
+          )
+          .join(", ")}`
+      );
+    }
+    if (it.features && it.features.length > 0) {
+      lines.push(`   - Key Features: ${it.features.slice(0, 8).join(" | ")}`);
+    }
+    if (it.models && it.models.length > 0) {
+      for (const m of it.models) {
+        const mSpecs = m.specifications.map((s) => `${s.label || s.key || ""}: ${s.value}`).join("; ");
+        lines.push(`   - Machine Model [${m.modelName}]: ${mSpecs || "Standard configuration"}`);
+      }
+    }
+    if (it.descriptionHtmlText || it.description) {
+      lines.push(
+        `   - Detailed Description: ${(it.descriptionHtmlText || it.description || "").slice(0, 420)}`
+      );
+    }
+    if (it.importantNoteText) {
+      lines.push(`   - Important Note: ${it.importantNoteText.slice(0, 260)}`);
+    }
+    if (it.industries && it.industries.length > 0) {
+      lines.push(
+        `   - Applications / Industries: ${it.industries
+          .map((ind) => (typeof ind === "string" ? ind : ind.name))
+          .join(", ")}`
+      );
+    }
+    if (it.relatedConsumables && it.relatedConsumables.length > 0) {
+      lines.push(
+        `   - Compatible Consumables: ${it.relatedConsumables
+          .map((c) => (typeof c === "string" ? c : c.name))
+          .join(", ")}`
+      );
+    }
+    if (it.resources && it.resources.length > 0) {
+      lines.push(
+        `   - Technical Resources: ${it.resources.map((r) => `${r.title || r.name || "Resource"}${r.type ? ` (${r.type})` : ""}`).join(", ")}`
+      );
+    }
+    return lines.join("\n");
+  });
+
+  const promptCatalogContext = promptLines.join("\n\n");
+
+  if (!isDeepQuestion || matchedItems.length === 0) {
+    return {
+      promptCatalogContext,
+      deterministicDeepAnswer: null,
+      isDeepQuestion,
+    };
+  }
+
+  // Check for unverified capacity or missing spec questions (e.g., "Can the ABM-1250 process 20mm acrylic?" or "What is the exact acrylic sheet thickness in mm of CCP055?")
+  if (unverifiedThicknessOrSpecMatch) {
+    const primary = matchedItems[0];
+    const requestedNum = unverifiedThicknessOrSpecMatch[1]
+      ? Number(unverifiedThicknessOrSpecMatch[1])
+      : null;
+    const requestedUnit = (unverifiedThicknessOrSpecMatch[2] || "").toLowerCase();
+
+    if (primary.brand === "CLASSIC_EDGE_53") {
+      // Check if user mentioned a specific model like ABM-1250
+      const targetModel =
+        (primary.models || []).find((m) =>
+          q.replace(/[-_\s]+/g, "").includes(m.modelName.toLowerCase().replace(/[-_\s]+/g, ""))
+        ) || (primary.models || [])[0];
+      const allSpecs = [
+        ...(targetModel?.specifications || []),
+        ...(primary.specifications || []),
+      ];
+      const thicknessSpec = allSpecs.find((s) =>
+        /thickness/i.test(s.label || s.key || "")
+      );
+      if (thicknessSpec && requestedNum && requestedUnit === "mm") {
+        const parsed = parseMeasurementValuesFromSpec(thicknessSpec.value);
+        if (parsed.maxNumber !== null && requestedNum > parsed.maxNumber) {
+          const otherModel = (primary.models || []).find(
+            (m) => m.modelName !== targetModel?.modelName
+          );
+          const otherThickness = otherModel?.specifications.find((s) =>
+            /thickness/i.test(s.label || s.key || "")
+          );
+          const lines: string[] = [
+            `Based on our verified catalog specifications for the *${primary.name}*${targetModel ? ` (*${targetModel.modelName}*)` : ""}, its rated sheet thickness capacity is *${thicknessSpec.value}*, so *${requestedNum} mm* exceeds the verified limit for that model.`,
+          ];
+          if (otherModel && otherThickness) {
+            lines.push(
+              `• *${otherModel.modelName}* supports *${otherThickness.value}*.`
+            );
+          }
+          lines.push(
+            `• Product Specs: ${primary.specsSummary || thicknessSpec.value}`,
+            `• View details: ${getLink(primary)}`,
+            `\nIf you need to process *${requestedNum} mm* acrylic sheets, please share your application and our Classic Edge 53 engineering team will confirm the right heavy-duty machine or custom heating/cutting setup.`
+          );
+          return {
+            promptCatalogContext,
+            deterministicDeepAnswer: lines.join("\n"),
+            isDeepQuestion: true,
+          };
+        }
+      }
+    }
+
+    // Check if asking for an unverified spec on a Classic Concepts product (e.g., sheet thickness in mm or motor brand when not stored)
+    if (
+      primary.brand === "CLASSIC_CONCEPTS" &&
+      /\b(thickness\s+in\s+mm|sheet\s+thickness|how\s+many\s+mm\s+thick|motor\s+brand|wattage)\b/i.test(
+        q
+      )
+    ) {
+      const hasThicknessInSpecs = (primary.specifications || []).some((s) =>
+        /\b\d+\s*mm\b/i.test(`${s.label || s.key || ""} ${s.value}`)
+      );
+      if (!hasThicknessInSpecs) {
+        const verifiedDims = (primary.dimensions || [])
+          .map((d) => `${d.label || d.key || ""}: ${d.value}`)
+          .join(", ");
+        const verifiedSpecs = (primary.specifications || [])
+          .filter((s) => s.type !== "dimension")
+          .map((s) => `${s.label || s.key || ""}: ${s.value}`)
+          .join(", ");
+        return {
+          promptCatalogContext,
+          deterministicDeepAnswer: [
+            `The exact acrylic sheet thickness in millimetres is not listed in the stored specifications for *${primary.name}* (${getLink(primary)}), so I will not guess that figure.`,
+            verifiedDims ? `• *Verified Dimensions:* ${verifiedDims}` : "",
+            verifiedSpecs ? `• *Verified Specifications:* ${verifiedSpecs}` : "",
+            `\nReply here if you would like our manufacturing team in Hyderabad to confirm the exact sheet gauge for each panel or customize the thickness for your order.`,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          isDeepQuestion: true,
+        };
+      }
+    }
+  }
+
+  // Handle Machine Model Comparisons (e.g., YN-JW1200 vs YN-JW1600, ABM-1250 vs ABM-2400)
+  const machineWithModels = matchedItems.find(
+    (it) => it.brand === "CLASSIC_EDGE_53" && (it.models || []).length >= 2
+  );
+  if (
+    machineWithModels &&
+    (isComparison ||
+      (machineWithModels.models || []).some((m) =>
+        q.replace(/[-_\s]+/g, "").includes(m.modelName.toLowerCase().replace(/[-_\s]+/g, ""))
+      ))
+  ) {
+    const models = machineWithModels.models || [];
+    const prodSpecs = (machineWithModels.specifications || [])
+      .map((s) => `${s.label || s.key || ""}: ${s.value}`)
+      .join(", ");
+    const modelLines = models.map((m) => {
+      const mSpecText = m.specifications.map((s) => `${s.label || s.key || ""}: ${s.value}`).join(" | ");
+      return `• *${m.modelName}*: ${mSpecText}`;
+    });
+    const featureLine =
+      machineWithModels.features && machineWithModels.features.length > 0
+        ? `• *Key Highlights*: ${machineWithModels.features.slice(0, 3).join("; ")}`
+        : "";
+    return {
+      promptCatalogContext,
+      deterministicDeepAnswer: [
+        `Here are the verified specifications for the *${machineWithModels.name}* (${getLink(machineWithModels)}):`,
+        prodSpecs ? `• *General Machine Specs*: ${prodSpecs}` : "",
+        ...modelLines,
+        featureLine,
+        machineWithModels.relatedConsumables && machineWithModels.relatedConsumables.length > 0
+          ? `• *Compatible Consumables*: ${machineWithModels.relatedConsumables.map((c) => (typeof c === "string" ? c : c.name)).join(", ")}`
+          : "",
+        `\nClassic Edge 53 machines are quoted based on the model and factory configuration. Share your preferred model (*${models.map((m) => m.modelName).join("* or *")}*) and city for an official quotation.`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      isDeepQuestion: true,
+    };
+  }
+
+  // Handle Multi-Product Comparisons & Superlative Follow-ups ("Compare CCP054 and CCP055", "Which one is wider?", "Which has the largest reading top?")
+  if (isComparison && matchedItems.length >= 2) {
+    const candidates = matchedItems.slice(0, 4);
+    const wantsReadingTop = /\b(reading\s*top|top\s*sheet|reading\s*surface|top\s*size)\b/i.test(q);
+    const wantsWider = /\b(wider|widest|width|larger|largest|bigger|biggest)\b/i.test(q);
+
+    let winnerNote = "";
+    if (wantsReadingTop || wantsWider) {
+      let bestItem: MainWebsiteProduct | null = null;
+      let bestSpecValue = "";
+      let bestMetric = -1;
+
+      for (const it of candidates) {
+        const allDims = it.dimensions || [];
+        const targetSpec = wantsReadingTop
+          ? allDims.find((d) => /top\s*sheet|reading/i.test(d.label || d.key || "")) || allDims[0]
+          : allDims.find((d) => /top\s*sheet|bottom\s*sheet|front\s*panel|width/i.test(d.label || d.key || "")) ||
+            allDims[0];
+        if (targetSpec) {
+          const parsed = parseMeasurementValuesFromSpec(targetSpec.value);
+          const metric = wantsReadingTop
+            ? parsed.area ?? parsed.maxNumber ?? -1
+            : parsed.maxNumber ?? parsed.area ?? -1;
+          if (metric > bestMetric) {
+            bestMetric = metric;
+            bestItem = it;
+            bestSpecValue = `${targetSpec.label || targetSpec.key || ""}: ${targetSpec.value}`;
+          }
+        }
+      }
+      if (bestItem) {
+        winnerNote = wantsReadingTop
+          ? `*${bestItem.name}* has the largest reading top among these options (*${bestSpecValue}*).`
+          : `*${bestItem.name}* has the wider dimensions among these options (*${bestSpecValue}*).`;
+      }
+    }
+
+    const itemLines = candidates.map((it) => {
+      const priceText =
+        typeof it.basePrice === "number" && it.basePrice > 0
+          ? `₹${it.basePrice.toLocaleString("en-IN")}`
+          : "Custom Quote";
+      const dims = (it.dimensions || [])
+        .map((d) => `${d.label || d.key || ""}: ${d.value}`)
+        .join(", ");
+      const tech = (it.specifications || [])
+        .filter((s) => s.type !== "dimension")
+        .map((s) => `${s.label || s.key || ""}: ${s.value}`)
+        .join(", ");
+      const vars =
+        it.variants && it.variants.length > 0
+          ? `Variants: ${it.variants
+              .map((v) =>
+                typeof v.price === "number" && v.price > 0
+                  ? `${v.name} (₹${v.price.toLocaleString("en-IN")})`
+                  : v.name
+              )
+              .join(", ")}`
+          : "";
+      return [
+        `• *${it.name}* (${priceText}) - ${getLink(it)}`,
+        dims ? `  Dimensions: ${dims}` : "",
+        tech ? `  Specs: ${tech}` : "",
+        vars ? `  ${vars}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    });
+
+    return {
+      promptCatalogContext,
+      deterministicDeepAnswer: [
+        winnerNote || `Here is a side-by-side comparison from our verified catalog:`,
+        ...itemLines,
+        `\nLet me know which model or variant you prefer and I can share delivery timelines or prepare a quote.`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      isDeepQuestion: true,
+    };
+  }
+
+  // Single-product deep question (dimensions, variants, specs, features, notes)
+  const item = matchedItems[0];
+  const priceStr =
+    typeof item.basePrice === "number" && item.basePrice > 0
+      ? `₹${item.basePrice.toLocaleString("en-IN")}`
+      : "Custom Quote on Request";
+  const detailLines: string[] = [
+    `Here are the verified catalog details for *${item.name}* (*${priceStr}*) at ${getLink(item)}:`,
+  ];
+
+  if (item.dimensions && item.dimensions.length > 0) {
+    detailLines.push(
+      `• *Dimensions*: ${item.dimensions.map((d) => `${d.label || d.key || ""}: ${d.value}`).join(" | ")}`
+    );
+  }
+  const techSpecs = (item.specifications || []).filter((s) => s.type !== "dimension");
+  if (techSpecs.length > 0) {
+    detailLines.push(
+      `• *Technical Specifications*: ${techSpecs.map((s) => `${s.label || s.key || ""}: ${s.value}`).join(" | ")}`
+    );
+  } else if (item.specsSummary) {
+    detailLines.push(`• *Specifications*: ${item.specsSummary}`);
+  }
+  if (item.variants && item.variants.length > 0) {
+    detailLines.push(
+      `• *Available Variants & Pricing*: ${item.variants
+        .map((v) =>
+          typeof v.price === "number" && v.price > 0
+            ? `${v.name} (₹${v.price.toLocaleString("en-IN")})`
+            : v.name
+        )
+        .join(", ")}`
+    );
+  }
+  if (item.features && item.features.length > 0) {
+    detailLines.push(`• *Key Features*: ${item.features.slice(0, 6).join("; ")}`);
+  }
+  if (item.models && item.models.length > 0) {
+    for (const m of item.models) {
+      detailLines.push(
+        `• *Model ${m.modelName}*: ${m.specifications.map((s) => `${s.label || s.key || ""}: ${s.value}`).join(" | ")}`
+      );
+    }
+  }
+  if (item.importantNoteText) {
+    detailLines.push(`• *Important Note*: ${item.importantNoteText}`);
+  }
+
+  return {
+    promptCatalogContext,
+    deterministicDeepAnswer: detailLines.join("\n"),
+    isDeepQuestion: true,
+  };
+}

@@ -5,6 +5,7 @@ import zlib from "node:zlib";
 import nodemailer from "nodemailer";
 import {
   appendAiTraceLog,
+  buildEcosystemDeepProductContextAndAnswer,
   cleanDisplayProductName,
   ensureDatabasesBootstrapped,
   extractBudgetConstraintsFromQuery,
@@ -1745,13 +1746,13 @@ export async function getCachedEcosystemCatalog(): Promise<{
 }> {
   const [ccRes, ceRes] = await Promise.all([
     rememberWhatsAppCacheWithMeta(
-      "ecosystem:cc-products:v6",
+      "ecosystem:cc-products:v7",
       ["cc-products"],
       3600,
       () => loadAllClassicConceptsProducts()
     ),
     rememberWhatsAppCacheWithMeta(
-      "ecosystem:ce53-items:v5",
+      "ecosystem:ce53-items:v6",
       ["ce53-machines"],
       3600,
       () => loadAllClassicEdgeItems()
@@ -1941,10 +1942,10 @@ export interface AcrioIntentClassification {
 }
 
 const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
-  /\b(podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|sign|nameplate|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|keychain|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|stool|chair|furniture|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
+  /\b(ccp[-_\s]?\d{2,4}|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|sign|nameplate|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|keychain|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|stool|chair|furniture|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
-  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*k\b|\d{4,6}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|silver|colored|coloured|thick|thickness|\d+\s*(?:mm|cm|inch|in|ft)\b|bigger|smaller|wider|taller|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one)\b/i;
+  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*k\b|\d{4,6}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these)\b/i;
 
 /**
  * Deterministic Turn-Level Intent Classifier (Phase A).
@@ -2133,7 +2134,7 @@ export function classifyAcrioInboundIntent(
 
   // 11. Product comparison
   if (
-    /\b(compare|comparison|vs\.?|versus|difference\s+between|which\s+(?:one|model|podium|machine)\s+is\s+better)\b/i.test(
+    /\b(compare|comparison|vs\.?|versus|difference\s+between|differ\s+between|which\s+(?:one|of\s+these|of\s+them|model|podium|pulpit|machine)\s+(?:is|has)\s+(?:better|wider|widest|larger|largest|bigger|biggest|taller|tallest|more))\b/i.test(
       lower
     )
   ) {
@@ -2885,7 +2886,18 @@ export async function runAcrioChatCopilot(params: {
       })
     : "";
 
+  const deepCopilotInfo = intentInfo.requiresProductLookup
+    ? buildEcosystemDeepProductContextAndAnswer({
+        rawQuery: lastInbound,
+        matchedItems: catalog,
+        formatItemLink: (it) => it.shortUrl || it.url,
+      })
+    : null;
+
   const localReplies: string[] = [];
+  if (deepCopilotInfo?.deterministicDeepAnswer) {
+    localReplies.push(`${greetPrefix}${deepCopilotInfo.deterministicDeepAnswer}`);
+  }
   if (intentInfo.intent === "IDENTITY_META") {
     localReplies.push(
       `${greetPrefix}I am *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic products) and *Classic Edge 53* (acrylic fabrication machines & tools).\n\nTell me what you want to display, build, or fabricate and I will share matching options right away.`,
@@ -3217,20 +3229,38 @@ export async function runAcrioAutonomousTurn(params: {
     usedLookupQuery = normalizedSearch.searchQuery;
     budgetLabel = normalizedSearch.budgetLabel;
 
+    const prevMaxPrice = storedState?.maxPrice ?? null;
+    const hasExplicitCodeInTurn =
+      /\b(ccp[-_\s]?\d{2,4}|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium)\b/i.test(
+        rawText
+      );
+    const budgetChangedInTurn = prevMaxPrice !== convState.maxPrice;
+
     if (
-      intentInfo.intent === "PRODUCT_COMPARISON" &&
-      convState.lastRecommendedProducts.length >= 2 &&
-      /\b(first\s*two|top\s*two|both|these\s*two|those\s*two)\b/i.test(rawText)
+      !hasExplicitCodeInTurn &&
+      !budgetChangedInTurn &&
+      convState.lastRecommendedProducts.length > 0 &&
+      (intentInfo.intent === "PRODUCT_COMPARISON" ||
+        intentInfo.intent === "FOLLOW_UP_REFINEMENT") &&
+      /\b(first\s*two|top\s*two|both|these|those|them|which\s+one|which\s+of\s+these|wider|widest|larger|largest|bigger|biggest|taller|tallest|reading\s*top|top\s*sheet|dimension|dimensions|spec|specs|specification|specifications|variant|variants|color|colors|colour|colours|feature|features|pillar|pillars|warranty)\b/i.test(
+        rawText
+      )
     ) {
+      const sliceCount = /\b(first\s*two|top\s*two|both|these\s*two|those\s*two)\b/i.test(
+        rawText
+      )
+        ? 2
+        : convState.lastRecommendedProducts.length;
       const targetSlugs = new Set(
-        convState.lastRecommendedProducts.slice(0, 2).map((p) => p.slug || p.id)
+        convState.lastRecommendedProducts
+          .slice(0, sliceCount)
+          .map((p) => p.slug || p.id)
       );
       contextMatches = allItems.filter((it) =>
         targetSlugs.has(it.slug || it.id)
       );
     }
 
-    const prevMaxPrice = storedState?.maxPrice ?? null;
     if (contextMatches.length === 0) {
       const budgetRaised =
         prevMaxPrice !== null &&
@@ -3363,6 +3393,14 @@ export async function runAcrioAutonomousTurn(params: {
       })
     : "";
 
+  const deepProductInfo = intentInfo.requiresProductLookup
+    ? buildEcosystemDeepProductContextAndAnswer({
+        rawQuery: rawText,
+        matchedItems: contextMatches,
+        formatItemLink: (it) => it.shortUrl || it.url,
+      })
+    : null;
+
   // 4. Multi-turn Claude Haiku 5.5 (Medium Effort) Diagnostic & Conversational Assistant
   const { apiKey, source: keySource } = await resolveSharedAnthropicApiKey("client");
   let lastAiError: string | null = null;
@@ -3427,8 +3465,14 @@ Welcome the customer briefly and ask what they are looking to display, build, or
           budgetFallbackLowestPrice && budgetFallbackLowestItem
             ? ` The lowest verified price in this category is ₹${budgetFallbackLowestPrice.toLocaleString("en-IN")} (*${cleanDisplayProductName(budgetFallbackLowestItem.name)}* - ${budgetFallbackLowestItem.shortUrl || budgetFallbackLowestItem.url}).`
             : "";
+        const deepBlock = deepProductInfo?.promptCatalogContext
+          ? `\n\nVerified Deep Product Specifications, Dimensions, Variants & Machine Models:\n${deepProductInfo.promptCatalogContext}`
+          : "";
+        const verifiedDeepReference = deepProductInfo?.deterministicDeepAnswer
+          ? `\n\nVerified Exact Answer Reference (include all exact measurements, variant prices, model codes, and links from this reference without inventing unverified numbers):\n${deepProductInfo.deterministicDeepAnswer}`
+          : "";
         catalogContext = prebuiltGroupedBlock
-          ? `Turn Intent: ${intentInfo.intent}\nMatched Products strictly filtered for the customer's query${budgetLabel ? ` (Budget filter applied: ${budgetLabel})` : ""}:\n${prebuiltGroupedBlock}\n\nIMPORTANT: ONLY share products from the list above. Do NOT invent or mention any product outside this list.`
+          ? `Turn Intent: ${intentInfo.intent}\nMatched Products strictly filtered for the customer's query${budgetLabel ? ` (Budget filter applied: ${budgetLabel})` : ""}:\n${prebuiltGroupedBlock}${deepBlock}${verifiedDeepReference}\n\nIMPORTANT: ONLY share products, dimensions, variant prices, and specifications from the verified data above. Never guess or invent unverified sheet thickness, wattage, or dimensions.`
           : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}.${nearestHint} Explain honestly and helpfully without inventing prices, and ask if they would like to see our starting model or discuss a custom option.`;
       }
 
@@ -3653,6 +3697,8 @@ Return ONLY valid JSON:
     fallbackReason = `Customer shared custom dimensions for Sales quotation ("${rawText.slice(0, 110)}").`;
     smartCategory = "Custom Fabrication";
     priority = "HIGH";
+  } else if (deepProductInfo?.deterministicDeepAnswer) {
+    fallbackReply = `${greetOnce}${deepProductInfo.deterministicDeepAnswer}`;
   } else if (top && prebuiltGroupedBlock) {
     const followUpPrompt =
       smartCategory === "Acrylic Machines (CE53)"
