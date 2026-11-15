@@ -78,9 +78,24 @@ interface DevAnalyticsSlice {
     templateMessagesCount: number;
     outboundDeliveryRatePct: number;
     outboundReadRatePct: number;
+    aiTokensIn?: number;
+    aiTokensOut?: number;
+    aiTokensTotal?: number;
+    aiCacheReadTokens?: number;
+    aiLiveCallsCount?: number;
     clientBilledInr?: number;
     actualMetaCostInr?: number;
     netMarginInr?: number;
+  };
+  aiTokenSummary?: {
+    periodTokensIn: number;
+    periodTokensOut: number;
+    periodTokensTotal: number;
+    periodCacheReadTokens: number;
+    periodLiveAiCalls: number;
+    allTimeTokensIn: number;
+    allTimeTokensOut: number;
+    allTimeTokensTotal: number;
   };
 }
 
@@ -575,7 +590,7 @@ export default function DevProfitAndOpsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 text-xs">
                 <div className="p-3 rounded-lg bg-neutral-50 border border-neutral-200">
                   <div className="text-neutral-500">Period Client Billed</div>
                   <div className="text-base font-bold text-neutral-900 mt-1 font-mono">
@@ -592,6 +607,18 @@ export default function DevProfitAndOpsPage() {
                   <div className="text-emerald-800 font-medium">Period Net Profit</div>
                   <div className="text-base font-bold text-emerald-900 mt-1 font-mono">
                     +₹{(analytics.kpis.netMarginInr ?? 0).toFixed(4)}
+                  </div>
+                </div>
+                <div className="p-3 rounded-lg bg-indigo-50/60 border border-indigo-200">
+                  <div className="text-indigo-800 font-medium">AI Tokens In</div>
+                  <div className="text-base font-bold text-indigo-950 mt-1 font-mono">
+                    {(analytics.kpis.aiTokensIn ?? 0).toLocaleString("en-IN")}
+                  </div>
+                </div>
+                <div className="p-3 rounded-lg bg-purple-50/60 border border-purple-200">
+                  <div className="text-purple-800 font-medium">AI Tokens Out</div>
+                  <div className="text-base font-bold text-purple-950 mt-1 font-mono">
+                    {(analytics.kpis.aiTokensOut ?? 0).toLocaleString("en-IN")}
                   </div>
                 </div>
                 <div className="p-3 rounded-lg bg-neutral-50 border border-neutral-200">

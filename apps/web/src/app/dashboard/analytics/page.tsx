@@ -60,6 +60,11 @@ interface AnalyticsResponse {
     acrioAutonomousChats: number;
     acrioAutonomousRatePct: number;
     acrioAvgResponseSeconds: number | null;
+    aiTokensIn?: number;
+    aiTokensOut?: number;
+    aiTokensTotal?: number;
+    aiCacheReadTokens?: number;
+    aiLiveCallsCount?: number;
     inboundMessagesCount: number;
     outboundMessagesCount: number;
     freeStaffRepliesCount: number;
@@ -77,6 +82,22 @@ interface AnalyticsResponse {
     clientBilledInr?: number;
     actualMetaCostInr?: number;
     netMarginInr?: number;
+  };
+  aiTokenSummary?: {
+    periodTokensIn: number;
+    periodTokensOut: number;
+    periodTokensTotal: number;
+    periodCacheReadTokens: number;
+    periodLiveAiCalls: number;
+    periodTotalTraces: number;
+    allTimeTokensIn: number;
+    allTimeTokensOut: number;
+    allTimeTokensTotal: number;
+    byWebsite: {
+      WHATSAPP_HUB: { inputTokens: number; outputTokens: number; calls: number };
+      CLASSIC_CONCEPTS: { inputTokens: number; outputTokens: number; calls: number };
+      CLASSIC_EDGE_53: { inputTokens: number; outputTokens: number; calls: number };
+    };
   };
   tickFunnel: {
     sending: number;
@@ -594,7 +615,14 @@ export default function AnalyticsDashboardPage() {
               <div className="text-xs text-slate-500 flex items-center justify-between tabular-nums">
                 <span>{data.kpis.acrioRepliesCount} ACRIO replies sent</span>
                 <span>
-                  Avg speed: {formatDuration(data.kpis.acrioAvgResponseSeconds)}
+                  In:{" "}
+                  <strong className="text-indigo-700">
+                    {(data.kpis.aiTokensIn ?? 0).toLocaleString("en-IN")}
+                  </strong>{" "}
+                  • Out:{" "}
+                  <strong className="text-purple-700">
+                    {(data.kpis.aiTokensOut ?? 0).toLocaleString("en-IN")}
+                  </strong>
                 </span>
               </div>
             </div>
@@ -695,6 +723,121 @@ export default function AnalyticsDashboardPage() {
               </div>
             )}
           </div>
+
+          {/* AI Token Usage Summary (Tokens In & Out across Ecosystem) */}
+          {data.aiTokenSummary && (
+            <div className="bg-white rounded-xl border border-neutral-200 p-4 md:p-5 space-y-3 shadow-2xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-indigo-600" />
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    AI Token Usage Summary (Claude Haiku 5.5 • Selected Period)
+                  </h2>
+                </div>
+                <span className="text-xs text-slate-500 font-mono">
+                  All-Time Total: In{" "}
+                  {(data.aiTokenSummary.allTimeTokensIn ?? 0).toLocaleString("en-IN")}{" "}
+                  • Out{" "}
+                  {(data.aiTokenSummary.allTimeTokensOut ?? 0).toLocaleString("en-IN")}{" "}
+                  (
+                  {(data.aiTokenSummary.allTimeTokensTotal ?? 0).toLocaleString("en-IN")}{" "}
+                  tokens)
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+                <div className="p-3 rounded-lg bg-indigo-50/50 border border-indigo-200">
+                  <div className="text-indigo-800 font-semibold uppercase text-[10.5px]">
+                    Total Tokens In
+                  </div>
+                  <div className="text-xl font-bold text-indigo-950 mt-1 font-mono tabular-nums">
+                    {(data.aiTokenSummary.periodTokensIn ?? 0).toLocaleString("en-IN")}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    Prompt + catalog input
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-purple-50/50 border border-purple-200">
+                  <div className="text-purple-800 font-semibold uppercase text-[10.5px]">
+                    Total Tokens Out
+                  </div>
+                  <div className="text-xl font-bold text-purple-950 mt-1 font-mono tabular-nums">
+                    {(data.aiTokenSummary.periodTokensOut ?? 0).toLocaleString("en-IN")}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    Generated AI output
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                  <div className="text-slate-600 font-semibold uppercase text-[10.5px]">
+                    Combined In + Out
+                  </div>
+                  <div className="text-xl font-bold text-slate-900 mt-1 font-mono tabular-nums">
+                    {(data.aiTokenSummary.periodTokensTotal ?? 0).toLocaleString("en-IN")}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {data.aiTokenSummary.periodLiveAiCalls} live AI calls
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-emerald-50/50 border border-emerald-200">
+                  <div className="text-emerald-800 font-semibold uppercase text-[10.5px]">
+                    WhatsApp Hub (ACRIO)
+                  </div>
+                  <div className="text-xs font-bold text-emerald-950 mt-1.5 font-mono tabular-nums">
+                    In:{" "}
+                    {(
+                      data.aiTokenSummary.byWebsite?.WHATSAPP_HUB?.inputTokens ?? 0
+                    ).toLocaleString("en-IN")}
+                  </div>
+                  <div className="text-xs font-bold text-emerald-950 font-mono tabular-nums">
+                    Out:{" "}
+                    {(
+                      data.aiTokenSummary.byWebsite?.WHATSAPP_HUB?.outputTokens ?? 0
+                    ).toLocaleString("en-IN")}
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-blue-50/50 border border-blue-200">
+                  <div className="text-blue-800 font-semibold uppercase text-[10.5px]">
+                    classicconcepts.in
+                  </div>
+                  <div className="text-xs font-bold text-blue-950 mt-1.5 font-mono tabular-nums">
+                    In:{" "}
+                    {(
+                      data.aiTokenSummary.byWebsite?.CLASSIC_CONCEPTS?.inputTokens ?? 0
+                    ).toLocaleString("en-IN")}
+                  </div>
+                  <div className="text-xs font-bold text-blue-950 font-mono tabular-nums">
+                    Out:{" "}
+                    {(
+                      data.aiTokenSummary.byWebsite?.CLASSIC_CONCEPTS?.outputTokens ?? 0
+                    ).toLocaleString("en-IN")}
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-amber-50/50 border border-amber-200">
+                  <div className="text-amber-800 font-semibold uppercase text-[10.5px]">
+                    classicedge53.com
+                  </div>
+                  <div className="text-xs font-bold text-amber-950 mt-1.5 font-mono tabular-nums">
+                    In:{" "}
+                    {(
+                      data.aiTokenSummary.byWebsite?.CLASSIC_EDGE_53?.inputTokens ?? 0
+                    ).toLocaleString("en-IN")}
+                  </div>
+                  <div className="text-xs font-bold text-amber-950 font-mono tabular-nums">
+                    Out:{" "}
+                    {(
+                      data.aiTokenSummary.byWebsite?.CLASSIC_EDGE_53?.outputTokens ?? 0
+                    ).toLocaleString("en-IN")}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ROW 2: Daily Volume & First-Response Trend + 24-Hour IST Enquiry Heatmap */}
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">

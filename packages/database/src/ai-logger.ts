@@ -353,10 +353,24 @@ export interface AiLogsQuerySummary {
   localFallbackCount: number;
   productLookupCount: number;
   errorCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalThinkingTokens: number;
+  totalCacheReadInputTokens: number;
+  totalCacheCreationInputTokens: number;
+  totalCombinedTokens: number;
+  filteredInputTokens: number;
+  filteredOutputTokens: number;
+  filteredCombinedTokens: number;
   byWebsite: {
     WHATSAPP_HUB: number;
     CLASSIC_CONCEPTS: number;
     CLASSIC_EDGE_53: number;
+  };
+  tokensByWebsite: {
+    WHATSAPP_HUB: { inputTokens: number; outputTokens: number };
+    CLASSIC_CONCEPTS: { inputTokens: number; outputTokens: number };
+    CLASSIC_EDGE_53: { inputTokens: number; outputTokens: number };
   };
   entries: AiTraceLogEntry[];
   rawTail: string;
@@ -367,6 +381,7 @@ export function readAiTraceLogs(filters?: {
   outcome?: string;
   cache?: string;
   search?: string;
+  sinceUtc?: string;
   limit?: number;
 }): AiLogsQuerySummary {
   syncSiblingWebsiteAiLogs();
@@ -386,15 +401,39 @@ export function readAiTraceLogs(filters?: {
     CLASSIC_CONCEPTS: 0,
     CLASSIC_EDGE_53: 0,
   };
+  const tokensByWebsite = {
+    WHATSAPP_HUB: { inputTokens: 0, outputTokens: 0 },
+    CLASSIC_CONCEPTS: { inputTokens: 0, outputTokens: 0 },
+    CLASSIC_EDGE_53: { inputTokens: 0, outputTokens: 0 },
+  };
   let liveAiCount = 0;
   let cacheHitCount = 0;
   let localFallbackCount = 0;
   let productLookupCount = 0;
   let errorCount = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalThinkingTokens = 0;
+  let totalCacheReadInputTokens = 0;
+  let totalCacheCreationInputTokens = 0;
 
   for (const e of allEntries) {
+    const inTok = Number(e.tokenUsage?.inputTokens ?? 0) || 0;
+    const outTok = Number(e.tokenUsage?.outputTokens ?? 0) || 0;
+    const thinkTok = Number(e.tokenUsage?.thinkingTokens ?? 0) || 0;
+    const cacheReadTok = Number(e.tokenUsage?.cacheReadInputTokens ?? 0) || 0;
+    const cacheWriteTok = Number(e.tokenUsage?.cacheCreationInputTokens ?? 0) || 0;
+
+    totalInputTokens += inTok;
+    totalOutputTokens += outTok;
+    totalThinkingTokens += thinkTok;
+    totalCacheReadInputTokens += cacheReadTok;
+    totalCacheCreationInputTokens += cacheWriteTok;
+
     if (e.website in byWebsite) {
       byWebsite[e.website]++;
+      tokensByWebsite[e.website].inputTokens += inTok;
+      tokensByWebsite[e.website].outputTokens += outTok;
     }
     if (e.outcomeSource === "LIVE_AI") liveAiCount++;
     if (
@@ -413,9 +452,11 @@ export function readAiTraceLogs(filters?: {
   const webFilter = (filters?.website || "ALL").toUpperCase();
   const outFilter = (filters?.outcome || "ALL").toUpperCase();
   const cacheFilter = (filters?.cache || "ALL").toUpperCase();
-  const limit = Math.min(Math.max(filters?.limit ?? 150, 1), 500);
+  const sinceUtc = filters?.sinceUtc || "";
+  const limit = Math.min(Math.max(filters?.limit ?? 150, 1), 5000);
 
   const filtered = allEntries.filter((e) => {
+    if (sinceUtc && e.timestampUtc < sinceUtc) return false;
     if (webFilter !== "ALL" && e.website !== webFilter) return false;
     if (outFilter !== "ALL" && e.outcomeSource !== outFilter) return false;
     if (cacheFilter === "HIT") {
@@ -448,6 +489,13 @@ export function readAiTraceLogs(filters?: {
     return true;
   });
 
+  let filteredInputTokens = 0;
+  let filteredOutputTokens = 0;
+  for (const e of filtered) {
+    filteredInputTokens += Number(e.tokenUsage?.inputTokens ?? 0) || 0;
+    filteredOutputTokens += Number(e.tokenUsage?.outputTokens ?? 0) || 0;
+  }
+
   const tailLines = allLines.slice(-600).join("\n");
 
   return {
@@ -460,7 +508,17 @@ export function readAiTraceLogs(filters?: {
     localFallbackCount,
     productLookupCount,
     errorCount,
+    totalInputTokens,
+    totalOutputTokens,
+    totalThinkingTokens,
+    totalCacheReadInputTokens,
+    totalCacheCreationInputTokens,
+    totalCombinedTokens: totalInputTokens + totalOutputTokens,
+    filteredInputTokens,
+    filteredOutputTokens,
+    filteredCombinedTokens: filteredInputTokens + filteredOutputTokens,
     byWebsite,
+    tokensByWebsite,
     entries: filtered.slice(0, limit),
     rawTail: tailLines,
   };

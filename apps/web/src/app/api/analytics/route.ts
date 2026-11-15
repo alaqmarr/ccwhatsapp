@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { formatInTimeZone, toZonedTime, fromZonedTime } from "date-fns-tz";
-import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+  readAiTraceLogs,
+} from "@cc/database";
 import { canViewCostBreakdown, hasPermission, isDevRole } from "@cc/rbac";
 import { checkAndEscalateWaitingChats } from "@cc/workers";
 import { getCurrentUser } from "@/lib/session";
@@ -858,6 +862,40 @@ export async function GET(req: Request) {
     outcome: String(a.outcome || "ACTIVE"),
   }));
 
+  // Aggregate AI Tokens In & Out across all 3 ecosystem websites for the selected period
+  const aiLogsReport = readAiTraceLogs({
+    sinceUtc: cutoffIso,
+    limit: 5000,
+  });
+  let aiTokensIn = 0;
+  let aiTokensOut = 0;
+  let aiCacheReadTokens = 0;
+  let aiLiveCallsCount = 0;
+  const aiTokensByWebsite = {
+    WHATSAPP_HUB: { inputTokens: 0, outputTokens: 0, calls: 0 },
+    CLASSIC_CONCEPTS: { inputTokens: 0, outputTokens: 0, calls: 0 },
+    CLASSIC_EDGE_53: { inputTokens: 0, outputTokens: 0, calls: 0 },
+  };
+  for (const entry of aiLogsReport.entries) {
+    const tIn = Number(entry.tokenUsage?.inputTokens ?? 0) || 0;
+    const tOut = Number(entry.tokenUsage?.outputTokens ?? 0) || 0;
+    const tCache = Number(entry.tokenUsage?.cacheReadInputTokens ?? 0) || 0;
+    aiTokensIn += tIn;
+    aiTokensOut += tOut;
+    aiCacheReadTokens += tCache;
+    if (entry.outcomeSource === "LIVE_AI") {
+      aiLiveCallsCount++;
+    }
+    if (entry.website in aiTokensByWebsite) {
+      aiTokensByWebsite[entry.website].inputTokens += tIn;
+      aiTokensByWebsite[entry.website].outputTokens += tOut;
+      if (tIn > 0 || tOut > 0 || entry.outcomeSource === "LIVE_AI") {
+        aiTokensByWebsite[entry.website].calls++;
+      }
+    }
+  }
+  const aiTokensTotal = aiTokensIn + aiTokensOut;
+
   return NextResponse.json({
     ok: true,
     range,
@@ -896,6 +934,11 @@ export async function GET(req: Request) {
       acrioAutonomousChats,
       acrioAutonomousRatePct,
       acrioAvgResponseSeconds: computeAverage(acrioRespTimes),
+      aiTokensIn,
+      aiTokensOut,
+      aiTokensTotal,
+      aiCacheReadTokens,
+      aiLiveCallsCount,
       inboundMessagesCount,
       outboundMessagesCount,
       freeStaffRepliesCount,
@@ -919,6 +962,18 @@ export async function GET(req: Request) {
             netMarginInr: Number(totalNetMarginInr.toFixed(4)),
           }
         : {}),
+    },
+    aiTokenSummary: {
+      periodTokensIn: aiTokensIn,
+      periodTokensOut: aiTokensOut,
+      periodTokensTotal: aiTokensTotal,
+      periodCacheReadTokens: aiCacheReadTokens,
+      periodLiveAiCalls: aiLiveCallsCount,
+      periodTotalTraces: aiLogsReport.entries.length,
+      allTimeTokensIn: aiLogsReport.totalInputTokens,
+      allTimeTokensOut: aiLogsReport.totalOutputTokens,
+      allTimeTokensTotal: aiLogsReport.totalCombinedTokens,
+      byWebsite: aiTokensByWebsite,
     },
     tickFunnel: {
       ...tickCounts,
