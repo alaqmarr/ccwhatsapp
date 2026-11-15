@@ -9,11 +9,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 restart_on_error() {
+  if [ ! -f "apps/web/.next/BUILD_ID" ] && [ -f "apps/web/.next.prev/BUILD_ID" ]; then
+    rm -rf apps/web/.next
+    mv apps/web/.next.prev apps/web/.next
+  fi
   if [ -f "node_modules/next/dist/bin/next" ] && [ -f "apps/web/.next/BUILD_ID" ]; then
     echo "WARNING: Update/build failed. Restoring previous PM2 process (${APP_NAME})..."
     pm2 start ecosystem.config.cjs --update-env || pm2 restart "${APP_NAME}" || true
   else
-    echo "ERROR: Dependencies or Next.js build not present yet. Run 'bash setup.sh' to complete initial install."
+    echo "ERROR: Dependencies or Next.js build failed and no prior build is available. Fix the build error above or run 'bash setup.sh'."
   fi
 }
 trap restart_on_error ERR
@@ -29,14 +33,14 @@ install_workspace_deps() {
   fi
 
   # 2. Install workspace dependencies (including TypeScript & Tailwind build devDependencies)
-  if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund; then
+  if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund --legacy-peer-deps; then
     echo "      -> npm install hit a stale directory state (such as ENOTEMPTY). Cleaning node_modules and retrying..."
     rm -rf node_modules apps/*/node_modules packages/*/node_modules
     npm cache verify >/dev/null 2>&1 || true
-    if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund; then
+    if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund --legacy-peer-deps; then
       echo "      -> Retrying with fresh Linux package-lock resolution..."
       rm -rf node_modules apps/*/node_modules packages/*/node_modules package-lock.json
-      NODE_ENV=development npm install --include=dev --no-audit --no-fund
+      NODE_ENV=development npm install --include=dev --no-audit --no-fund --legacy-peer-deps
     fi
   fi
 }
@@ -99,11 +103,15 @@ else
   echo "[4/7] No existing data/*.db files yet (will bootstrap automatically on start)."
 fi
 
-# 5. Typecheck & clean production Next.js build
+# 5. Typecheck & clean production Next.js build (preserve previous .next until new build succeeds)
 echo "[5/7] Running TypeScript check & clean Next.js build..."
 npm run typecheck
-rm -rf apps/web/.next
+rm -rf apps/web/.next.prev
+if [ -d "apps/web/.next" ]; then
+  mv apps/web/.next apps/web/.next.prev
+fi
 NODE_OPTIONS="--max-old-space-size=1536" npm run build
+rm -rf apps/web/.next.prev
 
 # 6. Refresh ONLY Redis DB /1 (leaves classicconcepts on DB /0 untouched!)
 if command -v redis-cli >/dev/null 2>&1 && redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then

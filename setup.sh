@@ -20,14 +20,14 @@ install_workspace_deps() {
   fi
 
   # 2. Install workspace dependencies (including TypeScript & Tailwind build devDependencies)
-  if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund; then
+  if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund --legacy-peer-deps; then
     echo "      -> npm install hit a stale directory state (such as ENOTEMPTY). Cleaning node_modules and retrying..."
     rm -rf node_modules apps/*/node_modules packages/*/node_modules
     npm cache verify >/dev/null 2>&1 || true
-    if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund; then
+    if ! NODE_ENV=development npm install --include=dev --no-audit --no-fund --legacy-peer-deps; then
       echo "      -> Retrying with fresh Linux package-lock resolution..."
       rm -rf node_modules apps/*/node_modules packages/*/node_modules package-lock.json
-      NODE_ENV=development npm install --include=dev --no-audit --no-fund
+      NODE_ENV=development npm install --include=dev --no-audit --no-fund --legacy-peer-deps
     fi
   fi
 }
