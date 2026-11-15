@@ -1143,6 +1143,7 @@ export async function processInboundAutomations(params: {
   );
 
   const acrioTurn = await runAcrioAutonomousTurn({
+    conversationId: params.conversationId,
     customerName: String(convRow.customer_name || params.customerPhone),
     inboundText: params.inboundText,
     recentMessages,

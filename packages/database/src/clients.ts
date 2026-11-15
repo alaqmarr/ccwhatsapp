@@ -2233,40 +2233,73 @@ const DOMAIN_SYNONYM_GROUPS: string[][] = [
   ["sheet", "sheets", "mirror", "tube", "tubes", "rod", "rods"],
 ];
 
+export interface EcosystemSearchOptions {
+  minPrice?: number | null;
+  maxPrice?: number | null;
+  brand?: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | null;
+  itemType?: "PRODUCT" | "MACHINE" | "CONSUMABLE" | null;
+  excludedItemTypes?: ("PRODUCT" | "MACHINE" | "CONSUMABLE")[];
+  preferPremium?: boolean;
+}
+
 export function extractBudgetConstraintsFromQuery(rawQuery: string): {
   maxPrice: number | null;
   minPrice: number | null;
 } {
-  const normalized = rawQuery.replace(/,/g, "").toLowerCase();
+  const normalized = String(rawQuery || "").replace(/,/g, "").toLowerCase();
   let maxPrice: number | null = null;
   let minPrice: number | null = null;
 
   const parseAmount = (numStr: string, kSuffix?: string): number | null => {
     const val = parseFloat(numStr);
     if (!Number.isFinite(val) || val <= 0) return null;
-    return kSuffix ? Math.round(val * 1000) : Math.round(val);
+    const computed = kSuffix ? Math.round(val * 1000) : Math.round(val);
+    // Avoid mistaking small quantities (e.g. "need 5" or "10mm") for a Rupee budget unless "k" or currency symbol is present
+    if (!kSuffix && computed < 250) return null;
+    return computed;
   };
 
-  const maxMatch = normalized.match(
-    /\b(?:under|below|within|upto|up\s*to|less\s*than|max|maximum|budget(?:\s*of|\s*is)?)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/i
-  );
-  if (maxMatch?.[1]) {
-    maxPrice = parseAmount(maxMatch[1], maxMatch[2]);
+  const maxRe =
+    /\b(?:under|below|within|upto|up\s*to|less\s*than|max|maximum|(?:increase|raise|extend|stretch|push|bump|change|update|set)?\s*(?:the\s*|my\s*|our\s*)?budget(?:\s*(?:of|is|to|upto|up\s*to|around))?|(?:stretch|go|increase|raise|make\s*it)(?:\s*up)?\s*to)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/gi;
+  for (const m of normalized.matchAll(maxRe)) {
+    if (m[1]) {
+      const parsed = parseAmount(m[1], m[2]);
+      if (parsed !== null) maxPrice = parsed;
+    }
   }
 
-  const minMatch = normalized.match(
-    /\b(?:above|over|more\s*than|min|minimum|starting(?:\s*from)?)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/i
-  );
-  if (minMatch?.[1]) {
-    minPrice = parseAmount(minMatch[1], minMatch[2]);
+  // Also catch standalone currency ceiling like "around ₹30000" or "₹30,000 budget"
+  if (maxPrice === null) {
+    const altMaxRe =
+      /(?:(?:rs\.?|inr|₹)\s*(\d+(?:\.\d+)?)\s*(k)?\s*(?:max|maximum|budget|limit|or\s*less))|(?:\baround\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b)/gi;
+    for (const m of normalized.matchAll(altMaxRe)) {
+      const num = m[1] || m[3];
+      const k = m[2] || m[4];
+      if (num) {
+        const parsed = parseAmount(num, k);
+        if (parsed !== null) maxPrice = parsed;
+      }
+    }
   }
 
-  const rangeMatch = normalized.match(
-    /\bbetween\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\s*(?:and|to|-)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/i
-  );
-  if (rangeMatch?.[1] && rangeMatch?.[3]) {
-    minPrice = parseAmount(rangeMatch[1], rangeMatch[2]);
-    maxPrice = parseAmount(rangeMatch[3], rangeMatch[4]);
+  const minRe =
+    /\b(?:above|over|more\s*than|min|minimum|starting(?:\s*from)?|at\s*least)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/gi;
+  for (const m of normalized.matchAll(minRe)) {
+    if (m[1]) {
+      const parsed = parseAmount(m[1], m[2]);
+      if (parsed !== null) minPrice = parsed;
+    }
+  }
+
+  const rangeRe =
+    /\bbetween\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\s*(?:and|to|-)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k)?\b/gi;
+  for (const m of normalized.matchAll(rangeRe)) {
+    if (m[1] && m[3]) {
+      const pMin = parseAmount(m[1], m[2]);
+      const pMax = parseAmount(m[3], m[4]);
+      if (pMin !== null) minPrice = pMin;
+      if (pMax !== null) maxPrice = pMax;
+    }
   }
 
   return { maxPrice, minPrice };
@@ -2297,25 +2330,57 @@ function wordMatchesToken(word: string, token: string): boolean {
 export function searchEcosystemItems(
   items: MainWebsiteProduct[],
   searchQuery: string,
-  limit = 6
+  limit = 6,
+  options?: EcosystemSearchOptions
 ): MainWebsiteProduct[] {
-  const cleanItems = items.filter((i) => !isDummyPlaceholderRow(i.id, i.name));
-  const q = searchQuery.trim().toLowerCase();
-  if (!q) return cleanItems.slice(0, limit);
+  let cleanItems = items.filter((i) => !isDummyPlaceholderRow(i.id, i.name));
+  if (options?.brand) {
+    cleanItems = cleanItems.filter((i) => i.brand === options.brand);
+  }
+  if (options?.itemType) {
+    cleanItems = cleanItems.filter((i) => i.itemType === options.itemType);
+  }
+  if (options?.excludedItemTypes && options.excludedItemTypes.length > 0) {
+    const excludedSet = new Set(options.excludedItemTypes);
+    cleanItems = cleanItems.filter((i) => !excludedSet.has(i.itemType));
+  }
 
-  const { maxPrice, minPrice } = extractBudgetConstraintsFromQuery(searchQuery);
+  const q = searchQuery.trim().toLowerCase();
+  if (!q && options?.maxPrice === undefined && options?.minPrice === undefined) {
+    return cleanItems.slice(0, limit);
+  }
+
+  const extractedBudget = extractBudgetConstraintsFromQuery(searchQuery);
+  const maxPrice =
+    options?.maxPrice !== undefined ? options.maxPrice : extractedBudget.maxPrice;
+  const minPrice =
+    options?.minPrice !== undefined ? options.minPrice : extractedBudget.minPrice;
+  const preferPremium =
+    options?.preferPremium ??
+    /\b(most\s*premium|premium|high\s*end|best\s*quality|top\s*model|flagship|luxury|heaviest)\b/i.test(
+      q
+    );
 
   // Strip currency amounts so price digits ("25", "000", "25000") do not match random SKUs or sizes
   const queryWithoutPrices = q
     .replace(/(?:rs\.?|inr|₹)\s*[\d,]+(?:\.\d+)?\s*k?\b/gi, " ")
-    .replace(/\b(?:under|below|within|upto|up\s*to|above|over|budget)\s*[\d,]+(?:\.\d+)?\s*k?\b/gi, " ");
+    .replace(
+      /\b(?:under|below|within|upto|up\s*to|above|over|budget(?:\s*(?:of|is|to))?|increase|raise|extend|stretch)\s*(?:the\s*|my\s*|our\s*)?(?:budget\s*(?:to|of|is)?\s*)?(?:rs\.?|inr|₹)?\s*[\d,]+(?:\.\d+)?\s*k?\b/gi,
+      " "
+    );
 
   const rawTokens = tokenizeWords(queryWithoutPrices).filter(
     (t) =>
       t.length >= 2 &&
       !SEARCH_STOPWORDS.has(t) &&
       !/^\d+$/.test(t) &&
-      t !== "acrylic"
+      t !== "acrylic" &&
+      t !== "increase" &&
+      t !== "extend" &&
+      t !== "raise" &&
+      t !== "stretch" &&
+      t !== "premium" &&
+      t !== "ones"
   );
 
   // If user literally only typed "acrylic", allow "acrylic" as fallback token
@@ -2328,14 +2393,18 @@ export function searchEcosystemItems(
 
   if (directTokens.length === 0) {
     if (maxPrice !== null || minPrice !== null) {
-      return cleanItems
-        .filter((it) => {
-          if (typeof it.basePrice !== "number" || it.basePrice <= 0) return false;
-          if (maxPrice !== null && it.basePrice > maxPrice) return false;
-          if (minPrice !== null && it.basePrice < minPrice) return false;
-          return true;
-        })
-        .slice(0, limit);
+      const pricedPool = cleanItems.filter((it) => {
+        if (typeof it.basePrice !== "number" || it.basePrice <= 0) return false;
+        if (maxPrice !== null && it.basePrice > maxPrice) return false;
+        if (minPrice !== null && it.basePrice < minPrice) return false;
+        return true;
+      });
+      pricedPool.sort((a, b) =>
+        preferPremium
+          ? (b.basePrice || 0) - (a.basePrice || 0)
+          : (a.basePrice || 0) - (b.basePrice || 0)
+      );
+      return pricedPool.slice(0, limit);
     }
     return [];
   }
@@ -2353,6 +2422,8 @@ export function searchEcosystemItems(
   }
 
   const wantsMachine =
+    options?.brand === "CLASSIC_EDGE_53" ||
+    options?.itemType === "MACHINE" ||
     /\b(machine|machines|laser|cnc|router|polisher|polishing|diamond|bending|bender|heater|blade|blades|cutter|ce53|yn-)\b/i.test(
       q
     );
@@ -2410,15 +2481,15 @@ export function searchEcosystemItems(
       matchScore += 10;
     } else if (!wantsMachine && item.brand === "CLASSIC_EDGE_53") {
       // Prevent machines/ovens from polluting product searches like "pulpits" or "stands"
-      matchScore -= 16;
+      matchScore -= 40;
     }
 
     if (maxPrice !== null || minPrice !== null) {
       if (typeof item.basePrice === "number" && item.basePrice > 0) {
-        matchScore += 12;
+        matchScore += 18;
       } else {
         // Keep unpriced customisable models in the same category below confirmed-budget items
-        matchScore -= 4;
+        matchScore -= 8;
       }
     }
 
@@ -2427,12 +2498,24 @@ export function searchEcosystemItems(
     }
   }
 
+  // When a budget constraint is active and we have verified priced matches, prefer verified priced matches first
   scored.sort((a, b) => {
+    const aHasPrice = typeof a.item.basePrice === "number" && a.item.basePrice > 0;
+    const bHasPrice = typeof b.item.basePrice === "number" && b.item.basePrice > 0;
+    if ((maxPrice !== null || minPrice !== null) && aHasPrice !== bHasPrice) {
+      return aHasPrice ? -1 : 1;
+    }
+    if (!preferPremium && b.score !== a.score) return b.score - a.score;
+    if (preferPremium && aHasPrice && bHasPrice) {
+      // When customer asks for "most premium" within budget, rank higher-tier priced matches within the same category first
+      if (Math.abs(b.score - a.score) <= 24) {
+        return (b.item.basePrice || 0) - (a.item.basePrice || 0);
+      }
+    }
     if (b.score !== a.score) return b.score - a.score;
-    // When customer gave a budget, prefer priced items sorted closest-to-budget / ascending
-    const aP = typeof a.item.basePrice === "number" && a.item.basePrice > 0 ? a.item.basePrice : Infinity;
-    const bP = typeof b.item.basePrice === "number" && b.item.basePrice > 0 ? b.item.basePrice : Infinity;
-    return aP - bP;
+    const aP = aHasPrice ? a.item.basePrice! : Infinity;
+    const bP = bHasPrice ? b.item.basePrice! : Infinity;
+    return preferPremium ? bP - aP : aP - bP;
   });
 
   return scored.slice(0, limit).map((s) => s.item);

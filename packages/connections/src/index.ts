@@ -29,6 +29,7 @@ import {
   type AiTokenUsage,
   type AiTraceLogEntry,
   type AiTraceStep,
+  type EcosystemSearchOptions,
   type MainWebsiteProduct,
 } from "@cc/database";
 import { socketHub } from "@cc/sockets";
@@ -1782,8 +1783,10 @@ export function buildGroupedProductShortLinksSection(params: {
   allItems: MainWebsiteProduct[];
   matchedItems: MainWebsiteProduct[];
   smartCategory: string;
+  excludeConsumables?: boolean;
+  hasStrictBudget?: boolean;
 }): string {
-  const { matchedItems, smartCategory } = params;
+  const { matchedItems, smartCategory, excludeConsumables, hasStrictBudget } = params;
   if (matchedItems.length === 0) return "";
 
   const usedKeys = new Set<string>();
@@ -1791,6 +1794,7 @@ export function buildGroupedProductShortLinksSection(params: {
 
   const uniqueMatches: MainWebsiteProduct[] = [];
   for (const item of matchedItems) {
+    if (excludeConsumables && item.itemType === "CONSUMABLE") continue;
     const k = keyOf(item);
     if (!usedKeys.has(k)) {
       usedKeys.add(k);
@@ -1823,9 +1827,11 @@ export function buildGroupedProductShortLinksSection(params: {
     primaryGroup = uniqueMatches
       .filter((it) => it.itemType !== "CONSUMABLE")
       .slice(0, 4);
-    secondaryGroup = uniqueMatches
-      .filter((it) => it.itemType === "CONSUMABLE")
-      .slice(0, 3);
+    secondaryGroup = excludeConsumables
+      ? []
+      : uniqueMatches
+          .filter((it) => it.itemType === "CONSUMABLE")
+          .slice(0, 3);
     if (primaryGroup.length === 0) {
       primaryGroup = uniqueMatches.slice(0, 4);
       secondaryGroup = [];
@@ -1840,7 +1846,7 @@ export function buildGroupedProductShortLinksSection(params: {
 
     if (pricedReady.length > 0) {
       primaryGroup = pricedReady.slice(0, 5);
-      secondaryGroup = customQuoteOnly.slice(0, 3);
+      secondaryGroup = hasStrictBudget ? [] : customQuoteOnly.slice(0, 3);
     } else {
       primaryGroup = uniqueMatches.slice(0, 5);
       secondaryGroup = [];
@@ -1916,7 +1922,7 @@ const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
   /\b(podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|sign|nameplate|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|keychain|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|stool|chair|furniture|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
-  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|rs\.?|inr|₹|\d+\s*k\b|\d{4,6}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|silver|colored|coloured|thick|thickness|\d+\s*(?:mm|cm|inch|in|ft)\b|bigger|smaller|wider|taller|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one)\b/i;
+  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*k\b|\d{4,6}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|silver|colored|coloured|thick|thickness|\d+\s*(?:mm|cm|inch|in|ft)\b|bigger|smaller|wider|taller|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one)\b/i;
 
 /**
  * Deterministic Turn-Level Intent Classifier (Phase A).
@@ -2171,6 +2177,570 @@ export function classifyAcrioInboundIntent(
   };
 }
 
+/**
+ * Phase B: Structured Per-Conversation State Object (`AcrioConversationState`).
+ * Replaces naive rolling string concatenation (`recentInboundWindow`) so ACRIO
+ * accurately remembers customer requirements, budgets, product categories,
+ * preferences, corrections, and follow-up turns while resetting cleanly on
+ * genuine topic changes and isolating state strictly per customer conversation.
+ */
+export interface AcrioConversationState {
+  activeBrand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | "BOTH" | null;
+  activeCategory: string | null;
+  productFamily: string | null;
+  primaryProductQuery: string | null;
+  itemTypeFilter: "PRODUCT" | "MACHINE" | "CONSUMABLE" | null;
+  excludedItemTypes: ("PRODUCT" | "MACHINE" | "CONSUMABLE")[];
+  minPrice: number | null;
+  maxPrice: number | null;
+  preferences: string[];
+  applicationContext: string | null;
+  dimensionsOrThickness: string | null;
+  quantity: string | null;
+  lastRecommendedProducts: {
+    id: string;
+    name: string;
+    slug: string;
+    priceInr: number | null;
+    shortUrl: string | null;
+    itemType?: "PRODUCT" | "MACHINE" | "CONSUMABLE";
+  }[];
+  turnCount: number;
+  updatedAt: string;
+}
+
+export function createEmptyAcrioConversationState(): AcrioConversationState {
+  return {
+    activeBrand: null,
+    activeCategory: null,
+    productFamily: null,
+    primaryProductQuery: null,
+    itemTypeFilter: null,
+    excludedItemTypes: [],
+    minPrice: null,
+    maxPrice: null,
+    preferences: [],
+    applicationContext: null,
+    dimensionsOrThickness: null,
+    quantity: null,
+    lastRecommendedProducts: [],
+    turnCount: 0,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function detectProductFamilyAndQuery(rawText: string): {
+  productFamily: string | null;
+  primaryProductQuery: string | null;
+  activeCategory: string | null;
+  activeBrand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" | null;
+  itemTypeFilter: "PRODUCT" | "MACHINE" | "CONSUMABLE" | null;
+  excludedItemTypes: ("PRODUCT" | "MACHINE" | "CONSUMABLE")[];
+  isCorrectionOnly: boolean;
+} {
+  const lower = String(rawText || "").toLowerCase();
+
+  const excludesConsumables =
+    /\b(?:not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|exclude|excluding|skip)\s+(?:any\s+)?(?:tools?|consumables?|blades?|cutters?|solvents?|accessories)\b|\b(?:just|only)\s+machines?\b/i.test(
+      lower
+    );
+  const excludesMachines =
+    /\b(?:not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|exclude)\s+(?:any\s+)?machines?\b|\b(?:just|only)\s+(?:tools?|consumables?|blades?|cutters?)\b/i.test(
+      lower
+    );
+
+  const strippedForCheck = lower
+    .replace(
+      /\b(actually|i\s+said|i\s+am|i'm|im|we\s+are|not\s+looking\s+for|looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|just|only|tools?|consumables?|machines?|please|show\s+me|need|want)\b/gi,
+      " "
+    )
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  const isCorrectionOnly =
+    (excludesConsumables || excludesMachines) && strippedForCheck.length === 0;
+
+  if (/\b(pulpit|pulpits|podium|podiums|lectern|lecterns|rostrum|rostrums)\b/i.test(lower)) {
+    return {
+      productFamily: "podium",
+      primaryProductQuery: "pulpit podium",
+      activeCategory: "Podiums & Stage",
+      activeBrand: "CLASSIC_CONCEPTS",
+      itemTypeFilter: "PRODUCT",
+      excludedItemTypes: [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  if (/\b(trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals)\b/i.test(lower)) {
+    return {
+      productFamily: "trophy",
+      primaryProductQuery: "acrylic trophy award memento",
+      activeCategory: "Awards & Trophies",
+      activeBrand: "CLASSIC_CONCEPTS",
+      itemTypeFilter: "PRODUCT",
+      excludedItemTypes: [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  if (
+    /\b(diamond\s*(?:edge\s*)?polish(?:er|ing)?|edge\s*polish(?:er|ing)?|cloudy\s*edge|rough\s*edge|white\s*edge)\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      productFamily: "polishing_machine",
+      primaryProductQuery: "diamond edge polishing machine",
+      activeCategory: "Acrylic Machines (CE53)",
+      activeBrand: "CLASSIC_EDGE_53",
+      itemTypeFilter: excludesMachines ? "CONSUMABLE" : "MACHINE",
+      excludedItemTypes: excludesConsumables ? ["CONSUMABLE"] : [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  if (/\b(bender|bending\s*(?:machine|heater)?|strip\s*heater|line\s*bending)\b/i.test(lower)) {
+    return {
+      productFamily: "bending_machine",
+      primaryProductQuery: "acrylic bending machine heater",
+      activeCategory: "Acrylic Machines (CE53)",
+      activeBrand: "CLASSIC_EDGE_53",
+      itemTypeFilter: excludesMachines ? "CONSUMABLE" : "MACHINE",
+      excludedItemTypes: excludesConsumables ? ["CONSUMABLE"] : [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  if (
+    /\b(machine|machines|laser|router|cnc|polisher|polishing|thermoforming|oven|yn-|ce53|classic\s*edge)\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      productFamily: "machine",
+      primaryProductQuery: isCorrectionOnly ? null : rawText.trim(),
+      activeCategory: "Acrylic Machines (CE53)",
+      activeBrand: "CLASSIC_EDGE_53",
+      itemTypeFilter: excludesMachines ? "CONSUMABLE" : "MACHINE",
+      excludedItemTypes: excludesConsumables ? ["CONSUMABLE"] : [],
+      isCorrectionOnly,
+    };
+  }
+
+  if (!excludesConsumables && /\b(blade|cutter|consumable|solvent|chloroform|glue|adhesive|buffing)\b/i.test(lower)) {
+    return {
+      productFamily: "consumable",
+      primaryProductQuery: rawText.trim(),
+      activeCategory: "Acrylic Machines (CE53)",
+      activeBrand: "CLASSIC_EDGE_53",
+      itemTypeFilter: "CONSUMABLE",
+      excludedItemTypes: excludesMachines ? ["MACHINE"] : [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  if (/\b(menu|qr\s*stand|tent\s*card|table\s*stand|sign\s*holder|brochure|leaflet|pamphlet)\b/i.test(lower)) {
+    return {
+      productFamily: "stand",
+      primaryProductQuery: rawText.trim(),
+      activeCategory: "Hotel & Banquet",
+      activeBrand: "CLASSIC_CONCEPTS",
+      itemTypeFilter: "PRODUCT",
+      excludedItemTypes: [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  if (/\b(tray|trays|coaster|coasters|tissue|napkin)\b/i.test(lower)) {
+    return {
+      productFamily: "tray_hospitality",
+      primaryProductQuery: rawText.trim(),
+      activeCategory: "Hotel & Banquet",
+      activeBrand: "CLASSIC_CONCEPTS",
+      itemTypeFilter: "PRODUCT",
+      excludedItemTypes: [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  if (
+    /\b(box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display\s*stand|riser|risers|cabinet|showcase|frame|frames|sheet|rod|tube|donation|suggestion\s*box|ballot|cake\s*stand|cosmetic|makeup|jewelry|jewellery|watch\s*stand|eyewear|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible)\b/i.test(
+      lower
+    )
+  ) {
+    const nounMatch = lower.match(ACRIO_DOMAIN_PRODUCT_NOUN_RE);
+    return {
+      productFamily: nounMatch ? nounMatch[1].toLowerCase() : "custom_display",
+      primaryProductQuery: rawText.trim(),
+      activeCategory: "Custom Fabrication",
+      activeBrand: "CLASSIC_CONCEPTS",
+      itemTypeFilter: "PRODUCT",
+      excludedItemTypes: [],
+      isCorrectionOnly: false,
+    };
+  }
+
+  return {
+    productFamily: null,
+    primaryProductQuery: null,
+    activeCategory: null,
+    activeBrand: null,
+    itemTypeFilter: excludesConsumables ? "MACHINE" : excludesMachines ? "CONSUMABLE" : null,
+    excludedItemTypes: excludesConsumables
+      ? ["CONSUMABLE"]
+      : excludesMachines
+      ? ["MACHINE"]
+      : [],
+    isCorrectionOnly,
+  };
+}
+
+function extractPreferencesFromTurn(rawText: string): string[] {
+  const lower = String(rawText || "").toLowerCase();
+  const prefs: string[] = [];
+  if (/\b(most\s*premium|premium|high\s*end|flagship|top\s*end|best|luxury|heavy\s*duty)\b/i.test(lower)) {
+    prefs.push("premium");
+  }
+  if (/\b(transparent|clear|crystal\s*clear|see\s*through)\b/i.test(lower)) {
+    prefs.push("transparent");
+  }
+  if (/\b(frosted|matte|satin)\b/i.test(lower)) {
+    prefs.push("frosted");
+  }
+  if (/\b(black|white|gold|silver|colored|coloured|tinted)\b/i.test(lower)) {
+    const m = lower.match(/\b(black|white|gold|silver|colored|coloured|tinted)\b/i);
+    if (m) prefs.push(m[1].toLowerCase());
+  }
+  if (/\b(led|light|backlit|illuminated)\b/i.test(lower)) {
+    prefs.push("led");
+  }
+  if (/\b(logo|branding|print|engraving|uv\s*print)\b/i.test(lower)) {
+    prefs.push("logo");
+  }
+  if (/\b(wheel|wheeled|castor|portable|foldable|compact|wide|tall)\b/i.test(lower)) {
+    const m = lower.match(/\b(wheel|wheeled|castor|portable|foldable|compact|wide|tall)\b/i);
+    if (m) prefs.push(m[1].toLowerCase());
+  }
+  return prefs;
+}
+
+function extractMetadataFromTurn(rawText: string): {
+  applicationContext: string | null;
+  dimensionsOrThickness: string | null;
+  quantity: string | null;
+} {
+  const lower = String(rawText || "").toLowerCase();
+  const appMatch = lower.match(
+    /\b(church|school|college|university|auditorium|conference|seminar|hotel|restaurant|cafe|banquet|hospital|clinic|retail|showroom|exhibition|event|ceremony|convocation|wedding|office|reception)\b/i
+  );
+  const dimMatch =
+    rawText.match(
+      /\b(\d+\s*(?:mm|cm|inch|in|ft)?\s*x\s*\d+\s*(?:mm|cm|inch|in|ft)?(?:\s*x\s*\d+\s*(?:mm|cm|inch|in|ft)?)?)\b/i
+    ) || rawText.match(/\b(\d+(?:\.\d+)?\s*(?:mm|cm|inch|in|ft))\b/i);
+  const qtyMatch = rawText.match(/\b(\d+\s*(?:pcs|pieces|nos|units|sets|qty))\b/i);
+
+  return {
+    applicationContext: appMatch ? appMatch[1].toLowerCase() : null,
+    dimensionsOrThickness: dimMatch ? dimMatch[1].trim() : null,
+    quantity: qtyMatch ? qtyMatch[1].trim() : null,
+  };
+}
+
+/**
+ * Deterministically updates `AcrioConversationState` for a single customer inbound turn.
+ */
+export function applyTurnToAcrioConversationState(
+  prevState: AcrioConversationState | null | undefined,
+  rawText: string,
+  intentInfo: AcrioIntentClassification
+): AcrioConversationState {
+  const base = prevState
+    ? {
+        ...prevState,
+        excludedItemTypes: [...(prevState.excludedItemTypes || [])],
+        preferences: [...(prevState.preferences || [])],
+        lastRecommendedProducts: [...(prevState.lastRecommendedProducts || [])],
+      }
+    : createEmptyAcrioConversationState();
+
+  base.turnCount = (base.turnCount || 0) + 1;
+  base.updatedAt = new Date().toISOString();
+
+  // Explicit topic reset clears active product/budget state
+  if (intentInfo.intent === "TOPIC_RESET") {
+    return {
+      ...createEmptyAcrioConversationState(),
+      turnCount: base.turnCount,
+      updatedAt: base.updatedAt,
+    };
+  }
+
+  // Non-product informational/greeting turns do not mutate active product state
+  if (!intentInfo.requiresProductLookup) {
+    return base;
+  }
+
+  const detected = detectProductFamilyAndQuery(rawText);
+  const budget = extractBudgetConstraintsFromQuery(rawText);
+  const turnPrefs = extractPreferencesFromTurn(rawText);
+  const meta = extractMetadataFromTurn(rawText);
+
+  const isTopicSwitch =
+    !detected.isCorrectionOnly &&
+    Boolean(detected.productFamily) &&
+    Boolean(base.productFamily) &&
+    detected.productFamily !== base.productFamily &&
+    !(
+      (detected.productFamily === "machine" &&
+        (base.productFamily === "polishing_machine" ||
+          base.productFamily === "bending_machine")) ||
+      ((detected.productFamily === "polishing_machine" ||
+        detected.productFamily === "bending_machine") &&
+        base.productFamily === "machine")
+    );
+
+  if (isTopicSwitch) {
+    base.activeBrand = detected.activeBrand;
+    base.activeCategory = detected.activeCategory;
+    base.productFamily = detected.productFamily;
+    base.primaryProductQuery = detected.primaryProductQuery || rawText.trim();
+    base.itemTypeFilter = detected.itemTypeFilter;
+    base.excludedItemTypes = [...detected.excludedItemTypes];
+    base.minPrice = budget.minPrice;
+    base.maxPrice = budget.maxPrice;
+    base.preferences = turnPrefs;
+    base.applicationContext = meta.applicationContext;
+    base.dimensionsOrThickness = meta.dimensionsOrThickness;
+    base.quantity = meta.quantity;
+    base.lastRecommendedProducts = [];
+    return base;
+  }
+
+  // Merge product family & query if not already set or if this turn specifies a more specific family
+  if (detected.activeBrand) base.activeBrand = detected.activeBrand;
+  if (detected.activeCategory) base.activeCategory = detected.activeCategory;
+  if (detected.productFamily && (!base.productFamily || base.productFamily === "machine")) {
+    base.productFamily = detected.productFamily;
+  }
+  if (detected.primaryProductQuery && (!base.primaryProductQuery || !detected.isCorrectionOnly)) {
+    // Only overwrite primaryProductQuery if base has none, or if this isn't a bare "just machines" correction on an existing specific machine query
+    if (
+      !base.primaryProductQuery ||
+      detected.productFamily === "podium" ||
+      detected.productFamily === "trophy" ||
+      detected.productFamily === "polishing_machine" ||
+      detected.productFamily === "bending_machine"
+    ) {
+      base.primaryProductQuery = detected.primaryProductQuery;
+    }
+  } else if (!base.primaryProductQuery && detected.isCorrectionOnly && detected.activeBrand === "CLASSIC_EDGE_53") {
+    base.primaryProductQuery = "acrylic machine";
+  } else if (
+    !base.primaryProductQuery &&
+    intentInfo.intent === "PRODUCT_SEARCH" &&
+    rawText.trim()
+  ) {
+    base.primaryProductQuery = rawText.trim();
+  }
+
+  if (detected.itemTypeFilter) {
+    base.itemTypeFilter = detected.itemTypeFilter;
+  }
+  if (detected.excludedItemTypes.length > 0) {
+    const mergedExcl = new Set([...base.excludedItemTypes, ...detected.excludedItemTypes]);
+    base.excludedItemTypes = Array.from(mergedExcl);
+  }
+
+  // Budget updates: preserve product category & requirements while updating price ceiling/floor!
+  if (budget.maxPrice !== null || budget.minPrice !== null) {
+    base.maxPrice = budget.maxPrice;
+    base.minPrice = budget.minPrice;
+  } else if (/\b(no\s*budget|any\s*budget|without\s*budget|ignore\s*budget|no\s*price\s*limit)\b/i.test(rawText)) {
+    base.maxPrice = null;
+    base.minPrice = null;
+  }
+
+  // Preferences merge
+  if (turnPrefs.length > 0) {
+    const mergedPrefs = new Set([...base.preferences, ...turnPrefs]);
+    base.preferences = Array.from(mergedPrefs);
+  }
+
+  if (meta.applicationContext) base.applicationContext = meta.applicationContext;
+  if (meta.dimensionsOrThickness) base.dimensionsOrThickness = meta.dimensionsOrThickness;
+  if (meta.quantity) base.quantity = meta.quantity;
+
+  return base;
+}
+
+/**
+ * Reconstructs `AcrioConversationState` across an inbound/outbound history array
+ * combined with an optional persisted `ai_state_json` snapshot.
+ */
+export function reconstructAcrioConversationState(params: {
+  persistedState?: AcrioConversationState | null;
+  recentMessages?: { direction: string; body: string }[];
+  currentInboundText: string;
+}): AcrioConversationState {
+  const { persistedState, recentMessages = [], currentInboundText } = params;
+  const trimmedCurrent = String(currentInboundText || "").trim();
+
+  // Extract inbound history excluding duplicate trailing currentInboundText
+  const inboundTurns = recentMessages
+    .filter((m) => m.direction === "INBOUND" && Boolean(String(m.body || "").trim()))
+    .map((m) => String(m.body).trim());
+
+  if (
+    inboundTurns.length > 0 &&
+    inboundTurns[inboundTurns.length - 1] === trimmedCurrent
+  ) {
+    inboundTurns.pop();
+  }
+
+  let state = persistedState
+    ? {
+        ...createEmptyAcrioConversationState(),
+        ...persistedState,
+        excludedItemTypes: [...(persistedState.excludedItemTypes || [])],
+        preferences: [...(persistedState.preferences || [])],
+        lastRecommendedProducts: [...(persistedState.lastRecommendedProducts || [])],
+      }
+    : createEmptyAcrioConversationState();
+
+  // If no persisted state had an active query (or turnCount === 0), replay prior inbound turns
+  if (!persistedState || (state.turnCount === 0 && inboundTurns.length > 0)) {
+    state = createEmptyAcrioConversationState();
+    for (let i = 0; i < inboundTurns.length; i++) {
+      const turnText = inboundTurns[i];
+      const turnIntent = classifyAcrioInboundIntent(turnText, i > 0);
+      state = applyTurnToAcrioConversationState(state, turnText, turnIntent);
+    }
+  }
+
+  const currentIntent = classifyAcrioInboundIntent(
+    trimmedCurrent,
+    inboundTurns.length > 0 || state.turnCount > 0
+  );
+  return applyTurnToAcrioConversationState(state, trimmedCurrent, currentIntent);
+}
+
+/**
+ * Builds the clean, normalized catalog search query and structured `EcosystemSearchOptions`
+ * from `AcrioConversationState` so follow-up turns ("We can increase the budget to ₹30,000",
+ * "Show me the most premium transparent ones", "Actually I am not looking for tools, just machines")
+ * never feed noisy multi-turn chat sentences into `searchEcosystemItems`.
+ */
+export function buildNormalizedSearchFromState(
+  state: AcrioConversationState,
+  fallbackRawText: string
+): {
+  searchQuery: string;
+  searchOptions: EcosystemSearchOptions;
+  budgetLabel: string | null;
+} {
+  const parts: string[] = [];
+  if (state.primaryProductQuery) {
+    parts.push(state.primaryProductQuery);
+  } else if (fallbackRawText.trim()) {
+    parts.push(fallbackRawText.trim());
+  }
+
+  const nonGenericPrefs = (state.preferences || []).filter(
+    (p) => p !== "premium"
+  );
+  if (nonGenericPrefs.length > 0) {
+    parts.push(nonGenericPrefs.join(" "));
+  }
+  if (state.applicationContext && !parts.join(" ").toLowerCase().includes(state.applicationContext)) {
+    parts.push(state.applicationContext);
+  }
+
+  const searchQuery = parts.join(" ").trim() || fallbackRawText.trim();
+  const preferPremium = (state.preferences || []).includes("premium");
+
+  const searchOptions: EcosystemSearchOptions = {
+    minPrice: state.minPrice,
+    maxPrice: state.maxPrice,
+    brand:
+      state.activeBrand === "CLASSIC_CONCEPTS" ||
+      state.activeBrand === "CLASSIC_EDGE_53"
+        ? state.activeBrand
+        : undefined,
+    itemType: state.itemTypeFilter,
+    excludedItemTypes: state.excludedItemTypes,
+    preferPremium,
+  };
+
+  const budgetLabel =
+    state.maxPrice !== null && state.minPrice !== null
+      ? `₹${state.minPrice.toLocaleString("en-IN")} to ₹${state.maxPrice.toLocaleString("en-IN")}`
+      : state.maxPrice !== null
+      ? `<= ₹${state.maxPrice.toLocaleString("en-IN")}`
+      : state.minPrice !== null
+      ? `>= ₹${state.minPrice.toLocaleString("en-IN")}`
+      : null;
+
+  return { searchQuery, searchOptions, budgetLabel };
+}
+
+let aiStateColumnChecked = false;
+async function ensureConversationsAiStateColumn(): Promise<void> {
+  if (aiStateColumnChecked) return;
+  try {
+    await ensureDatabasesBootstrapped();
+    const conv = getRawLibSqlClient("conversations");
+    await conv
+      .execute(`ALTER TABLE conversations ADD COLUMN ai_state_json TEXT`)
+      .catch(() => {});
+    aiStateColumnChecked = true;
+  } catch {
+    // Non-fatal
+  }
+}
+
+export async function loadConversationAiState(
+  conversationId?: string
+): Promise<AcrioConversationState | null> {
+  if (!conversationId) return null;
+  try {
+    await ensureConversationsAiStateColumn();
+    const conv = getRawLibSqlClient("conversations");
+    const res = await conv.execute({
+      sql: `SELECT ai_state_json FROM conversations WHERE id = ? LIMIT 1`,
+      args: [conversationId],
+    });
+    const raw = res.rows[0]?.ai_state_json;
+    if (!raw || typeof raw !== "string") return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      return {
+        ...createEmptyAcrioConversationState(),
+        ...parsed,
+      };
+    }
+  } catch {
+    // Ignore parse/DB errors
+  }
+  return null;
+}
+
+export async function saveConversationAiState(
+  conversationId: string | undefined,
+  state: AcrioConversationState
+): Promise<void> {
+  if (!conversationId) return;
+  try {
+    await ensureConversationsAiStateColumn();
+    const conv = getRawLibSqlClient("conversations");
+    await conv.execute({
+      sql: `UPDATE conversations SET ai_state_json = ? WHERE id = ?`,
+      args: [JSON.stringify(state), conversationId],
+    });
+  } catch {
+    // Non-fatal
+  }
+}
+
 export async function runAcrioChatCopilot(params: {
   customerName: string;
   organizationType?: string;
@@ -2202,8 +2772,12 @@ export async function runAcrioChatCopilot(params: {
     lastInbound,
     customerMessages.length > 1
   );
+  const convState = reconstructAcrioConversationState({
+    recentMessages: customerMessages,
+    currentInboundText: lastInbound,
+  });
   const lower = intentInfo.allowRollingContextFallback
-    ? `${recentInboundContext} ${lastInbound}`.toLowerCase()
+    ? `${convState.primaryProductQuery || recentInboundContext} ${lastInbound}`.toLowerCase()
     : lastInbound.toLowerCase();
 
   let allItems: MainWebsiteProduct[] = [];
@@ -2220,21 +2794,19 @@ export async function runAcrioChatCopilot(params: {
     const fetched = await getCachedEcosystemCatalog();
     allItems = fetched.allItems;
     cacheMeta = fetched.cacheMeta;
-    const primaryMatches = searchEcosystemItems(allItems, lastInbound, 4);
-    usedQuery =
-      primaryMatches.length > 0 || !intentInfo.allowRollingContextFallback
-        ? lastInbound
-        : recentInboundContext;
-    catalog =
-      primaryMatches.length > 0
-        ? primaryMatches
-        : intentInfo.allowRollingContextFallback
-        ? searchEcosystemItems(allItems, recentInboundContext, 4)
-        : [];
+    const { searchQuery, searchOptions } = buildNormalizedSearchFromState(
+      convState,
+      lastInbound
+    );
+    usedQuery = searchQuery;
+    catalog = searchEcosystemItems(allItems, searchQuery, 4, searchOptions);
+    if (catalog.length === 0 && searchQuery !== lastInbound) {
+      catalog = searchEcosystemItems(allItems, lastInbound, 4, searchOptions);
+    }
   }
 
   // Smart intent & category classification across Classic Concepts + Classic Edge 53
-  let smartCategory = "General Enquiry";
+  let smartCategory = convState.activeCategory || "General Enquiry";
   let priority: AcrioChatCopilotResult["priority"] = "NORMAL";
 
   if (intentInfo.requiresProductLookup) {
@@ -2285,6 +2857,8 @@ export async function runAcrioChatCopilot(params: {
         allItems,
         matchedItems: catalog,
         smartCategory,
+        excludeConsumables: convState.excludedItemTypes.includes("CONSUMABLE"),
+        hasStrictBudget: convState.maxPrice !== null || convState.minPrice !== null,
       })
     : "";
 
@@ -2419,6 +2993,7 @@ export interface AcrioAutonomousTurnResult {
   customerReply: string;
   smartCategory: string;
   priority: "URGENT" | "HIGH" | "NORMAL";
+  conversationState?: AcrioConversationState;
 }
 
 /**
@@ -2431,10 +3006,12 @@ export interface AcrioAutonomousTurnResult {
  * - Logs every step, cache check, product lookup, and response to `ai.logs`.
  */
 export async function runAcrioAutonomousTurn(params: {
+  conversationId?: string;
   customerName: string;
   inboundText: string;
   recentMessages?: { direction: string; senderType?: string; body: string }[];
   hasAlreadyGreeted?: boolean;
+  persistedState?: AcrioConversationState | null;
 }): Promise<AcrioAutonomousTurnResult> {
   const started = Date.now();
   const steps: AiTraceStep[] = [];
@@ -2466,7 +3043,6 @@ export async function runAcrioAutonomousTurn(params: {
     Boolean(params.hasAlreadyGreeted) ||
     history.some((m) => m.direction === "OUTBOUND");
 
-  // Build rolling context from recent inbound messages so short follow-ups ("price?", "need 5", "under 20k?") keep full context
   const recentInboundWindow = [
     ...history
       .filter((m) => m.direction === "INBOUND")
@@ -2476,13 +3052,33 @@ export async function runAcrioAutonomousTurn(params: {
   ].join(" ");
   const contextLower = recentInboundWindow.toLowerCase();
 
-  addStep(
-    "Loaded conversation context",
-    `historyTurns=${history.length}, alreadyGreeted=${alreadyGreeted}`
-  );
+  const storedState =
+    params.persistedState !== undefined
+      ? params.persistedState
+      : await loadConversationAiState(params.conversationId);
 
   // 1. Classify turn intent BEFORE any catalog fetch or product lookup (Phase A)
-  const intentInfo = classifyAcrioInboundIntent(rawText, history.length > 0);
+  const intentInfo = classifyAcrioInboundIntent(
+    rawText,
+    history.length > 0 || Boolean(storedState?.turnCount)
+  );
+
+  // 1b. Reconstruct & update structured per-conversation state (Phase B)
+  const convState = reconstructAcrioConversationState({
+    persistedState: storedState,
+    recentMessages: history,
+    currentInboundText: rawText,
+  });
+
+  if (intentInfo.intent === "TOPIC_RESET") {
+    await saveConversationAiState(params.conversationId, convState);
+  }
+
+  addStep(
+    "Loaded conversation context & state",
+    `historyTurns=${history.length}, alreadyGreeted=${alreadyGreeted}, activeProduct="${convState.primaryProductQuery || "none"}", maxPrice=${convState.maxPrice ?? "none"}, prefs=[${convState.preferences.join(",")}]`
+  );
+
   addStep(
     "Classified inbound turn intent",
     `intent=${intentInfo.intent}, requiresProductLookup=${intentInfo.requiresProductLookup}, allowRollingFallback=${intentInfo.allowRollingContextFallback} (${intentInfo.reason})`
@@ -2566,39 +3162,62 @@ export async function runAcrioAutonomousTurn(params: {
     cacheMeta = fetched.cacheMeta;
     addStep("Checked ecosystem catalog cache", cacheMeta.cacheSummary);
 
-    const directBudget = extractBudgetConstraintsFromQuery(rawText);
-    const windowBudget = intentInfo.allowRollingContextFallback
-      ? extractBudgetConstraintsFromQuery(recentInboundWindow)
-      : { minPrice: null, maxPrice: null };
-    const activeBudget =
-      directBudget.maxPrice !== null || directBudget.minPrice !== null
-        ? directBudget
-        : windowBudget;
-    budgetLabel =
-      activeBudget.maxPrice !== null && activeBudget.minPrice !== null
-        ? `₹${activeBudget.minPrice.toLocaleString("en-IN")} to ₹${activeBudget.maxPrice.toLocaleString("en-IN")}`
-        : activeBudget.maxPrice !== null
-        ? `<= ₹${activeBudget.maxPrice.toLocaleString("en-IN")}`
-        : activeBudget.minPrice !== null
-        ? `>= ₹${activeBudget.minPrice.toLocaleString("en-IN")}`
-        : null;
+    const normalizedSearch = buildNormalizedSearchFromState(convState, rawText);
+    usedLookupQuery = normalizedSearch.searchQuery;
+    budgetLabel = normalizedSearch.budgetLabel;
 
-    const directMatches = searchEcosystemItems(allItems, rawText, 8);
-    usedLookupQuery =
-      directMatches.length > 0 || !intentInfo.allowRollingContextFallback
-        ? rawText
-        : recentInboundWindow;
-    contextMatches =
-      directMatches.length > 0
-        ? directMatches
-        : intentInfo.allowRollingContextFallback
-        ? searchEcosystemItems(allItems, recentInboundWindow, 8)
-        : [];
+    if (
+      intentInfo.intent === "PRODUCT_COMPARISON" &&
+      convState.lastRecommendedProducts.length >= 2 &&
+      /\b(first\s*two|top\s*two|both|these\s*two|those\s*two)\b/i.test(rawText)
+    ) {
+      const targetSlugs = new Set(
+        convState.lastRecommendedProducts.slice(0, 2).map((p) => p.slug || p.id)
+      );
+      contextMatches = allItems.filter((it) =>
+        targetSlugs.has(it.slug || it.id)
+      );
+    }
+
+    if (contextMatches.length === 0) {
+      contextMatches = searchEcosystemItems(
+        allItems,
+        usedLookupQuery,
+        8,
+        normalizedSearch.searchOptions
+      );
+    }
+
+    if (contextMatches.length === 0 && usedLookupQuery !== rawText) {
+      const directFallback = searchEcosystemItems(
+        allItems,
+        rawText,
+        8,
+        normalizedSearch.searchOptions
+      );
+      if (directFallback.length > 0) {
+        contextMatches = directFallback;
+        usedLookupQuery = rawText;
+      }
+    }
+
     top = contextMatches[0];
+
+    if (contextMatches.length > 0) {
+      convState.lastRecommendedProducts = contextMatches.slice(0, 5).map((it) => ({
+        id: it.id,
+        name: cleanDisplayProductName(it.name),
+        slug: it.slug,
+        priceInr: it.basePrice,
+        shortUrl: it.shortUrl || it.url,
+        itemType: it.itemType,
+      }));
+    }
+    await saveConversationAiState(params.conversationId, convState);
 
     addStep(
       "Executed catalog product lookup",
-      `query="${usedLookupQuery.slice(0, 90)}"${budgetLabel ? `, budget="${budgetLabel}"` : ""}, matched=${contextMatches.length} of ${allItems.length} items`
+      `query="${usedLookupQuery.slice(0, 90)}"${budgetLabel ? `, budget="${budgetLabel}"` : ""}${convState.excludedItemTypes.length ? `, excluded=[${convState.excludedItemTypes.join(",")}]` : ""}, matched=${contextMatches.length} of ${allItems.length} items`
     );
   } else {
     addStep(
@@ -2607,23 +3226,46 @@ export async function runAcrioAutonomousTurn(params: {
     );
   }
 
-  let smartCategory = "General Enquiry";
+  let smartCategory = convState.activeCategory || "General Enquiry";
   let priority: "URGENT" | "HIGH" | "NORMAL" = "NORMAL";
 
   if (intentInfo.requiresProductLookup) {
-    const classificationProbe = intentInfo.allowRollingContextFallback ? contextLower : lower;
-    if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|classic edge|consumable|blade|cutter|flame|buffing|cloudy\s*edge|rough\s*edge/i.test(classificationProbe)) {
+    const classificationProbe = `${convState.primaryProductQuery || ""} ${rawText}`.toLowerCase();
+    if (
+      convState.activeCategory === "Acrylic Machines (CE53)" ||
+      /machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|classic edge|consumable|blade|cutter|flame|buffing|cloudy\s*edge|rough\s*edge/i.test(
+        classificationProbe
+      )
+    ) {
       smartCategory = "Acrylic Machines (CE53)";
       priority = "HIGH";
-    } else if (/podium|podiums|lectern|lecterns|pulpit|pulpits|rostrum|stage|auditorium|conference/i.test(classificationProbe)) {
+    } else if (
+      convState.activeCategory === "Podiums & Stage" ||
+      /podium|podiums|lectern|lecterns|pulpit|pulpits|rostrum|stage|auditorium|conference/i.test(
+        classificationProbe
+      )
+    ) {
       smartCategory = "Podiums & Stage";
       priority = /friday|urgent|tomorrow|today/i.test(lower) ? "URGENT" : "HIGH";
-    } else if (/trophy|trophies|memento|award|student|convocation|plaque/i.test(classificationProbe)) {
+    } else if (
+      convState.activeCategory === "Awards & Trophies" ||
+      /trophy|trophies|memento|award|student|convocation|plaque/i.test(classificationProbe)
+    ) {
       smartCategory = "Awards & Trophies";
-    } else if (/hotel|banquet|menu|qr|resort|hospitality|tent\s*card|table\s*stand|sign\s*holder/i.test(classificationProbe)) {
+    } else if (
+      convState.activeCategory === "Hotel & Banquet" ||
+      /hotel|banquet|menu|qr|resort|hospitality|tent\s*card|table\s*stand|sign\s*holder/i.test(
+        classificationProbe
+      )
+    ) {
       smartCategory = "Hotel & Banquet";
       priority = "HIGH";
-    } else if (/cover|guard|enclosure|box|case|display\s*stand|riser|custom|mm|inch/i.test(classificationProbe)) {
+    } else if (
+      convState.activeCategory === "Custom Fabrication" ||
+      /cover|guard|enclosure|box|case|display\s*stand|riser|custom|mm|inch/i.test(
+        classificationProbe
+      )
+    ) {
       smartCategory = "Custom Fabrication";
       priority = "HIGH";
     } else if (/order|dispatch|delivery|tracking|courier|invoice|advance|payment/i.test(classificationProbe)) {
@@ -2636,6 +3278,8 @@ export async function runAcrioAutonomousTurn(params: {
         allItems,
         matchedItems: contextMatches,
         smartCategory,
+        excludeConsumables: convState.excludedItemTypes.includes("CONSUMABLE"),
+        hasStrictBudget: convState.maxPrice !== null || convState.minPrice !== null,
       })
     : "";
 
@@ -2704,11 +3348,15 @@ Welcome the customer briefly and ask what they are looking to display, build, or
           : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}. Explain honestly and helpfully what we do make (stage podiums/pulpits from ₹7,150 upwards, awards & trophies, hotel QR/menu stands, custom clear acrylic boxes/covers on classicconcepts.in, plus acrylic bending, diamond polishing & cutting machines on classicedge53.com) and ask 1 short clarifying question.`;
       }
 
+      const stateSummaryLine = intentInfo.requiresProductLookup
+        ? `Active Conversation Memory: product="${convState.primaryProductQuery || "unspecified"}", category="${smartCategory}", budget="${budgetLabel || "open"}", preferences=[${convState.preferences.join(", ") || "none"}]${convState.excludedItemTypes.length ? `, excludedItemTypes=[${convState.excludedItemTypes.join(", ")}]` : ""}`
+        : "";
+
       const latestPromptPayload = `[Internal Context for ACRIO - never echo raw labels]
 Customer Name: ${params.customerName}
 Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Start directly with the helpful answer.)" : `NO (First reply: greet "${firstName}" warmly once in 1 short line.)`}
 Detected Category: ${smartCategory}
-${catalogContext}
+${stateSummaryLine ? `${stateSummaryLine}\n` : ""}${catalogContext}
 
 Customer's latest WhatsApp message:
 ${rawText}`;
@@ -2825,6 +3473,7 @@ Return ONLY valid JSON:
             customerReply: cleanedReply,
             smartCategory: parsed.smartCategory || smartCategory,
             priority: parsed.priority || priority,
+            conversationState: convState,
           };
         } else {
           lastAiError = "Claude returned text that could not be parsed as JSON.";
@@ -2960,6 +3609,7 @@ Return ONLY valid JSON:
     customerReply: finalFallback,
     smartCategory,
     priority,
+    conversationState: convState,
   };
 }
 
