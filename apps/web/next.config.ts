@@ -49,6 +49,7 @@ const nextConfig: NextConfig = {
   },
   outputFileTracingRoot: monorepoRoot,
   allowedDevOrigins: [
+    "chat.ccapl.cc",
     "whatsapp.ccapl.cc",
     "track.ccapl.cc",
     "track.ccapl.in",

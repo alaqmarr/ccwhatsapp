@@ -90,7 +90,7 @@ fi
 
 echo "=========================================================="
 echo "ALL 7 DATABASES RESET COMPLETE (0 DUMMY RECORDS)"
-echo "Next step: Open https://whatsapp.ccapl.cc/setup to create"
+echo "Next step: Open https://chat.ccapl.cc/setup to create"
 echo "your real DEV owner account."
 echo "=========================================================="
 exit 0

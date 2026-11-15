@@ -1,8 +1,8 @@
-# Classic Concepts WhatsApp Desk Rules (whatsapp.ccapl.cc)
+# Classic Concepts Customer & Order Desk Rules (chat.ccapl.cc)
 
 ## Domain
-- Official WhatsApp platform domain: **`whatsapp.ccapl.cc`** (`https://whatsapp.ccapl.cc`).
-- Webhook URL: `https://whatsapp.ccapl.cc/api/webhooks/whatsapp`
+- Official platform domain: **`chat.ccapl.cc`** (`https://chat.ccapl.cc`) (with `whatsapp.ccapl.cc` supported as a secondary alias).
+- Webhook URL: `https://chat.ccapl.cc/api/webhooks/whatsapp`
 - Custom short links: `https://ccapl.cc/<6-char-id>` (with `/l/[code]` backwards-compatible)
 
 ## UI / UX Rules

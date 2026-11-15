@@ -77,6 +77,14 @@ module.exports = {
         NODE_ENV: "production",
         PORT: String(port),
         CCWHATSAPP_ROOT: __dirname,
+        APP_URL:
+          !dotEnv.APP_URL || dotEnv.APP_URL === "https://whatsapp.ccapl.cc"
+            ? "https://chat.ccapl.cc"
+            : dotEnv.APP_URL,
+        NEXT_PUBLIC_APP_URL:
+          !dotEnv.NEXT_PUBLIC_APP_URL || dotEnv.NEXT_PUBLIC_APP_URL === "https://whatsapp.ccapl.cc"
+            ? "https://chat.ccapl.cc"
+            : dotEnv.NEXT_PUBLIC_APP_URL,
         TRACKING_PUBLIC_ORIGIN: dotEnv.TRACKING_PUBLIC_ORIGIN || "https://track.ccapl.cc",
         SEED_DEMO_DATA: dotEnv.SEED_DEMO_DATA || "0",
         REDIS_URL: redisUrl,

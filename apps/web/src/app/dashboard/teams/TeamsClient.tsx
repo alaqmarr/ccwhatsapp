@@ -1459,7 +1459,7 @@ export function TeamsClient({
               </span>
             </div>
             <p className="text-xs text-neutral-600">
-              Powers whatsapp.ccapl.cc, track.ccapl.cc/{"{id}"} live order redirects, and ultra-short ccapl.cc/{"{6-char}"} shareable links.
+              Powers chat.ccapl.cc, track.ccapl.cc/{"{id}"} live order redirects, and ultra-short ccapl.cc/{"{6-char}"} shareable links.
             </p>
             <div className="text-[11px] font-mono text-neutral-500">
               Port 3007 • Bridge endpoint: /api/internal/website-enquiry

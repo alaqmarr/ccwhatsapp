@@ -81,7 +81,7 @@ export function proxy(request: NextRequest) {
     }
   }
 
-  // 3. Also support direct /{6-char-id} on whatsapp.ccapl.cc or localhost (:3007)
+  // 3. Also support direct /{6-char-id} on chat.ccapl.cc, whatsapp.ccapl.cc, or localhost (:3007)
   // whenever it is a non-reserved single path segment without a file extension.
   const trimmedSeg = pathname.replace(/^\/+|\/+$/g, "");
   if (

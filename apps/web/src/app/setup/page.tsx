@@ -387,7 +387,7 @@ export default function SetupPage() {
                 </div>
               )}
 
-              {/* Webhook Details for whatsapp.ccapl.cc */}
+              {/* Webhook Details for chat.ccapl.cc */}
               <section className="p-5 rounded-lg bg-white border border-neutral-200 space-y-4">
                 <div>
                   <h2 className="text-sm font-semibold text-neutral-900">
@@ -507,7 +507,7 @@ export default function SetupPage() {
                   },
                   {
                     key: "webhookSubscribed" as const,
-                    title: "5. Connect Webhook to whatsapp.ccapl.cc",
+                    title: "5. Connect Webhook to chat.ccapl.cc",
                     desc: "Paste the Callback URL and Verify Token on the left, then turn on the 'messages' toggle.",
                   },
                 ].map((item) => (

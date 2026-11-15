@@ -1,8 +1,8 @@
 import React from "react";
 import type { AccountStatus, UserRole } from "@cc/rbac";
 
-export const WHATSAPP_PUBLIC_DOMAIN = "whatsapp.ccapl.cc";
-export const WHATSAPP_PUBLIC_ORIGIN = "https://whatsapp.ccapl.cc";
+export const WHATSAPP_PUBLIC_DOMAIN = "chat.ccapl.cc";
+export const WHATSAPP_PUBLIC_ORIGIN = "https://chat.ccapl.cc";
 export const SHORTLINK_PUBLIC_DOMAIN = "ccapl.cc";
 export const SHORTLINK_PUBLIC_ORIGIN = "https://ccapl.cc";
 export const TRACKING_PUBLIC_DOMAIN = "track.ccapl.cc";

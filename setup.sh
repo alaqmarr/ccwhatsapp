@@ -104,9 +104,9 @@ if curl -sSf -L -o /dev/null "http://127.0.0.1:${APP_PORT}/login"; then
   echo "=================================================="
   echo "SUCCESS: '${APP_NAME}' is LIVE on port ${APP_PORT}!"
   echo "Next steps:"
-  echo "  1. Point Nginx for whatsapp.ccapl.cc -> http://127.0.0.1:${APP_PORT}"
+  echo "  1. Point Nginx for chat.ccapl.cc -> http://127.0.0.1:${APP_PORT}"
   echo "     (Set 'proxy_buffering off;' on /api/realtime/stream for live SSE ticks)"
-  echo "  2. Open https://whatsapp.ccapl.cc/setup to create your DEV account & connect Meta"
+  echo "  2. Open https://chat.ccapl.cc/setup to create your DEV account & connect Meta"
   echo "  3. Run 'pm2 startup' once if not already enabled on boot"
   echo "=================================================="
 else

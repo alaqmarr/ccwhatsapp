@@ -55,6 +55,11 @@ fi
 git pull --ff-only || git pull
 chmod +x setup.sh update.sh reset-db.sh 2>/dev/null || true
 
+# 1b. Auto-migrate .env.production APP_URL from whatsapp.ccapl.cc to chat.ccapl.cc
+if [ -f ".env.production" ]; then
+  sed -i 's|https://whatsapp\.ccapl\.cc|https://chat.ccapl.cc|g' .env.production 2>/dev/null || true
+fi
+
 # 2. Install workspace dependencies (auto-recovers from ENOTEMPTY)
 echo "[2/7] Installing dependencies..."
 install_workspace_deps

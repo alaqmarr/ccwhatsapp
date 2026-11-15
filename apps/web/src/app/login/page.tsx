@@ -3,12 +3,8 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
-import {
-  ClassicConceptsWordmark,
-  WHATSAPP_PUBLIC_DOMAIN,
-  WhatsAppLogoIcon,
-} from "@cc/ui";
+import { Loader2, ShieldCheck } from "lucide-react";
+import { ClassicConceptsWordmark } from "@cc/ui";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -29,15 +25,19 @@ export default function LoginPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        if (data.needsEmailVerify) {
-          router.push(`/register?verify=${encodeURIComponent(email)}`);
-          return;
-        }
-        setError(data.error || "Incorrect email or password.");
+        setError(data.error || "Sign in failed. Please check your credentials.");
         return;
       }
-      router.push("/");
+      if (data.user?.status === "PENDING_EMAIL_OTP") {
+        router.push("/register");
+      } else if (data.user?.status !== "ACTIVE") {
+        router.push("/onboarding");
+      } else {
+        router.push("/dashboard");
+      }
       router.refresh();
+    } catch {
+      setError("Could not reach the server. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -50,34 +50,32 @@ export default function LoginPage() {
           <ClassicConceptsWordmark height={38} variant="light" />
           <div className="h-6 w-px bg-neutral-200" />
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-[#25d366] text-white flex items-center justify-center shrink-0">
-              <WhatsAppLogoIcon size={15} />
+            <div className="w-7 h-7 rounded-full bg-slate-900 text-white flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-4 h-4" />
             </div>
             <div>
               <div className="font-display text-sm font-bold tracking-tight text-slate-900">
-                WhatsApp Business Desk
+                Internal Staff & Order Portal
               </div>
               <div className="font-mono text-[11px] text-slate-500">
-                {WHATSAPP_PUBLIC_DOMAIN}
+                classicconcepts.in • classicedge53.com
               </div>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-4 text-xs font-semibold">
-          <Link href="/register" className="text-slate-700 hover:text-slate-950">
-            Create staff account
-          </Link>
-        </div>
+        <span className="text-xs text-slate-500 hidden sm:inline font-medium">
+          Authorized Classic Concepts Staff Only
+        </span>
       </header>
 
       <div className="flex-1 w-full flex items-center justify-center p-6">
         <div className="w-full max-w-md bg-white rounded-xl border border-neutral-200 p-7 space-y-5 shadow-xs">
           <div>
             <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
-              Staff & Admin Sign In
+              Staff Portal Sign In
             </h1>
             <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
-              Sign in with your registered email address and password.
+              Sign in with your approved Classic Concepts staff email and password to access internal customer enquiries and orders.
             </p>
           </div>
 
@@ -89,7 +87,7 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">
+              <label className="block text-xs font-medium text-neutral-700 mb-1.5">
                 Email Address
               </label>
               <input
@@ -97,12 +95,13 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm focus:border-neutral-900 focus:outline-none"
+                placeholder="name@classicconcepts.in"
+                className="w-full px-3.5 py-2 rounded-md border border-neutral-300 text-sm focus:outline-none focus:border-neutral-900"
               />
             </div>
+
             <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">
+              <label className="block text-xs font-medium text-neutral-700 mb-1.5">
                 Password
               </label>
               <input
@@ -110,29 +109,51 @@ export default function LoginPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter your password"
-                className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm focus:border-neutral-900 focus:outline-none"
+                placeholder="••••••••"
+                className="w-full px-3.5 py-2 rounded-md border border-neutral-300 text-sm focus:outline-none focus:border-neutral-900"
               />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-2.5 rounded-md bg-[#1da851] hover:bg-[#178c43] text-white text-sm font-medium flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-2.5 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-sm font-medium flex items-center justify-center gap-2 cursor-pointer"
             >
               {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-              <span>Sign in</span>
+              <span>Sign in to Classic Concepts Portal</span>
             </button>
           </form>
 
           <div className="pt-4 border-t border-neutral-200 text-xs text-neutral-600 flex items-center justify-between">
-            <span>First time joining the desk?</span>
+            <span>New Classic Concepts team member?</span>
             <Link
               href="/register"
               className="font-medium text-neutral-900 underline"
             >
               Register staff account
             </Link>
+          </div>
+
+          <div className="pt-3 border-t border-neutral-100 text-[11px] leading-relaxed text-neutral-500">
+            Internal employee CRM and order portal operated by{" "}
+            <a
+              href="https://classicconcepts.in"
+              className="underline text-neutral-700"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Classic Concepts (classicconcepts.in)
+            </a>{" "}
+            and{" "}
+            <a
+              href="https://classicedge53.com"
+              className="underline text-neutral-700"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Classic Edge 53 (classicedge53.com)
+            </a>
+            . Authorized internal staff access only. Independent business software; not affiliated with or endorsed by consumer messaging platforms.
           </div>
         </div>
       </div>

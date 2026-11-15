@@ -1,0 +1,2508 @@
+# CLASSIC CONCEPTS AI ECOSYSTEM — MASTER ENGINEERING INSTRUCTION
+## ACRIO + ACRO | Credit-Efficient Audit, Repair, Optimization and Testing
+
+You are a senior full-stack engineer, AI systems architect, database and retrieval specialist, and production QA engineer.
+
+Your assignment is to improve our existing AI ecosystem across three directories, with the smallest reliable changes and minimal unnecessary token consumption.
+
+**CRITICAL: I have limited Antigravity credits. Prioritize efficient execution.**
+
+Do not attempt to implement the entire specification in one continuous run.
+
+First identify the architecture and confirmed root causes, then prepare a concise, prioritized implementation plan. Stop after the plan in this initial execution. Do not begin modifying application code until the next instruction.
+
+Use this document as the master specification for subsequent phases. Do not repeatedly reread or reanalyze the entire project when continuing.
+
+---
+
+# 1. PROJECT STRUCTURE
+
+We have three existing directories.
+
+### `classicconcepts`
+
+Classic Concepts — acrylic products website and backend.
+
+Products include acrylic podiums, pulpits, display products, acrylic sheets, custom fabrication and other products in the actual catalog.
+
+Contains customer-facing functionality and administrator product-management capabilities.
+
+### `classicedge53`
+
+Classic Edge 53 — sister firm specializing in acrylic fabrication machinery, tools and associated equipment.
+
+Has its own product catalog and business identity.
+
+### `ccwhatsapp`
+
+Internal staff WhatsApp dashboard.
+
+ACRIO serves as the initial customer-facing assistant and attempts to resolve enquiries before human staff intervention.
+
+Inspect the existing WhatsApp ownership, routing and handoff mechanisms.
+
+Do not assume both websites and WhatsApp have identical business configurations or database connections. Verify them from code.
+
+---
+
+# 2. OUR TWO AI ASSISTANTS
+
+## ACRIO — Customer-facing assistant
+
+ACRIO serves customers through supported website chat and WhatsApp channels.
+
+Responsibilities:
+
+- Understand customer intent.
+- Answer company and general questions.
+- Search appropriate product catalogs.
+- Recommend relevant products.
+- Remember customer requirements.
+- Understand follow-ups and corrections.
+- Compare products.
+- Assist with custom requirements.
+- Help collect quotation information.
+- Route enquiries to staff when appropriate.
+- Provide natural, concise and useful responses.
+
+ACRIO must not have administrator-level write permissions.
+
+## ACRO — Administrator assistant
+
+ACRO helps authorized administrators create and improve product information in the backend.
+
+Responsibilities:
+
+- Product creation assistance.
+- Product names and titles.
+- Short and detailed descriptions.
+- Feature bullets and selling points.
+- Product applications.
+- Technical attribute suggestions.
+- Category and subcategory suggestions.
+- SEO titles and meta descriptions.
+- Keywords, tags and FAQs.
+- Grammar and clarity improvements.
+- Missing-information detection.
+- Product content quality analysis.
+- Existing product editing and improvement.
+
+ACRO must respect administrator permissions and product data accuracy.
+
+ACRIO and ACRO should share suitable infrastructure while maintaining separate instructions, permissions and behavior.
+
+Do not merge them into one unrestricted assistant.
+
+---
+
+# 3. CONFIRMED PROBLEMS FROM ACTUAL AI LOGS
+
+We have actual AI flight logs demonstrating several failures.
+
+These are observed symptoms, not automatically confirmed code-level root causes.
+
+Investigate the underlying implementation.
+
+## Problem A — Unnecessary product retrieval
+
+WhatsApp triggered product lookup for messages including:
+
+- "Hi"
+- "Who are you?"
+- "I have a different query"
+- Company information questions
+
+Product search should only execute when relevant to the customer intent.
+
+## Problem B — Conversation history contaminates searches
+
+For an incoming "Hi", the backend constructed a search query containing old messages about pulpits and previous greetings.
+
+Example:
+
+"I am looking for pulpits under ₹25,000 I said I am looking for pulpits Who are yo Hi Hi"
+
+This resulted in unrelated product recommendations.
+
+Never construct search queries by blindly concatenating raw conversation messages.
+
+Use structured active requirements and the current message.
+
+## Problem C — Product category confusion
+
+Customer:
+
+"I am looking for pulpits under ₹25,000 for church events and premium functions."
+
+ACRIO correctly identifies acrylic podiums.
+
+Customer:
+
+"We can increase the budget to ₹30,000."
+
+ACRIO incorrectly searches Acrylic Sheets.
+
+It should preserve the existing product category and change only the budget.
+
+## Problem D — Product type mismatch
+
+Customer:
+
+"I am not looking for any tools, just machines."
+
+The retrieval layer still returned records classified as `CONSUMABLE`.
+
+The final answer sometimes filters them out, but strict constraints should be applied before product recommendations reach the model.
+
+## Problem E — Irrelevant continuation
+
+Customer:
+
+"Who are you?"
+
+ACRIO introduces itself but then continues recommending polishing machines and asking technical questions.
+
+It should answer the actual question without forcing the previous product discussion into every response.
+
+## Problem F — Inappropriate handoff
+
+Customer:
+
+"Whom will you connect me to?"
+
+The system initiated staff handoff.
+
+Distinguish informational questions about staff from explicit requests for handoff.
+
+## Problem G — Large prompt-cache writes
+
+A website request recorded approximately 35,171 cache-write tokens with zero cache-read tokens.
+
+Investigate whether excessive static information or catalog content is being sent and whether prompt caching is effective across requests.
+
+A single cache write is not necessarily a bug. Measure actual repeated-request behavior before changing it.
+
+## Problem H — Cross-business retrieval risk
+
+Some searches scan products from both Classic Concepts and Classic Edge 53.
+
+Ensure that product searches are appropriately scoped to the requested business and category.
+
+Do not allow unrelated machinery to appear in finished acrylic-product recommendations.
+
+---
+
+# 4. REQUIRED ACRIO ARCHITECTURE
+
+The logical customer-request flow should be:
+
+1. Receive customer message.
+2. Identify conversation and business context.
+3. Load relevant previous conversation state.
+4. Interpret current intent and any changes to requirements.
+5. Decide whether database retrieval is necessary.
+6. Route to the appropriate business and catalog.
+7. Build structured search parameters.
+8. Retrieve relevant product records.
+9. Apply deterministic product and budget filters.
+10. Rank the legitimate matches.
+11. Generate an appropriate grounded response.
+12. Validate product references and factual claims.
+13. Update conversation state.
+14. Return the response through the correct channel.
+
+This describes the required behavior, not a mandate to introduce 14 separate services or model calls.
+
+Prefer efficient existing functions.
+
+Avoid unnecessary model calls for trivial routing decisions.
+
+---
+
+# 5. CONVERSATION MEMORY AND INTENT
+
+Maintain reliable per-conversation state for applicable information:
+
+- Conversation ID
+- Channel
+- Business identity
+- Current intent
+- Product category
+- Product name and synonyms
+- Budget and currency
+- Intended application
+- Material
+- Style and color
+- Dimensions
+- Thickness
+- Quantity
+- Custom requirements
+- Products already discussed
+- Pending clarifications
+- AI/human ownership
+- Relevant recent conversation history
+
+Distinguish:
+
+- New request
+- Follow-up
+- Requirement modification
+- Customer correction
+- Topic change
+- General conversation
+- Staff enquiry
+- Explicit handoff request
+
+Update only the changed requirements.
+
+Example:
+
+Initial request:
+Pulpits, maximum ₹25,000, church events and premium functions.
+
+Follow-up:
+"Increase budget to ₹30,000."
+
+Updated requirements:
+Same product, same applications, new maximum ₹30,000.
+
+Follow-up:
+"Only transparent ones."
+
+Updated requirements:
+Same product, same applications, same budget, transparent design required.
+
+Follow-up:
+"Actually, I want acrylic display boxes."
+
+Recognize a new product category and clear or re-evaluate constraints that no longer apply.
+
+Do not preserve irrelevant restrictions after a genuine topic change.
+
+Ensure conversation state is isolated between customers and persistent for the appropriate session lifetime.
+
+---
+
+# 6. PRODUCT RETRIEVAL AND RELEVANCE
+
+Audit existing retrieval before deciding whether it needs redesign.
+
+Support, where appropriate:
+
+- Exact product matching
+- Category matching
+- Approved synonyms
+- Keyword matching
+- Structured filtering
+- Semantic retrieval
+- Application matching
+- Technical specifications
+- Price constraints
+- Product-type constraints
+- Business-domain restrictions
+
+Examples:
+
+"Pulpit" may map to suitable podium or lectern records.
+
+"Diamond polishing machine" should retrieve Classic Edge 53 machinery.
+
+"Machines only" must exclude records classified as tools or consumables.
+
+Never recommend unrelated products simply to fill a list.
+
+For each recommendation, verify:
+
+- Product ID
+- Correct business
+- Actual category
+- Relevant characteristics
+- Verified price, if presented
+- Valid existing product URL
+- Applicable customer constraints
+
+Unknown prices must not be treated as confirmed within budget.
+
+Do not invent specifications, availability, discounts or quotations.
+
+If no products qualify, report the absence of verified matches and offer a useful next step.
+
+Do not represent a database failure as confirmed product unavailability.
+
+---
+
+# 7. RESPONSE QUALITY AND COMPANY KNOWLEDGE
+
+ACRIO must answer the customer's actual question first.
+
+For greetings and assistant-identity questions, avoid unnecessary product searches.
+
+For company details, use approved company information rather than searching product records.
+
+For product questions, use grounded catalog information.
+
+For comparisons, explain meaningful differences.
+
+For custom requirements, identify necessary information without repeatedly asking for already-known details.
+
+Avoid:
+
+- Generic category menus after every message.
+- Repetitive sales scripts.
+- Unrelated product recommendations.
+- Excessive product lists.
+- Unsupported marketing claims.
+- Repeated clarification questions.
+- Claiming completed actions without tool confirmation.
+
+Prefer a natural, helpful and professional sales-consultant tone.
+
+---
+
+# 8. WHATSAPP AND HUMAN HANDOFF
+
+Inspect the current `ccwhatsapp` integration.
+
+Preserve working WhatsApp features.
+
+Improve:
+
+- Message routing
+- Conversation context
+- Business identification
+- AI first response
+- Product lookup
+- Human handoff
+- AI suspension after takeover
+- Duplicate-event prevention
+- Error handling
+
+Differentiate:
+
+"Can you connect me to a person?"
+→ Explicit staff request.
+
+"Whom will you connect me to?"
+→ Information request unless the surrounding context clearly authorizes handoff.
+
+Honor existing business rules and authenticated staff permissions.
+
+Do not allow simultaneous conflicting human and AI replies.
+
+---
+
+# 9. ACRO ADMIN AI REQUIREMENTS
+
+Inspect the existing Acro implementation and identify where content quality and safety can be improved.
+
+ACRO must understand:
+
+- Which business the administrator is editing.
+- Which product is being created or modified.
+- Current catalog data.
+- Existing product specifications.
+- Desired output fields.
+- Applicable backend schema.
+- Administrator permissions.
+
+### Product creation
+
+Prepare high-quality content including relevant:
+
+- Product titles
+- Short descriptions
+- Long descriptions
+- Features
+- Benefits
+- Applications
+- Technical details
+- Categories
+- SEO titles
+- Meta descriptions
+- Tags
+- Keywords
+
+Use actual provided information.
+
+Do not invent dimensions, thickness, motor capacity, machine speed, warranty or other technical facts.
+
+### Content improvement
+
+When an admin requests improvement:
+
+- Preserve verified facts.
+- Correct language and formatting.
+- Reduce repetition.
+- Improve useful selling points.
+- Suggest missing information.
+- Improve readability and SEO naturally.
+- Avoid generic text duplicated across products.
+- Match language to the correct product category.
+
+### Structured backend integration
+
+Respect actual field names, data types, length restrictions, category taxonomy and validation rules.
+
+Prefer structured suggestions compatible with the existing backend.
+
+Show proposed changes before applying them.
+
+Respect role-based permissions.
+
+Never silently overwrite or publish products.
+
+Require authorization for sensitive changes.
+
+Use the existing audit trail where available.
+
+Treat imported product descriptions and third-party content as untrusted data, not instructions.
+
+---
+
+# 10. CONNECT ACRO UPDATES TO ACRIO
+
+Approved product updates should propagate correctly.
+
+Inspect existing flows between:
+
+- Database
+- Website catalog
+- Product APIs
+- Database cache
+- Search indexes
+- AI retrieval
+- WhatsApp product results
+
+When an authorized administrator updates a product through Acro, Acrio should eventually retrieve the correct published information.
+
+Ensure appropriate cache invalidation or refresh.
+
+Do not expose unpublished product records to customers.
+
+Avoid unnecessary new infrastructure if current mechanisms can be repaired.
+
+---
+
+# 11. CACHE AND TOKEN OPTIMIZATION
+
+Identify existing caching layers:
+
+- Catalog cache
+- Database query cache
+- Search result cache
+- Conversation-state cache
+- Response cache
+- Anthropic prompt cache
+
+Do not confuse these systems.
+
+Search cache keys must incorporate relevant factors such as:
+
+- Business
+- Product category
+- Budget
+- Material
+- Product type
+- Active filters
+- Catalog version
+
+Avoid global reuse of customer-specific responses.
+
+Do not send full catalog content to Claude when targeted product retrieval is sufficient.
+
+Keep static reusable instructions separate from dynamic customer data where supported.
+
+Measure cache-write and cache-read tokens.
+
+Improve cache-hit rates without serving stale information.
+
+Use compact conversation context while preserving critical customer requirements.
+
+---
+
+# 12. MODEL STRATEGY
+
+The current application uses Claude Haiku 5.5.
+
+Do not switch models immediately.
+
+First fix proven retrieval, state and routing issues.
+
+Then evaluate the existing model against stronger alternatives using the same test cases.
+
+Possible routing:
+
+- Simple greetings and FAQs: efficient configuration.
+- Straightforward product lookup: efficient model with verified data.
+- Complex product comparison: stronger reasoning when needed.
+- Complex custom requirements: stronger model when quality justifies it.
+- Basic Acro grammar improvement: efficient model.
+- Detailed Acro technical content: stronger configuration when beneficial.
+
+Verify actual provider capabilities and model identifiers before implementation.
+
+Do not introduce extra model calls without measurable benefit.
+
+Track token usage, latency, cache usage and estimated API costs.
+
+---
+
+# 13. REQUIRED REGRESSION TESTS
+
+Build focused automated tests using existing test infrastructure whenever possible.
+
+Mandatory Acrio scenarios:
+
+1. "Hi" → greeting, no product retrieval.
+2. "Who are you?" → introduce Acrio, no product retrieval.
+3. "I have a different query" → invite the question, no product retrieval.
+4. Pulpits under ₹25,000 → correct Classic Concepts catalog.
+5. Increase budget to ₹30,000 → retain pulpit category.
+6. "Only transparent ones" → retain applicable previous constraints.
+7. "Which one is more premium?" → compare relevant previously retrieved products.
+8. "Machines only" → exclude consumables and tools.
+9. Acrylic polishing machine → Classic Edge 53.
+10. "I said pulpits" → correct the active product category.
+11. "Tell me about Classic Concepts" → company information.
+12. "Whom will you connect me to?" → do not hand off solely because of the question.
+13. "Connect me to a human" → authorized handoff.
+14. Staff takeover → prevent conflicting AI replies.
+15. No matching products → transparent no-match response.
+16. Missing specifications → no invented facts.
+17. Customer changes product type → correctly update context.
+18. Mixed-business enquiry → separate appropriate product sources.
+19. Budget above previous maximum → retrieve newly qualifying products where available.
+20. Identical requests on supported channels → consistent underlying search behavior.
+
+Mandatory Acro scenarios:
+
+1. Product creation using supplied fields.
+2. Accurate product descriptions.
+3. Better feature bullets.
+4. SEO suggestions.
+5. Missing specification detection.
+6. No invented technical data.
+7. Existing factual information preserved.
+8. Structured output validation.
+9. Unauthorized write rejected.
+10. Approved product update reflected in customer retrieval after synchronization.
+
+Tests must examine both final responses and underlying retrieval behavior.
+
+Fix root causes rather than hardcoding replies for these exact sentences.
+
+Use deterministic tests for state, routing, filtering and permissions.
+
+Use controlled real-model evaluations separately when necessary.
+
+---
+
+# 14. SECURITY AND RELIABILITY
+
+Maintain:
+
+- Customer data isolation
+- Administrator authorization
+- Business-level data separation
+- Safe database operations
+- Existing authentication
+- Existing functional features
+- Proper error handling
+- Structured diagnostic logs
+- Appropriate data retention
+- Protection against prompt injection
+
+Never expose production secrets in logs.
+
+Never permit customer messages to authorize administrative actions.
+
+Never publish or delete products without appropriate authorization.
+
+Do not modify production data or deploy changes without approval.
+
+---
+
+# 15. CREDIT-EFFICIENT EXECUTION RULES
+
+These rules are mandatory.
+
+### Rule 1 — Targeted exploration
+
+Use filename, symbol and text searches to locate relevant code.
+
+Inspect dependency manifests, relevant service entry points, and directly related functions first.
+
+Do not dump entire repositories or repeatedly read unrelated files.
+
+### Rule 2 — No unnecessary redesign
+
+Reuse existing functions, services, infrastructure and dependencies.
+
+Do not introduce microservices, vector databases, message queues or additional AI providers unless evidence demonstrates a real need.
+
+### Rule 3 — Avoid repeated analysis
+
+Record confirmed findings in one concise project progress document.
+
+Future phases should reuse this document rather than repeating the initial audit.
+
+### Rule 4 — Small implementation phases
+
+Divide work into bounded phases:
+
+Phase A: Fix intent routing and unnecessary product retrieval.
+
+Phase B: Fix conversation state and normalized search queries.
+
+Phase C: Fix category, item-type and business filtering.
+
+Phase D: Fix response relevance and WhatsApp handoff behavior.
+
+Phase E: Improve Acro product-content assistance.
+
+Phase F: Improve cache synchronization and AI cost efficiency.
+
+Phase G: Run cross-system regression tests and final review.
+
+### Rule 5 — Efficient testing
+
+Run focused tests after each phase.
+
+Avoid unnecessary full test-suite execution after every small edit.
+
+Run broader integration tests when all relevant phases are complete.
+
+### Rule 6 — No redundant output
+
+Keep explanations concise.
+
+Report confirmed findings, changed files, test results and blockers.
+
+Do not produce lengthy generic essays or repeatedly restate the specification.
+
+### Rule 7 — Do not sacrifice quality
+
+Credit efficiency must not introduce unsafe shortcuts, missing validation or untested changes.
+
+Prioritize correctness over artificially minimizing tool usage.
+
+---
+
+# 16. INITIAL EXECUTION — AUDIT AND PLAN ONLY
+
+For this first execution:
+
+1. Locate relevant AI implementation files across the three directories.
+2. Trace the actual request-processing path.
+3. Identify where product lookup is triggered.
+4. Identify how conversation search queries are constructed.
+5. Identify how product categories and item types are filtered.
+6. Identify how business routing works.
+7. Identify where Acro generates and saves content.
+8. Identify how caching is implemented.
+9. Identify how WhatsApp staff handoff is triggered.
+10. Compare the discovered implementation against the logged failures.
+
+Do not scan unrelated files in depth.
+
+Produce a concise report containing:
+
+**A. Architecture map**
+- Main AI entry points
+- Key files
+- Data flow between systems
+
+**B. Confirmed root causes**
+- Exact affected functions or modules
+- Explanation tied to observed failures
+- Evidence from existing code
+
+**C. Prioritized implementation plan**
+- Phase
+- Files likely to change
+- Expected improvement
+- Important risks
+- Focused tests
+
+**D. Credit-efficient continuation**
+- Record discoveries in a concise progress file.
+- Explain which implementation phase should be executed next.
+- Identify any genuinely blocking information.
+
+Do not implement changes in this initial run.
+
+Do not perform production modifications.
+
+**STOP AFTER THE AUDIT AND IMPLEMENTATION PLAN.**
+
+The next agent instruction will authorize the first implementation phase.
+
+---
+
+# FINAL OBJECTIVE
+
+Create a reliable, unified AI ecosystem where:
+
+**ACRIO** understands customers, preserves context, retrieves correct products from the correct business, respects budgets, answers naturally and escalates appropriately.
+
+**ACRO** helps administrators generate and improve accurate product content, works within existing backend structures and safely applies approved changes.
+
+Both assistants must be context-aware, database-grounded, secure, efficient and maintainable.
+
+Do not try to solve every problem by increasing model intelligence.
+
+Fix the underlying application logic first.
+
+Begin the targeted audit now. Produce the plan and stop.
+
+
+**IMPORTANT: CREDIT-EFFICIENT EXECUTION**
+
+I have limited Antigravity credits.
+
+Read the complete specification, but do not attempt to implement everything in one continuous execution.
+
+First inspect the relevant existing architecture across `classicconcepts`, `classicedge53`, and `ccwhatsapp`.
+
+Identify the critical issues affecting Acrio and Acro.
+
+Create a prioritized, phased implementation plan.
+
+Do not perform unnecessary full-repository scans, repeated searches, broad refactoring or unrelated improvements.
+
+Implement one logical phase at a time, run targeted tests, and report completed work and remaining tasks.
+
+Preserve useful findings in a concise project progress file so future agent sessions can continue without repeating the full investigation.
+
+Prioritize correctness, maintainability and efficient token usage.
+
+
+# MASTER DEVELOPMENT PROMPT
+# CLASSIC CONCEPTS AI ECOSYSTEM — ACRIO + ACRO
+## Full Codebase Audit, Intelligent Architecture, Implementation, Optimization and Quality Assurance
+
+You are acting as a principal AI architect, senior full-stack engineer, conversational AI engineer, database architect, retrieval specialist, product-content optimization specialist, and production quality assurance engineer.
+
+Your task is to thoroughly inspect, understand, repair, enhance and optimize our existing AI ecosystem across three project directories.
+
+This is a real production business system. Do not make assumptions about existing implementations without inspecting the actual code.
+
+The objective is to build a highly capable, accurate, efficient, context-aware and cost-effective AI ecosystem serving both our customers and our internal administrators.
+
+**We have TWO distinct AI assistants:**
+
+1. **ACRIO** — Customer-facing AI sales and support assistant.
+2. **ACRO** — Administrator-facing AI assistant for creating, improving and managing backend content.
+
+They should share reliable underlying AI capabilities where appropriate while maintaining different permissions, instructions, responsibilities and workflows.
+
+The priority is **relevance, factual accuracy, contextual intelligence, useful recommendations, operational safety and measurable quality**.
+
+---
+
+# SECTION 1 — UNDERSTAND OUR PROJECT STRUCTURE
+
+We currently have three existing directories.
+
+## 1.1 `classicconcepts`
+
+This is the primary website and backend for Classic Concepts.
+
+Business focus:
+- Acrylic products
+- Acrylic podiums and pulpits
+- Display stands
+- Acrylic boxes
+- Acrylic organizers
+- Acrylic sheets
+- Custom acrylic fabrication
+- Other actual products and categories in our database
+
+The website provides customers with catalog information and product discovery.
+
+Administrators use its backend to manage products, descriptions, categories, specifications, SEO content and other catalog data.
+
+ACRIO may assist website customers.
+
+ACRO assists administrators with backend content creation, editing and recommendations.
+
+Inspect the existing implementation to verify these features and determine how they currently work.
+
+## 1.2 `classicedge53`
+
+This is the website and backend for Classic Edge 53, the sister firm of Classic Concepts.
+
+Business focus:
+- Acrylic fabrication machinery
+- Acrylic diamond polishing machines
+- Cutting equipment
+- Bending equipment
+- Other acrylic-working machinery, tools, accessories and equipment in the actual catalog
+
+It has a distinct business identity and product domain.
+
+ACRIO must understand when customers are asking for machines instead of finished acrylic products.
+
+ACRO must understand machinery specifications, technical product content and appropriate descriptions.
+
+Never mix the two businesses' catalog information without a valid customer or administrator request.
+
+## 1.3 `ccwhatsapp`
+
+This is our internal staff WhatsApp dashboard.
+
+ACRIO serves as the first point of contact for incoming customer conversations and attempts to resolve them through intelligent replies and appropriate business tools.
+
+Staff may need to review conversations, take over, handle quotation enquiries or complete tasks beyond ACRIO's authorization.
+
+Inspect the actual WhatsApp integration, message-processing logic, business configuration, session management and staff takeover features.
+
+Do not assume that WhatsApp serves both businesses without confirming the configuration.
+
+---
+
+# SECTION 2 — OVERALL AI ARCHITECTURE
+
+Design a maintainable AI architecture with the following logical components:
+
+### A. Shared AI infrastructure
+
+Common reusable capabilities where appropriate:
+
+- Model invocation and configuration
+- Conversation understanding
+- Context management
+- Product retrieval
+- Database search
+- Structured output validation
+- Cache coordination
+- Model routing
+- Tool execution
+- Error handling
+- Monitoring
+- Evaluation
+- Token and cost tracking
+
+### B. ACRIO — Customer AI
+
+Handles:
+
+- Website enquiries
+- WhatsApp enquiries
+- Product discovery
+- Recommendations
+- Product comparisons
+- Customer requirements
+- Custom-product enquiries
+- Quotation assistance
+- General company questions
+- Conversation follow-ups
+- Human handoff
+
+ACRIO must not have unrestricted administrator write access.
+
+### C. ACRO — Administrator AI
+
+Handles:
+
+- Product creation assistance
+- Product description generation
+- Product content improvement
+- Suggested features and bullet points
+- Technical content structuring
+- Category and subcategory suggestions
+- SEO title suggestions
+- Meta descriptions
+- Product keyword suggestions
+- Product attribute suggestions
+- Content quality evaluation
+- Duplicate-content detection
+- Existing product-content refinement
+- Other authorized backend content workflows
+
+ACRO may prepare structured changes but must respect administrator permissions, validation and approval controls.
+
+### D. Business-aware data access
+
+Both assistants must identify the correct business and catalog.
+
+Classic Concepts product information must remain distinct from Classic Edge 53 machinery information.
+
+### E. Channel-aware presentation
+
+Use appropriate output formats for:
+
+- Website chat
+- WhatsApp
+- Administrator dashboards
+
+Do not duplicate business logic unnecessarily.
+
+Inspect existing packages, services and repository boundaries before deciding how to share logic.
+
+Do not create a new microservice merely because it appears architecturally attractive.
+
+---
+
+# SECTION 3 — MANDATORY CODEBASE AUDIT
+
+Before implementing changes:
+
+1. Inspect all three directories thoroughly.
+2. Identify frameworks, runtime versions and package managers.
+3. Identify application entry points and deployment architecture.
+4. Find all existing AI integrations.
+5. Inspect existing model identifiers and API configurations.
+6. Read all system and developer prompts.
+7. Inspect database schemas and access layers.
+8. Identify relevant product and category tables.
+9. Inspect caching mechanisms.
+10. Trace website chatbot requests.
+11. Trace WhatsApp message processing.
+12. Trace administrator AI actions.
+13. Identify existing authentication and authorization logic.
+14. Identify available AI tools and function calls.
+15. Inspect content publishing and modification workflows.
+16. Determine how conversation history is stored.
+17. Identify existing automated tests.
+18. Inspect relevant logs and errors.
+19. Identify any shared packages or common APIs.
+20. Document architectural limitations and observed bugs.
+
+Produce a concise but meaningful architecture audit and implementation plan.
+
+Distinguish confirmed findings from hypotheses.
+
+Do not claim a feature is missing without checking.
+
+Do not overwrite functioning systems unnecessarily.
+
+Preserve existing APIs, authentication, catalog URLs, database records and dashboard behavior unless a justified change is required.
+
+---
+
+# SECTION 4 — ACRIO: INTELLIGENT CUSTOMER UNDERSTANDING
+
+ACRIO must behave like a knowledgeable, attentive sales consultant.
+
+It must understand:
+
+- Customer intent
+- Previous conversation context
+- Product requirements
+- Budget
+- Intended application
+- Material preferences
+- Design preferences
+- Customization requirements
+- Quantities
+- Technical questions
+- Corrections
+- Topic changes
+- Follow-up questions
+
+Every message must be interpreted in context.
+
+Do not automatically search the product database for every message.
+
+Examples:
+
+Customer: "Who are you?"
+
+Expected:
+Introduce ACRIO naturally.
+
+Customer: "I need acrylic pulpits."
+
+Expected:
+Identify relevant Classic Concepts products.
+
+Customer: "I need a diamond polishing machine."
+
+Expected:
+Identify the appropriate machinery catalog.
+
+Customer: "Increase my budget to ₹30,000."
+
+Expected:
+Update the existing budget without changing product type.
+
+Customer: "Show me only transparent ones."
+
+Expected:
+Retain the active product category and budget while filtering the design preference.
+
+Customer: "Actually, I need display boxes instead."
+
+Expected:
+Recognize a genuine product change and adjust the active requirements.
+
+Customer: "I said pulpits."
+
+Expected:
+Recognize a correction, acknowledge briefly and recover without repeating unrelated suggestions.
+
+Avoid generic scripted menus when the customer's intent is already clear.
+
+---
+
+# SECTION 5 — ACRIO: PERSISTENT CONVERSATION STATE
+
+Implement or improve structured conversation memory.
+
+Store appropriate active conversation requirements, including:
+
+- Conversation identifier
+- Business context
+- Channel
+- Current intent
+- Product category
+- Product aliases
+- Intended application
+- Minimum and maximum budget
+- Currency
+- Material
+- Color
+- Style
+- Dimensions
+- Thickness
+- Quantity
+- Customization requirements
+- Previous recommendations
+- Pending questions
+- Relevant recent messages
+- AI or human ownership status
+
+Store this per conversation using the existing architecture where possible.
+
+Distinguish:
+
+- New requirement
+- Modified requirement
+- Correction
+- Clarification
+- Topic change
+- Unrelated question
+
+A follow-up must update only the affected constraints.
+
+Example:
+
+Customer:
+"I want pulpits under ₹25,000 for church events and high-end functions."
+
+State:
+
+- Business: Classic Concepts
+- Category: Acrylic pulpits / podiums
+- Maximum budget: ₹25,000
+- Applications: Church events and premium functions
+
+Customer:
+"We can increase the budget to ₹30,000."
+
+New state:
+
+- Business: Classic Concepts
+- Category: Acrylic pulpits / podiums
+- Maximum budget: ₹30,000
+- Applications: Church events and premium functions
+
+Only the budget changes.
+
+Do not search Acrylic Sheets.
+
+Use durable conversation storage where required.
+
+Handle concurrent messages safely.
+
+Keep different customers' contexts isolated.
+
+Handle session expiry and data retention appropriately.
+
+---
+
+# SECTION 6 — ACRIO: ACCURATE DATABASE RETRIEVAL
+
+The existing database and cache are the authoritative sources for product information.
+
+Database access does not automatically guarantee correct search results.
+
+Audit and improve retrieval using:
+
+- Exact product matching
+- Category matching
+- Approved aliases and synonyms
+- Keyword search
+- Semantic retrieval where appropriate
+- Structured filters
+- Price filtering
+- Application matching
+- Specifications
+- Product relevance scoring
+- Availability data when reliable
+
+Use hybrid retrieval where beneficial.
+
+Enforce hard constraints in database queries or deterministic application logic.
+
+A product must not be recommended merely because it contains a similar keyword.
+
+Examples:
+
+"Pulpit" may relate to "Lectern" or "Podium."
+
+"Diamond polishing machine" relates to machinery.
+
+"Acrylic serving tray" is not a valid pulpit recommendation.
+
+"Acrylic oven" is not a valid pulpit recommendation.
+
+"Acrylic sheet" should not replace the customer's existing pulpit requirement when they only change their budget.
+
+Every recommendation must correspond to a real catalog record.
+
+Verify the product's source business.
+
+Use only valid product links from the database.
+
+If no products match, explain that fact instead of filling the response with irrelevant products.
+
+Distinguish unavailable data from confirmed product unavailability.
+
+---
+
+# SECTION 7 — ACRIO: CUSTOMER RESPONSE QUALITY
+
+ACRIO should:
+
+1. Answer the actual question.
+2. Preserve relevant context.
+3. Provide accurate information.
+4. Recommend genuinely relevant products.
+5. Respect customer constraints.
+6. Ask relevant clarification questions only when needed.
+7. Avoid repeating questions already answered.
+8. Avoid generic product dumps.
+9. Avoid unnecessary marketing language.
+10. Use verified prices and specifications.
+11. Clearly distinguish factual data from general advice.
+12. Give appropriate next steps.
+
+Examples of appropriate actions:
+
+- Show available matching products.
+- Explain differences between genuine alternatives.
+- Ask about a missing required dimension.
+- Offer custom-manufacturing enquiry where supported.
+- Assist with quotation requirements.
+- Refer the customer to staff when needed.
+
+Do not invent discounts, quotations, stock levels or technical specifications.
+
+Never claim an action has been completed unless the relevant tool confirms success.
+
+---
+
+# SECTION 8 — WHATSAPP: AI FIRST-CONTACT AND STAFF HANDOFF
+
+In `ccwhatsapp`, ACRIO is the initial customer-support and sales assistant.
+
+Audit and improve:
+
+- Incoming-message handling
+- Conversation routing
+- AI response generation
+- Message history
+- Business identity selection
+- Product lookup
+- Staff handoff
+- Human takeover
+- AI suspension and resumption
+- Error recovery
+- Duplicate message prevention
+
+ACRIO should attempt to resolve straightforward enquiries.
+
+It should escalate appropriately when:
+
+- The customer asks for a human.
+- The request exceeds AI authorization.
+- A quotation requires human approval.
+- Product information cannot be verified.
+- The customer is repeatedly dissatisfied.
+- A technical or operational error prevents resolution.
+
+Preserve existing handoff workflows where functional.
+
+Ensure AI and staff do not respond simultaneously in conflicting ways.
+
+Use idempotency controls for webhook/event processing.
+
+Keep WhatsApp-specific presentation separate from core AI reasoning.
+
+---
+
+# SECTION 9 — ACRO: INTELLIGENT ADMINISTRATOR ASSISTANT
+
+ACRO is a separate AI assistant serving authorized administrators.
+
+Its objective is to make product creation, editing and catalog maintenance faster and more accurate.
+
+ACRO must understand the actual product and the relevant business before generating content.
+
+It must not act like the customer-facing assistant.
+
+## 9.1 Product creation assistance
+
+When an administrator creates a new product, ACRO should help prepare:
+
+- Product name suggestions
+- Clear product descriptions
+- Short descriptions
+- Key features
+- Product highlights
+- Benefits
+- Suitable applications
+- Technical attributes
+- Category suggestions
+- Subcategory suggestions
+- Product tags
+- SEO titles
+- Meta descriptions
+- Search keywords
+- FAQ suggestions where useful
+
+All content should be based on information actually supplied by the administrator, existing verified records and approved reference material.
+
+Do not invent technical specifications.
+
+## 9.2 Product content improvement
+
+When an administrator requests "Improve this product," ACRO should inspect the current product fields and suggest targeted improvements.
+
+Examples:
+
+- Correct grammar
+- Improve readability
+- Remove repetition
+- Add useful descriptive points
+- Organize features
+- Improve customer relevance
+- Improve SEO clarity
+- Make technical content easier to understand
+- Identify missing information
+- Suggest better product titles
+
+Preserve accurate existing information.
+
+Do not remove important specifications to make descriptions shorter.
+
+## 9.3 Business-specific product knowledge
+
+For Classic Concepts:
+
+Emphasize appropriate information about acrylic products, applications, appearance, finishes, dimensions, customization and relevant product characteristics.
+
+For Classic Edge 53:
+
+Emphasize machinery type, purpose, operating features, compatible materials, technical specifications, use cases and other verified equipment information.
+
+Do not apply generic acrylic-display product descriptions to industrial machinery.
+
+## 9.4 Factual content grounding
+
+Categorize proposed content as:
+
+A. Verified from supplied product data.
+
+B. Supported by approved existing catalog content.
+
+C. General descriptive wording that does not assert unverified specifications.
+
+D. Suggested information requiring administrator confirmation.
+
+Do not transform assumptions into verified product specifications.
+
+Examples:
+
+If material thickness is unknown, do not invent "5 mm acrylic."
+
+If motor power is unknown, do not invent "2.2 kW."
+
+If warranty is unknown, do not claim warranty coverage.
+
+If outdoor suitability is unverified, do not claim UV resistance.
+
+If production capacity is unknown, do not invent a value.
+
+Ask the administrator to supply important missing facts when necessary.
+
+## 9.5 Structured product output
+
+Generate content in the exact schema expected by the existing backend.
+
+Do not return unstructured prose when the application requires validated JSON or structured tool arguments.
+
+Respect:
+
+- Field names
+- Field types
+- Required attributes
+- Character limits
+- Existing taxonomies
+- Allowed values
+- Database constraints
+
+Validate outputs before presenting or saving them.
+
+## 9.6 Existing product editing
+
+ACRO should be able to suggest changes to selected product fields.
+
+Show differences between current and proposed values.
+
+Allow administrators to approve, reject or edit suggestions.
+
+Default to non-destructive previews.
+
+Do not silently overwrite product records.
+
+Do not publish automatically unless explicitly authorized by the existing workflow.
+
+Use existing authorization and audit-log mechanisms.
+
+## 9.7 Bulk content improvement
+
+If bulk editing is supported or requested:
+
+- Process products individually.
+- Preserve product identity.
+- Validate every result.
+- Avoid applying identical generic content across unrelated products.
+- Prevent accidental duplication.
+- Support review before committing changes.
+- Provide partial-failure reporting.
+- Keep rollback or change-history information where feasible.
+
+Do not build unnecessary bulk functionality if it is outside the actual application requirements.
+
+## 9.8 SEO optimization
+
+ACRO should produce useful and natural SEO content.
+
+Avoid keyword stuffing.
+
+Use verified product attributes and relevant search terminology.
+
+Generate distinct descriptions for genuinely different products.
+
+Preserve the business's actual product naming conventions.
+
+Do not exaggerate performance or make unsupported marketing claims.
+
+## 9.9 Admin suggestions
+
+ACRO should proactively identify useful content issues in the current editing workflow, such as:
+
+- Missing descriptions
+- Missing important specifications
+- Poorly formatted features
+- Duplicate wording
+- Inconsistent units
+- Unclear titles
+- Potential category mismatch
+- Unverified promotional claims
+- Excessive repetition
+
+Recommendations must be actionable and explain the suggested change.
+
+---
+
+# SECTION 10 — STRICT ACRO ADMINISTRATOR PERMISSIONS
+
+ACRO must respect role-based access controls.
+
+Never trust a model-generated tool call as authorization.
+
+Every backend write operation must validate the authenticated user's permissions.
+
+Distinguish:
+
+- Read existing product data
+- Generate suggestions
+- Preview changes
+- Save drafts
+- Update approved fields
+- Publish products
+- Delete products
+
+Use the application's actual permission model.
+
+Require explicit approval for destructive or publishing actions unless already authorized by an established workflow.
+
+Maintain auditability for AI-assisted changes.
+
+Prevent cross-business writes unless the administrator has the appropriate access.
+
+Treat product descriptions, imported text and external content as untrusted data.
+
+Do not execute instructions embedded inside product descriptions or customer messages.
+
+Prevent prompt injection from causing unauthorized reads, writes or external actions.
+
+---
+
+# SECTION 11 — SHARED AI MODEL STRATEGY
+
+Our current AI infrastructure uses Claude Haiku 5.5.
+
+However, model names and provider capabilities must be verified against current official API documentation.
+
+Do not assume a model identifier, effort setting or feature exists without checking.
+
+Implement configurable model routing where appropriate.
+
+Suggested strategy to evaluate:
+
+## ACRIO
+
+Simple questions:
+- Efficient model configuration.
+
+Database-grounded product searches:
+- Efficient model with reliable retrieval and validation.
+
+Complex comparisons:
+- Higher reasoning effort or stronger model when necessary.
+
+Difficult multi-step requirements:
+- Stronger model if evaluation shows a material quality improvement.
+
+## ACRO
+
+Simple grammar correction:
+- Efficient model configuration.
+
+Short product descriptions:
+- Efficient model where quality is acceptable.
+
+Detailed product description improvement:
+- Stronger reasoning configuration when useful.
+
+Complex technical content:
+- Stronger model when justified by factual and editorial quality.
+
+Multi-field product generation:
+- Evaluate output quality and cost before selecting a default model.
+
+Model routing should depend on measured quality, not just the apparent complexity of the task.
+
+Keep model selection configurable.
+
+Do not hardcode provider-specific assumptions throughout the codebase.
+
+Support safe fallbacks for provider timeouts, invalid output and transient failures.
+
+---
+
+# SECTION 12 — DATABASE AND CACHE OPTIMIZATION
+
+Audit all existing caches before changing them.
+
+Identify:
+
+1. Product-data cache.
+2. Database query cache.
+3. Search result cache.
+4. Conversation-state cache.
+5. AI response cache if present.
+6. Anthropic prompt cache if used.
+
+Each requires different handling.
+
+Product search cache keys must account for:
+
+- Business identity
+- Product category
+- Search terms
+- Budget
+- Attributes
+- Active filters
+- Relevant catalog version
+
+Do not reuse cached results from unrelated searches.
+
+Ensure cached data is invalidated when relevant product records change.
+
+ACRO product updates must trigger appropriate invalidation so ACRIO does not continue serving stale product descriptions or prices.
+
+Avoid caching customer-specific responses in globally shared keys.
+
+Use provider prompt caching correctly and monitor actual hits.
+
+Never assume database caching and Anthropic prompt caching are equivalent.
+
+---
+
+# SECTION 13 — CONNECT ADMIN CONTENT CHANGES TO CUSTOMER AI
+
+One important architectural requirement:
+
+When ACRO improves or creates a product and an authorized administrator approves and saves that content, ACRIO should be able to retrieve the updated product information.
+
+Inspect how catalog updates propagate to:
+
+- Primary database
+- Database cache
+- Search indexes
+- Semantic/vector indexes, if present
+- Product APIs
+- Website catalog
+- WhatsApp product retrieval
+
+Ensure updates eventually become available according to clearly defined consistency requirements.
+
+Avoid stale product information.
+
+Do not have ACRO write directly into AI search caches as a substitute for proper catalog updates.
+
+The database should remain the authoritative system of record.
+
+---
+
+# SECTION 14 — COST, LATENCY AND PERFORMANCE
+
+Optimize the entire AI pipeline.
+
+Goals:
+
+- Low API cost
+- Fast customer responses
+- Accurate product retrieval
+- Reliable admin content generation
+- Minimal unnecessary tool calls
+- Efficient conversation context
+- Good cache utilization
+
+Record:
+
+- Requests per assistant
+- Input tokens
+- Output tokens
+- Cached input tokens
+- Cache writes
+- Model selection
+- Reasoning effort
+- Tool calls
+- Latency
+- Estimated cost
+- Errors
+- Retrieval success
+- Validation failures
+
+Do not sacrifice product accuracy merely to reduce token usage.
+
+Avoid sending the entire product database when targeted retrieval is sufficient.
+
+Use bounded context history and structured conversation summaries when appropriate.
+
+Measure the tradeoff between prompt length, model quality, cost and response speed.
+
+Do not automatically use maximum reasoning effort for every request.
+
+---
+
+# SECTION 15 — AUTOMATED TESTING
+
+Create a comprehensive regression evaluation suite.
+
+Include deterministic unit tests, integration tests and controlled real-model evaluations.
+
+## ACRIO tests
+
+1. Greeting recognition.
+2. Business identity questions.
+3. Exact product searches.
+4. Synonym-based searches.
+5. Category filtering.
+6. Budget filtering.
+7. Budget changes.
+8. Material preference changes.
+9. Follow-up questions.
+10. Pronoun resolution.
+11. Product comparisons.
+12. Customer corrections.
+13. Topic changes.
+14. Unavailable products.
+15. Missing specifications.
+16. Custom requirements.
+17. Quotation requests.
+18. Multi-business requests.
+19. WhatsApp conversation continuity.
+20. Staff takeover.
+
+Mandatory scenario:
+
+Customer:
+"I am looking for pulpits under ₹25,000 for church events, but they should also be suitable for high-end functions and gatherings."
+
+ACRIO must retrieve relevant Classic Concepts podiums.
+
+Customer:
+"We can increase the budget to ₹30,000 to get more options."
+
+ACRIO must retain the pulpit category and other requirements while changing only the budget.
+
+Customer:
+"Show me the most premium transparent ones."
+
+ACRIO must preserve the other applicable requirements.
+
+Customer:
+"Who are you?"
+
+ACRIO must introduce itself, not return unrelated products.
+
+## ACRO tests
+
+1. Create a product description from verified fields.
+2. Generate clear product feature bullets.
+3. Improve grammar without changing factual meaning.
+4. Suggest a suitable category.
+5. Suggest an SEO title.
+6. Generate a meta description.
+7. Detect missing attributes.
+8. Avoid invented dimensions.
+9. Avoid invented machine specifications.
+10. Preserve brand terminology.
+11. Handle incomplete product records.
+12. Validate structured output schema.
+13. Reject unauthorized write attempts.
+14. Preview changes before saving.
+15. Prevent cross-business data modifications.
+16. Update search caches/indexes after approved edits.
+17. Handle bulk operations safely.
+18. Prevent duplicate or generic content.
+19. Handle malformed model output.
+20. Recover safely from provider errors.
+
+## Cross-system tests
+
+1. ACRO creates a verified product draft.
+2. Authorized administrator approves and saves it.
+3. Database and applicable indexes update.
+4. Caches invalidate or refresh.
+5. ACRIO can retrieve the published product.
+6. ACRIO returns the correct product link.
+7. No unpublished information leaks to customers.
+
+Also test concurrent updates, failed writes and cache invalidation failures.
+
+Use actual product fixtures whenever possible.
+
+Never fabricate production data merely to pass tests.
+
+---
+
+# SECTION 16 — QUALITY ACCEPTANCE CRITERIA
+
+Do not declare success simply because the applications compile.
+
+Evaluate:
+
+### Customer AI
+
+- Product relevance
+- Conversation continuity
+- Correct business routing
+- Accurate budget handling
+- Factual grounding
+- Correct product links
+- Appropriate clarification
+- Correct escalation behavior
+
+### Admin AI
+
+- Technical factual accuracy
+- Content usefulness
+- Grammar and readability
+- Originality
+- Appropriate terminology
+- Structured output validity
+- Permission enforcement
+- Safe content updates
+
+### Infrastructure
+
+- Integration reliability
+- Cache correctness
+- Data isolation
+- Latency
+- Token consumption
+- Provider error handling
+- Observability
+- Security
+
+Required:
+
+- All mandatory deterministic regression tests pass.
+- No known high-severity data isolation or authorization failures remain.
+- No known invalid product-ID or category recommendations remain in the curated test cases.
+- All AI-generated catalog writes pass backend validation.
+- Material factual claims are supported by authoritative data.
+- Actual evaluation results are documented.
+
+Target at least 95% correct outcomes on a representative, independently reviewed evaluation set before recommending production deployment.
+
+Do not fabricate test results or claim that any model is perfect.
+
+---
+
+# SECTION 17 — IMPLEMENTATION AND DELIVERY
+
+Follow this sequence:
+
+## Step 1: Audit
+
+Inspect the three directories.
+
+Map the current architecture and data flow.
+
+Identify actual root causes and weaknesses.
+
+## Step 2: Plan
+
+Prepare a prioritized implementation plan.
+
+Clearly identify:
+
+- Critical fixes
+- Architectural improvements
+- Reusable components
+- Database or schema changes
+- Risks
+- Testing approach
+
+## Step 3: Fix customer AI
+
+Prioritize:
+
+1. Conversation context.
+2. Intent classification.
+3. Correct business routing.
+4. Accurate product retrieval.
+5. Strict recommendation validation.
+6. Natural responses.
+7. WhatsApp handoff.
+
+## Step 4: Improve admin AI
+
+Prioritize:
+
+1. Accurate product-content generation.
+2. Context-aware content suggestions.
+3. Product-specific knowledge.
+4. Structured data validation.
+5. Administrator review.
+6. Permission-safe updates.
+7. Cache and index synchronization.
+
+## Step 5: Optimize shared infrastructure
+
+Improve:
+
+- Model routing
+- Caching
+- Latency
+- Reliability
+- Logging
+- Cost monitoring
+
+## Step 6: Test
+
+Run deterministic tests and controlled model evaluations.
+
+Investigate every failed test.
+
+Correct underlying causes rather than hardcoding answers for specific test phrases.
+
+## Step 7: Report
+
+Provide:
+
+- Architecture audit
+- Root-cause findings
+- Changes implemented
+- Files modified
+- Database changes
+- Tests executed
+- Passed and failed tests
+- Before-and-after examples
+- API cost and performance observations
+- Security implications
+- Deployment instructions
+- Rollback plan
+- Remaining limitations
+
+---
+
+# IMPORTANT ENGINEERING RESTRICTIONS
+
+1. Do not rebuild the three projects from scratch.
+2. Do not introduce unnecessary dependencies.
+3. Do not invent database tables or API contracts.
+4. Do not assume the websites share the same database.
+5. Do not merge separate business catalogs.
+6. Do not break existing website or dashboard features.
+7. Do not overwrite real product data without authorization.
+8. Do not expose API keys or sensitive customer data.
+9. Do not make direct production changes without approval.
+10. Do not invent product facts.
+11. Do not use hardcoded replies as a substitute for solving retrieval and memory failures.
+12. Do not claim tests pass without executing them.
+13. Do not optimize cost at the expense of critical accuracy.
+14. Do not assume a stronger AI model will resolve architectural defects.
+15. Do not silently change administrator permissions.
+
+# ULTIMATE OBJECTIVE
+
+Create a reliable AI ecosystem where:
+
+**ACRIO** understands customers, remembers their requirements, searches the correct business catalog, recommends genuinely relevant products, answers naturally, and involves staff when appropriate.
+
+**ACRO** understands products and administrator intentions, creates useful and accurate catalog content, improves existing product pages, recommends better descriptions and features, and safely supports authorized backend operations.
+
+Both assistants should use consistent verified product information while respecting their distinct roles and permissions.
+
+The system must be accurate, cost-effective, maintainable, secure, and suitable for production use.
+
+**START NOW by auditing all three directories, identifying existing AI implementations, and producing a prioritized architecture and implementation plan. Then proceed with development and validation within the existing project, without unauthorized production deployment.**
+
+# PHASE H — COMPLETE PRODUCT KNOWLEDGE & DEEP RETRIEVAL
+## ACRIO AI Ecosystem — Post-Phase-G Enhancement
+
+You are continuing an EXISTING, COMPLETED development project.
+
+**Phases A, B, C, D, E, F and G have already been implemented and tested.**
+
+Do not restart the development process, repeat previous phases, or redesign the system.
+
+Your task is to introduce a new targeted enhancement:
+
+**PHASE H — Enable Acrio to use complete, accurate product information from both business databases when searching, recommending, comparing and answering customer questions.**
+
+This must build upon the previously completed work.
+
+## 1. IMPORTANT EXECUTION RULES
+
+I have limited Antigravity credits.
+
+Follow these rules:
+
+1. Read the existing AI progress file and relevant Phase G completion report.
+2. Inspect only the files related to product retrieval, Prisma queries, product context generation, caching and AI responses.
+3. Preserve all successfully implemented improvements from Phases A–G.
+4. Reuse existing services, functions, database connections and interfaces.
+5. Avoid unnecessary dependencies, database migrations and architecture changes.
+6. Do not repeat the previous full codebase audit.
+7. Do not alter unrelated website, dashboard or admin features.
+8. Implement this as a focused enhancement rather than a rebuild.
+9. Add targeted tests and run them.
+10. Update the existing progress file with Phase H results.
+11. Do not deploy to production.
+12. Stop after completing Phase H.
+
+Prioritize quality and correctness while minimizing unnecessary tool calls and token consumption.
+
+---
+
+# 2. PROJECT CONTEXT
+
+We have three directories:
+
+### `classicconcepts`
+
+Classic Concepts website and backend.
+
+Contains acrylic products, podiums, pulpits, display products and custom acrylic products.
+
+Uses Prisma and SQLite.
+
+### `classicedge53`
+
+Classic Edge 53 website and backend.
+
+Contains acrylic machinery, machine models, technical specifications, tools and consumables.
+
+Uses Prisma and SQLite.
+
+### `ccwhatsapp`
+
+Staff WhatsApp dashboard.
+
+Acrio is the first point of contact and uses product information from the appropriate businesses to assist customers.
+
+The previous phases have already addressed conversation memory, intent routing, product filtering, WhatsApp handoff, admin AI and integration testing.
+
+**Do not undo these improvements.**
+
+ACRO is our separate administrator AI assistant. Do not change its existing content-generation behavior unless necessary to maintain product-data synchronization.
+
+---
+
+# 3. THE CURRENT PROBLEM
+
+Acrio appears to rely too heavily on basic product fields, such as:
+
+- Name
+- Price
+- Category
+- Short description
+- Keywords
+
+It does not consistently consider the complete information available in product records.
+
+Important information may be overlooked:
+
+- Detailed descriptions
+- Rich HTML descriptions
+- Important notes
+- Feature bullets
+- Quick facts
+- Dimensions
+- Technical specifications
+- Product applications
+- Industries
+- Problem statements
+- Variants
+- Machine models
+- Model-specific specifications
+- Consumables
+- Resources and technical documents
+
+Investigate which fields are actually missing from the existing retrieval and answer-generation pipeline.
+
+Do not assume every field is currently omitted.
+
+The objective is not to send everything to Claude for every message.
+
+The objective is to make all relevant verified product information accessible and use it intelligently.
+
+---
+
+# 4. REQUIRED RETRIEVAL ARCHITECTURE
+
+Implement or improve a **two-stage retrieval system**.
+
+### Stage 1 — Comprehensive product discovery
+
+Search using information derived from relevant product fields:
+
+- Names
+- Product identifiers
+- Keywords
+- Categories
+- Subcategories
+- Descriptions
+- Rich descriptions
+- Features
+- Dimensions
+- Specifications
+- Applications
+- Model names
+- Model specifications
+- Other searchable product metadata
+
+Reuse existing search infrastructure wherever practical.
+
+Apply mandatory customer constraints and business-domain filters.
+
+Avoid returning irrelevant products because of generic keyword overlap.
+
+### Stage 2 — Full product-detail hydration
+
+Once relevant products are shortlisted, retrieve their complete authoritative data using Prisma relations.
+
+Only retrieve details for relevant products.
+
+Include the fields necessary to answer the customer's question accurately.
+
+For detailed comparisons, retrieve the complete relevant records of every compared product.
+
+Do not silently truncate specifications or dimensions needed to answer the question.
+
+Use targeted additional retrieval if the requested details were not included in the initial context.
+
+---
+
+# 5. CLASSIC CONCEPTS — COMPLETE PRODUCT DATA
+
+Use the existing Prisma schema.
+
+For the `Product` model, support relevant information from:
+
+### Core fields
+
+- `id`
+- `name`
+- `slug`
+- `sku`
+- `description`
+- `descriptionHtml`
+- `importantNoteHtml`
+- `searchKeywords`
+- `basePrice`
+- `discountPrice`
+- `discountBadge`
+- `stockStatus`
+- `isPodium`
+- `isRegisteredDesign`
+- `designRegistrationNo`
+- `ipProtectionText`
+
+### Classification and application relationships
+
+- `category`
+- `subCategory`
+- `subCategories`
+- `podiumSubCategory`
+- `podiumSubCategories`
+- `industries`
+- `problemStatements`
+
+Use available names and descriptions from related records where relevant.
+
+### Features
+
+- `features[].text`
+
+All relevant feature bullets must be available to the answer-generation pipeline.
+
+### Specifications and dimensions
+
+- `specifications[].name`
+- `specifications[].value`
+- `specifications[].type`
+
+The `type` field distinguishes dimensions and technical specifications.
+
+Preserve exact values and units.
+
+Do not infer missing dimensions.
+
+### Variants
+
+- `variants[].name`
+- `variants[].price`
+- `variants[].imageUrl`
+- `variants[].images`
+
+Respect variant-specific pricing and attributes.
+
+Inspect and preserve the application's existing effective-price calculation.
+
+Do not assume base prices and variant prices are interchangeable.
+
+### Media
+
+- `images`
+- `videoUrl`
+
+Use verified product media and product URLs when relevant.
+
+Do not infer technical properties solely from image URLs.
+
+### Quick facts
+
+Determine whether existing product pages derive quick facts from specifications, features or other fields.
+
+Reuse those sources.
+
+Do not create invented quick facts.
+
+---
+
+# 6. CLASSIC EDGE 53 — COMPLETE PRODUCT DATA
+
+Use the existing Prisma schema.
+
+For the `Product` model, retrieve:
+
+### Core fields
+
+- `id`
+- `name`
+- `description`
+- `keywords`
+- `coverImage`
+- `images`
+
+### Features
+
+- `features[].text`
+
+### Product-level specifications
+
+- `specifications[].key`
+- `specifications[].value`
+
+### Machine models
+
+- `models[].modelName`
+- `models[].specifications[].key`
+- `models[].specifications[].value`
+
+**Critical requirement:** Keep product-level specifications separate from model-specific specifications.
+
+Never assign specifications from Model A to Model B.
+
+### Resources
+
+- `resources[].name`
+- `resources[].url`
+- `models[].resources`
+
+Preserve verified technical resource links.
+
+Do not claim to know the contents of manuals or other documents unless the application actually extracts and indexes them.
+
+### Consumables
+
+- `consumables`
+- `models[].consumables`
+
+Use available consumable names, descriptions, keywords and categories.
+
+Distinguish machinery from associated consumables.
+
+When customers request machines only, do not recommend consumables as complete machines.
+
+### Pricing
+
+The supplied Classic Edge 53 Product schema has no native product price field.
+
+Use an existing verified external pricing mechanism if one is already implemented.
+
+Otherwise, treat pricing as quotation-based or unknown.
+
+Do not invent machine prices.
+
+---
+
+# 7. NORMALIZED PRODUCT KNOWLEDGE
+
+Create or extend a lightweight normalized product representation.
+
+It should support:
+
+- Source business
+- Product ID
+- Product name
+- Category or type
+- Descriptions
+- Rich text
+- Features
+- Quick facts
+- Dimensions
+- Technical specifications
+- Applications
+- Variants or models
+- Model-specific specifications
+- Pricing where available
+- Resources
+- Consumables
+- Verified product URL
+- Source provenance
+
+Use existing interfaces and types where possible.
+
+Do not create unnecessary database tables.
+
+If a field is unavailable, represent it as unknown rather than inventing information.
+
+Preserve the original source field and relevant product/model identity for factual claims.
+
+Normalize HTML into safe plain text for AI context while preserving useful structure, lists, tables and measurements.
+
+Do not discard content merely because it is stored as HTML.
+
+Avoid duplicated data and unnecessary token usage.
+
+---
+
+# 8. QUESTION-AWARE PRODUCT CONTEXT
+
+The system must select the relevant product details based on customer intent.
+
+Examples:
+
+**Customer: "What are the dimensions of CCP055?"**
+
+Retrieve CCP055 and its dimension records.
+
+Return the exact stored measurements and units.
+
+**Customer: "Compare CCP054 and CCP055."**
+
+Retrieve both products' descriptions, features, prices, dimensions and relevant specifications.
+
+Explain their actual differences.
+
+**Customer: "Which podium is suitable for premium events?"**
+
+Use verified features, descriptions, product design information and application relationships.
+
+Explain recommendations based on available evidence.
+
+**Customer: "What is the difference between two bending machine models?"**
+
+Retrieve the exact model-specific specifications.
+
+Never confuse the two machine models.
+
+**Customer: "What are the main features of this machine?"**
+
+Use actual feature bullets, descriptions and applicable technical specifications.
+
+**Customer: "Can this machine process 20 mm acrylic?"**
+
+Check the verified machine/model capacity specifications.
+
+If the information is absent, state that compatibility cannot be confirmed from the available data.
+
+**Customer: "Which of these has the largest reading top?"**
+
+Resolve previously recommended products, retrieve their dimensions and compare the relevant measurements.
+
+Do not guess.
+
+The objective is to produce the most useful answer, not the longest possible answer.
+
+---
+
+# 9. PRODUCT GROUNDING AND ACCURACY
+
+Every product-specific claim must be supported by authoritative product information.
+
+Validate:
+
+- Product identity
+- Source business
+- Category
+- Product/model association
+- Dimensions
+- Specifications
+- Prices
+- URLs
+- Customer constraints
+
+Never:
+
+- Invent technical specifications.
+- Invent dimensions.
+- Invent warranty terms.
+- Invent stock availability.
+- Invent machine compatibility.
+- Treat an unknown price as within a confirmed budget.
+- Confuse consumables with machinery.
+- Mix technical data between machine models.
+
+Use deterministic validation wherever practical.
+
+Do not rely solely on a model asking itself whether its answer is correct.
+
+---
+
+# 10. CONVERSATION CONTINUITY
+
+All Phase A–G conversation-memory improvements must remain functional.
+
+The assistant must remember:
+
+- Previously discussed product IDs.
+- Current product category.
+- Customer budget.
+- Active preferences.
+- Current machine model when relevant.
+- Previous recommendations.
+
+Example:
+
+Customer:
+"Show acrylic pulpits under ₹25,000."
+
+Customer:
+"Increase my budget to ₹30,000."
+
+Customer:
+"Which one is wider?"
+
+Acrio must compare relevant previously discussed podiums using verified dimension records.
+
+Do not reset conversation context or change product category unexpectedly.
+
+Do not trigger product retrieval for greetings, identity questions or unrelated messages.
+
+---
+
+# 11. CACHE AND CONTENT SYNCHRONIZATION
+
+Inspect existing cache and knowledge-snapshot generation.
+
+Determine whether the cache currently contains only basic product summaries.
+
+Ensure richer product data is accessible through the retrieval pipeline.
+
+When administrators update product content, approved changes should propagate through:
+
+- Database
+- Catalog cache
+- Search index, if present
+- AI retrieval
+- Website responses
+- WhatsApp responses
+
+Use appropriate cache invalidation or revision-aware keys.
+
+Avoid caching stale or incomplete specifications.
+
+Do not place entire expanded catalogs into every AI prompt.
+
+Track cache usage and token costs.
+
+---
+
+# 12. WEBSITE AND WHATSAPP PARITY
+
+Website Acrio and WhatsApp Acrio must use equivalent authoritative product information.
+
+For the same product and question, factual answers should agree across channels.
+
+The formatting can differ:
+
+Website:
+- Product cards
+- Images
+- Specifications
+- Comparisons
+- Links
+
+WhatsApp:
+- Concise explanations
+- Relevant specifications
+- Clear model names
+- Product links
+- Useful follow-up questions
+
+Do not create separate conflicting product-knowledge implementations if shared functionality already exists.
+
+Respect existing repository and deployment boundaries.
+
+---
+
+# 13. REGRESSION TESTS
+
+Create targeted tests using real or approved catalog fixtures.
+
+Required tests:
+
+1. Find a product using information that exists only in its feature bullets.
+2. Find a product using terminology from its rich HTML description.
+3. Retrieve exact podium dimensions.
+4. Compare two podiums using actual specifications.
+5. Retrieve correct variant-specific pricing.
+6. Preserve all relevant product features.
+7. Find a product through its industry or application relationship.
+8. Retrieve Classic Edge 53 product-level specifications.
+9. Retrieve machine model-specific specifications.
+10. Compare two machine models correctly.
+11. Do not mix specifications across models.
+12. Exclude consumables from machine-only recommendations.
+13. Handle missing technical data without hallucination.
+14. Use verified product URLs.
+15. Preserve conversation context through follow-up questions.
+16. Reflect approved product updates after cache refresh.
+17. Produce consistent factual answers across website and WhatsApp.
+18. Preserve all relevant Phase A–G functionality.
+
+At least some test fixtures must contain important information exclusively in:
+
+- `descriptionHtml`
+- `importantNoteHtml`
+- `features`
+- `specifications`
+- `ProductModel.specifications`
+- `variants`
+- `industries`
+- `problemStatements`
+
+A test should fail if the AI cannot access and use required verified information.
+
+Measure retrieval completeness, correctness, latency and token cost where possible.
+
+---
+
+# 14. IMPLEMENTATION PROCESS
+
+Follow this efficient sequence:
+
+1. Read the existing Phase G progress/completion file.
+2. Locate the current product retrieval and AI context-building functions.
+3. Compare fetched fields with the actual Prisma schemas.
+4. Identify omissions and unnecessary truncation.
+5. Implement the smallest compatible product-knowledge improvements.
+6. Improve query-aware detail retrieval.
+7. Maintain existing cache and conversation behavior.
+8. Add targeted regression tests.
+9. Execute the tests.
+10. Correct failures introduced by this phase.
+11. Record Phase H changes in the existing progress file.
+12. Report findings and stop.
+
+Do not repeat previous completed development phases.
+
+Do not scan unrelated code.
+
+Do not introduce unnecessary infrastructure.
+
+Do not modify Acro's unrelated functionality.
+
+Do not make unauthorized production changes.
+
+---
+
+# 15. DELIVERABLES
+
+At completion provide a concise report:
+
+1. Previously missing product fields.
+2. Prisma relationships now retrieved.
+3. Files modified.
+4. Retrieval approach used.
+5. How full product details are delivered to the AI.
+6. How variants and machine models are handled.
+7. How cache updates work.
+8. Tests actually run.
+9. Pass/fail results.
+10. Before-and-after examples.
+11. Token/cost performance where measurable.
+12. Outstanding limitations.
+
+Do not claim complete coverage without verified evidence.
+
+---
+
+# FINAL INSTRUCTION
+
+Phases A–G are complete. Preserve that work.
+
+**Implement Phase H only: Complete Product Knowledge and Deep Retrieval.**
+
+Make Acrio capable of finding and using every relevant available product detail, including specifications, dimensions, feature bullets, rich descriptions, quick facts, applications, variants, machine models, consumables and technical resources.
+
+Use selective retrieval, not indiscriminate full-catalog prompting.
+
+Prioritize factual accuracy, response relevance, efficient token usage and maintainability.
+
+Run targeted tests, update the progress file, report actual results, and stop.

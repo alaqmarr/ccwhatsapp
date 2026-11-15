@@ -3,11 +3,9 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { Loader2, ShieldCheck } from "lucide-react";
 import {
   ClassicConceptsWordmark,
-  WHATSAPP_PUBLIC_DOMAIN,
-  WhatsAppLogoIcon,
 } from "@cc/ui";
 
 export default function RegisterStaffPage() {
@@ -87,15 +85,15 @@ export default function RegisterStaffPage() {
           <ClassicConceptsWordmark height={38} variant="light" />
           <div className="h-6 w-px bg-neutral-200" />
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-[#25d366] text-white flex items-center justify-center shrink-0">
-              <WhatsAppLogoIcon size={15} />
+            <div className="w-7 h-7 rounded-full bg-slate-900 text-white flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-4 h-4" />
             </div>
             <div>
               <div className="font-display text-sm font-bold tracking-tight text-slate-900">
-                WhatsApp Business Desk
+                Internal Staff & Order Portal
               </div>
               <div className="font-mono text-[11px] text-slate-500">
-                {WHATSAPP_PUBLIC_DOMAIN}
+                classicconcepts.in • classicedge53.com
               </div>
             </div>
           </div>
@@ -112,10 +110,10 @@ export default function RegisterStaffPage() {
         <div className="w-full max-w-lg bg-white rounded-xl border border-neutral-200 p-7 space-y-5 shadow-xs">
           <div>
             <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
-              Staff Registration
+              Classic Concepts Staff Registration
             </h1>
             <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
-              Register with your active WhatsApp number and email address.
+              Register with your work phone number and email address.
               After verifying your email code, your account goes to Superadmin or Dev for approval.
             </p>
           </div>
@@ -168,7 +166,7 @@ export default function RegisterStaffPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    WhatsApp Phone Number
+                    Mobile Phone Number
                   </label>
                   <input
                     type="text"
@@ -246,7 +244,7 @@ export default function RegisterStaffPage() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-2.5 rounded-md bg-[#1da851] hover:bg-[#178c43] text-white text-sm font-medium flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-2.5 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-sm font-medium flex items-center justify-center gap-2 cursor-pointer"
               >
                 {loading && <Loader2 className="w-4 h-4 animate-spin" />}
                 <span>Send verification code to email</span>
@@ -295,6 +293,10 @@ export default function RegisterStaffPage() {
               </button>
             </form>
           )}
+
+          <div className="pt-3 border-t border-neutral-100 text-[11px] leading-relaxed text-neutral-500">
+            Internal employee CRM and order portal operated by Classic Concepts (classicconcepts.in) and Classic Edge 53 (classicedge53.com). Authorized internal staff access only.
+          </div>
         </div>
       </div>
     </div>

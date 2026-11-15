@@ -549,9 +549,13 @@ export function resolveWhatsAppWebAppOrigin(): string {
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.APP_URL ||
     process.env.APP_BASE_URL ||
-    "https://whatsapp.ccapl.cc"
+    "https://chat.ccapl.cc"
   ).trim();
-  return raw.replace(/\/+$/, "");
+  const cleaned = raw.replace(/\/+$/, "");
+  if (cleaned.toLowerCase() === "https://whatsapp.ccapl.cc" || cleaned.toLowerCase() === "http://whatsapp.ccapl.cc") {
+    return "https://chat.ccapl.cc";
+  }
+  return cleaned;
 }
 
 export function resolveShortLinkDomainOrigin(): string {
