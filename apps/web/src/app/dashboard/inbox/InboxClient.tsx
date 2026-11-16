@@ -51,6 +51,7 @@ import {
   formatTimeIst,
   stripWhatsAppFormatting,
 } from "@cc/ui";
+import { MentionTextarea } from "@/components/MentionTextarea";
 import type {
   ApprovedTemplateOption,
   ChatMessage,
@@ -61,6 +62,29 @@ import type {
   StaffOption,
   TeamOption,
 } from "@/lib/inbox-server-data";
+
+/** Toast text after saving a note: says who was pinged and whether ACRIO is answering. */
+function describeNoteResult(data: {
+  mentioned?: { id: string; name: string }[];
+  askedAcrio?: boolean;
+}): string {
+  const parts = ["Internal note saved."];
+  const names = (data?.mentioned || []).map((m) => m.name);
+  if (names.length > 0) parts.push(`Pinged ${names.join(", ")}.`);
+  if (data?.askedAcrio) parts.push("ACRIO will answer in a private note shortly.");
+  return parts.join(" ");
+}
+
+/** Makes @ACRIO and @Teammate names bold inside note text. */
+function emphasizeMentions(text: string, people: { name: string }[]): string {
+  let out = text;
+  const names = ["ACRIO", ...people.map((p) => p.name)].sort((a, b) => b.length - a.length);
+  for (const name of names) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(`(^|[\\s(])@${esc}(?![A-Za-z0-9_])`, "gi"), (_m, lead) => `${lead}*@${name}*`);
+  }
+  return out;
+}
 
 interface MessageCtaButton {
   label: string;
@@ -957,7 +981,7 @@ export function InboxClient({
 
     try {
       if (composerMode === "NOTE") {
-        await fetch(`/api/conversations/${currentConvId}`, {
+        const noteRes = await fetch(`/api/conversations/${currentConvId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -967,7 +991,8 @@ export function InboxClient({
             replyTo: activeReplyRef || undefined,
           }),
         });
-        showToast("Internal team note saved.");
+        const noteData = await noteRes.json().catch(() => ({}));
+        showToast(describeNoteResult(noteData));
       } else if (composerMode === "TEMPLATE" && activeTemplate) {
         const res = await fetch(`/api/conversations/${currentConvId}`, {
           method: "POST",
@@ -1052,7 +1077,7 @@ export function InboxClient({
     if (!selectedId || !quickNoteDraft.trim()) return;
     const text = quickNoteDraft.trim();
     setQuickNoteDraft("");
-    await fetch(`/api/conversations/${selectedId}`, {
+    const noteRes = await fetch(`/api/conversations/${selectedId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1060,7 +1085,8 @@ export function InboxClient({
         noteText: text,
       }),
     });
-    showToast("Internal note added.");
+    const noteData = await noteRes.json().catch(() => ({}));
+    showToast(describeNoteResult(noteData));
     await fetchAndCacheDetail(selectedId, false);
   }
 
@@ -2138,6 +2164,7 @@ export function InboxClient({
                 const isHighlighted = highlightedMsgId === m.id;
 
                 if (isInternalNote) {
+                  const isAcrioNote = m.senderName === "ACRIO";
                   return (
                     <div
                       key={m.id}
@@ -2145,16 +2172,20 @@ export function InboxClient({
                       className="flex justify-center my-2"
                     >
                       <div
-                        className={`w-full max-w-[78%] rounded-lg px-3.5 py-2.5 bg-[#fef3c7] border border-[#f59e0b]/45 shadow-2xs text-[#78350f] transition-all duration-300 ${
-                          isHighlighted ? "ring-2 ring-[#00a884]" : ""
-                        }`}
+                        className={`w-full max-w-[78%] rounded-lg px-3.5 py-2.5 shadow-2xs transition-all duration-300 ${
+                          isAcrioNote
+                            ? "bg-violet-50 border border-violet-300/70 text-violet-950"
+                            : "bg-[#fef3c7] border border-[#f59e0b]/45 text-[#78350f]"
+                        } ${isHighlighted ? "ring-2 ring-[#00a884]" : ""}`}
                       >
                         <div className="flex items-center justify-between gap-3 text-[11px] font-semibold mb-1">
                           <span className="inline-flex items-center gap-1">
-                            <Lock className="w-3 h-3 text-amber-700" />
-                            <span>Internal Team Note • {m.senderName}</span>
+                            <Lock className={`w-3 h-3 ${isAcrioNote ? "text-violet-700" : "text-amber-700"}`} />
+                            <span>
+                              {isAcrioNote ? "ACRIO • Private answer for your team" : `Internal Team Note • ${m.senderName}`}
+                            </span>
                           </span>
-                          <span className="font-normal text-amber-800/80">
+                          <span className={`font-normal ${isAcrioNote ? "text-violet-800/80" : "text-amber-800/80"}`}>
                             {formatTimeIst(m.createdAt)}
                           </span>
                         </div>
@@ -2173,7 +2204,7 @@ export function InboxClient({
                           </button>
                         )}
                         <WhatsAppFormattedText
-                          text={m.body}
+                          text={emphasizeMentions(m.body, staffList)}
                           className="text-[13px] leading-relaxed"
                         />
                       </div>
@@ -3057,11 +3088,13 @@ export function InboxClient({
               )}
 
               <div className="flex items-end gap-2">
-                <textarea
-                  ref={composerInputRef}
+                <MentionTextarea
+                  textareaRef={composerInputRef}
                   rows={2}
+                  enabled={composerMode === "NOTE"}
+                  people={staffList.map((s) => ({ id: s.id, name: s.name, role: s.role }))}
                   value={replyText}
-                  onChange={(e) => setReplyText(e.target.value)}
+                  onChange={(v) => setReplyText(v)}
                   onKeyDown={(e) => {
                     if (e.key === "Escape" && replyingTo) {
                       e.preventDefault();
@@ -3075,12 +3108,12 @@ export function InboxClient({
                   }}
                   placeholder={
                     composerMode === "NOTE"
-                      ? "Write a private note for Sales or Fabrication teammates (for example, 'Quote ₹14,500 if ordering 4 podiums')..."
+                      ? "Private note. Type @ to ping a teammate or ask @ACRIO a question..."
                       : composerMode === "TEMPLATE"
                       ? "Review template message before sending to customer..."
                       : "Type a WhatsApp reply (Enter to send, Shift+Enter for new line)..."
                   }
-                  className={`flex-1 rounded-lg px-3.5 py-2 text-sm text-[#111b21] resize-none focus:outline-none border ${
+                  className={`w-full rounded-lg px-3.5 py-2 text-sm text-[#111b21] resize-none focus:outline-none border ${
                     composerMode === "NOTE"
                       ? "bg-white border-amber-300 focus:border-amber-500"
                       : "bg-white border-[#d1d7db] focus:border-[#00a884]"
@@ -3396,11 +3429,12 @@ export function InboxClient({
                     <Lock className="w-3.5 h-3.5 text-amber-700" />
                     <span>Add Internal Team Note</span>
                   </div>
-                  <textarea
+                  <MentionTextarea
                     rows={2}
+                    people={staffList.map((s) => ({ id: s.id, name: s.name, role: s.role }))}
                     value={quickNoteDraft}
-                    onChange={(e) => setQuickNoteDraft(e.target.value)}
-                    placeholder="Private note for Sales, Fabrication, or Machine Support..."
+                    onChange={(v) => setQuickNoteDraft(v)}
+                    placeholder="Private note. Type @ to ping a teammate or ask @ACRIO a question..."
                     className="w-full rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs"
                   />
                   <button
@@ -3430,7 +3464,7 @@ export function InboxClient({
                           </span>
                         </div>
                         <WhatsAppFormattedText
-                          text={n.body}
+                          text={emphasizeMentions(n.body, staffList)}
                           className="text-xs text-amber-950"
                         />
                       </div>

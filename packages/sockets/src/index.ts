@@ -2,6 +2,8 @@ export type RealtimeEventType =
   | "connected"
   | "message:new"
   | "note:new"
+  | "staff:mention"
+  | "callback:new"
   | "message:status"
   | "conversation:updated"
   | "conversation:assigned"

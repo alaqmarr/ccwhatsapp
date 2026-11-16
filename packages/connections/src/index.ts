@@ -3526,6 +3526,136 @@ export async function saveConversationAiState(
   }
 }
 
+/**
+ * ACRIO answers a teammate who asked a question with "@ACRIO" inside an internal chat note.
+ * The answer goes back into the same chat as a private note (never sent to the customer).
+ */
+export async function runAcrioStaffQuestion(params: {
+  question: string;
+  staffName: string;
+  customerName: string;
+  customerPhone?: string;
+  chatMessages: { direction: string; senderName?: string; body: string; isNote?: boolean }[];
+}): Promise<{ ok: boolean; answer: string; error?: string }> {
+  const started = Date.now();
+  const steps: AiTraceStep[] = [];
+  const addStep = (label: string, detail?: string, status: AiTraceStep["status"] = "OK") =>
+    steps.push({ stepNumber: steps.length + 1, label, detail, durationMs: Date.now() - started, status });
+
+  const question = params.question.trim();
+  const fetchedCatalog = await getCachedEcosystemCatalog();
+  const allItems = fetchedCatalog.allItems;
+
+  const lastCustomerText = params.chatMessages
+    .filter((m) => m.direction === "INBOUND")
+    .slice(-3)
+    .map((m) => m.body)
+    .join(" ");
+  const matches = searchEcosystemItems(allItems, `${question} ${lastCustomerText}`, 6);
+  const deep = buildEcosystemDeepProductContextAndAnswer({
+    rawQuery: question,
+    matchedItems: matches,
+    formatItemLink: (it) => it.shortUrl || it.url,
+  });
+  addStep("Looked up catalog for the question", `matched=${matches.length} of ${allItems.length}`);
+
+  const liveContext = await loadLiveDatabaseOperationalContext({
+    customerName: params.customerName,
+    rawQuery: question,
+  }).catch(() => "");
+
+  const transcript = params.chatMessages
+    .slice(-30)
+    .map((m) => {
+      const who = m.isNote
+        ? `[Private team note by ${m.senderName || "team"}]`
+        : m.direction === "INBOUND"
+        ? `[Customer ${params.customerName}]`
+        : `[${m.senderName || "Reply"} to customer]`;
+      return `${who} ${String(m.body).replace(/\s+/g, " ").slice(0, 500)}`;
+    })
+    .join("\n");
+
+  const { apiKey } = await resolveSharedAnthropicApiKey("admin");
+  let answer = "";
+  let usage: AiTokenUsage | null = null;
+  let error: string | undefined;
+
+  if (apiKey) {
+    const aiCall = await callClaudeHaikuMessagesDetailed({
+      apiKey,
+      maxTokens: 2048,
+      effort: "medium",
+      timeoutMs: 30000,
+      system: `You are ACRIO, the assistant for the Classic Concepts and Classic Edge 53 team. A teammate (${params.staffName}) is asking you a PRIVATE question inside an internal note on a customer chat. Your answer is saved as a private team note and is NEVER sent to the customer.
+
+RULES:
+1. Answer the teammate's question directly and briefly (3 to 8 short lines). Plain everyday English. No em-dashes, no "--", no buzzwords.
+2. Use ONLY the verified catalogue, company and chat information below. Never invent prices, sizes, specs, stock or dates. If something is not in the data, say so plainly.
+3. When it helps, add a ready-to-send customer reply under a line that says "Suggested reply:". Keep it short, with prices in ₹ and ccapl.cc links from the data.
+4. Use single asterisks for *bold*. No markdown headings or tables.
+5. If the question needs a decision from a manager (discounts, special pricing, delivery promises), say who to ask: Sales Head Ananya Deshmukh, or Rohan Kulkarni for general sales.
+
+${buildCompleteEcosystemDatabaseDirectory(allItems)}`,
+      messages: [
+        {
+          role: "user",
+          content: `Customer: ${params.customerName}${params.customerPhone ? ` (${params.customerPhone})` : ""}
+
+Recent chat (oldest first):
+${transcript || "(no messages yet)"}
+
+${deep.promptCatalogContext ? `Verified product details that may be relevant:\n${deep.promptCatalogContext}\n` : ""}${liveContext ? `Company and database context:\n${liveContext}\n` : ""}
+Teammate question:
+${question}`,
+        },
+      ],
+    });
+    usage = aiCall.usage;
+    if (aiCall.ok && aiCall.text) {
+      answer = formatWhatsAppOutboundText(aiCall.text).trim();
+      addStep("Claude answered the teammate", `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms`);
+    } else {
+      error = aiCall.error || "Claude call failed";
+      addStep("Claude call failed", error, "ERROR");
+    }
+  } else {
+    error = "No Anthropic admin API key is configured.";
+    addStep("No admin API key", error, "WARN");
+  }
+
+  if (!answer) {
+    answer = deep.deterministicDeepAnswer
+      ? `I could not reach my AI engine just now, but here are the verified details from our catalogue:\n\n${deep.deterministicDeepAnswer}`
+      : "I could not reach my AI engine just now, so I cannot answer this one. Please try again in a minute.";
+  }
+
+  recordAndBroadcastAiLog({
+    website: "WHATSAPP_HUB",
+    websiteLabel: "Classic Concepts WhatsApp Hub",
+    feature: "ACRIO Staff Assistant (@ACRIO in notes)",
+    actor: params.staffName,
+    question,
+    model: apiKey && !error ? LOCKED_CLAUDE_MODEL : "local-fallback",
+    effort: apiKey && !error ? "medium" : undefined,
+    outcomeSource: apiKey && !error ? "LIVE_AI" : "LOCAL_FALLBACK",
+    responseCacheStatus: "BYPASS",
+    catalogCacheStatus: "BYPASS",
+    cacheDetails: fetchedCatalog.cacheMeta?.cacheSummary || "",
+    productLookupTriggered: true,
+    productLookupQuery: question,
+    productLookupTotalScanned: allItems.length,
+    productsLookedUp: matches.map(mapProductToLogItem),
+    steps,
+    response: answer,
+    durationMs: Date.now() - started,
+    tokenUsage: usage,
+    error: error || null,
+  });
+
+  return { ok: !error, answer, error };
+}
+
 export async function runAcrioChatCopilot(params: {
   customerName: string;
   organizationType?: string;

@@ -730,6 +730,12 @@ async function handleAcrioInteractiveReply(params: {
       senderName: "ACRIO • Callback Request",
       text: pingBody,
     });
+    socketHub.emit("callback:new", {
+      conversationId: params.conversationId,
+      customerName,
+      customerPhone: params.customerPhone,
+      slot: slotLabel,
+    });
 
     await say(
       `Done! Your callback is booked for *${slotLabel}*.\n\nOur team will call you on ${params.customerPhone}. Until then, I am right here if you want to look at anything else.`
@@ -3766,3 +3772,5 @@ export function ensureBackgroundWorkersRunning(): void {
     }
   }, 30000);
 }
+
+export * from "./staff-notes";

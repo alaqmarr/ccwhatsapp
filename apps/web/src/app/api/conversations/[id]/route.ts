@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
+import { listAllStaffAccounts } from "@cc/auth";
 import {
   ensureDatabasesBootstrapped,
   fetchWebsiteEnquiriesForCustomer,
@@ -24,6 +25,7 @@ import {
   logConversationAssignment,
   markPriorOutboundMessagesRead,
   processInboundAutomations,
+  processStaffNote,
   recordAssignedFirstResponse,
   recordDualPricingLedgerEntry,
   scheduleSandboxDeliveryReceipt,
@@ -633,7 +635,30 @@ export async function POST(
     });
 
     socketHub.emit("note:new", { conversationId: id, senderName: user.name, noteText });
-    return NextResponse.json({ ok: true, noteId, replyTo: replyMeta });
+
+    // @mentions ping teammates; "@ACRIO" makes ACRIO answer back in a private note.
+    let mentioned: { id: string; name: string }[] = [];
+    let askedAcrio = false;
+    if (noteText.includes("@")) {
+      try {
+        const accounts = await listAllStaffAccounts();
+        const staff = accounts
+          .filter((a) => a.status === "ACTIVE" && a.role !== "CLIENT")
+          .map((a) => ({ id: a.id, name: a.name, email: a.email }));
+        const processed = await processStaffNote({
+          conversationId: id,
+          noteId,
+          noteText,
+          author: { id: user.id, name: user.name },
+          staff,
+        });
+        mentioned = processed.mentioned;
+        askedAcrio = processed.askedAcrio;
+      } catch (err) {
+        console.warn("[notes] mention processing failed:", (err as Error)?.message || err);
+      }
+    }
+    return NextResponse.json({ ok: true, noteId, replyTo: replyMeta, mentioned, askedAcrio });
   }
 
   // 2b. Human Staff Takes Over Chat from ACRIO (defaults to Sales Team)

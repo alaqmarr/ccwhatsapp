@@ -7,6 +7,7 @@ import {
   BarChart3,
   BookOpen,
   Contact2,
+  LayoutDashboard,
   Truck,
   Users,
   Megaphone,
@@ -36,6 +37,7 @@ import {
   WHATSAPP_PUBLIC_DOMAIN,
   WhatsAppLogoIcon,
 } from "@cc/ui";
+import { NotificationBell } from "@/components/NotificationBell";
 
 export function AppShell({
   user,
@@ -104,6 +106,12 @@ export function AppShell({
     {
       heading: "Workspace",
       items: [
+        {
+          href: "/dashboard",
+          label: "Dashboard",
+          icon: LayoutDashboard,
+          visible: isActiveAccount && user.role !== "CLIENT",
+        },
         {
           href: "/dashboard/inbox",
           label: "Customer Chats",
@@ -206,14 +214,15 @@ export function AppShell({
     },
   ];
 
+  const isNavActive = (href: string) =>
+    href === "/dashboard"
+      ? pathname === "/dashboard"
+      : pathname === href || (href !== "/onboarding" && pathname.startsWith(href));
+
   const activeNavLabel =
     navSections
       .flatMap((s) => s.items)
-      .find(
-        (i) =>
-          pathname === i.href ||
-          (i.href !== "/onboarding" && pathname.startsWith(i.href))
-      )?.label || "Workspace";
+      .find((i) => isNavActive(i.href))?.label || "Workspace";
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -250,10 +259,15 @@ export function AppShell({
       </div>
 
       <div className="px-4 py-3 border-b border-neutral-200 bg-slate-50/75 space-y-1 shrink-0">
-        <div className="font-display text-[13.5px] font-bold tracking-tight text-slate-900 truncate">
-          {user.name}
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="font-display text-[13.5px] font-bold tracking-tight text-slate-900 truncate">
+              {user.name}
+            </div>
+            <div className="text-[11px] text-slate-500 truncate">{user.email}</div>
+          </div>
+          {isActiveAccount && user.role !== "CLIENT" && <NotificationBell userId={user.id} />}
         </div>
-        <div className="text-[11px] text-slate-500 truncate">{user.email}</div>
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
           <RoleBadge role={user.role} />
           <AccountStatusBadge status={user.status} />
@@ -271,10 +285,7 @@ export function AppShell({
               </div>
               {visibleItems.map((item) => {
                 const Icon = item.icon;
-                const active =
-                  pathname === item.href ||
-                  (item.href !== "/onboarding" &&
-                    pathname.startsWith(item.href));
+                const active = isNavActive(item.href);
                 return (
                   <Link
                     key={item.href}
