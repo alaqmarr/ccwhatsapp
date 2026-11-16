@@ -15,6 +15,7 @@ export type RealtimeEventType =
   | "template:updated"
   | "backup:completed"
   | "queue:updated"
+  | "enquiry:updated"
   | "ai:log";
 
 export interface RealtimeEvent<T = Record<string, unknown>> {

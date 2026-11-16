@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/session";
 import {
+  dispatchSystemEmail,
   evaluateWebsiteEnquiryWithAi,
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
@@ -9,8 +10,10 @@ import {
   checkEcosystemBridgesHealth,
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
+  isValidEcosystemBridgeKey,
   normalizeWhatsAppPhone,
-  resolveEcosystemBridgeKey,
+  syncWebsiteEnquiryStatusAcrossSites,
+  upsertEcosystemEnquiry,
   upsertOrderTracking,
   upsertSyncedContact,
   type ShipmentStatus,
@@ -25,7 +28,7 @@ export const dynamic = "force-dynamic";
 
 function isAuthorizedBridgeCall(req: Request): boolean {
   const key = req.headers.get("x-cc-bridge-key")?.trim() || "";
-  return Boolean(key && key === resolveEcosystemBridgeKey());
+  return isValidEcosystemBridgeKey(key);
 }
 
 export async function GET(req: Request) {
@@ -51,11 +54,11 @@ export async function POST(req: Request) {
 
   await ensureDatabasesBootstrapped();
   const body = await req.json().catch(() => ({}));
-  const eventType = String(body.type || "WEBSITE_ENQUIRY").toUpperCase();
+  const eventType = String(body.type || body.event || "WEBSITE_ENQUIRY").toUpperCase();
 
   // 1. Live Order Creation / Status Sync from classicconcepts (:3003) or classicedge (:3002)
   if (eventType === "WEBSITE_ORDER") {
-    const orderNumber = String(body.orderNumber || body.orderId || "").trim();
+    const orderNumber = String(body.orderNumber || body.displayOrderId || body.orderId || "").trim();
     if (!orderNumber) {
       return NextResponse.json(
         { ok: false, error: "orderNumber is required" },
@@ -78,14 +81,14 @@ export async function POST(req: Request) {
       ? "IN_PRODUCTION"
       : "ORDER_CONFIRMED";
 
+    const rawCustomerPhone = String(body.customerPhone || body.phone || "");
     const upserted = await upsertOrderTracking({
       orderId: orderNumber,
       brand:
         body.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS",
-      customerName: String(body.customerName || ""),
+      customerName: String(body.customerName || body.name || ""),
       customerPhone:
-        normalizeWhatsAppPhone(String(body.customerPhone || "")) ||
-        String(body.customerPhone || ""),
+        normalizeWhatsAppPhone(rawCustomerPhone) || rawCustomerPhone,
       itemsSummary: String(body.itemsSummary || "Website Order"),
       providerCode: String(body.providerCode || "WORKSHOP"),
       providerName: String(body.providerName || "Workshop Dispatch"),
@@ -105,13 +108,137 @@ export async function POST(req: Request) {
     });
   }
 
+  // 1b. Cross-Site Enquiry Reply Sync (`ENQUIRY_REPLY`) from classicconcepts (:3003) or classicedge (:3002)
+  if (eventType === "ENQUIRY_REPLY") {
+    const brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" =
+      body.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS";
+    const externalId = String(body.enquiryId || "").trim();
+    const customerName = String(body.customerName || body.name || "Customer").trim();
+    const customerEmail = String(body.customerEmail || body.email || "").trim();
+    const rawPhone = String(body.customerPhone || body.phone || "").trim();
+    const normalizedPhone = normalizeWhatsAppPhone(rawPhone);
+    const replyMessage = String(body.replyMessage || "").trim();
+    const originalMessage = String(body.originalMessage || "").trim();
+    const productName = String(body.productName || "").trim();
+    const channel = String(body.channel || "EMAIL").toUpperCase();
+    const repliedByName = String(body.repliedByName || "Admin").trim();
+    const nowIso = new Date().toISOString();
+
+    let emailDispatchedByHub = false;
+    let whatsappDispatchedByHub = false;
+
+    if (body.dispatchEmailViaHub && customerEmail && replyMessage) {
+      const brandTitle =
+        brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts";
+      const mailRes = await dispatchSystemEmail({
+        to: customerEmail,
+        recipientName: customerName,
+        subject: `Re: Your Enquiry — ${brandTitle}`,
+        text: `Hello ${customerName},\n\n${replyMessage}\n\nWarm regards,\nThe ${brandTitle} Team`,
+        dispatchType: "WEBSITE_ENQUIRY_REPLY",
+      });
+      emailDispatchedByHub = mailRes.ok;
+    }
+
+    let conversationId: string | null = null;
+    const conv = getRawLibSqlClient("conversations");
+    if (normalizedPhone) {
+      const existingConv = await conv.execute({
+        sql: `SELECT id FROM conversations WHERE customer_phone = ? LIMIT 1`,
+        args: [normalizedPhone],
+      });
+      if (existingConv.rows[0]) {
+        conversationId = String(existingConv.rows[0].id);
+      }
+
+      if (channel === "WHATSAPP" && replyMessage) {
+        const waRes = await sendWhatsAppCloudMessage({
+          toPhone: normalizedPhone,
+          bodyText: replyMessage,
+        });
+        whatsappDispatchedByHub = waRes.ok;
+        if (conversationId) {
+          await conv.execute({
+            sql: `INSERT INTO messages (
+              id, conversation_id, wa_message_id, direction, sender_type, sender_name, message_type,
+              billing_category, body, delivery_status, created_at
+            ) VALUES (?, ?, ?, 'OUTBOUND', 'STAFF', ?, 'TEXT', 'FREE_CHAT', ?, ?, ?)`,
+            args: [
+              `msg_${crypto.randomUUID().slice(0, 10)}`,
+              conversationId,
+              waRes.waMessageId,
+              repliedByName,
+              replyMessage,
+              waRes.deliveryStatus,
+              nowIso,
+            ],
+          });
+        }
+      } else if (conversationId && replyMessage) {
+        await conv.execute({
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, delivery_status, created_at
+          ) VALUES (?, ?, 'INTERNAL', 'STAFF', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+          args: [
+            `msg_${crypto.randomUUID().slice(0, 10)}`,
+            conversationId,
+            repliedByName,
+            `[Website Enquiry Replied via ${channel}]:\n${replyMessage}`,
+            nowIso,
+          ],
+        });
+      }
+    }
+
+    const updatedEnq = await upsertEcosystemEnquiry({
+      externalId: externalId || `ext_${crypto.randomUUID().slice(0, 8)}`,
+      brand,
+      customerName,
+      customerEmail,
+      customerPhone: normalizedPhone || rawPhone,
+      productName,
+      message: originalMessage,
+      status: "Replied",
+      lastReplyText: replyMessage,
+      lastReplyChannel: channel,
+      repliedByName,
+      repliedAt: nowIso,
+      conversationId,
+    });
+
+    await syncWebsiteEnquiryStatusAcrossSites({
+      brand,
+      externalId,
+      replyMessage,
+      sendEmailOnSite: false,
+    });
+
+    socketHub.emit("enquiry:updated", {
+      enquiry: updatedEnq,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      enquiry: updatedEnq,
+      emailDispatchedByHub,
+      whatsappDispatchedByHub,
+    });
+  }
+
   // 2. Website Form Enquiry: Smart Claude Haiku 5.5 First Evaluation + Sales Team Routing
   const brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53" =
     body.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS";
-  const customerName = String(body.customerName || "Customer").trim();
-  const rawPhone = String(body.customerPhone || "").trim();
-  const customerEmail = String(body.customerEmail || "").trim();
+  const customerName = String(body.customerName || body.name || "Customer").trim();
+  const rawPhone = String(body.customerPhone || body.phone || "").trim();
+  const customerEmail = String(body.customerEmail || body.email || "").trim();
   const productName = String(body.productName || "").trim();
+  const sourceLabel = String(
+    body.source ||
+      (brand === "CLASSIC_EDGE_53"
+        ? "Classic Edge 53 Website"
+        : "Classic Concepts Website")
+  ).trim();
   const messageText = String(body.message || "").trim();
   const externalId =
     String(body.enquiryId || "").trim() ||
@@ -296,7 +423,22 @@ export async function POST(req: Request) {
     socketHub.emit("conversation:assigned", { conversationId });
   }
 
-  // Log website enquiry sync record
+  // Log website enquiry sync record & upsert into unified ecosystem_enquiries table
+  await upsertEcosystemEnquiry({
+    externalId,
+    brand,
+    customerName,
+    customerEmail,
+    customerPhone: normalizedPhone || rawPhone,
+    productName,
+    source: sourceLabel,
+    message: messageText,
+    status: "New",
+    aiSuggestedReply: aiEval.smartReplyText,
+    conversationId,
+    createdAt: nowIso,
+  }).catch(() => {});
+
   await crm
     .execute({
       sql: `INSERT OR REPLACE INTO website_enquiry_sync_logs (
@@ -319,10 +461,16 @@ export async function POST(req: Request) {
     })
     .catch(() => {});
 
+  socketHub.emit("enquiry:updated", {
+    externalId,
+    brand,
+  });
+
   return NextResponse.json({
     ok: true,
     conversationId,
     whatsappDelivered,
+    whatsappDispatched: whatsappDelivered,
     smartCategory: aiEval.smartCategory,
     priority: aiEval.priority,
     smartReplyText: aiEval.smartReplyText,

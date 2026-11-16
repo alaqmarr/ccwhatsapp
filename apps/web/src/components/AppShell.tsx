@@ -24,6 +24,7 @@ import {
   Menu,
   X,
   Link2,
+  Mail,
 } from "lucide-react";
 import type { AuthenticatedUser } from "@cc/auth";
 import {
@@ -119,6 +120,13 @@ export function AppShell({
           label: "Customer Chats",
           icon: WhatsAppLogoIcon,
           visible: isActiveAccount && user.role !== "CLIENT",
+        },
+        {
+          href: "/dashboard/enquiries",
+          label: "Website Enquiries",
+          icon: Mail,
+          visible: isActiveAccount && user.role !== "CLIENT",
+          badge: "CC+CE53",
         },
         {
           href: "/dashboard/contacts",

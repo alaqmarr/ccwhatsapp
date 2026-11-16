@@ -1568,19 +1568,62 @@ export async function processInboundAutomations(params: {
 
   // Case B: Initial / active ACRIO assignment -> ACRIO handles the query automatically in the backend!
   const recentRes = await conv.execute({
-    sql: `SELECT direction, sender_type, body FROM messages
+    sql: `SELECT direction, sender_type, body, metadata_json, wa_message_id FROM messages
           WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
           ORDER BY created_at DESC LIMIT 16`,
     args: [params.conversationId],
   });
-  const recentMessages = [...recentRes.rows].reverse().map((m) => ({
-    direction: String(m.direction),
-    senderType: String(m.sender_type || ""),
-    body: String(m.body),
-  }));
+  const recentMessages = [...recentRes.rows].reverse().map((m) => {
+    let parsedMeta: Record<string, any> = {};
+    if (m.metadata_json) {
+      try {
+        parsedMeta = JSON.parse(String(m.metadata_json));
+      } catch {
+        parsedMeta = {};
+      }
+    }
+    return {
+      direction: String(m.direction),
+      senderType: String(m.sender_type || ""),
+      body: String(m.body),
+      productSlug: parsedMeta.productSlug ? String(parsedMeta.productSlug) : null,
+      replyTo: parsedMeta.replyTo || null,
+    };
+  });
   const hasAlreadyGreeted = recentMessages.some(
     (m) => m.direction === "OUTBOUND"
   );
+
+  let replyToMessage =
+    recentMessages[recentMessages.length - 1]?.replyTo || null;
+  if (!replyToMessage && params.replyToWaMessageId) {
+    const quotedRes = await conv
+      .execute({
+        sql: `SELECT sender_name, direction, body, metadata_json FROM messages WHERE wa_message_id = ? LIMIT 1`,
+        args: [params.replyToWaMessageId],
+      })
+      .catch(() => ({ rows: [] as any[] }));
+    const qRow = quotedRes.rows[0];
+    if (qRow) {
+      let qMeta: Record<string, any> = {};
+      if (qRow.metadata_json) {
+        try {
+          qMeta = JSON.parse(String(qRow.metadata_json));
+        } catch {
+          qMeta = {};
+        }
+      }
+      replyToMessage = {
+        waMessageId: params.replyToWaMessageId,
+        senderName: String(qRow.sender_name || "ACRIO"),
+        direction: String(qRow.direction || "OUTBOUND"),
+        body: String(qRow.body || ""),
+        productSlug: qMeta.productSlug ? String(qMeta.productSlug) : null,
+        productName: qMeta.productName ? String(qMeta.productName) : null,
+        variantName: qMeta.variantName ? String(qMeta.variantName) : null,
+      };
+    }
+  }
 
   const acrioTurn = await runAcrioAutonomousTurn({
     conversationId: params.conversationId,
@@ -1590,6 +1633,7 @@ export async function processInboundAutomations(params: {
     recentMessages,
     hasAlreadyGreeted,
     forcedFocusSlug,
+    replyToMessage,
   });
 
   if (params.onBeforeAcrioSend) {

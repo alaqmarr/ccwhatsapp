@@ -347,13 +347,21 @@ export async function POST(req: Request) {
         const metaObj: Record<string, unknown> = {};
         if (contextWaId) {
           const origRes = await conv.execute({
-            sql: `SELECT id, sender_name, sender_type, direction, body
+            sql: `SELECT id, sender_name, sender_type, direction, body, metadata_json
                   FROM messages
                   WHERE wa_message_id = ?
                   LIMIT 1`,
             args: [contextWaId],
           });
           const orig = origRes.rows[0] as Record<string, unknown> | undefined;
+          let origMeta: Record<string, unknown> = {};
+          if (orig?.metadata_json) {
+            try {
+              origMeta = JSON.parse(String(orig.metadata_json));
+            } catch {
+              origMeta = {};
+            }
+          }
           const replyTo = orig
             ? {
                 messageId: String(orig.id),
@@ -361,7 +369,10 @@ export async function POST(req: Request) {
                 senderName: String(orig.sender_name || "Classic Concepts"),
                 senderType: String(orig.sender_type || "STAFF"),
                 direction: String(orig.direction || "OUTBOUND"),
-                body: String(orig.body || "").slice(0, 280),
+                body: String(orig.body || "").slice(0, 380),
+                productSlug: origMeta.productSlug ? String(origMeta.productSlug) : null,
+                productName: origMeta.productName ? String(origMeta.productName) : null,
+                variantName: origMeta.variantName ? String(origMeta.variantName) : null,
               }
             : {
                 messageId: null,
@@ -370,6 +381,9 @@ export async function POST(req: Request) {
                 senderType: "STAFF",
                 direction: "OUTBOUND",
                 body: "Customer replied to an earlier message on WhatsApp",
+                productSlug: null,
+                productName: null,
+                variantName: null,
               };
           metaObj.replyTo = replyTo;
         }

@@ -1618,27 +1618,27 @@ async function seedInitialOperationalData(): Promise<void> {
       const ensureDemoStaff = [
         {
           id: "usr_sales_p0",
-          name: "Rohan Kulkarni",
-          email: "rohan.kulkarni@classiconcepts.in",
-          phone: "+919848022101",
+          name: "Shiva Kumar Chernapally",
+          email: "info@classicconcepts.in",
+          phone: "+917337222878",
           role: "STAFF",
-          dept: "Sales Team",
+          dept: "Corporate Sales Manager",
         },
         {
           id: "usr_sales_p1",
-          name: "Ananya Deshmukh",
-          email: "ananya.deshmukh@classiconcepts.in",
-          phone: "+919848022102",
+          name: "Hussain Earanpurwala",
+          email: "hussain@classicconcepts.in",
+          phone: "+919849050752",
           role: "ADMIN",
-          dept: "Senior Sales & Hospitality",
+          dept: "Director - Sales",
         },
         {
           id: "usr_ce53_p0",
-          name: "Karthik Nair",
-          email: "karthik.nair@classiconcepts.in",
-          phone: "+919848022103",
+          name: "Yusuf Zakir",
+          email: "sales@classicconcepts.in",
+          phone: "+919959362437",
           role: "STAFF",
-          dept: "Classic Edge 53 Machines",
+          dept: "Director - Production & Machines",
         },
       ];
       for (const st of ensureDemoStaff) {
@@ -1681,9 +1681,9 @@ async function seedInitialOperationalData(): Promise<void> {
           (u) => String(u.role) === "DEV" || String(u.role) === "SUPERADMIN"
         ) || activePool[0];
 
-      const p0Sales = findByEmail("rohan.kulkarni@classiconcepts.in");
-      const p1Sales = findByEmail("ananya.deshmukh@classiconcepts.in");
-      const p0Machines = findByEmail("karthik.nair@classiconcepts.in");
+      const p0Sales = findByEmail("info@classicconcepts.in");
+      const p1Sales = findByEmail("hussain@classicconcepts.in");
+      const p0Machines = findByEmail("sales@classicconcepts.in");
 
       const memberSeeds: {
         id: string;
@@ -2228,4 +2228,47 @@ async function seedInitialOperationalData(): Promise<void> {
       ],
     });
   }
+
+  // Clean up any legacy seeded placeholder staff accounts from core_auth.db & conversations.db
+  await auth
+    .execute(
+      `DELETE FROM users WHERE email IN ('priya.menon@classiconcepts.in', 'rohan.kulkarni@classiconcepts.in', 'ananya.deshmukh@classiconcepts.in', 'karthik.nair@classiconcepts.in')`
+    )
+    .catch(() => {});
+  await conv
+    .execute(
+      `DELETE FROM team_members WHERE staff_email IN ('priya.menon@classiconcepts.in', 'rohan.kulkarni@classiconcepts.in', 'ananya.deshmukh@classiconcepts.in', 'karthik.nair@classiconcepts.in')`
+    )
+    .catch(() => {});
+
+  // Ensure unified ecosystem_enquiries table exists in crm_orders.db for cross-site staff replies & AI context
+  await crm.batch(
+    [
+      `CREATE TABLE IF NOT EXISTS ecosystem_enquiries (
+        id TEXT PRIMARY KEY,
+        external_id TEXT NOT NULL,
+        brand TEXT NOT NULL,
+        brand_label TEXT NOT NULL,
+        customer_name TEXT NOT NULL,
+        customer_email TEXT NOT NULL DEFAULT '',
+        customer_phone TEXT NOT NULL DEFAULT '',
+        product_name TEXT DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'Website Form',
+        message TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'New',
+        ai_suggested_reply TEXT DEFAULT '',
+        last_reply_text TEXT DEFAULT '',
+        last_reply_channel TEXT DEFAULT '',
+        replied_by_name TEXT DEFAULT '',
+        replied_at TEXT,
+        conversation_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_eco_enq_created ON ecosystem_enquiries (created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_eco_enq_phone ON ecosystem_enquiries (customer_phone)`,
+      `CREATE INDEX IF NOT EXISTS idx_eco_enq_brand_status ON ecosystem_enquiries (brand, status)`,
+    ],
+    "write"
+  );
 }

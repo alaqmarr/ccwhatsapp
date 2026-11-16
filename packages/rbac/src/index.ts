@@ -19,6 +19,8 @@ export type Permission =
   | "inbox:view"
   | "inbox:reply"
   | "inbox:smart_resolve"
+  | "enquiries:view"
+  | "enquiries:reply"
   | "acrio:use_chat_copilot"
   | "crm:view_customer_360"
   | "crm:manage_orders_notes"
@@ -51,6 +53,8 @@ const STAFF_PERMISSIONS: Permission[] = [
   "inbox:view",
   "inbox:reply",
   "inbox:smart_resolve",
+  "enquiries:view",
+  "enquiries:reply",
   "analytics:view",
   "acrio:use_chat_copilot",
   "crm:view_customer_360",

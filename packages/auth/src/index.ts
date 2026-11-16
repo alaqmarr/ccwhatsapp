@@ -251,33 +251,6 @@ export async function createInitialDevAccount(params: {
     await saveFacebookWhatsAppConfig(params.facebookConfig);
   }
 
-  // Only seed a sample pending staff member when SEED_DEMO_DATA=1 is explicitly enabled
-  if (process.env.SEED_DEMO_DATA === "1") {
-    const pendingCheck = await auth.execute({
-      sql: `SELECT id FROM users WHERE email = ?`,
-      args: ["priya.menon@classiconcepts.in"],
-    });
-    if (pendingCheck.rows.length === 0) {
-      const sampleHash = await bcrypt.hash("Staff@123", 10);
-      await auth.execute({
-        sql: `INSERT INTO users (
-          id, name, email, whatsapp_number, password_hash, role, status,
-          department, email_verified_at, onboarding_progress_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, 'STAFF', 'PENDING_APPROVAL', 'Corporate & Hotel Sales', ?, ?, ?)`,
-        args: [
-          "usr_staff_sample",
-          "Priya Menon",
-          "priya.menon@classiconcepts.in",
-          "+919848055110",
-          sampleHash,
-          now,
-          JSON.stringify(["welcome", "inbox", "acrio"]),
-          now,
-        ],
-      });
-    }
-  }
-
   const sessionToken = await createSessionForUser(userId);
   const user = await getUserById(userId);
   return { ok: true, sessionToken, user: user ?? undefined };

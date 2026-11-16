@@ -1052,9 +1052,21 @@ export function resolveEcosystemBridgeKey(): string {
   resolveMonorepoRoot();
   return (
     process.env.CC_BRIDGE_KEY ||
+    process.env.CC_ECOSYSTEM_BRIDGE_KEY ||
     process.env.INTERNAL_BRIDGE_SECRET ||
     "cc_internal_ecosystem_bridge_2026"
   ).trim();
+}
+
+export function isValidEcosystemBridgeKey(candidateKey: string | null | undefined): boolean {
+  const clean = String(candidateKey || "").trim();
+  if (!clean) return false;
+  const accepted = new Set([
+    resolveEcosystemBridgeKey(),
+    "cc_internal_ecosystem_bridge_2026",
+    "cc_internal_bridge_2026",
+  ]);
+  return accepted.has(clean);
 }
 
 export function resolveClassicConceptsInternalUrl(): string {
@@ -3850,6 +3862,480 @@ export async function fetchAllEcosystemWebsiteEnquiries(
   return combined;
 }
 
+export interface EcosystemEnquiryRecord {
+  id: string;
+  externalId: string;
+  brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  brandLabel: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  productName: string;
+  source: string;
+  message: string;
+  status: "New" | "Replied";
+  aiSuggestedReply: string;
+  lastReplyText: string;
+  lastReplyChannel: string;
+  repliedByName: string;
+  repliedAt: string | null;
+  conversationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+let ecoEnqTableChecked = false;
+export async function ensureEcosystemEnquiriesTable(): Promise<void> {
+  if (ecoEnqTableChecked) return;
+  const crm = getRawLibSqlClient("crm_orders");
+  await crm.batch(
+    [
+      `CREATE TABLE IF NOT EXISTS ecosystem_enquiries (
+        id TEXT PRIMARY KEY,
+        external_id TEXT NOT NULL,
+        brand TEXT NOT NULL,
+        brand_label TEXT NOT NULL,
+        customer_name TEXT NOT NULL,
+        customer_email TEXT NOT NULL DEFAULT '',
+        customer_phone TEXT NOT NULL DEFAULT '',
+        product_name TEXT DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'Website Form',
+        message TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'New',
+        ai_suggested_reply TEXT DEFAULT '',
+        last_reply_text TEXT DEFAULT '',
+        last_reply_channel TEXT DEFAULT '',
+        replied_by_name TEXT DEFAULT '',
+        replied_at TEXT,
+        conversation_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_eco_enq_created ON ecosystem_enquiries (created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_eco_enq_phone ON ecosystem_enquiries (customer_phone)`,
+      `CREATE INDEX IF NOT EXISTS idx_eco_enq_brand_status ON ecosystem_enquiries (brand, status)`,
+    ],
+    "write"
+  );
+  ecoEnqTableChecked = true;
+}
+
+function mapEcosystemEnquiryRow(r: Record<string, unknown>): EcosystemEnquiryRecord {
+  const brand =
+    String(r.brand || "") === "CLASSIC_EDGE_53"
+      ? "CLASSIC_EDGE_53"
+      : "CLASSIC_CONCEPTS";
+  return {
+    id: String(r.id),
+    externalId: String(r.external_id || String(r.id).replace(/^(cc_|ce53_|ce_)/, "")),
+    brand,
+    brandLabel:
+      String(r.brand_label || "") ||
+      (brand === "CLASSIC_EDGE_53"
+        ? "Classic Edge 53 (classicedge53.com)"
+        : "Classic Concepts (classicconcepts.in)"),
+    customerName: String(r.customer_name || "Customer"),
+    customerEmail: String(r.customer_email || ""),
+    customerPhone: String(r.customer_phone || ""),
+    productName: String(r.product_name || ""),
+    source: String(r.source || "Website Form"),
+    message: String(r.message || ""),
+    status: String(r.status || "New") === "Replied" ? "Replied" : "New",
+    aiSuggestedReply: String(r.ai_suggested_reply || ""),
+    lastReplyText: String(r.last_reply_text || ""),
+    lastReplyChannel: String(r.last_reply_channel || ""),
+    repliedByName: String(r.replied_by_name || ""),
+    repliedAt: r.replied_at ? String(r.replied_at) : null,
+    conversationId: r.conversation_id ? String(r.conversation_id) : null,
+    createdAt: String(r.created_at || new Date().toISOString()),
+    updatedAt: String(r.updated_at || new Date().toISOString()),
+  };
+}
+
+export async function upsertEcosystemEnquiry(params: {
+  externalId: string;
+  brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  customerName: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  productName?: string;
+  source?: string;
+  message: string;
+  status?: "New" | "Replied" | string;
+  aiSuggestedReply?: string;
+  lastReplyText?: string;
+  lastReplyChannel?: string;
+  repliedByName?: string;
+  repliedAt?: string | null;
+  conversationId?: string | null;
+  createdAt?: string;
+}): Promise<EcosystemEnquiryRecord> {
+  await ensureEcosystemEnquiriesTable();
+  const crm = getRawLibSqlClient("crm_orders");
+  const cleanExtId = String(params.externalId || "").replace(/^(cc_|ce53_|ce_)/, "").trim();
+  const prefix = params.brand === "CLASSIC_EDGE_53" ? "ce53" : "cc";
+  const id = `${prefix}_${cleanExtId || crypto.randomUUID().slice(0, 10)}`;
+  const brandLabel =
+    params.brand === "CLASSIC_EDGE_53"
+      ? "Classic Edge 53 (classicedge53.com)"
+      : "Classic Concepts (classicconcepts.in)";
+  const nowIso = new Date().toISOString();
+
+  const existingRes = await crm.execute({
+    sql: `SELECT * FROM ecosystem_enquiries WHERE id = ? LIMIT 1`,
+    args: [id],
+  });
+  const ex = existingRes.rows[0] as Record<string, unknown> | undefined;
+
+  const finalStatus =
+    String(params.status || "").toLowerCase() === "replied" ||
+    String(ex?.status || "").toLowerCase() === "replied"
+      ? "Replied"
+      : "New";
+  const finalCreatedAt =
+    params.createdAt || (ex?.created_at ? String(ex.created_at) : nowIso);
+  const finalAiReply =
+    params.aiSuggestedReply !== undefined && params.aiSuggestedReply.trim()
+      ? params.aiSuggestedReply.trim()
+      : String(ex?.ai_suggested_reply || "");
+  const finalLastReply =
+    params.lastReplyText !== undefined && params.lastReplyText.trim()
+      ? params.lastReplyText.trim()
+      : String(ex?.last_reply_text || "");
+  const finalChannel =
+    params.lastReplyChannel !== undefined && params.lastReplyChannel.trim()
+      ? params.lastReplyChannel.trim()
+      : String(ex?.last_reply_channel || "");
+  const finalRepliedBy =
+    params.repliedByName !== undefined && params.repliedByName.trim()
+      ? params.repliedByName.trim()
+      : String(ex?.replied_by_name || "");
+  const finalRepliedAt =
+    params.repliedAt !== undefined && params.repliedAt
+      ? params.repliedAt
+      : ex?.replied_at
+      ? String(ex.replied_at)
+      : finalStatus === "Replied"
+      ? nowIso
+      : null;
+  const finalConvId =
+    params.conversationId !== undefined && params.conversationId
+      ? params.conversationId
+      : ex?.conversation_id
+      ? String(ex.conversation_id)
+      : null;
+
+  await crm.execute({
+    sql: `INSERT INTO ecosystem_enquiries (
+      id, external_id, brand, brand_label, customer_name, customer_email, customer_phone,
+      product_name, source, message, status, ai_suggested_reply, last_reply_text,
+      last_reply_channel, replied_by_name, replied_at, conversation_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      customer_name = COALESCE(NULLIF(excluded.customer_name, ''), ecosystem_enquiries.customer_name),
+      customer_email = COALESCE(NULLIF(excluded.customer_email, ''), ecosystem_enquiries.customer_email),
+      customer_phone = COALESCE(NULLIF(excluded.customer_phone, ''), ecosystem_enquiries.customer_phone),
+      product_name = COALESCE(NULLIF(excluded.product_name, ''), ecosystem_enquiries.product_name),
+      source = COALESCE(NULLIF(excluded.source, ''), ecosystem_enquiries.source),
+      message = COALESCE(NULLIF(excluded.message, ''), ecosystem_enquiries.message),
+      status = excluded.status,
+      ai_suggested_reply = COALESCE(NULLIF(excluded.ai_suggested_reply, ''), ecosystem_enquiries.ai_suggested_reply),
+      last_reply_text = COALESCE(NULLIF(excluded.last_reply_text, ''), ecosystem_enquiries.last_reply_text),
+      last_reply_channel = COALESCE(NULLIF(excluded.last_reply_channel, ''), ecosystem_enquiries.last_reply_channel),
+      replied_by_name = COALESCE(NULLIF(excluded.replied_by_name, ''), ecosystem_enquiries.replied_by_name),
+      replied_at = COALESCE(excluded.replied_at, ecosystem_enquiries.replied_at),
+      conversation_id = COALESCE(excluded.conversation_id, ecosystem_enquiries.conversation_id),
+      updated_at = excluded.updated_at`,
+    args: [
+      id,
+      cleanExtId,
+      params.brand,
+      brandLabel,
+      params.customerName || "Customer",
+      params.customerEmail || "",
+      params.customerPhone || "",
+      params.productName || "",
+      params.source || (params.brand === "CLASSIC_EDGE_53" ? "Classic Edge 53 Website" : "Classic Concepts Website"),
+      params.message || "",
+      finalStatus,
+      finalAiReply,
+      finalLastReply,
+      finalChannel,
+      finalRepliedBy,
+      finalRepliedAt,
+      finalConvId,
+      finalCreatedAt,
+      nowIso,
+    ],
+  });
+
+  const savedRes = await crm.execute({
+    sql: `SELECT * FROM ecosystem_enquiries WHERE id = ? LIMIT 1`,
+    args: [id],
+  });
+  return mapEcosystemEnquiryRow((savedRes.rows[0] || {}) as Record<string, unknown>);
+}
+
+export async function syncWebsiteEnquiryStatusAcrossSites(params: {
+  brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  externalId: string;
+  replyMessage?: string;
+  sendEmailOnSite?: boolean;
+}): Promise<{ bridgeUpdated: boolean; dbUpdated: boolean; emailDeliveredBySite: boolean; emailError?: string }> {
+  const cleanExtId = String(params.externalId || "").replace(/^(cc_|ce53_|ce_)/, "").trim();
+  if (!cleanExtId) {
+    return { bridgeUpdated: false, dbUpdated: false, emailDeliveredBySite: false };
+  }
+
+  let bridgeUpdated = false;
+  let dbUpdated = false;
+  let emailDeliveredBySite = false;
+  let emailError: string | undefined;
+
+  // 1. Update directly via local SQLite client if available on this host
+  try {
+    if (params.brand === "CLASSIC_CONCEPTS") {
+      const ccClient = getMainCatalogClient();
+      if (ccClient) {
+        await ccClient.execute({
+          sql: `UPDATE Enquiry SET status = 'Replied' WHERE id = ?`,
+          args: [cleanExtId],
+        });
+        dbUpdated = true;
+      }
+    } else {
+      const ceClient = getClassicEdgeClient();
+      if (ceClient) {
+        await ceClient.execute({
+          sql: `UPDATE Enquiry SET repliedAt = ? WHERE id = ?`,
+          args: [new Date().toISOString(), cleanExtId],
+        });
+        dbUpdated = true;
+      }
+    }
+  } catch {
+    // Non-blocking
+  }
+
+  // 2. Call internal HTTP webhook on Classic Concepts (:3003) or Classic Edge 53 (:3002)
+  const targetBaseUrl =
+    params.brand === "CLASSIC_EDGE_53"
+      ? resolveClassicEdgeInternalUrl()
+      : resolveClassicConceptsInternalUrl();
+  const key = resolveEcosystemBridgeKey();
+
+  try {
+    const res = await fetch(`${targetBaseUrl}/api/internal/bridge`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-cc-bridge-key": key,
+      },
+      body: JSON.stringify({
+        action: params.sendEmailOnSite ? "reply_enquiry" : "mark_enquiry_replied",
+        enquiryId: cleanExtId,
+        replyMessage: params.replyMessage || "",
+        sendEmail: Boolean(params.sendEmailOnSite),
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (res.ok) {
+      const data: any = await res.json().catch(() => ({}));
+      bridgeUpdated = Boolean(data?.ok);
+      emailDeliveredBySite = Boolean(data?.emailDelivered);
+      if (data?.emailError) emailError = String(data.emailError);
+    }
+  } catch {
+    // Non-blocking if sibling site is offline in local dev
+  }
+
+  return { bridgeUpdated, dbUpdated, emailDeliveredBySite, emailError };
+}
+
+export async function syncAndListEcosystemEnquiries(filters?: {
+  brand?: "ALL" | "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  status?: "ALL" | "New" | "Replied";
+  search?: string;
+  limit?: number;
+}): Promise<EcosystemEnquiryRecord[]> {
+  await ensureEcosystemEnquiriesTable();
+  const crm = getRawLibSqlClient("crm_orders");
+  const key = resolveEcosystemBridgeKey();
+
+  // 1. Pull from Classic Concepts SQLite + HTTP bridge
+  try {
+    const ccClient = getMainCatalogClient();
+    if (ccClient) {
+      const res = await ccClient.execute(
+        `SELECT id, name, email, phone, message, source, status, createdAt FROM Enquiry ORDER BY createdAt DESC LIMIT 200`
+      );
+      for (const r of res.rows) {
+        const createdIso =
+          typeof r.createdAt === "number"
+            ? new Date(r.createdAt).toISOString()
+            : String(r.createdAt || new Date().toISOString());
+        await upsertEcosystemEnquiry({
+          externalId: String(r.id),
+          brand: "CLASSIC_CONCEPTS",
+          customerName: String(r.name || "Customer"),
+          customerEmail: String(r.email || ""),
+          customerPhone: String(r.phone || ""),
+          source: String(r.source || "Classic Concepts Website"),
+          message: String(r.message || ""),
+          status: String(r.status || "New"),
+          createdAt: createdIso,
+        });
+      }
+    }
+  } catch {
+    // Non-blocking
+  }
+
+  // 2. Pull from Classic Edge 53 SQLite + HTTP bridge
+  try {
+    const ceClient = getClassicEdgeClient();
+    if (ceClient) {
+      const res = await ceClient.execute(
+        `SELECT id, name, email, phone, message, productName, repliedAt, createdAt FROM Enquiry ORDER BY createdAt DESC LIMIT 200`
+      );
+      for (const r of res.rows) {
+        const prod = r.productName ? String(r.productName) : "";
+        const createdIso =
+          typeof r.createdAt === "number"
+            ? new Date(r.createdAt).toISOString()
+            : String(r.createdAt || new Date().toISOString());
+        const repliedIso = r.repliedAt
+          ? typeof r.repliedAt === "number"
+            ? new Date(r.repliedAt).toISOString()
+            : String(r.repliedAt)
+          : null;
+        await upsertEcosystemEnquiry({
+          externalId: String(r.id),
+          brand: "CLASSIC_EDGE_53",
+          customerName: String(r.name || "Customer"),
+          customerEmail: String(r.email || ""),
+          customerPhone: String(r.phone || ""),
+          productName: prod,
+          source: prod ? `Classic Edge 53 (${prod})` : "Classic Edge 53 Website",
+          message: String(r.message || ""),
+          status: r.repliedAt ? "Replied" : "New",
+          repliedAt: repliedIso,
+          createdAt: createdIso,
+        });
+      }
+    }
+  } catch {
+    // Non-blocking
+  }
+
+  // 3. Also pull via HTTP Bridges (:3003 & :3002) in case databases are on separate paths
+  const bridgeTargets: Array<{
+    url: string;
+    brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  }> = [
+    { url: resolveClassicConceptsInternalUrl(), brand: "CLASSIC_CONCEPTS" },
+    { url: resolveClassicEdgeInternalUrl(), brand: "CLASSIC_EDGE_53" },
+  ];
+  await Promise.all(
+    bridgeTargets.map(async (bt) => {
+      try {
+        const res = await fetch(
+          `${bt.url}/api/internal/bridge?action=enquiries&limit=100`,
+          {
+            headers: { "x-cc-bridge-key": key },
+            signal: AbortSignal.timeout(2200),
+          }
+        );
+        if (!res.ok) return;
+        const json: any = await res.json().catch(() => ({}));
+        const list: any[] = Array.isArray(json?.enquiries) ? json.enquiries : [];
+        for (const e of list) {
+          await upsertEcosystemEnquiry({
+            externalId: String(e.id),
+            brand: bt.brand,
+            customerName: String(e.name || "Customer"),
+            customerEmail: String(e.email || ""),
+            customerPhone: String(e.phone || ""),
+            productName: String(e.productName || ""),
+            source:
+              String(e.source || "") ||
+              (bt.brand === "CLASSIC_EDGE_53"
+                ? "Classic Edge 53 Website"
+                : "Classic Concepts Website"),
+            message: String(e.message || "").replace(/^\[Machine:\s*[^\]]+\]\s*/i, ""),
+            status: String(e.status || "New"),
+            createdAt: String(e.createdAt || new Date().toISOString()),
+          });
+        }
+      } catch {
+        // Non-blocking
+      }
+    })
+  );
+
+  // 4. Also backfill from website_enquiry_sync_logs if any enquiries arrived via webhook earlier
+  try {
+    const syncLogs = await crm
+      .execute(
+        `SELECT * FROM website_enquiry_sync_logs ORDER BY created_at DESC LIMIT 100`
+      )
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    for (const log of syncLogs.rows) {
+      const extKey = String(log.external_key || "");
+      const brand =
+        String(log.brand || "") === "CLASSIC_EDGE_53"
+          ? "CLASSIC_EDGE_53"
+          : "CLASSIC_CONCEPTS";
+      const extId = extKey.replace(/^(CLASSIC_CONCEPTS:|CLASSIC_EDGE_53:)/, "");
+      if (!extId) continue;
+      await upsertEcosystemEnquiry({
+        externalId: extId,
+        brand,
+        customerName: String(log.customer_name || "Customer"),
+        customerEmail: String(log.customer_email || ""),
+        customerPhone: String(log.customer_phone || ""),
+        productName: String(log.product_name || ""),
+        message: String(log.message || "Customer Website Enquiry"),
+        aiSuggestedReply: String(log.smart_reply_text || ""),
+        conversationId: log.conversation_id ? String(log.conversation_id) : null,
+        createdAt: String(log.created_at || new Date().toISOString()),
+      });
+    }
+  } catch {
+    // Non-blocking
+  }
+
+  // 5. Query filtered list from ecosystem_enquiries
+  const where: string[] = [];
+  const args: (string | number)[] = [];
+  if (filters?.brand && filters.brand !== "ALL") {
+    where.push("brand = ?");
+    args.push(filters.brand);
+  }
+  if (filters?.status && filters.status !== "ALL") {
+    where.push("status = ?");
+    args.push(filters.status);
+  }
+  if (filters?.search?.trim()) {
+    const q = `%${filters.search.trim().toLowerCase()}%`;
+    where.push(
+      "(LOWER(customer_name) LIKE ? OR LOWER(customer_email) LIKE ? OR LOWER(customer_phone) LIKE ? OR LOWER(message) LIKE ? OR LOWER(product_name) LIKE ? OR LOWER(source) LIKE ?)"
+    );
+    args.push(q, q, q, q, q, q);
+  }
+
+  const limit = Math.min(500, Math.max(1, filters?.limit ?? 200));
+  const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const rowsRes = await crm.execute({
+    sql: `SELECT * FROM ecosystem_enquiries ${whereSql} ORDER BY created_at DESC LIMIT ${limit}`,
+    args,
+  });
+
+  return rowsRes.rows.map((r) =>
+    mapEcosystemEnquiryRow(r as Record<string, unknown>)
+  );
+}
+
 /**
  * Resolves the role-isolated Anthropic API key (`client` vs `admin`), locked to `claude-haiku-5-5`:
  * 1. Environment variables (`ANTHROPIC_CLIENT_API_KEY` / `ANTHROPIC_ADMIN_API_KEY` from `.env` / `.env.production`)
@@ -5571,6 +6057,137 @@ export function buildCompleteEcosystemDatabaseDirectory(
   return cachedDirectoryText;
 }
 
+const IS_TEST_OR_DEV_CONTACT_RE =
+  /\b(sakina\s*manzil|tirumalgherry|alaqmarak0810|rapidshiftlabs|ananya\s*deshmukh|rohan\s*kulkarni|priya\s*menon|karthik\s*nair|arjun\s*deshmukh|98480\s*\d{5}|93467\s*63253|96184\s*43558)\b/i;
+
+let cachedLiveBrandTeamInfo: {
+  fetchedAt: number;
+  headOfficeLine: string;
+  leadershipLines: string[];
+} | null = null;
+
+async function getVerifiedLiveBrandAndTeamInfo(): Promise<{
+  headOfficeLine: string;
+  leadershipLines: string[];
+}> {
+  if (
+    cachedLiveBrandTeamInfo &&
+    Date.now() - cachedLiveBrandTeamInfo.fetchedAt < 5 * 60 * 1000
+  ) {
+    return cachedLiveBrandTeamInfo;
+  }
+
+  let address =
+    "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015";
+  let phone1 = "+91 79016 50662";
+  let phone2 = "+91 79016 50663";
+  let whatsappNumber = "+91 73372 20568";
+  let email1 = "sales@classicconcepts.in";
+  let email2 = "info@classicconcepts.in";
+  let businessHours = "Monday - Saturday: 10:00 AM to 7:00 PM (Sunday: Closed)";
+  const leadershipLines: string[] = [];
+  const seenNames = new Set<string>();
+
+  // 1. Check Classic Concepts SQLite DB (SiteSetting & TeamMember)
+  const ccClient = getMainCatalogClient();
+  if (ccClient) {
+    const [ccSettings, ccTeam] = await Promise.all([
+      ccClient.execute(`SELECT * FROM SiteSetting LIMIT 1`).catch(() => ({ rows: [] as any[] })),
+      ccClient.execute(`SELECT * FROM TeamMember ORDER BY sortOrder ASC`).catch(() => ({ rows: [] as any[] })),
+    ]);
+
+    if (ccSettings.rows.length > 0) {
+      const s = ccSettings.rows[0];
+      if (s.address && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.address))) {
+        address = String(s.address).replace(/\r?\n/g, ", ").trim();
+      }
+      if (s.phone1 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.phone1))) {
+        phone1 = String(s.phone1).trim();
+      }
+      if (s.phone2 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.phone2))) {
+        phone2 = String(s.phone2).trim();
+      }
+      if (s.email && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.email))) {
+        email1 = String(s.email).trim();
+      }
+      if (s.email2 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.email2))) {
+        email2 = String(s.email2).trim();
+      }
+      if (s.businessHours) {
+        businessHours = String(s.businessHours).replace(/\r?\n/g, " ").trim();
+      }
+    }
+
+    for (const m of ccTeam.rows) {
+      if (m.isActive === 0 || m.isActive === false) continue;
+      const name = String(m.name || "").trim();
+      if (!name || IS_TEST_OR_DEV_CONTACT_RE.test(name)) continue;
+      seenNames.add(name.toLowerCase());
+      const pos = String(m.position || m.role || "Team Member").trim();
+      const phone =
+        m.phone && !IS_TEST_OR_DEV_CONTACT_RE.test(String(m.phone))
+          ? String(m.phone).trim()
+          : "";
+      const email =
+        m.email && !IS_TEST_OR_DEV_CONTACT_RE.test(String(m.email))
+          ? String(m.email).trim()
+          : "";
+      leadershipLines.push(
+        `• ${name} (${pos})${phone ? ` | Phone: ${phone}` : ""}${email ? ` | Email: ${email}` : ""}`
+      );
+    }
+  }
+
+  // 2. If local DB had no TeamMember rows, verify against live Classic Concepts brand-info API
+  if (leadershipLines.length === 0) {
+    const urls = [
+      `${resolveClassicConceptsInternalUrl()}/api/brand-info`,
+      "https://classicconcepts.in/api/brand-info",
+    ];
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
+        if (!res.ok) continue;
+        const data: any = await res.json().catch(() => null);
+        if (data?.contact?.address && !IS_TEST_OR_DEV_CONTACT_RE.test(String(data.contact.address))) {
+          address = String(data.contact.address).replace(/\r?\n/g, ", ").trim();
+        }
+        if (Array.isArray(data?.team)) {
+          for (const m of data.team) {
+            const name = String(m.name || "").trim();
+            if (!name || seenNames.has(name.toLowerCase()) || IS_TEST_OR_DEV_CONTACT_RE.test(name)) continue;
+            seenNames.add(name.toLowerCase());
+            const pos = String(m.position || "Team Member").trim();
+            const phone =
+              m.phone && !IS_TEST_OR_DEV_CONTACT_RE.test(String(m.phone))
+                ? String(m.phone).trim()
+                : "";
+            const email =
+              m.email && !IS_TEST_OR_DEV_CONTACT_RE.test(String(m.email))
+                ? String(m.email).trim()
+                : "";
+            leadershipLines.push(
+              `• ${name} (${pos})${phone ? ` | Phone: ${phone}` : ""}${email ? ` | Email: ${email}` : ""}`
+            );
+          }
+        }
+        if (leadershipLines.length > 0) break;
+      } catch {
+        // Ignore network errors
+      }
+    }
+  }
+
+  const headOfficeLine = `• Official Company & Head Office (Verified Live Database): Classic Concepts Acrylic Private Limited (https://classicconcepts.in) & Classic Edge 53 (https://classicedge53.com) | Factory & Head Office: ${address} | Phones: ${phone1}${phone2 ? `, ${phone2}` : ""} | Official WhatsApp Business API: ${whatsappNumber} | Emails: ${email1}${email2 ? `, ${email2}` : ""} | Business Hours: ${businessHours}`;
+
+  cachedLiveBrandTeamInfo = {
+    fetchedAt: Date.now(),
+    headOfficeLine,
+    leadershipLines,
+  };
+  return cachedLiveBrandTeamInfo;
+}
+
 export async function loadLiveDatabaseOperationalContext(params: {
   customerPhone?: string;
   customerName?: string;
@@ -5581,103 +6198,36 @@ export async function loadLiveDatabaseOperationalContext(params: {
   const q = String(params.rawQuery || "").toLowerCase();
 
   try {
-    const auth = getRawLibSqlClient("core_auth");
-    const inbox = getRawLibSqlClient("conversations");
     const crm = getRawLibSqlClient("crm_orders");
-
-    // 1. Specialist Teams, Department Contacts, Leadership & Company Info (from WhatsApp Hub + Classic Concepts DB)
-    const [teamsRes, membersRes, usersRes] = await Promise.all([
-      inbox
-        .execute(
-          `SELECT id, name, description, brand_scope, routing_keywords FROM teams ORDER BY priority_rank ASC, name ASC`
-        )
-        .catch(() => ({ rows: [] as any[] })),
-      inbox
-        .execute(
-          `SELECT team_id, staff_name, staff_email, tier, is_available FROM team_members`
-        )
-        .catch(() => ({ rows: [] as any[] })),
-      auth
-        .execute(
-          `SELECT id, name, email, whatsapp_number, role, status, department FROM users WHERE status = 'ACTIVE'`
-        )
-        .catch(() => ({ rows: [] as any[] })),
-    ]);
-
-    const teamLines: string[] = [
-      `• Official Company Details: Classic Concepts (Acrylic Display & Custom Fabrication) & Classic Edge 53 (Industrial Acrylic Machines & Tools) | Factory & Head Office: 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad, Hyderabad, Telangana | Main Phone / WhatsApp: +91 73372 22876 | Official Email: sales@classicconcepts.in | Websites: https://www.classicconcepts.in & https://classicedge.in`,
-    ];
-    for (const t of teamsRes.rows) {
-      const tMembers = membersRes.rows
-        .filter(
-          (m) =>
-            String(m.team_id) === String(t.id) &&
-            Number(m.is_available ?? 1) === 1
-        )
-        .map(
-          (m) =>
-            `${m.staff_name} (${m.tier || "P0"}, ${m.staff_email})`
-        );
-      teamLines.push(
-        `• Department Team — ${t.name} [${t.brand_scope || "ALL"}]: ${t.description || ""}${tMembers.length > 0 ? ` | Members: ${tMembers.join(", ")}` : ""}`
-      );
-    }
-    if (usersRes.rows.length > 0) {
-      teamLines.push(
-        `• Department-Wise Staff & Leadership Contacts: ` +
-          usersRes.rows
-            .map((u) => {
-              const rawPhone = String(u.whatsapp_number || "").trim();
-              const safeStaffPhone =
-                rawPhone && !/93467|63253/.test(rawPhone) ? rawPhone : "";
-              return `${u.name} — Role/Dept: ${u.department || u.role} | Email: ${u.email}${safeStaffPhone ? ` | Phone/WhatsApp: ${safeStaffPhone}` : ""}`;
-            })
-            .join(" ; ")
-      );
-    }
-
     const ccClient = getMainCatalogClient();
+
+    // 1. Verified Live Company Details & Leadership Team (strictly verified against live database, never local test/dev contacts!)
+    const liveBrand = await getVerifiedLiveBrandAndTeamInfo();
+    const asksAboutCompanyOrTeamContacts =
+      Boolean(params.forStaffCopilot) ||
+      /\b(contact|phone|number|call|whatsapp|email|address|location|where\s+are\s+you|factory|office|hours|timings|director|directors|chairperson|chairman|founder|ceo|owner|leadership|team|manager|sales\s+person|who\s+handles|whom\s+will\s+you\s+connect|connect\s+me|yusuf|hussain|shiva|lalitha|susheela|shilpa|chandi|priyanka|lakshmi|murtuza|suraj|harendar)\b/i.test(
+        q
+      );
+
+    if (asksAboutCompanyOrTeamContacts) {
+      const teamBlock = [
+        liveBrand.headOfficeLine,
+        ...(liveBrand.leadershipLines.length > 0
+          ? [`• Verified Leadership & Sales Team (from Live Database):`, ...liveBrand.leadershipLines]
+          : []),
+      ].join("\n");
+      sections.push(`VERIFIED LIVE COMPANY & TEAM CONTACTS:\n${teamBlock}`);
+    } else {
+      sections.push(`VERIFIED COMPANY SUMMARY:\n${liveBrand.headOfficeLine}`);
+    }
+
     if (ccClient) {
-      const [ccTeam, ccSettings, ccRes] = await Promise.all([
-        ccClient
-          .execute(`SELECT * FROM TeamMember ORDER BY sortOrder ASC`)
-          .catch(() => ({ rows: [] as any[] })),
-        ccClient
-          .execute(`SELECT * FROM SiteSetting LIMIT 1`)
-          .catch(() => ({ rows: [] as any[] })),
-        ccClient
-          .execute(
-            `SELECT title, category, type, fileUrl FROM Resource ORDER BY createdAt DESC LIMIT 12`
-          )
-          .catch(() => ({ rows: [] as any[] })),
-      ]);
-      for (const m of ccTeam.rows) {
-        if (m.isActive === 0 || m.isActive === false) continue;
-        const mPhone =
-          m.phone && !/93467|63253/.test(String(m.phone)) ? String(m.phone) : "";
-        teamLines.push(
-          `• Leadership / Key Person: ${m.name} (${m.position || m.role || "Leadership"})${m.email ? ` | Email: ${m.email}` : ""}${mPhone ? ` | Phone: ${mPhone}` : ""}${m.bio ? ` - ${String(m.bio).slice(0, 140)}` : ""}`
-        );
-      }
-      if (ccSettings.rows.length > 0) {
-        const s = ccSettings.rows[0];
-        const safePhone1 =
-          s.phone1 && !/93467|63253/.test(String(s.phone1))
-            ? String(s.phone1)
-            : "+91 73372 22876";
-        const safePhone2 =
-          s.phone2 && !/93467|63253/.test(String(s.phone2))
-            ? ` | Phone 2: ${s.phone2}`
-            : "";
-        const safeEmail =
-          s.email && !/alaqmarak0810/i.test(String(s.email))
-            ? String(s.email)
-            : "sales@classicconcepts.in";
-        teamLines.push(
-          `• Head Office & Direct Contact Numbers: Phone: ${safePhone1}${safePhone2} | WhatsApp: ${s.whatsappNumber || "+91 73372 22876"} | Email: ${safeEmail} | Address: ${String(s.address || "111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad, Hyderabad").replace(/\r?\n/g, ", ")}`
-        );
-      }
-      if (ccRes.rows.length > 0) {
+      const ccRes = await ccClient
+        .execute(
+          `SELECT title, category, type, fileUrl FROM Resource ORDER BY createdAt DESC LIMIT 12`
+        )
+        .catch(() => ({ rows: [] as any[] }));
+      if (ccRes.rows.length > 0 && /\b(pdf|brochure|catalogue|catalog|resource|download|spec\s*sheet)\b/i.test(q)) {
         sections.push(
           `DOWNLOADABLE CATALOGUES & RESOURCES:\n` +
             ccRes.rows
@@ -5690,12 +6240,6 @@ export async function loadLiveDatabaseOperationalContext(params: {
       }
     }
 
-    if (teamLines.length > 0) {
-      sections.push(
-        `COMPANY DETAILS, LEADERSHIP, DEPARTMENTS & STAFF CONTACTS:\n${teamLines.join("\n")}`
-      );
-    }
-
     // 2. Customer-specific CRM profile, orders, trackings, and enquiries (strictly isolated to the current customer's 10-digit phone!)
     const cleanPhone = params.customerPhone
       ? normalizeWhatsAppPhone(params.customerPhone)
@@ -5703,6 +6247,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
     const phoneTail = cleanPhone.slice(-10);
 
     if (phoneTail.length >= 10) {
+      await ensureEcosystemEnquiriesTable().catch(() => {});
       const custRes = await crm
         .execute({
           sql: `SELECT id, name, phone, email, company_name, organization_type, acrio_segment, total_orders_count, lifetime_value_inr, notes FROM customers WHERE phone LIKE ? LIMIT 3`,
@@ -5712,12 +6257,14 @@ export async function loadLiveDatabaseOperationalContext(params: {
 
       if (custRes.rows.length > 0) {
         const c = custRes.rows[0];
-        sections.push(
-          `CURRENT CUSTOMER CRM RECORD: ${c.name} (${c.phone})${c.company_name ? `, Company: ${c.company_name}` : ""}${c.organization_type ? `, Segment: ${c.organization_type}` : ""}, Orders: ${c.total_orders_count ?? 0}, LTV: ₹${Number(c.lifetime_value_inr ?? 0).toLocaleString("en-IN")}${c.notes ? `, Notes: ${c.notes}` : ""}`
-        );
+        if (!IS_TEST_OR_DEV_CONTACT_RE.test(String(c.name || ""))) {
+          sections.push(
+            `CURRENT CUSTOMER CRM RECORD: ${c.name} (${c.phone})${c.company_name ? `, Company: ${c.company_name}` : ""}${c.organization_type ? `, Segment: ${c.organization_type}` : ""}, Orders: ${c.total_orders_count ?? 0}, LTV: ₹${Number(c.lifetime_value_inr ?? 0).toLocaleString("en-IN")}${c.notes ? `, Notes: ${c.notes}` : ""}`
+          );
+        }
       }
 
-      const [ordRes, trkRes, enqRes] = await Promise.all([
+      const [ordRes, trkRes, ecoEnqRes] = await Promise.all([
         crm
           .execute({
             sql: `SELECT order_number, items_summary, quantity, total_amount_inr, payment_status, fulfillment_status, ordered_at FROM customer_orders WHERE customer_phone LIKE ? ORDER BY ordered_at DESC LIMIT 5`,
@@ -5732,7 +6279,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
           .catch(() => ({ rows: [] as any[] })),
         crm
           .execute({
-            sql: `SELECT brand, external_key, customer_name, smart_reply_text, assigned_staff_name, created_at FROM website_enquiry_sync_logs WHERE customer_phone LIKE ? ORDER BY created_at DESC LIMIT 5`,
+            sql: `SELECT brand_label, product_name, message, status, last_reply_text, replied_by_name, created_at FROM ecosystem_enquiries WHERE customer_phone LIKE ? ORDER BY created_at DESC LIMIT 5`,
             args: [`%${phoneTail}%`],
           })
           .catch(() => ({ rows: [] as any[] })),
@@ -5752,13 +6299,13 @@ export async function loadLiveDatabaseOperationalContext(params: {
         sections.push(`CUSTOMER ORDERS & DISPATCH TRACKING:\n${ordLines.join("\n")}`);
       }
 
-      if (enqRes.rows.length > 0) {
+      if (ecoEnqRes.rows.length > 0) {
         sections.push(
-          `CUSTOMER WEBSITE ENQUIRIES ON FILE:\n` +
-            enqRes.rows
+          `CUSTOMER WEBSITE ENQUIRIES & REPLIES ON FILE:\n` +
+            ecoEnqRes.rows
               .map(
                 (e) =>
-                  `• [${e.brand}] ${e.customer_name} (Assigned: ${e.assigned_staff_name || "Sales"}): "${String(e.smart_reply_text || "").slice(0, 120)}"`
+                  `• [${e.brand_label}] (${e.status})${e.product_name ? ` Product: ${e.product_name} |` : ""} Enquiry: "${String(e.message || "").slice(0, 140)}"${e.last_reply_text ? ` | Team Reply (${e.replied_by_name || "Staff"}): "${String(e.last_reply_text).slice(0, 140)}"` : ""}`
               )
               .join("\n")
         );
@@ -5768,24 +6315,24 @@ export async function loadLiveDatabaseOperationalContext(params: {
         const [ccEnq, ccCart] = await Promise.all([
           ccClient
             .execute({
-              sql: `SELECT name, company, message, status, createdAt FROM Enquiry WHERE phone LIKE ? ORDER BY createdAt DESC LIMIT 5`,
+              sql: `SELECT name, message, status, createdAt FROM Enquiry WHERE phone LIKE ? ORDER BY createdAt DESC LIMIT 5`,
               args: [`%${phoneTail}%`],
             })
             .catch(() => ({ rows: [] as any[] })),
           ccClient
             .execute({
-              sql: `SELECT orderCode, customerName, totalAmount, status, createdAt FROM CartOrder WHERE customerPhone LIKE ? ORDER BY createdAt DESC LIMIT 5`,
+              sql: `SELECT id, name, total, status, createdAt FROM CartOrder WHERE phone LIKE ? ORDER BY createdAt DESC LIMIT 5`,
               args: [`%${phoneTail}%`],
             })
             .catch(() => ({ rows: [] as any[] })),
         ]);
-        if (ccEnq.rows.length > 0) {
+        if (ccEnq.rows.length > 0 && ecoEnqRes.rows.length === 0) {
           sections.push(
             `MAIN WEBSITE ENQUIRIES FOR THIS PHONE:\n` +
               ccEnq.rows
                 .map(
                   (e) =>
-                    `• ${e.name}${e.company ? ` (${e.company})` : ""} [${e.status}]: "${String(e.message || "").slice(0, 120)}"`
+                    `• ${e.name} [${e.status}]: "${String(e.message || "").slice(0, 120)}"`
                 )
                 .join("\n")
           );
@@ -5796,7 +6343,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
               ccCart.rows
                 .map(
                   (o) =>
-                    `• Order ${o.orderCode}: ₹${Number(o.totalAmount ?? 0).toLocaleString("en-IN")} [${o.status}]`
+                    `• Order CC-${String(o.id).slice(-6).toUpperCase()}: ₹${Number(o.total ?? 0).toLocaleString("en-IN")} [${o.status}]`
                 )
                 .join("\n")
           );
@@ -5812,10 +6359,11 @@ export async function loadLiveDatabaseOperationalContext(params: {
         q
       )
     ) {
+      await ensureEcosystemEnquiriesTable().catch(() => {});
       const [recentEnq, recentOrd] = await Promise.all([
         crm
           .execute(
-            `SELECT brand, customer_name, customer_phone, smart_reply_text, assigned_staff_name, created_at FROM website_enquiry_sync_logs ORDER BY created_at DESC LIMIT 8`
+            `SELECT brand_label, customer_name, customer_phone, message, status, last_reply_text, replied_by_name FROM ecosystem_enquiries ORDER BY created_at DESC LIMIT 8`
           )
           .catch(() => ({ rows: [] as any[] })),
         crm
@@ -5830,7 +6378,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
             recentEnq.rows
               .map(
                 (e) =>
-                  `• [${e.brand}] ${e.customer_name} (${e.customer_phone}): "${String(e.smart_reply_text || "").slice(0, 100)}" [Assigned: ${e.assigned_staff_name || "Sales"}]`
+                  `• [${e.brand_label}] ${e.customer_name} (${e.customer_phone}) [${e.status}]: "${String(e.message || "").slice(0, 100)}"${e.last_reply_text ? ` -> Replied by ${e.replied_by_name || "Staff"}: "${String(e.last_reply_text).slice(0, 80)}"` : ""}`
               )
               .join("\n")
         );

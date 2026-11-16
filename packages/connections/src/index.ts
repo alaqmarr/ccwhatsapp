@@ -405,8 +405,12 @@ export function formatWhatsAppOutboundText(text: string): string {
     .replace(/\bleveraged\b/gi, "used")
     .replace(/\bleverages\b/gi, "uses")
     .replace(/\bleverage\b/gi, "use")
-    .replace(/(?:\+?91[\s-]*)?73372[\s-]*22876\s*[/,]\s*(?:\+?91[\s-]*)?93467[\s-]*63253/g, "+91 73372 22876")
-    .replace(/(?:\+?91[\s-]*)?93467[\s-]*63253/g, "+91 73372 22876")
+    .replace(/(?:\+?91[\s-]*)?73372[\s-]*22876\s*[/,]\s*(?:\+?91[\s-]*)?93467[\s-]*63253/g, "+91 79016 50662")
+    .replace(/(?:\+?91[\s-]*)?93467[\s-]*63253/g, "+91 79016 50662")
+    .replace(/111\/1\s*,?\s*Sakina\s*Manzil\s*,?\s*R\.?T\.?C\s*Colony\s*,?\s*Tirumalgherry/gi, "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal")
+    .replace(/(?:\+?91[\s-]*)?98480[\s-]*2210[123]/g, "+91 79016 50662")
+    .replace(/(?:\+?91[\s-]*)?98480[\s-]*55110/g, "+91 79016 50662")
+    .replace(/(?:ananya\.deshmukh|rohan\.kulkarni|priya\.menon|karthik\.nair)@classiconcepts\.in/gi, "sales@classicconcepts.in")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n[ \t]+/g, "\n")
@@ -2404,7 +2408,10 @@ const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
   /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|signages|sign|signs|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keychains|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|tables|stool|stools|chair|chairs|desk|desks|furniture|interior|interiors|interiora|decor|furnishing|seating|sit|sitting|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
-  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|all\s*(?:three|two|four|five|of\s*them)|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frost|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|imag[a-z]*|phot[a-z]*|phto[a-z]*|pics?|pictures?|snaps?|visuals?|videos?|pdf|brochure|catalogue|catalog|dikha[a-z]*|photo\s*bhejo|bhejo\s*photo|close[-\s]*up|how\s+does\s+(?:it|this|that)\s+look|look\s+like|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
+  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|mrp|how\s*much|kitna|kitne|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|all\s*(?:three|two|four|five|of\s*them)|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs?|pieces?|nos?|units?|qty|quantity|sets?)\b|single\s*piece|just\s*one|transparent|clear|frost|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|imag[a-z]*|phot[a-z]*|phto[a-z]*|pics?|pictures?|snaps?|visuals?|videos?|pdf|brochure|catalogue|catalog|dikha[a-z]*|photo\s*bhejo|bhejo\s*photo|close[-\s]*up|how\s+does\s+(?:it|this|that)\s+look|look\s+like|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|details?|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|available|availability|in\s*stock|stock|delivery|shipping|dispatch|gst|tax|invoice|how\s+to\s+(?:order|buy|book)|order\s+this|buy\s+this|book\s+this|i\s+want\s+this|this\s+one|that\s+one|same\s+one|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|without\s*logo|no\s*logo|with\s*logo|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
+
+const ACRIO_SHORT_CITY_OR_REPLY_RE =
+  /\b(hyderabad|secunderabad|mumbai|bangalore|bengaluru|delhi|new\s*delhi|noida|gurgaon|gurugram|chennai|pune|kolkata|ahmedabad|surat|vadodara|jaipur|lucknow|kanpur|nagpur|indore|bhopal|visakhapatnam|vizag|vijayawada|guntur|warangal|tirupati|coimbatore|madurai|kochi|ernakulam|trivandrum|patna|ranchi|bhubaneswar|guwahati|chandigarh|ludhiana|amritsar|dehradun|raipur|mysore|mangalore|hubli|belgaum|nashik|aurangabad|thane|navi\s*mumbai|faridabad|ghaziabad|\d{6})\b/i;
 
 /**
  * Deterministic Turn-Level Intent Classifier (Phase A).
@@ -2709,19 +2716,21 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 19. Short confirmation or follow-up in active conversation
+  // 19. Short confirmation, city/quantity/preference answer, or quoted-message reply in active conversation
   if (
     hasConversationHistory &&
-    /\b(yes|yeah|yep|sure|ok|okay|please\s*share|send\s*(?:links|details|options|photos|catalogue|catalog)|show\s*(?:me|them|options)|tell\s*me\s*more)\b/i.test(
+    (/\b(yes|yeah|yep|yup|no|nope|sure|ok|okay|fine|go\s*ahead|please\s*share|send\s*(?:links|details|options|photos|images|catalogue|catalog|quote)|show\s*(?:me|them|options|details)|tell\s*me(?:\s*more|\s*about\s*(?:this|it|that))?|what\s+about\s+(?:this|that|it)|is\s+(?:it|this)\s+available|can\s+(?:you|we)\s+(?:customize|customise|print|deliver|ship))\b/i.test(
       lower
-    )
+    ) ||
+      ACRIO_SHORT_CITY_OR_REPLY_RE.test(lower) ||
+      /^\s*\d{1,3}\s*(?:pcs?|pieces?|nos?|units?|sets?)?\s*$/i.test(trimmed))
   ) {
     return {
       intent: "FOLLOW_UP_REFINEMENT",
       requiresProductLookup: true,
       allowRollingContextFallback: true,
       needsImmediateHandoff: false,
-      reason: "Customer confirmed or asked to see options from the active conversation",
+      reason: "Customer sent a short confirmation, quantity, city, or follow-up reply in the active conversation",
     };
   }
 
@@ -3645,7 +3654,8 @@ export function resolveMultiProductMediaAttachments(
  */
 export function isFocusedProductFollowUp(
   rawText: string,
-  focusItem?: MainWebsiteProduct | null
+  focusItem?: MainWebsiteProduct | null,
+  hasQuotedFocusProduct = false
 ): boolean {
   const t = rawText.toLowerCase().trim();
   if (isCatalogAggregateQuestion(t)) return false;
@@ -3665,6 +3675,7 @@ export function isFocusedProductFollowUp(
     return false;
   }
 
+  // If the customer directly swiped/quoted a message for this specific product, keep focus on it unless they asked for cheaper/other options!
   const asksForImages = isProductImageRequest(rawText);
   if (
     !asksForImages &&
@@ -3673,6 +3684,10 @@ export function isFocusedProductFollowUp(
     )
   ) {
     return false;
+  }
+
+  if (hasQuotedFocusProduct) {
+    return true;
   }
 
   // If the user specifies a colour/finish (e.g. "frosted white") alongside a general noun ("podium") without "this/its",
@@ -3698,7 +3713,7 @@ export function isFocusedProductFollowUp(
       t
     );
   const attribute =
-    /\b(variants?|colou?rs?|imag[a-z]*|phot[a-z]*|phto[a-z]*|pics?|pictures?|warranty|price|cost|rate|mrp|size|dimensions?|height|width|weight|logo|led|delivery|material|pillars?|shelf|wheels?|assembly|available|stock|in\s+(?:black|white|clear|gold|silver|frost|frosted))\b/i.test(
+    /\b(variants?|colou?rs?|imag[a-z]*|phot[a-z]*|phto[a-z]*|pics?|pictures?|warranty|price|cost|rate|mrp|how\s*much|kitna|size|dimensions?|height|width|weight|logo|led|delivery|shipping|dispatch|gst|invoice|order|buy|book|material|pillars?|shelf|wheels?|assembly|available|stock|details?|specs?|in\s+(?:black|white|clear|gold|silver|frost|frosted))\b/i.test(
       t
     );
   // Short variant reply (e.g. "Black please", "White", "Black Clear", "White Frosted")
@@ -3709,9 +3724,19 @@ export function isFocusedProductFollowUp(
     (!focusItem ||
       matchProductVariantsByColourTokens(focusItem.variants || [], t).length > 0);
 
+  // Short city, quantity, or yes/no continuation when a single product is already in focus (e.g. "Hyderabad", "2 pieces", "Yes with logo")
+  const isShortContextualContinuation =
+    Boolean(focusItem) &&
+    !hasAnyFamilyNoun &&
+    t.split(/\s+/).length <= 7 &&
+    (ACRIO_SHORT_CITY_OR_REPLY_RE.test(t) ||
+      /^\s*\d{1,3}\s*(?:pcs?|pieces?|nos?|units?|sets?)?\s*$/i.test(t) ||
+      /\b(yes|yeah|yep|no|nope|ok|okay|sure|with\s+logo|without\s+logo|no\s+logo|with\s+led|no\s+led|with\s+wheels)\b/i.test(t));
+
   return (
     anaphora ||
     isShortVariantReply ||
+    isShortContextualContinuation ||
     (asksForImages && !hasAnyFamilyNoun) ||
     (attribute && !hasAnyFamilyNoun && t.split(/\s+/).length <= 12)
   );
@@ -4352,7 +4377,7 @@ RULES:
 2. Use ONLY the verified catalogue, company and chat information below. Never invent prices, sizes, specs, stock or dates. If something is not in the data, say so plainly.
 3. When it helps, add a ready-to-send customer reply under a line that says "Suggested reply:". Keep it short, with prices in ₹ and ccapl.cc links from the data.
 4. Use single asterisks for *bold*. No markdown headings or tables.
-5. If the question needs a decision from a manager (discounts, special pricing, delivery promises), say who to ask: Sales Head Ananya Deshmukh, or Rohan Kulkarni for general sales.
+5. If the question needs a decision from a director or manager (discounts, special pricing, delivery promises), say who to ask: Director - Sales Hussain Earanpurwala, Director - Production Yusuf Zakir, or Corporate Sales Manager Shiva Kumar Chernapally.
 
 ${buildCompleteEcosystemDatabaseDirectory(allItems)}`,
       messages: [
@@ -4714,16 +4739,34 @@ export interface AcrioUiSink {
   languageMode?: string;
 }
 
+export interface AcrioReplyToMessageContext {
+  waMessageId?: string;
+  senderName?: string;
+  direction?: string;
+  body?: string;
+  productSlug?: string | null;
+  productName?: string | null;
+  variantName?: string | null;
+}
+
 export interface AcrioTurnParams {
   conversationId?: string;
   customerName: string;
   customerPhone?: string;
   inboundText: string;
-  recentMessages?: { direction: string; senderType?: string; body: string }[];
+  recentMessages?: {
+    direction: string;
+    senderType?: string;
+    body: string;
+    productSlug?: string | null;
+    replyTo?: AcrioReplyToMessageContext | null;
+  }[];
   hasAlreadyGreeted?: boolean;
   persistedState?: AcrioConversationState | null;
   /** Set when the customer tapped a product in the "View options" list. */
   forcedFocusSlug?: string;
+  /** Set when the customer swiped/quoted an earlier WhatsApp message. */
+  replyToMessage?: AcrioReplyToMessageContext | null;
   /** Set false to get plain text only (website widget, tests). Defaults to true. */
   enableInteractive?: boolean;
   uiSink?: AcrioUiSink;
@@ -4981,29 +5024,40 @@ async function runAcrioAutonomousTurnCore(
   ].join(" ");
   const contextLower = recentInboundWindow.toLowerCase();
 
+  // Resolve any quoted / replied-to message from params.replyToMessage or the latest inbound message in history
+  const latestInboundInHistory = [...history].reverse().find((m) => m.direction === "INBOUND");
+  const quotedReplyContext: AcrioReplyToMessageContext | null =
+    params.replyToMessage ||
+    (latestInboundInHistory && latestInboundInHistory.body.trim() === rawText
+      ? latestInboundInHistory.replyTo || null
+      : null);
+  const quotedBody = String(quotedReplyContext?.body || "").trim();
+
   // 1. Classify turn intent BEFORE any catalog fetch or product lookup (Phase A)
   let intentInfo = classifyAcrioInboundIntent(
     rawText,
-    history.length > 0 || Boolean(storedState?.turnCount)
+    history.length > 0 || Boolean(storedState?.turnCount) || Boolean(quotedReplyContext)
   );
 
-  // 1a. "the first one" / "option 2" / "the cheaper one": the customer is picking from the list we just sent.
-  // Resolve it from the links in our last outbound message, and make sure it is treated as a product follow-up.
+  // 1a. "the first one" / "option 2" / "the cheaper one": the customer is picking from the list we just sent (or a quoted list).
+  // Resolve it from the links in the quoted message or our last outbound message, and make sure it is treated as a product follow-up.
   const outboundBodies = history
     .filter((m) => m.direction === "OUTBOUND")
     .map((m) => String(m.body || ""))
     .reverse();
   const countAcrioLinks = (b: string) =>
     new Set(b.match(/https?:\/\/ccapl\.cc\/[^\s)*>]+/gi) || []).size;
-  // Use the latest reply that actually showed a list (2+ products); fall back to the very last reply.
+  // If customer quoted a specific message with links, prefer that message; otherwise use latest multi-link outbound message.
   const lastOutboundBody =
-    countAcrioLinks(outboundBodies[0] || "") >= 2
+    quotedBody && countAcrioLinks(quotedBody) >= 1
+      ? quotedBody
+      : countAcrioLinks(outboundBodies[0] || "") >= 2
       ? outboundBodies[0]
       : outboundBodies.slice(1, 4).find((b) => countAcrioLinks(b) >= 2) || outboundBodies[0] || "";
   const hasListPickWording = isListPickText(rawText);
   if (
     hasListPickWording &&
-    (/https?:\/\/ccapl\.cc\//i.test(lastOutboundBody) || /View options/i.test(outboundBodies[0] || "")) &&
+    (/https?:\/\/ccapl\.cc\//i.test(lastOutboundBody) || /View options/i.test(outboundBodies[0] || "") || Boolean(quotedBody)) &&
     !intentInfo.needsImmediateHandoff &&
     intentInfo.intent !== "TOPIC_RESET" &&
     intentInfo.intent !== "HUMAN_HANDOFF_REQUEST"
@@ -5012,7 +5066,7 @@ async function runAcrioAutonomousTurnCore(
       ...intentInfo,
       intent: "FOLLOW_UP_REFINEMENT",
       requiresProductLookup: true,
-      reason: "Customer picked an item from the list we just sent",
+      reason: "Customer picked an item from the list we sent",
     };
   }
   if (params.forcedFocusSlug) {
@@ -5022,6 +5076,29 @@ async function runAcrioAutonomousTurnCore(
       requiresProductLookup: true,
       needsImmediateHandoff: false,
       reason: "Customer tapped a product in the View options list",
+    };
+  }
+  // If customer quoted/replied to an earlier message OR sent a short follow-up while an active product is in memory,
+  // upgrade CONVERSATIONAL_FOLLOWUP to FOLLOW_UP_REFINEMENT so product context is never dropped!
+  const hasActiveProductMemory = Boolean(
+    storedState?.focusProductSlug ||
+      (storedState?.lastRecommendedProducts && storedState.lastRecommendedProducts.length > 0) ||
+      storedState?.primaryProductQuery ||
+      quotedReplyContext?.productSlug ||
+      (quotedBody && (/https?:\/\/ccapl\.cc\//i.test(quotedBody) || extractExplicitProductOrModelCodes(quotedBody).length > 0))
+  );
+  if (
+    intentInfo.intent === "CONVERSATIONAL_FOLLOWUP" &&
+    (Boolean(quotedReplyContext) || (hasActiveProductMemory && rawText.split(/\s+/).length <= 12))
+  ) {
+    intentInfo = {
+      ...intentInfo,
+      intent: "FOLLOW_UP_REFINEMENT",
+      requiresProductLookup: true,
+      allowRollingContextFallback: true,
+      reason: quotedReplyContext
+        ? "Customer quoted/replied directly to an earlier message"
+        : "Short follow-up continuation on active product context",
     };
   }
 
@@ -5250,10 +5327,37 @@ async function runAcrioAutonomousTurnCore(
       dimsInTurn.ranges.length > 0;
     const budgetChangedInTurn = prevMaxPrice !== convState.maxPrice;
 
-    // Resolve the product the customer is currently talking about (survives across turns).
+    // Resolve the product the customer is currently talking about (survives across turns, and prioritizes quoted/replied-to messages!).
     const findItemBySlug = (slug?: string | null) =>
       slug ? allItems.find((it) => (it.slug || "").toLowerCase() === slug.toLowerCase()) : undefined;
-    let focusItem = findItemBySlug(convState.focusProductSlug);
+
+    let quotedFocusItem: MainWebsiteProduct | undefined;
+    let quotedMultipleItems: MainWebsiteProduct[] = [];
+    if (quotedReplyContext) {
+      if (quotedReplyContext.productSlug) {
+        quotedFocusItem = findItemBySlug(quotedReplyContext.productSlug);
+      }
+      if (!quotedFocusItem && quotedBody) {
+        const fromLinks = resolveProductsFromOutboundText(quotedBody, allItems);
+        if (fromLinks.length === 1) {
+          quotedFocusItem = fromLinks[0];
+        } else if (fromLinks.length >= 2) {
+          quotedMultipleItems = fromLinks;
+        } else {
+          const qCodes = extractExplicitProductOrModelCodes(quotedBody);
+          if (qCodes.length === 1) {
+            quotedFocusItem = allItems.find((it) =>
+              `${it.sku || ""} ${it.slug}`
+                .toLowerCase()
+                .replace(/[^a-z0-9]/g, "")
+                .includes(qCodes[0].toLowerCase().replace(/[^a-z0-9]/g, ""))
+            );
+          }
+        }
+      }
+    }
+
+    let focusItem = quotedFocusItem || findItemBySlug(convState.focusProductSlug);
     if (!focusItem && !isMultiProductReference(rawText)) {
       // Derive from earlier customer turns (e.g. "tell me about ccp065") when no state was persisted.
       const priorInbound = history.filter((m) => m.direction === "INBOUND").map((m) => m.body);
@@ -5265,11 +5369,11 @@ async function runAcrioAutonomousTurnCore(
           );
         }
       }
-      // Or if the previous turn recommended a single product, use it when the customer asks for "its images" / "this model".
+      // Or if the previous turn recommended a single product, use it when the customer asks for "its images" / "this model" / short continuation.
       if (
         !focusItem &&
         convState.lastRecommendedProducts.length === 1 &&
-        isProductImageRequest(rawText)
+        (isProductImageRequest(rawText) || rawText.split(/\s+/).length <= 8)
       ) {
         focusItem = findItemBySlug(convState.lastRecommendedProducts[0].slug);
       }
@@ -5277,6 +5381,7 @@ async function runAcrioAutonomousTurnCore(
 
     aggregateResult = buildCatalogAggregateAnswer(allItems, rawText);
     const listPickItem =
+      (quotedBody ? resolveListPickFromLastReply(rawText, quotedBody, allItems) : null) ||
       resolveListPickFromLastReply(rawText, lastOutboundBody, allItems) ||
       (isListPickText(rawText) && (storedState?.lastListedSlugs || []).length > 0 && /View options/i.test(outboundBodies[0] || "")
         ? (() => {
@@ -5305,11 +5410,19 @@ async function runAcrioAutonomousTurnCore(
     } else if (
       focusItem &&
       !projectPlan.isMultiItemOrTotalling &&
-      isFocusedProductFollowUp(rawText, focusItem)
+      isFocusedProductFollowUp(rawText, focusItem, Boolean(quotedFocusItem))
     ) {
       pinnedFocusItem = focusItem;
       contextMatches = [focusItem];
-      addStep("Pinned focus product", `Follow-up refers to "${focusItem.name}" (kept from earlier in the chat)`);
+      addStep(
+        "Pinned focus product",
+        quotedFocusItem
+          ? `Customer quoted/replied directly to "${focusItem.name}"`
+          : `Follow-up refers to "${focusItem.name}" (kept from earlier in the chat)`
+      );
+    } else if (quotedMultipleItems.length >= 2 && !hasExplicitCodeOrDimInTurn) {
+      contextMatches = quotedMultipleItems;
+      addStep("Resolved products from quoted message", `matched=${quotedMultipleItems.length} products from quoted reply`);
     } else if (projectPlan.isMultiItemOrTotalling && projectPlan.matchedProducts.length > 0) {
       contextMatches = projectPlan.matchedProducts;
     } else if (intentInfo.intent === "MENU_SELECTION" && /essential\s*podium/i.test(convState.primaryProductQuery || "")) {
@@ -5953,21 +6066,25 @@ Answer directly in 2-3 short lines: you are *ACRIO*, the WhatsApp product & fabr
 CRITICAL: Do NOT list or repeat specific products or links from earlier turns in this reply!`;
         } else if (intentInfo.intent === "COMPANY_INFO") {
           catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about our company, factory location, contact details, or what we do).
-Answer directly: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, acrylic furniture & chairs, office signages, trophies, hotel/retail stands, custom boxes) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility at 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad / Hyderabad (+91 73372 22876, sales@classicconcepts.in) with pan-India delivery and GST billing.`;
+Answer directly using ONLY the verified live company details: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, acrylic furniture & chairs, office signages, trophies, hotel/retail stands, custom boxes) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility at 1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015 (Phones: +91 79016 50662, +91 79016 50663 | Official WhatsApp: +91 73372 20568 | Emails: sales@classicconcepts.in, info@classicconcepts.in) with pan-India delivery and GST billing.`;
         } else if (intentInfo.intent === "TOPIC_RESET") {
           catalogContext = `Turn Intent: TOPIC_RESET (The customer wants to ask a different query or start a new topic).
 Acknowledge warmly in 1-2 short lines and invite them to share their new question or requirement.
 CRITICAL: Do NOT carry over, repeat, or pitch any products from earlier messages in the conversation!`;
         } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
           catalogContext = `Turn Intent: HUMAN_HANDOFF_INFO (The customer is asking an informational question about who you will connect them to).
-Explain clearly that when they want human assistance, you can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (including Rohan Kulkarni, Ananya Deshmukh, Priya Menon for Sales/Hospitality, and Karthik Nair for Classic Edge 53 Machines), and ask if they would like to be connected now or keep exploring.
+Explain clearly that when they want human assistance, you can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (led by Director - Sales Hussain Earanpurwala, Director - Production Yusuf Zakir, Corporate Sales Manager Shiva Kumar Chernapally, and our Sales & Relationship Managers), and ask if they would like to be connected now or keep exploring.
 CRITICAL: Set "needsHumanHandoff": false because they are only asking *whom* you connect to!`;
         } else if (intentInfo.intent === "OFF_TOPIC") {
           catalogContext = `Turn Intent: OFF_TOPIC.
 Politely state in 1-2 lines that you only assist with *Classic Concepts* acrylic products and *Classic Edge 53* fabrication machines, and ask if they need any display, podium, furniture, signage, or machine.`;
         } else if (intentInfo.intent === "CONVERSATIONAL_FOLLOWUP") {
-          catalogContext = `Turn Intent: CONVERSATIONAL_FOLLOWUP.
-Respond naturally and directly to the customer's message using the conversation history above. Keep it concise (2-4 lines) and do NOT dump a 5-product template list unless they asked for product options.`;
+          const activeRecSummary =
+            convState.lastRecommendedProducts.length > 0
+              ? `\nActive product(s) in this chat: ${convState.lastRecommendedProducts.map((p) => `*${p.name}*${p.priceInr ? ` (₹${p.priceInr.toLocaleString("en-IN")})` : ""} ${p.shortUrl || ""}`).join(", ")}`
+              : "";
+          catalogContext = `Turn Intent: CONVERSATIONAL_FOLLOWUP.${activeRecSummary}
+Respond naturally and directly to the customer's message using the conversation history and active product context above. Keep it concise (2-4 lines) and do NOT dump a 5-product template list unless they asked for product options.`;
         } else {
           catalogContext = `Turn Intent: GREETING.
 Welcome the customer briefly and ask what they are looking to display, build, or fabricate today (stage podiums/pulpits, acrylic furniture & chairs, office signages, awards, custom acrylic boxes, or Classic Edge 53 machines). Do NOT dump specific product links yet.`;
@@ -6002,12 +6119,15 @@ Welcome the customer briefly and ask what they are looking to display, build, or
         firstName === "there"
           ? "Valued Customer (do NOT greet with a phone number; say 'Hi there' if greeting)"
           : params.customerName;
+      const quotedMessagePromptLine = quotedReplyContext
+        ? `Customer Swiped / Replied Directly To This Earlier WhatsApp Message (${quotedReplyContext.senderName || "Earlier message"}): "${quotedBody.slice(0, 320)}"${quotedReplyContext.productName ? ` [Referenced Product: ${quotedReplyContext.productName}${quotedReplyContext.variantName ? `, Variant: ${quotedReplyContext.variantName}` : ""}]` : ""}\nCRITICAL QUOTED-REPLY RULE: Interpret the customer's short message below directly as a response to or question about that quoted message!\n`
+        : "";
       const latestPromptPayload = `[Internal Context for ACRIO - never echo raw labels]
 Customer Name: ${safePromptCustomerName}
 Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Start directly with the helpful answer.)" : `NO (First reply: greet "${firstName}" warmly once in 1 short line.)`}
 Customer Persona & Language Instruction: ${customerProfileInfo.instructionNote}
-${antiRepeatRule ? `${antiRepeatRule}\n` : ""}${stateSummaryLine}
-${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Company Details, Leadership, Department Staff Contacts, Resources, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
+${quotedMessagePromptLine}${antiRepeatRule ? `${antiRepeatRule}\n` : ""}${stateSummaryLine}
+${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Verified Company Summary, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
 
 Customer's latest WhatsApp message:
 ${rawText}`;
@@ -6043,8 +6163,10 @@ CORE CONVERSATION, ACCURACY, GIST FORMATTING & BUSINESS RULES:
    - Use single asterisks *like this* for WhatsApp bold (NEVER **double asterisks**, NEVER [markdown](links), NEVER ### headings).
 3. MULTI-ITEM PROJECT TOTALLING & BUDGET SOLVING:
    - When a customer asks for multiple items with quantities and a budget (e.g. "3 Acrylic podiums, 10 signages for office name plates and 10 chairs within 1 lac rupees"), ALWAYS show the exact unit price × quantity = line total for each item, the grand total, and 2 smart combinations (Option 1: Within-budget combination; Option 2: Full-quantity package with bulk discount check from our Sales Team).
-4. COMPANY DETAILS, CHAIRPERSON/LEADERSHIP & DEPARTMENT CONTACTS:
-   - When asked about company details, leadership/chairperson/director, marketing, sales, or department contacts, share the exact names, roles, emails, and phone/WhatsApp numbers from the Live Database Operational Context (e.g., Head Office: +91 73372 22876, sales@classicconcepts.in; Platform & Leadership: AL AQMAR app@rapidshiftlabs.in +919618443558; Senior Sales & Hospitality: Ananya Deshmukh ananya.deshmukh@classiconcepts.in +919848022102; Corporate & Hotel Sales: Priya Menon priya.menon@classiconcepts.in +919848055110; Sales Team: Rohan Kulkarni rohan.kulkarni@classiconcepts.in +919848022101; Classic Edge 53 Machines: Karthik Nair karthik.nair@classiconcepts.in +919848022103).
+4. COMPANY DETAILS, DIRECTORS & LEADERSHIP CONTACTS (STRICT LIVE DATABASE VERIFICATION):
+   - ONLY share company contact details or leadership names when the customer explicitly asks for company info, address, phone, email, or leadership/team contacts. NEVER append unrequested contact directories to normal product replies!
+   - When asked about company details, leadership/directors, marketing, or sales contacts, use ONLY the verified live database records from the Live Database Operational Context (Head Office: 1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015 | Phones: +91 79016 50662, +91 79016 50663 | Official WhatsApp: +91 73372 20568 | Emails: sales@classicconcepts.in, info@classicconcepts.in | Directors: Yusuf Zakir - Director Production +91 9959362437, Hussain Earanpurwala - Director Sales +91 9849050752 hussain@classicconcepts.in | Corporate Sales Manager: Shiva Kumar Chernapally +91 7337222878 | Sales & Relationship Managers: Lalitha Barma +91 7337222875, Susheela Kunchala +91 7337222879, Shilpa Parikh +91 8977765662, M Chandi Priyanka +91 733 722 2169 | Corporate Sales: Lakshmi Nossam +91 8977641665 | Client Relationship: Syed Murtuza +91 8977765661 | E-Commerce & Digital Growth: B Suraj Goud +91 8977765660, Harendar Kumar +91 8977765664).
+   - NEVER use any unverified or placeholder names or addresses.
    - PRIVACY RULE: NEVER share any other customer's phone number, email, enquiry, or order details.
    - IMAGE SHARING CAPABILITY: Our system automatically attaches and sends product and variant photos from our Cloudflare R2 storage whenever a customer asks for images/photos. NEVER say "I cannot send images directly here".
 5. CONSULTATIVE SALES TEAM PING vs FULL HANDOFF (CRITICAL):
@@ -6275,7 +6397,7 @@ Return ONLY valid JSON:
     fallbackReply = `${greetOnce}${podiumSubCategoriesText}`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "LEADERSHIP_CONTACT_INFO") {
-    fallbackReply = `${greetOnce}Here are the direct contact details for our leadership and specialist departments at *Classic Concepts* & *Classic Edge 53*:\n\n• *Management & Platform Head:* AL AQMAR (app@rapidshiftlabs.in, +91 96184 43558)\n• *Senior Sales & Hospitality Head:* Ananya Deshmukh (ananya.deshmukh@classiconcepts.in, +91 98480 22102)\n• *Corporate, Office & Institutional Sales:* Priya Menon (priya.menon@classiconcepts.in, +91 98480 55110) & Rohan Kulkarni (rohan.kulkarni@classiconcepts.in, +91 98480 22101)\n• *Classic Edge 53 Machines & Technical Head:* Karthik Nair (karthik.nair@classiconcepts.in, +91 98480 22103)\n• *Main Factory & Sales Desk (Secunderabad, Hyderabad):* +91 73372 22876 | sales@classicconcepts.in`;
+    fallbackReply = `${greetOnce}Here are the verified leadership and sales contact details for *Classic Concepts* & *Classic Edge 53*:\n\n• *Director - Production:* Yusuf Zakir (+91 99593 62437)\n• *Director - Sales:* Hussain Earanpurwala (+91 98490 50752, hussain@classicconcepts.in)\n• *Corporate Sales Manager:* Shiva Kumar Chernapally (+91 73372 22878, info@classicconcepts.in)\n• *Sales & Relationship Managers:* Lalitha Barma (+91 73372 22875), Susheela Kunchala (+91 73372 22879), Shilpa Parikh (+91 89777 65662), M Chandi Priyanka (+91 73372 22169)\n• *E-Commerce & Digital Sales:* B Suraj Goud (+91 89777 65660, marketing@classicconcepts.in)\n• *Head Office & Factory (Secunderabad, Telangana):* +91 79016 50662 / +91 79016 50663 | WhatsApp: +91 73372 20568 | sales@classicconcepts.in`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "CHAT_HISTORY_META") {
     const prevUserTopics = history
@@ -6296,13 +6418,13 @@ Return ONLY valid JSON:
     fallbackReply = `${greetOnce}I am *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, furniture, signages, awards, stands, and boxes) and *Classic Edge 53* (industrial acrylic bending, diamond edge polishing, and cutting machines).\n\nTell me what you want to display, build, or fabricate and I will share matching options and prices right away.`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "COMPANY_INFO") {
-    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, furniture, signages, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our 16,000+ sq. ft. facility at 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad / Hyderabad (+91 73372 22876, sales@classicconcepts.in).\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
+    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, furniture, signages, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our 16,000+ sq. ft. facility at 1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015 (Phones: +91 79016 50662, +91 79016 50663 | WhatsApp: +91 73372 20568 | sales@classicconcepts.in).\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "TOPIC_RESET") {
     fallbackReply = `${greetOnce}Sure, let's start fresh! Tell me what you are looking for or what question you have, and I will help you right away.`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
-    fallbackReply = `${greetOnce}When you ask to speak with someone, I can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (Ananya Deshmukh, Priya Menon, Rohan Kulkarni, and Karthik Nair) so a specialist can help you with custom quotes, bulk pricing, or order dispatch.\n\nWould you like me to connect our *Sales Team* now, or would you like to check a product first?`;
+    fallbackReply = `${greetOnce}When you ask to speak with someone, I can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (led by Director - Sales Hussain Earanpurwala, Director - Production Yusuf Zakir, and Corporate Sales Manager Shiva Kumar Chernapally) so a specialist can help you with custom quotes, bulk pricing, or order dispatch.\n\nWould you like me to connect our *Sales Team* now, or would you like to check a product first?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "OFF_TOPIC") {
     fallbackReply = `${greetOnce}I only help with *Classic Concepts* acrylic products (podiums, furniture, signages, awards, stands, custom boxes) and *Classic Edge 53* acrylic fabrication machines.\n\nLet me know if you need options or pricing for any acrylic product or machine!`;
@@ -7721,20 +7843,23 @@ async function resolveDirectSmtpCredentials(): Promise<SmtpResolvedConfig> {
         : `file:///${normalized}`;
       const ccClient = createClient({ url });
       const sRes = await ccClient.execute(
-        `SELECT smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom FROM SiteSetting LIMIT 1`
+        `SELECT smtpHost, smtpPort, smtpUser, smtpPass, email FROM SiteSetting LIMIT 1`
       );
       const r = sRes.rows[0];
-      if (r?.smtpHost && r?.smtpUser && r?.smtpPass) {
+      if (r?.smtpUser && r?.smtpPass) {
+        const resolvedHost = String(r.smtpHost || "smtp.gmail.com").trim() || "smtp.gmail.com";
+        const rawPass = String(r.smtpPass).trim();
+        const cleanPass = resolvedHost.toLowerCase().includes("gmail")
+          ? rawPass.replace(/\s+/g, "")
+          : rawPass;
         return {
           configured: true,
           source: "classicconcepts_db",
-          host: String(r.smtpHost).trim(),
+          host: resolvedHost,
           port: Number(r.smtpPort || 587),
           user: String(r.smtpUser).trim(),
-          pass: String(r.smtpPass).trim(),
-          from:
-            String(r.smtpFrom || "").trim() ||
-            `"Classic Concepts WhatsApp Desk" <${String(r.smtpUser).trim()}>`,
+          pass: cleanPass,
+          from: `"Classic Concepts" <${String(r.smtpUser).trim()}>`,
         };
       }
     }
