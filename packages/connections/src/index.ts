@@ -2932,6 +2932,65 @@ export function buildFocusedAttributeAnswer(item: MainWebsiteProduct, rawText: s
   return null;
 }
 
+const ACRIO_ORDINALS: Record<string, number> = {
+  first: 0, "1st": 0, one: 0, second: 1, "2nd": 1, two: 1, third: 2, "3rd": 2, three: 2,
+  fourth: 3, "4th": 3, four: 3, fifth: 4, "5th": 4, five: 4, last: -1,
+};
+
+/** True when the text looks like picking from a list we sent ("the first one", "option 2", "the cheaper one"). */
+export function isListPickText(rawText: string): boolean {
+  const t = rawText.toLowerCase().trim();
+  if (t.split(/\s+/).length > 10) return false;
+  if (extractExplicitProductOrModelCodes(rawText).length > 0) return false;
+  if (/\b(first\s*two|top\s*two|both|these\s*two|those\s*two|all\s*of\s*them)\b/.test(t)) return false;
+  return (
+    /\b(?:the\s+)?(first|second|third|fourth|fifth|last|1st|2nd|3rd|4th|5th)\s*(?:one|option|model|product|podium|item|choice)?\b/.test(t) ||
+    /\b(?:option|number|no\.?|#)\s*[1-5]\b/.test(t) ||
+    /\b(?:the\s+)?(cheaper|cheapest|costlier|costliest|pricier|more\s+expensive|bigger|biggest|larger|largest|smaller|smallest|taller|tallest)\s+one\b/.test(t) ||
+    /^\s*[1-5][\s.)!]*$/.test(t)
+  );
+}
+
+/** Resolve which product from the last outbound list the customer means. Uses the order of links we actually sent. */
+export function resolveListPickFromLastReply(
+  rawText: string,
+  lastOutboundBody: string,
+  allItems: MainWebsiteProduct[]
+): MainWebsiteProduct | null {
+  if (!isListPickText(rawText)) return null;
+  const links = Array.from(lastOutboundBody.matchAll(/https?:\/\/ccapl\.cc\/[^\s)*>]+/gi)).map((m) =>
+    m[0].replace(/[.,;!?]+$/, "")
+  );
+  const seen = new Set<string>();
+  const listed: MainWebsiteProduct[] = [];
+  for (const link of links) {
+    if (seen.has(link)) continue;
+    seen.add(link);
+    const item = allItems.find((it) => (it.shortUrl || "").replace(/[.,;!?]+$/, "") === link);
+    if (item) listed.push(item);
+  }
+  if (listed.length === 0) return null;
+  if (listed.length === 1) return listed[0];
+
+  const t = rawText.toLowerCase();
+  const price = (it: MainWebsiteProduct) => (typeof it.basePrice === "number" && it.basePrice > 0 ? it.basePrice : null);
+  const priced = listed.filter((it) => price(it) !== null);
+  if (/\b(cheaper|cheapest|smaller|smallest)\s+one\b/.test(t) && priced.length > 0) {
+    return [...priced].sort((a, b) => price(a)! - price(b)!)[0];
+  }
+  if (/\b(costlier|costliest|pricier|more\s+expensive|bigger|biggest|larger|largest|taller|tallest)\s+one\b/.test(t) && priced.length > 0) {
+    return [...priced].sort((a, b) => price(b)! - price(a)!)[0];
+  }
+  const word = t.match(/\b(first|second|third|fourth|fifth|last|1st|2nd|3rd|4th|5th)\b/)?.[1];
+  const num = t.match(/(?:option|number|no\.?|#)\s*([1-5])\b/)?.[1] || t.match(/^\s*([1-5])[\s.)!]*$/)?.[1];
+  let idx = -2;
+  if (word) idx = ACRIO_ORDINALS[word];
+  else if (num) idx = parseInt(num, 10) - 1;
+  if (idx === -1) return listed[listed.length - 1];
+  if (idx >= 0 && idx < listed.length) return listed[idx];
+  return null;
+}
+
 /**
  * Deterministically updates `AcrioConversationState` for a single customer inbound turn.
  */
@@ -3698,10 +3757,39 @@ export async function runAcrioAutonomousTurn(params: {
       : await loadConversationAiState(params.conversationId);
 
   // 1. Classify turn intent BEFORE any catalog fetch or product lookup (Phase A)
-  const intentInfo = classifyAcrioInboundIntent(
+  let intentInfo = classifyAcrioInboundIntent(
     rawText,
     history.length > 0 || Boolean(storedState?.turnCount)
   );
+
+  // 1a. "the first one" / "option 2" / "the cheaper one": the customer is picking from the list we just sent.
+  // Resolve it from the links in our last outbound message, and make sure it is treated as a product follow-up.
+  const outboundBodies = history
+    .filter((m) => m.direction === "OUTBOUND")
+    .map((m) => String(m.body || ""))
+    .reverse();
+  const countAcrioLinks = (b: string) =>
+    new Set(b.match(/https?:\/\/ccapl\.cc\/[^\s)*>]+/gi) || []).size;
+  // Use the latest reply that actually showed a list (2+ products); fall back to the very last reply.
+  const lastOutboundBody =
+    countAcrioLinks(outboundBodies[0] || "") >= 2
+      ? outboundBodies[0]
+      : outboundBodies.slice(1, 4).find((b) => countAcrioLinks(b) >= 2) || outboundBodies[0] || "";
+  const hasListPickWording = isListPickText(rawText);
+  if (
+    hasListPickWording &&
+    /https?:\/\/ccapl\.cc\//i.test(lastOutboundBody) &&
+    !intentInfo.needsImmediateHandoff &&
+    intentInfo.intent !== "TOPIC_RESET" &&
+    intentInfo.intent !== "HUMAN_HANDOFF_REQUEST"
+  ) {
+    intentInfo = {
+      ...intentInfo,
+      intent: "FOLLOW_UP_REFINEMENT",
+      requiresProductLookup: true,
+      reason: "Customer picked an item from the list we just sent",
+    };
+  }
 
   // 1b. Reconstruct & update structured per-conversation state (Phase B)
   const convState = reconstructAcrioConversationState({
@@ -3898,8 +3986,13 @@ export async function runAcrioAutonomousTurn(params: {
     }
 
     aggregateResult = buildCatalogAggregateAnswer(allItems, rawText);
+    const listPickItem = resolveListPickFromLastReply(rawText, lastOutboundBody, allItems);
     if (aggregateResult && !projectPlan.isMultiItemOrTotalling) {
       contextMatches = aggregateResult.items;
+    } else if (listPickItem && !projectPlan.isMultiItemOrTotalling) {
+      pinnedFocusItem = listPickItem;
+      contextMatches = [listPickItem];
+      addStep("Resolved list pick", `Customer picked "${listPickItem.name}" from the list we just sent`);
     } else if (focusItem && !projectPlan.isMultiItemOrTotalling && isFocusedProductFollowUp(rawText)) {
       pinnedFocusItem = focusItem;
       contextMatches = [focusItem];
@@ -4270,7 +4363,7 @@ Welcome the customer briefly and ask what they are looking to display, build, or
         const deepBlock = aggregateResult
           ? `\n\nVerified Catalogue-Wide Count (the customer asked HOW MANY; answer with this exact count and breakdown, do not describe one single product):\n${aggregateResult.answer}`
           : pinnedFocusItem
-          ? `\n\nFOCUS PRODUCT (the customer's words like "this model", "it", "the white one" refer to THIS product from earlier in the chat; answer ONLY about it, in 2-4 short lines, answering exactly what they asked and nothing more):\n${cleanDisplayProductName(pinnedFocusItem.name)} | ${pinnedFocusItem.shortUrl || pinnedFocusItem.url}\n${deepProductInfo?.promptCatalogContext || ""}`
+          ? `\n\nFOCUS PRODUCT (the customer's words like "this model", "it", "the white one" refer to THIS product from earlier in the chat; answer ONLY about it. If they asked one specific thing (colour, price, warranty, size, quantity) answer just that in 2-4 short lines. If they only picked it from a list or asked for more details, give the crisp 5-6 line gist for this one product:\n${cleanDisplayProductName(pinnedFocusItem.name)} | ${pinnedFocusItem.shortUrl || pinnedFocusItem.url}\n${deepProductInfo?.promptCatalogContext || ""}`
           : deepProductInfo?.promptCatalogContext
           ? `\n\nVerified Deep Product Specifications, Dimensions, Variants & Machine Models:\n${deepProductInfo.promptCatalogContext}`
           : "";
@@ -4338,6 +4431,7 @@ CORE CONVERSATION, ACCURACY, GIST FORMATTING & BUSINESS RULES:
 6. PLAIN EVERYDAY LANGUAGE & ANTI-REPETITION:
    - FOLLOW-UP MEMORY: When the customer says "this model", "it", "its price", "the white one" or asks a short question about colour, warranty, price or size, they mean the FOCUS PRODUCT from earlier in this chat. Answer ONLY that question about THAT product in 2-4 short lines. NEVER switch to a different product and NEVER repeat the full product description again.
    - COUNT QUESTIONS: When asked "how many products ...", use the Verified Catalogue-Wide Count if provided and answer with the number first.
+   - NEVER state a technical figure (power, kW, weight, speed, thickness, voltage) unless it appears in the verified product data above. If it is missing, say you do not have it verified and share the right team contact instead.
    - JSON SAFETY: Write inches as the word "inch" or "in" (for example 22 x 16 inch), NEVER with a double quote character inside customerReply, so the JSON stays valid.
    - Primary languages: English and Hindi/Hinglish. Use other languages only if the user clearly does not understand English or Hindi.
    - Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords.

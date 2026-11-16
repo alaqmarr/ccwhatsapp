@@ -29,7 +29,8 @@ data/*.sqlite-wal
 data/*.sqlite-journal
 *.db.backup*
 *.db-backup*
-
+*.logs
+*.txt
 # Runtime Backups, Uploads & PM2 Logs
 backups/
 uploads/
