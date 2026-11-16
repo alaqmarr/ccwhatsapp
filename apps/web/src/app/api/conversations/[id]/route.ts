@@ -644,7 +644,7 @@ export async function POST(
         const accounts = await listAllStaffAccounts();
         const staff = accounts
           .filter((a) => a.status === "ACTIVE" && a.role !== "CLIENT")
-          .map((a) => ({ id: a.id, name: a.name, email: a.email }));
+          .map((a) => ({ id: a.id, name: a.name, email: a.email, whatsappNumber: a.whatsappNumber }));
         const processed = await processStaffNote({
           conversationId: id,
           noteId,

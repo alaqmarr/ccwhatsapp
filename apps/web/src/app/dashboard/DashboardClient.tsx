@@ -62,7 +62,7 @@ interface CallReq {
 }
 interface Notif {
   id: string;
-  type: "MENTION" | "ACRIO_REPLY";
+  type: "MENTION" | "ACRIO_REPLY" | "CALLBACK";
   conversationId: string;
   fromName: string;
   customerName: string;
@@ -474,7 +474,11 @@ export function DashboardClient() {
                   >
                     <span className="flex items-center justify-between text-[11.5px]">
                       <span className="font-semibold text-slate-900">
-                        {n.type === "ACRIO_REPLY" ? "ACRIO answered you" : `${n.fromName} mentioned you`}
+                        {n.type === "ACRIO_REPLY"
+                          ? "ACRIO answered you"
+                          : n.type === "CALLBACK"
+                          ? "New callback request"
+                          : `${n.fromName} mentioned you`}
                       </span>
                       <span className="text-slate-400">{ago(n.createdAt)}</span>
                     </span>

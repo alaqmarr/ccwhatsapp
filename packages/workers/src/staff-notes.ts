@@ -1,18 +1,24 @@
 import crypto from "node:crypto";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
-import { runAcrioStaffQuestion } from "@cc/connections";
+import {
+  runAcrioStaffQuestion,
+  sendStaffAlertEmail,
+  sendStaffWhatsAppAlert,
+} from "@cc/connections";
+import { claimPendingJobs, completeJob, enqueueJob, failJob } from "@cc/queue";
 import { socketHub } from "@cc/sockets";
 
 export interface MentionableStaff {
   id: string;
   name: string;
   email?: string;
+  whatsappNumber?: string;
 }
 
 export interface StaffNotification {
   id: string;
   staffId: string;
-  type: "MENTION" | "ACRIO_REPLY";
+  type: "MENTION" | "ACRIO_REPLY" | "CALLBACK";
   conversationId: string;
   messageId: string;
   fromName: string;
@@ -124,6 +130,144 @@ async function createNotification(params: {
   });
 }
 
+/** Emails (and optionally WhatsApps) a teammate. Never throws and never blocks the caller. */
+async function alertStaffOutsideApp(params: {
+  staff: MentionableStaff;
+  type: "STAFF_MENTION" | "STAFF_CALLBACK";
+  subject: string;
+  headline: string;
+  detail: string;
+  conversationId: string;
+}): Promise<void> {
+  try {
+    if (params.staff.email) {
+      await sendStaffAlertEmail({
+        staffId: params.staff.id,
+        staffEmail: params.staff.email,
+        staffName: params.staff.name,
+        subject: params.subject,
+        headline: params.headline,
+        detail: params.detail,
+        conversationId: params.conversationId,
+        ctaLabel: params.type === "STAFF_CALLBACK" ? "Open the chat" : "Open chat",
+        dispatchType: params.type,
+      });
+    }
+    if (params.staff.whatsappNumber) {
+      await sendStaffWhatsAppAlert({
+        toPhone: params.staff.whatsappNumber,
+        staffName: params.staff.name,
+        headline: params.headline,
+        detail: params.detail,
+      });
+    }
+  } catch (err) {
+    console.warn("[notify] staff alert failed:", (err as Error)?.message || err);
+  }
+}
+
+const STAFF_NOTE_QUEUE = "acrio:staff_note_answer" as const;
+
+/** Runs one saved "@ACRIO" question job. Safe to run twice: the answer is only written once. */
+export async function runStaffNoteAnswerJob(payload: Record<string, unknown>): Promise<void> {
+  await answerAcrioNote({
+    conversationId: String(payload.conversationId),
+    noteId: String(payload.noteId),
+    question: String(payload.question || ""),
+    author: payload.author as { id: string; name: string },
+    customerName: String(payload.customerName || "a customer"),
+    customerPhone: String(payload.customerPhone || ""),
+  });
+}
+
+/** Jobs stuck in PROCESSING for 3+ minutes (server restarted mid-answer) are put back in line. */
+export async function requeueStaleStaffNoteJobs(): Promise<void> {
+  await ensureDatabasesBootstrapped();
+  const db = getRawLibSqlClient("queue_jobs");
+  const cutoff = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+  await db
+    .execute({
+      sql: `UPDATE jobs SET status = 'PENDING', run_after = ?
+            WHERE queue_name = ? AND status = 'PROCESSING' AND attempts < max_attempts AND created_at < ?`,
+      args: [new Date().toISOString(), STAFF_NOTE_QUEUE, cutoff],
+    })
+    .catch(() => {});
+}
+
+let staffNoteDrainRunning = false;
+/** Claims and answers waiting @ACRIO note jobs (also called by the background worker loop). */
+export async function claimAndRunStaffNoteJobs(): Promise<number> {
+  if (staffNoteDrainRunning) return 0;
+  staffNoteDrainRunning = true;
+  let done = 0;
+  try {
+    const jobs = await claimPendingJobs(STAFF_NOTE_QUEUE, 3);
+    for (const job of jobs) {
+      try {
+        await runStaffNoteAnswerJob(job.payload);
+        await completeJob(job.id);
+        done++;
+      } catch (err) {
+        await failJob(job, (err as Error)?.message || "ACRIO note answer failed");
+      }
+    }
+  } finally {
+    staffNoteDrainRunning = false;
+  }
+  return done;
+}
+
+/** Tells the sales team about a new callback request: bell notification, email and optional WhatsApp. */
+export async function notifyCallbackRequest(params: {
+  conversationId: string;
+  customerName: string;
+  customerPhone: string;
+  slot: string;
+  topic: string;
+  requestId: string;
+}): Promise<void> {
+  try {
+    await ensureDatabasesBootstrapped();
+    const conv = getRawLibSqlClient("conversations");
+    const members = await conv.execute(
+      `SELECT staff_id, staff_name, staff_email FROM team_members WHERE team_id = 'team_sales'`
+    );
+    // Phone numbers live on the staff account, so look them up when we can.
+    const auth = getRawLibSqlClient("core_auth");
+    for (const m of members.rows) {
+      const staffId = String(m.staff_id);
+      const phoneRes = await auth
+        .execute({ sql: `SELECT whatsapp_number FROM users WHERE id = ? AND status = 'ACTIVE' LIMIT 1`, args: [staffId] })
+        .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+      const detail = `${params.customerName} (${params.customerPhone}) wants a call in the ${params.slot}.\nInterested in: ${params.topic}.`;
+      await createNotification({
+        staffId,
+        type: "CALLBACK",
+        conversationId: params.conversationId,
+        messageId: params.requestId,
+        fromName: "ACRIO",
+        customerName: params.customerName,
+        text: detail,
+      }).catch(() => {});
+      void alertStaffOutsideApp({
+        staff: {
+          id: staffId,
+          name: String(m.staff_name || "Team"),
+          email: String(m.staff_email || ""),
+          whatsappNumber: phoneRes.rows[0]?.whatsapp_number ? String(phoneRes.rows[0].whatsapp_number) : undefined,
+        },
+        type: "STAFF_CALLBACK",
+        subject: `Callback request: ${params.customerName} (${params.customerPhone})`,
+        headline: "New callback request",
+        detail,
+        conversationId: params.conversationId,
+      });
+    }
+  } catch (err) {
+    console.warn("[notify] callback notification failed:", (err as Error)?.message || err);
+  }
+}
+
 async function answerAcrioNote(params: {
   conversationId: string;
   noteId: string;
@@ -133,6 +277,14 @@ async function answerAcrioNote(params: {
   customerPhone: string;
 }): Promise<void> {
   const conv = getRawLibSqlClient("conversations");
+
+  // Already answered (for example the job was retried after a restart)? Then do nothing.
+  const already = await conv.execute({
+    sql: `SELECT id FROM messages WHERE conversation_id = ? AND sender_name = 'ACRIO'
+          AND message_type = 'INTERNAL_NOTE' AND metadata_json LIKE ? LIMIT 1`,
+    args: [params.conversationId, `%"inReplyToNoteId":"${params.noteId}"%`],
+  });
+  if (already.rows[0]) return;
   const msgRes = await conv.execute({
     sql: `SELECT direction, sender_name, message_type, body FROM messages
           WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 30`,
@@ -242,19 +394,29 @@ export async function processStaffNote(params: {
       customerName,
       text: params.noteText,
     }).catch(() => {});
+    // Also reach them outside the app (email, and WhatsApp when a template is configured).
+    void alertStaffOutsideApp({
+      staff: m,
+      type: "STAFF_MENTION",
+      subject: `${params.author.name} mentioned you in a chat with ${customerName}`,
+      headline: `${params.author.name} mentioned you`,
+      detail: `Chat with ${customerName}${customerPhone ? ` (${customerPhone})` : ""}:\n${params.noteText.slice(0, 500)}`,
+      conversationId: params.conversationId,
+    });
   }
 
   if (askAcrio) {
     const question = params.noteText.replace(/(^|[\s(])@acrio\b[:,]?/gi, "$1").trim() || params.noteText;
-    // Answer in the background so saving the note stays instant.
-    void answerAcrioNote({
+    // Saved as a queue job first, so a server restart cannot lose the question.
+    await enqueueJob("acrio:staff_note_answer", {
       conversationId: params.conversationId,
       noteId: params.noteId,
       question,
       author: params.author,
       customerName,
       customerPhone,
-    }).catch((err) => console.warn("[ACRIO] @ACRIO note answer failed:", err?.message || err));
+    });
+    void claimAndRunStaffNoteJobs();
   }
 
   return {

@@ -6680,6 +6680,10 @@ export async function dispatchSystemEmail(params: {
     | "STAFF_ASSIGNMENT"
     | "STAFF_ESCALATION"
     | "STAFF_OTP"
+    | "STAFF_MENTION"
+    | "STAFF_CALLBACK"
+    | "EMAIL_CHANGE_OTP"
+    | "EMAIL_CHANGED_NOTICE"
     | "WEBSITE_ENQUIRY_REPLY"
     | "SMTP_TEST";
   conversationId?: string | null;
@@ -6991,4 +6995,133 @@ export async function sendStaffVerificationEmail(params: {
     return { deliveredViaSmtp: true };
   }
   return { deliveredViaSmtp: false, devPreviewCode: params.otpCode };
+}
+
+function escapeHtmlText(s: string): string {
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Emails a teammate about something that needs them (a mention, a callback request).
+ * Respects the per-member "email alerts" switch on the team_members table.
+ */
+export async function sendStaffAlertEmail(params: {
+  staffId?: string | null;
+  staffEmail?: string | null;
+  staffName: string;
+  subject: string;
+  headline: string;
+  detail: string;
+  conversationId?: string | null;
+  ctaLabel?: string;
+  dispatchType: "STAFF_MENTION" | "STAFF_CALLBACK";
+}): Promise<{ ok: boolean; via: string; error?: string }> {
+  await ensureDatabasesBootstrapped();
+  const conv = getRawLibSqlClient("conversations");
+  const to = String(params.staffEmail || "").trim();
+  if (!to) return { ok: false, via: "none", error: "No staff email found." };
+
+  if (params.staffId) {
+    const pref = await conv
+      .execute({
+        sql: `SELECT email_alerts_enabled FROM team_members WHERE staff_id = ? LIMIT 1`,
+        args: [params.staffId],
+      })
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    if (pref.rows[0] && pref.rows[0].email_alerts_enabled !== undefined && Number(pref.rows[0].email_alerts_enabled) === 0) {
+      return { ok: false, via: "disabled_by_preference" };
+    }
+  }
+
+  const origin = resolveWhatsAppWebAppOrigin();
+  const link = params.conversationId
+    ? `${origin}/dashboard/inbox?chat=${encodeURIComponent(params.conversationId)}`
+    : `${origin}/dashboard`;
+  const text = [`Hello ${params.staffName},`, "", params.headline, "", params.detail, "", `${params.ctaLabel || "Open chat"}: ${link}`].join("\n");
+  const html = `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#fff;">
+      <div style="background:#075e54;color:#fff;padding:16px 20px;font-size:16px;font-weight:700;">${escapeHtmlText(params.headline)}</div>
+      <div style="padding:20px;color:#1e293b;font-size:14px;line-height:1.55;">
+        <p style="margin:0 0 12px;">Hello <strong>${escapeHtmlText(params.staffName)}</strong>,</p>
+        <div style="background:#f8fafc;border-left:4px solid #10b981;padding:12px 14px;border-radius:6px;margin-bottom:16px;white-space:pre-wrap;">${escapeHtmlText(params.detail)}</div>
+        <a href="${link}" style="display:inline-block;background:#10b981;color:#fff;font-weight:600;text-decoration:none;padding:11px 20px;border-radius:8px;">${escapeHtmlText(params.ctaLabel || "Open chat")}</a>
+      </div>
+    </div>`;
+  return dispatchSystemEmail({
+    to,
+    recipientName: params.staffName,
+    subject: params.subject,
+    text,
+    html,
+    dispatchType: params.dispatchType,
+    conversationId: params.conversationId || null,
+  });
+}
+
+/**
+ * Optional WhatsApp ping to a teammate's own number. WhatsApp only allows free text inside a 24 hour
+ * window, so this needs an approved utility template. Set WHATSAPP_STAFF_ALERT_TEMPLATE to its name
+ * (body must have 3 variables: name, headline, detail). Without it, nothing is sent.
+ */
+export async function sendStaffWhatsAppAlert(params: {
+  toPhone: string;
+  staffName: string;
+  headline: string;
+  detail: string;
+}): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
+  const templateName = String(process.env.WHATSAPP_STAFF_ALERT_TEMPLATE || "").trim();
+  if (!templateName || !params.toPhone) return { ok: false, skipped: true };
+  const clean = (s: string) => String(s || "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, 300);
+  const res = await sendWhatsAppCloudMessage({
+    toPhone: params.toPhone,
+    bodyText: `${params.headline} ${params.detail}`,
+    templateName,
+    languageCode: String(process.env.WHATSAPP_STAFF_ALERT_TEMPLATE_LANG || "en"),
+    templateComponents: [
+      {
+        type: "body",
+        parameters: [params.staffName, params.headline, params.detail].map((t) => ({ type: "text", text: clean(t) || "-" })),
+      },
+    ],
+  });
+  if (!res.ok) console.warn("[WA] Staff WhatsApp alert failed:", res.error);
+  return { ok: res.ok, error: res.error };
+}
+
+/** Sends the 6 digit code for changing a login email, to either the old or the new address. */
+export async function sendEmailChangeOtpEmail(params: {
+  to: string;
+  staffName: string;
+  otpCode: string;
+  which: "OLD" | "NEW";
+  oldEmail: string;
+  newEmail: string;
+}): Promise<{ ok: boolean; devPreviewCode?: string }> {
+  const intro =
+    params.which === "OLD"
+      ? `Someone (hopefully you) asked to change the login email on your Classic Concepts WhatsApp Hub account from ${params.oldEmail} to ${params.newEmail}.`
+      : `This address (${params.newEmail}) was entered as the new login email for the Classic Concepts WhatsApp Hub account of ${params.staffName}.`;
+  const res = await dispatchSystemEmail({
+    to: params.to,
+    recipientName: params.staffName,
+    subject: `${params.otpCode} is your email change code (${params.which === "OLD" ? "current email" : "new email"})`,
+    text: `Hello ${params.staffName},\n\n${intro}\n\nYour 6-digit code is: ${params.otpCode}\n\nIt is valid for 10 minutes. You need the codes from BOTH the old and the new email to finish. If you did not ask for this, ignore this email and your login email stays the same.\n`,
+    dispatchType: "EMAIL_CHANGE_OTP",
+  });
+  return { ok: res.ok, devPreviewCode: res.ok ? undefined : params.otpCode };
+}
+
+export async function sendEmailChangedNoticeEmail(params: {
+  to: string;
+  staffName: string;
+  oldEmail: string;
+  newEmail: string;
+}): Promise<void> {
+  await dispatchSystemEmail({
+    to: params.to,
+    recipientName: params.staffName,
+    subject: "Your Classic Concepts login email was changed",
+    text: `Hello ${params.staffName},\n\nThe login email on your Classic Concepts WhatsApp Hub account was changed from ${params.oldEmail} to ${params.newEmail}.\n\nIf this was not you, contact a Superadmin right away.\n`,
+    dispatchType: "EMAIL_CHANGED_NOTICE",
+  }).catch(() => {});
 }

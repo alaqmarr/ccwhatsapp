@@ -1,12 +1,13 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
-import { AtSign, Bell, Bot, CheckCheck } from "lucide-react";
+import { AtSign, Bell, Bot, CheckCheck, PhoneCall } from "lucide-react";
 
 interface Notif {
   id: string;
-  type: "MENTION" | "ACRIO_REPLY";
+  type: "MENTION" | "ACRIO_REPLY" | "CALLBACK";
   conversationId: string;
   fromName: string;
   customerName: string;
@@ -29,6 +30,24 @@ export function NotificationBell({ userId }: { userId: string }) {
   const [items, setItems] = useState<Notif[]>([]);
   const [unread, setUnread] = useState(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const dropRef = useRef<HTMLDivElement | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number }>({ top: 80, left: 12, width: 384 });
+
+  // The sidebar is its own stacking layer, so the list is drawn on <body> to always sit above the page.
+  useEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const width = Math.min(384, vw - 16);
+      const left = r ? Math.min(Math.max(8, r.left), vw - width - 8) : 12;
+      setPos({ top: (r ? r.bottom : 72) + 8, left, width });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
 
   const load = useCallback(async () => {
     try {
@@ -64,7 +83,9 @@ export function NotificationBell({ userId }: { userId: string }) {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (panelRef.current?.contains(target) || dropRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -94,6 +115,7 @@ export function NotificationBell({ userId }: { userId: string }) {
   return (
     <div className="relative" ref={panelRef}>
       <button
+        ref={btnRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="relative p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 cursor-pointer"
@@ -107,8 +129,14 @@ export function NotificationBell({ userId }: { userId: string }) {
         )}
       </button>
 
-      {open && (
-        <div className="fixed left-3 right-3 top-14 lg:left-[15.5rem] lg:right-auto lg:top-24 lg:w-96 z-[70] rounded-xl bg-white border border-neutral-200 shadow-2xl overflow-hidden">
+      {open &&
+        typeof document !== "undefined" &&
+        createPortal(
+        <div
+          ref={dropRef}
+          style={{ top: pos.top, left: pos.left, width: pos.width }}
+          className="fixed z-[1000] rounded-xl bg-white border border-neutral-200 shadow-2xl overflow-hidden"
+        >
           <div className="px-3.5 py-2.5 border-b border-neutral-200 flex items-center justify-between bg-slate-50">
             <span className="text-sm font-semibold text-slate-900">Mentions and ACRIO replies</span>
             <button
@@ -136,15 +164,29 @@ export function NotificationBell({ userId }: { userId: string }) {
                 >
                   <span
                     className={`mt-0.5 w-6 h-6 rounded-full shrink-0 flex items-center justify-center ${
-                      n.type === "ACRIO_REPLY" ? "bg-violet-100 text-violet-700" : "bg-amber-100 text-amber-800"
+                      n.type === "ACRIO_REPLY"
+                        ? "bg-violet-100 text-violet-700"
+                        : n.type === "CALLBACK"
+                        ? "bg-rose-100 text-rose-700"
+                        : "bg-amber-100 text-amber-800"
                     }`}
                   >
-                    {n.type === "ACRIO_REPLY" ? <Bot className="w-3.5 h-3.5" /> : <AtSign className="w-3.5 h-3.5" />}
+                    {n.type === "ACRIO_REPLY" ? (
+                      <Bot className="w-3.5 h-3.5" />
+                    ) : n.type === "CALLBACK" ? (
+                      <PhoneCall className="w-3.5 h-3.5" />
+                    ) : (
+                      <AtSign className="w-3.5 h-3.5" />
+                    )}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2 text-[11.5px]">
                       <span className="font-semibold text-slate-900 truncate">
-                        {n.type === "ACRIO_REPLY" ? "ACRIO answered you" : `${n.fromName} mentioned you`}
+                        {n.type === "ACRIO_REPLY"
+                          ? "ACRIO answered you"
+                          : n.type === "CALLBACK"
+                          ? "New callback request"
+                          : `${n.fromName} mentioned you`}
                       </span>
                       <span className="text-slate-400 shrink-0">{timeAgo(n.createdAt)}</span>
                     </span>
@@ -156,8 +198,9 @@ export function NotificationBell({ userId }: { userId: string }) {
               ))
             )}
           </div>
-        </div>
-      )}
+        </div>,
+        document.body
+        )}
     </div>
   );
 }

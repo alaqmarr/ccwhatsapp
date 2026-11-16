@@ -32,6 +32,7 @@ import {
   recordWorkerHeartbeat,
 } from "@cc/queue";
 import { socketHub } from "@cc/sockets";
+import { notifyCallbackRequest, requeueStaleStaffNoteJobs, runStaffNoteAnswerJob } from "./staff-notes";
 
 export type BillingMessageCategory =
   | "MARKETING"
@@ -736,6 +737,17 @@ async function handleAcrioInteractiveReply(params: {
       customerPhone: params.customerPhone,
       slot: slotLabel,
     });
+    if (!existing.rows[0]) {
+      // Brand new request: tell the sales team (bell, email, optional WhatsApp).
+      void notifyCallbackRequest({
+        conversationId: params.conversationId,
+        customerName,
+        customerPhone: params.customerPhone,
+        slot: slotLabel,
+        topic,
+        requestId,
+      });
+    }
 
     await say(
       `Done! Your callback is booked for *${slotLabel}*.\n\nOur team will call you on ${params.customerPhone}. Until then, I am right here if you want to look at anything else.`
@@ -2131,6 +2143,7 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
  * Processes pending jobs across queues (`backup:midnight_gdrive`, `whatsapp:broadcast`, etc.)
  */
 export async function drainPendingWorkerJobs(): Promise<number> {
+  await requeueStaleStaffNoteJobs();
   const jobs = await claimPendingJobs(undefined, 8);
   let processed = 0;
 
@@ -2145,6 +2158,8 @@ export async function drainPendingWorkerJobs(): Promise<number> {
         if (!res.ok) throw new Error(res.detailsMessage);
       } else if (job.queueName === "whatsapp:broadcast") {
         await executeBroadcastJob(job.payload);
+      } else if (job.queueName === "acrio:staff_note_answer") {
+        await runStaffNoteAnswerJob(job.payload);
       }
       await completeJob(job.id);
       processed++;

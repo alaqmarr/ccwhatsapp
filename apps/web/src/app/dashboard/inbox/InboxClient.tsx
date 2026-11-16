@@ -75,6 +75,15 @@ function describeNoteResult(data: {
   return parts.join(" ");
 }
 
+/** True when the text mentions @ACRIO or a teammate by name. */
+function hasTeamMention(text: string, people: { name: string }[]): boolean {
+  const names = ["ACRIO", ...people.map((p) => p.name)];
+  return names.some((name) => {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[\\s(])@${esc}(?![A-Za-z0-9_])`, "i").test(text);
+  });
+}
+
 /** Makes @ACRIO and @Teammate names bold inside note text. */
 function emphasizeMentions(text: string, people: { name: string }[]): string {
   let out = text;
@@ -366,6 +375,65 @@ export function InboxClient({
     initialData.initialDetail?.customer?.notes || ""
   );
   const [quickNoteDraft, setQuickNoteDraft] = useState<string>("");
+  // Pending "Request a callback" for the open chat (shown as a banner above the composer)
+  const [pendingCallback, setPendingCallback] = useState<{
+    id: string;
+    slot: string;
+    topic: string;
+    phone: string;
+    createdAt: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setPendingCallback(null);
+      return;
+    }
+    let cancelled = false;
+    const loadCallback = async () => {
+      try {
+        const res = await fetch("/api/callback-requests?status=PENDING", { cache: "no-store" });
+        const data = await res.json();
+        if (cancelled || !data?.ok) return;
+        const row = (data.requests || []).find(
+          (r: Record<string, unknown>) => String(r.conversation_id) === selectedId
+        );
+        setPendingCallback(
+          row
+            ? {
+                id: String(row.id),
+                slot: String(row.preferred_slot || ""),
+                topic: String(row.topic || ""),
+                phone: String(row.customer_phone || ""),
+                createdAt: String(row.created_at || ""),
+              }
+            : null
+        );
+      } catch {
+        // ignore
+      }
+    };
+    void loadCallback();
+    const timer = setInterval(loadCallback, 30000);
+    const es = new EventSource("/api/realtime/stream");
+    es.addEventListener("callback:new", loadCallback);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      es.close();
+    };
+  }, [selectedId]);
+
+  async function markPendingCallbackDone() {
+    if (!pendingCallback) return;
+    await fetch("/api/callback-requests", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: pendingCallback.id, status: "DONE" }),
+    });
+    setPendingCallback(null);
+    showToast("Marked as called.");
+  }
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -843,6 +911,18 @@ export function InboxClient({
   async function handleComposerSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedId || !replyText.trim() || !detail) return;
+
+    // An @teammate or @ACRIO in a customer reply is almost certainly meant for the team. Never send it to the customer.
+    if (composerMode !== "NOTE" && hasTeamMention(replyText, staffList)) {
+      const asNote = window.confirm(
+        "This message has an @mention, so it looks meant for your team. Sent as a reply, the CUSTOMER would see it on WhatsApp.\n\nPress OK to switch to a private note (then press Save Note).\nPress Cancel to go back and edit it."
+      );
+      if (asNote) {
+        setComposerMode("NOTE");
+        showToast("Switched to Note mode. Press Save Note to post it privately.");
+      }
+      return;
+    }
 
     const textToSend = replyText.trim();
     const currentConvId = selectedId;
@@ -2894,6 +2974,29 @@ export function InboxClient({
               </div>
             )}
 
+            {pendingCallback && (
+              <div className="px-4 py-2 bg-rose-50 border-t border-rose-200 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-rose-950 shrink-0">
+                <span className="font-semibold">Callback requested</span>
+                <span>
+                  Wants a call in the <strong>{pendingCallback.slot}</strong>
+                  {pendingCallback.topic ? ` about ${pendingCallback.topic}` : ""}
+                </span>
+                <a
+                  href={`tel:${pendingCallback.phone}`}
+                  className="font-semibold text-[#008069] hover:underline"
+                >
+                  {pendingCallback.phone}
+                </a>
+                <button
+                  type="button"
+                  onClick={() => void markPendingCallbackDone()}
+                  className="ml-auto px-2.5 py-1 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white font-semibold cursor-pointer"
+                >
+                  Mark called
+                </button>
+              </div>
+            )}
+
             {/* WhatsApp Bottom Composer: Chat Reply vs Template vs Internal Note */}
             <form
               onSubmit={handleComposerSubmit}
@@ -3091,7 +3194,13 @@ export function InboxClient({
                 <MentionTextarea
                   textareaRef={composerInputRef}
                   rows={2}
-                  enabled={composerMode === "NOTE"}
+                  enabled
+                  onPickMention={() => {
+                    if (composerMode !== "NOTE") {
+                      setComposerMode("NOTE");
+                      showToast("Switched to Note mode, so the customer will not see this.");
+                    }
+                  }}
                   people={staffList.map((s) => ({ id: s.id, name: s.name, role: s.role }))}
                   value={replyText}
                   onChange={(v) => setReplyText(v)}

@@ -23,6 +23,7 @@ export function MentionTextarea({
   textareaRef,
   onKeyDown,
   enabled = true,
+  onPickMention,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -32,8 +33,10 @@ export function MentionTextarea({
   className?: string;
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
-  /** Turn mention suggestions on or off (off for customer replies). */
+  /** Turn mention suggestions on or off. */
   enabled?: boolean;
+  /** Called when someone picks a name from the list (used to switch a reply box into note mode). */
+  onPickMention?: () => void;
 }) {
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
@@ -76,6 +79,7 @@ export function MentionTextarea({
     const insert = `@${person.name} `;
     const next = `${before}${insert}${after}`;
     onChange(next);
+    onPickMention?.();
     setActive(0);
     const pos = before.length + insert.length;
     requestAnimationFrame(() => {

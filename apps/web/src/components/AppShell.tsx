@@ -260,12 +260,20 @@ export function AppShell({
 
       <div className="px-4 py-3 border-b border-neutral-200 bg-slate-50/75 space-y-1 shrink-0">
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="font-display text-[13.5px] font-bold tracking-tight text-slate-900 truncate">
+          <Link
+            href="/dashboard/profile"
+            onClick={() => setMobileNavOpen(false)}
+            className="min-w-0 block group"
+            title="Edit my profile and email"
+          >
+            <div className="font-display text-[13.5px] font-bold tracking-tight text-slate-900 truncate group-hover:text-[#008069]">
               {user.name}
             </div>
             <div className="text-[11px] text-slate-500 truncate">{user.email}</div>
-          </div>
+            <div className="text-[10.5px] font-medium text-[#008069] opacity-0 group-hover:opacity-100 transition-opacity">
+              Edit profile
+            </div>
+          </Link>
           {isActiveAccount && user.role !== "CLIENT" && <NotificationBell userId={user.id} />}
         </div>
         <div className="flex flex-wrap items-center gap-1.5 pt-1">

@@ -9,7 +9,8 @@ export type QueueName =
   | "whatsapp:broadcast"
   | "acrio:categorize"
   | "backup:midnight_gdrive"
-  | "email:staff_otp";
+  | "email:staff_otp"
+  | "acrio:staff_note_answer";
 
 export interface QueuedJob<TPayload = Record<string, unknown>> {
   id: string;
