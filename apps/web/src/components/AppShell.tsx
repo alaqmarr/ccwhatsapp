@@ -18,6 +18,7 @@ import {
   HardDrive,
   FileCode,
   ShieldAlert,
+  Cpu,
   Settings,
   LogOut,
   Menu,
@@ -198,6 +199,13 @@ export function AppShell({
           label: "Dev Profit & Ops",
           icon: HardDrive,
           visible: isDev,
+        },
+        {
+          href: "/dashboard/claude-usage",
+          label: "Claude Usage & Spend",
+          icon: Cpu,
+          visible: isDev,
+          badge: "USD",
         },
         {
           href: "/dashboard/issues-identifier",

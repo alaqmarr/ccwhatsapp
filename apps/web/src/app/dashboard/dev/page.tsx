@@ -453,6 +453,13 @@ export default function DevProfitAndOpsPage() {
 
         <div className="flex items-center gap-2">
           <Link
+            href="/dashboard/claude-usage"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium"
+          >
+            <IndianRupee className="w-3.5 h-3.5" />
+            <span>Claude API Usage &amp; Spend</span>
+          </Link>
+          <Link
             href="/dashboard/ai-logs"
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium"
           >
