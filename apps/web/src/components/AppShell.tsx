@@ -17,6 +17,7 @@ import {
   IndianRupee,
   HardDrive,
   FileCode,
+  ShieldAlert,
   Settings,
   LogOut,
   Menu,
@@ -197,6 +198,13 @@ export function AppShell({
           label: "Dev Profit & Ops",
           icon: HardDrive,
           visible: isDev,
+        },
+        {
+          href: "/dashboard/issues-identifier",
+          label: "Issues Identifier",
+          icon: ShieldAlert,
+          visible: isDev,
+          badge: "ACRIO",
         },
         {
           href: "/dashboard/ai-logs",

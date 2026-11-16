@@ -8315,3 +8315,866 @@ export async function sendEmailChangedNoticeEmail(params: {
     dispatchType: "EMAIL_CHANGED_NOTICE",
   }).catch(() => {});
 }
+
+// ============================================================================
+// 5. DEV MODE: ACRIO ECOSYSTEM ISSUES IDENTIFIER & AUTO-REPAIR ENGINE
+// ============================================================================
+export type EcosystemIssueSeverity = "CRITICAL" | "WARNING" | "INFO";
+export type EcosystemIssueCategory =
+  | "SHORTLINKS_AND_CROSS_SITE"
+  | "PRODUCT_MEDIA_AND_R2"
+  | "PRICING_AND_SPECS"
+  | "AI_LOGS_AND_BRIDGES"
+  | "TEMPLATES_AND_CONTENT";
+export type EcosystemSiteKey =
+  | "CLASSIC_CONCEPTS"
+  | "CLASSIC_EDGE_53"
+  | "WHATSAPP_HUB"
+  | "SHORTLINK_ROUTER";
+
+export interface EcosystemDetectedIssue {
+  id: string;
+  severity: EcosystemIssueSeverity;
+  category: EcosystemIssueCategory;
+  site: EcosystemSiteKey;
+  title: string;
+  detail: string;
+  affectedEntity: string;
+  skuOrCode?: string | null;
+  sourceUrl?: string | null;
+  targetUrl?: string | null;
+  adminEditUrl?: string | null;
+  autoFixAction?: "SYNC_SHORTLINKS" | "REFRESH_CATALOG_CACHE" | null;
+  suggestion: string;
+}
+
+export interface EcosystemSiteHealthSummary {
+  site: EcosystemSiteKey;
+  label: string;
+  publicDomain: string;
+  online: boolean;
+  totalItemsScanned: number;
+  criticalCount: number;
+  warningCount: number;
+  infoCount: number;
+  statusNote: string;
+}
+
+export interface EcosystemIssuesAuditReport {
+  scannedAtIso: string;
+  scannedAtIst: string;
+  durationMs: number;
+  healthScore: number;
+  totals: {
+    totalIssues: number;
+    critical: number;
+    warning: number;
+    info: number;
+    classicConceptsProducts: number;
+    classicEdgeItems: number;
+    shortLinksCount: number;
+    templatesCount: number;
+    recentAiLogsScanned: number;
+  };
+  siteSummaries: EcosystemSiteHealthSummary[];
+  issues: EcosystemDetectedIssue[];
+  acrioAnalysis?: string | null;
+  acrioModel?: string | null;
+}
+
+export async function executeAcrioEcosystemAutoFix(
+  action: "SYNC_SHORTLINKS" | "REFRESH_CATALOG_CACHE",
+  actorName = "DEV"
+): Promise<{ ok: boolean; message: string; fixedCount: number }> {
+  await ensureDatabasesBootstrapped();
+  if (action === "REFRESH_CATALOG_CACHE") {
+    await invalidateWhatsAppCacheTags(["cc-products", "ce53-machines"]);
+    const fresh = await getCachedEcosystemCatalog();
+    return {
+      ok: true,
+      fixedCount: fresh.allItems.length,
+      message: `Invalidated L1/L2/L3 catalog caches and reloaded ${fresh.classicConceptsProducts.length} Classic Concepts products + ${fresh.classicEdgeItems.length} Classic Edge 53 items.`,
+    };
+  }
+
+  if (action === "SYNC_SHORTLINKS") {
+    const conv = getRawLibSqlClient("conversations");
+    await invalidateWhatsAppCacheTags(["cc-products", "ce53-machines"]);
+    const catalog = await getCachedEcosystemCatalog();
+    const existingRes = await conv.execute(`SELECT * FROM custom_links`);
+    const rows = existingRes.rows as Record<string, unknown>[];
+
+    let fixedCount = 0;
+    const nowIso = new Date().toISOString();
+
+    // 1. Repair any localhost / 127.0.0.1 / http:// target_url in custom_links
+    for (const r of rows) {
+      const id = String(r.id || "");
+      const rawTarget = String(r.target_url || "").trim();
+      const slug = String(r.product_slug || "");
+      let repaired = rawTarget;
+      if (/localhost|127\.0\.0\.1|:300[0-9]/i.test(repaired)) {
+        const isCe = slug.startsWith("ce53:") || /classicedge|machines/i.test(repaired);
+        const pathPart = repaired.replace(/^https?:\/\/[^/]+/i, "");
+        repaired = `${isCe ? "https://classicedge.in" : "https://classicconcepts.in"}${
+          pathPart.startsWith("/") ? pathPart : `/${pathPart}`
+        }`;
+      }
+      if (repaired.startsWith("http://")) {
+        repaired = repaired.replace(/^http:\/\//i, "https://");
+      }
+      if (repaired !== rawTarget) {
+        await conv.execute({
+          sql: `UPDATE custom_links SET target_url = ? WHERE id = ?`,
+          args: [repaired, id],
+        });
+        fixedCount++;
+      }
+    }
+
+    // 2. Ensure every catalog item has a valid shortlink in custom_links
+    const existingBySlug = new Set(
+      rows
+        .map((r) => String(r.product_slug || "").toLowerCase())
+        .filter(Boolean)
+    );
+    const existingCodes = new Set(
+      rows.map((r) => String(r.code || "").toLowerCase()).filter(Boolean)
+    );
+
+    for (const item of catalog.allItems) {
+      const prefixedSlug =
+        item.brand === "CLASSIC_EDGE_53"
+          ? `ce53:${item.itemType.toLowerCase()}:${item.slug}`
+          : `cc:product:${item.slug}`;
+      if (
+        existingBySlug.has(prefixedSlug.toLowerCase()) ||
+        existingBySlug.has(item.slug.toLowerCase())
+      ) {
+        continue;
+      }
+      const code =
+        item.shortCode && !existingCodes.has(item.shortCode.toLowerCase())
+          ? item.shortCode
+          : crypto
+              .createHash("sha256")
+              .update(prefixedSlug)
+              .digest("base64url")
+              .slice(0, 6);
+      existingCodes.add(code.toLowerCase());
+      existingBySlug.add(prefixedSlug.toLowerCase());
+      const canonicalTarget =
+        item.url ||
+        (item.brand === "CLASSIC_EDGE_53"
+          ? `https://classicedge.in/machines/${item.slug}`
+          : `https://classicconcepts.in/shop/p/${item.slug}`);
+      await conv
+        .execute({
+          sql: `INSERT OR IGNORE INTO custom_links (
+            id, code, title, target_url, link_type, product_slug, utm_campaign, created_by_name, clicks_count, created_at
+          ) VALUES (?, ?, ?, ?, 'PRODUCT', ?, 'acrio_auto_sync', ?, 0, ?)`,
+          args: [
+            `lnk_${crypto.randomUUID().slice(0, 8)}`,
+            code,
+            cleanDisplayProductName(item.name),
+            canonicalTarget,
+            prefixedSlug,
+            actorName,
+            nowIso,
+          ],
+        })
+        .catch(() => {});
+      fixedCount++;
+    }
+
+    await invalidateWhatsAppCacheTags(["cc-products", "ce53-machines"]);
+    return {
+      ok: true,
+      fixedCount,
+      message: `Synchronized and repaired ${fixedCount} shortlinks and cross-site product URLs across Classic Concepts, Classic Edge 53, and ccapl.cc.`,
+    };
+  }
+
+  return { ok: false, fixedCount: 0, message: "Unknown auto-fix action." };
+}
+
+export async function runAcrioEcosystemIssuesIdentifier(options?: {
+  askPrompt?: string;
+  forceFreshCatalog?: boolean;
+  actorName?: string;
+}): Promise<EcosystemIssuesAuditReport> {
+  const started = Date.now();
+  await ensureDatabasesBootstrapped();
+
+  if (options?.forceFreshCatalog) {
+    await invalidateWhatsAppCacheTags(["cc-products", "ce53-machines"]);
+  }
+
+  const conv = getRawLibSqlClient("conversations");
+  const mkt = getRawLibSqlClient("marketing");
+
+  const [catalog, linksRes, templatesRes] = await Promise.all([
+    getCachedEcosystemCatalog(),
+    conv.execute(`SELECT * FROM custom_links ORDER BY created_at DESC`),
+    mkt.execute(`SELECT * FROM templates ORDER BY created_at DESC`),
+  ]);
+
+  const ccProducts = catalog.classicConceptsProducts;
+  const ceItems = catalog.classicEdgeItems;
+  const allItems = catalog.allItems;
+  const linkRows = linksRes.rows as Record<string, unknown>[];
+  const templateRows = templatesRes.rows as Record<string, unknown>[];
+
+  const issues: EcosystemDetectedIssue[] = [];
+  let seq = 1;
+  const pushIssue = (
+    issue: Omit<EcosystemDetectedIssue, "id">
+  ): void => {
+    issues.push({
+      id: `iss_${seq++}`,
+      ...issue,
+    });
+  };
+
+  // Build lookup maps
+  const allSlugsSet = new Set<string>();
+  const skuMap = new Map<string, MainWebsiteProduct[]>();
+  for (const it of allItems) {
+    const sl = (it.slug || "").toLowerCase();
+    if (sl) {
+      allSlugsSet.add(sl);
+      allSlugsSet.add(`cc:product:${sl}`);
+      allSlugsSet.add(`ce53:machine:${sl}`);
+      allSlugsSet.add(`ce53:consumable:${sl}`);
+      allSlugsSet.add(`ce53:product:${sl}`);
+    }
+    if (it.sku) {
+      const k = it.sku.trim().toUpperCase();
+      const arr = skuMap.get(k) || [];
+      arr.push(it);
+      skuMap.set(k, arr);
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 1. SHORTLINKS (ccapl.cc) & CROSS-SITE LINK AUDIT
+  // --------------------------------------------------------------------------
+  const customLinksBySlug = new Map<string, Record<string, unknown>[]>();
+  const customLinksByTarget = new Map<string, Record<string, unknown>[]>();
+
+  for (const row of linkRows) {
+    const code = String(row.code || "");
+    const title = String(row.title || "");
+    const targetUrl = String(row.target_url || "").trim();
+    const productSlug = String(row.product_slug || "").trim();
+    const linkType = String(row.link_type || "PRODUCT");
+    const shortUrl = `https://ccapl.cc/${code}`;
+
+    if (productSlug) {
+      const k = productSlug.toLowerCase();
+      customLinksBySlug.set(k, [...(customLinksBySlug.get(k) || []), row]);
+    }
+    if (targetUrl) {
+      const k = targetUrl.toLowerCase().replace(/\/+$/, "");
+      customLinksByTarget.set(k, [...(customLinksByTarget.get(k) || []), row]);
+    }
+
+    // 1a. Localhost / internal port leak in shortlink target
+    if (/localhost|127\.0\.0\.1|:300[0-9]/i.test(targetUrl)) {
+      pushIssue({
+        severity: "CRITICAL",
+        category: "SHORTLINKS_AND_CROSS_SITE",
+        site: "SHORTLINK_ROUTER",
+        title: "Shortlink points to localhost / internal port",
+        detail: `Shortlink ${shortUrl} ("${title}") redirects to "${targetUrl}", which will fail for external WhatsApp customers.`,
+        affectedEntity: `${code} (${title})`,
+        skuOrCode: code,
+        sourceUrl: shortUrl,
+        targetUrl,
+        autoFixAction: "SYNC_SHORTLINKS",
+        suggestion:
+          "Click 'Auto-Fix & Sync Shortlinks' to rewrite the target URL to the public https:// domain.",
+      });
+    } else if (targetUrl.startsWith("http://")) {
+      pushIssue({
+        severity: "WARNING",
+        category: "SHORTLINKS_AND_CROSS_SITE",
+        site: "SHORTLINK_ROUTER",
+        title: "Shortlink uses unencrypted HTTP target URL",
+        detail: `Shortlink ${shortUrl} ("${title}") points to "${targetUrl}" instead of https://.`,
+        affectedEntity: `${code} (${title})`,
+        skuOrCode: code,
+        sourceUrl: shortUrl,
+        targetUrl,
+        autoFixAction: "SYNC_SHORTLINKS",
+        suggestion: "Upgrade target URL to https:// via 'Auto-Fix & Sync Shortlinks'.",
+      });
+    }
+
+    // 1b. Orphaned product shortlink (points to a product slug not in the live catalog)
+    if (linkType === "PRODUCT" && productSlug) {
+      const bareSlug = productSlug
+        .replace(/^(?:cc|ce53):(?:product|machine|consumable):/i, "")
+        .toLowerCase();
+      if (
+        bareSlug &&
+        !bareSlug.startsWith("cat:") &&
+        !allSlugsSet.has(bareSlug) &&
+        !allSlugsSet.has(productSlug.toLowerCase())
+      ) {
+        pushIssue({
+          severity: "WARNING",
+          category: "SHORTLINKS_AND_CROSS_SITE",
+          site: "SHORTLINK_ROUTER",
+          title: "Orphaned product shortlink (slug not found in catalog)",
+          detail: `Shortlink ${shortUrl} references product_slug="${productSlug}", which does not match any active product in Classic Concepts or Classic Edge 53.`,
+          affectedEntity: `${code} -> ${productSlug}`,
+          skuOrCode: code,
+          sourceUrl: shortUrl,
+          targetUrl,
+          suggestion:
+            "Verify if this product was renamed or deleted on classicconcepts.in / classicedge.in and update the shortlink target.",
+        });
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 2. CLASSIC CONCEPTS (classicconcepts.in) PRODUCT, MEDIA & SPEC AUDIT
+  // --------------------------------------------------------------------------
+  for (const prod of ccProducts) {
+    const displayName = cleanDisplayProductName(prod.name);
+    const publicUrl = prod.url || `https://classicconcepts.in/shop/p/${prod.slug}`;
+    const adminUrl = `https://classicconcepts.in/admin/products/${prod.id}`;
+    const isPodium =
+      (prod.podiumSubCategoryNames && prod.podiumSubCategoryNames.length > 0) ||
+      /podium|lectern|pulpit/i.test(`${prod.categoryName || ""} ${prod.name}`);
+
+    // 2a. Missing shortlink
+    if (!prod.shortUrl || !prod.shortUrl.includes("ccapl.cc/")) {
+      pushIssue({
+        severity: "WARNING",
+        category: "SHORTLINKS_AND_CROSS_SITE",
+        site: "CLASSIC_CONCEPTS",
+        title: "Product missing ccapl.cc shortlink",
+        detail: `${displayName} (${prod.slug}) does not have a registered ccapl.cc shortlink for WhatsApp replies.`,
+        affectedEntity: displayName,
+        skuOrCode: prod.sku || prod.slug,
+        sourceUrl: publicUrl,
+        adminEditUrl: adminUrl,
+        autoFixAction: "SYNC_SHORTLINKS",
+        suggestion: "Run 'Auto-Fix & Sync Shortlinks' to generate its 6-char ccapl.cc link.",
+      });
+    }
+
+    // 2b. Missing primary product image or non-HTTPS / non-R2 image URL
+    const allImgs = [
+      ...(prod.mainImage ? [prod.mainImage] : []),
+      ...(prod.images || []),
+    ].filter(Boolean);
+    if (allImgs.length === 0) {
+      pushIssue({
+        severity: "CRITICAL",
+        category: "PRODUCT_MEDIA_AND_R2",
+        site: "CLASSIC_CONCEPTS",
+        title: "Product has no photos in storage",
+        detail: `${displayName} has 0 images. Customers on classicconcepts.in cannot see the product and ACRIO cannot share photos on WhatsApp.`,
+        affectedEntity: displayName,
+        skuOrCode: prod.sku || prod.slug,
+        sourceUrl: publicUrl,
+        adminEditUrl: adminUrl,
+        suggestion: "Upload product photos to R2 storage in the Product Editor.",
+      });
+    } else {
+      const relativeOrHttpImgs = allImgs.filter(
+        (u) => !/^https:\/\//i.test(u.trim())
+      );
+      if (relativeOrHttpImgs.length > 0) {
+        pushIssue({
+          severity: "WARNING",
+          category: "PRODUCT_MEDIA_AND_R2",
+          site: "CLASSIC_CONCEPTS",
+          title: "Product has relative or non-HTTPS image URL",
+          detail: `${displayName} has ${relativeOrHttpImgs.length} image URL(s) not served over https:// (${relativeOrHttpImgs[0]}). WhatsApp Cloud API requires public https:// R2 URLs to attach images.`,
+          affectedEntity: displayName,
+          skuOrCode: prod.sku || prod.slug,
+          sourceUrl: publicUrl,
+          targetUrl: relativeOrHttpImgs[0],
+          adminEditUrl: adminUrl,
+          suggestion: "Ensure all product images use full https://media.classicconcepts.in/... URLs.",
+        });
+      }
+    }
+
+    // 2c. Variant image & price checks
+    const variants = prod.variants || [];
+    if (variants.length > 0) {
+      const variantsMissingImg = variants.filter((v) => !v.imageUrl);
+      if (variantsMissingImg.length > 0) {
+        pushIssue({
+          severity: "WARNING",
+          category: "PRODUCT_MEDIA_AND_R2",
+          site: "CLASSIC_CONCEPTS",
+          title: "Product variant(s) missing dedicated photo",
+          detail: `${displayName} has ${variantsMissingImg.length} variant(s) without a dedicated photo (${variantsMissingImg.map((v) => v.name).join(", ")}). When a customer asks ACRIO for that specific colour photo, ACRIO has to fall back to the main image.`,
+          affectedEntity: `${displayName} [${variantsMissingImg.map((v) => v.name).join(", ")}]`,
+          skuOrCode: prod.sku || prod.slug,
+          sourceUrl: publicUrl,
+          adminEditUrl: adminUrl,
+          suggestion: "Assign a variant-specific R2 photo to each colour variant in Manage Variants.",
+        });
+      }
+
+      // Check if multiple distinct variants share the exact same image URL
+      if (variants.length >= 2) {
+        const varUrls = variants
+          .map((v) => v.imageUrl || "")
+          .filter(Boolean);
+        if (varUrls.length >= 2 && new Set(varUrls).size === 1) {
+          pushIssue({
+            severity: "INFO",
+            category: "PRODUCT_MEDIA_AND_R2",
+            site: "CLASSIC_CONCEPTS",
+            title: "All colour variants point to the same image URL",
+            detail: `${displayName} has ${variants.length} variants (${variants.map((v) => v.name).join(", ")}) that all use the exact same image file.`,
+            affectedEntity: displayName,
+            skuOrCode: prod.sku || prod.slug,
+            sourceUrl: publicUrl,
+            adminEditUrl: adminUrl,
+            suggestion: "Upload distinct colour photos per variant so customers see the true colour finish.",
+          });
+        }
+      }
+    }
+
+    // 2d. Pricing & MRP discrepancies
+    if (prod.basePrice === null || prod.basePrice <= 0) {
+      pushIssue({
+        severity: "WARNING",
+        category: "PRICING_AND_SPECS",
+        site: "CLASSIC_CONCEPTS",
+        title: "Product has no selling price (Price on Request / ₹0)",
+        detail: `${displayName} has basePrice=${prod.basePrice ?? "null"}. ACRIO cannot include it in strict budget calculations or multi-item project quotes.`,
+        affectedEntity: displayName,
+        skuOrCode: prod.sku || prod.slug,
+        sourceUrl: publicUrl,
+        adminEditUrl: adminUrl,
+        suggestion: "Set a verified base/selling price in the Product Editor if this is a ready-stock model.",
+      });
+    } else if (
+      typeof prod.regularPrice === "number" &&
+      prod.regularPrice > 0 &&
+      prod.regularPrice < prod.basePrice
+    ) {
+      pushIssue({
+        severity: "CRITICAL",
+        category: "PRICING_AND_SPECS",
+        site: "CLASSIC_CONCEPTS",
+        title: "MRP is lower than selling price",
+        detail: `${displayName} has selling price ₹${prod.basePrice.toLocaleString("en-IN")} > MRP ₹${prod.regularPrice.toLocaleString("en-IN")}.`,
+        affectedEntity: displayName,
+        skuOrCode: prod.sku || prod.slug,
+        sourceUrl: publicUrl,
+        adminEditUrl: adminUrl,
+        suggestion: "Update Base/MRP Price and Discount Price so Selling Price <= MRP.",
+      });
+    }
+
+    // 2e. Podium-specific specification & taxonomy checks
+    if (isPodium) {
+      const dims = prod.dimensions || [];
+      const hasHeight = dims.some((d) => /height/i.test(d.label || d.key || ""));
+      const hasTop = dims.some((d) => /top|reading/i.test(d.label || d.key || ""));
+      if (!hasHeight || !hasTop) {
+        pushIssue({
+          severity: "WARNING",
+          category: "PRICING_AND_SPECS",
+          site: "CLASSIC_CONCEPTS",
+          title: `Podium missing ${!hasHeight && !hasTop ? "Height & Top Sheet" : !hasHeight ? "Height" : "Top Sheet"} dimensions`,
+          detail: `${displayName} is a podium but is missing structured ${!hasHeight && !hasTop ? "Height and Top Sheet" : !hasHeight ? "Height" : "Top Sheet"} dimensions for ACRIO size filtering.`,
+          affectedEntity: displayName,
+          skuOrCode: prod.sku || prod.slug,
+          sourceUrl: publicUrl,
+          adminEditUrl: adminUrl,
+          suggestion: "Add Height and Top Sheet dimensions on the product page.",
+        });
+      }
+      if (!prod.podiumSubCategoryNames || prod.podiumSubCategoryNames.length === 0) {
+        pushIssue({
+          severity: "INFO",
+          category: "PRICING_AND_SPECS",
+          site: "CLASSIC_CONCEPTS",
+          title: "Podium not assigned to a Podium Range (Essential / Signature / Premium)",
+          detail: `${displayName} has no podiumSubCategory assigned, so it may be omitted when customers browse by podium tier.`,
+          affectedEntity: displayName,
+          skuOrCode: prod.sku || prod.slug,
+          sourceUrl: publicUrl,
+          adminEditUrl: adminUrl,
+          suggestion: "Assign a Podium Sub-Category in the Admin Podium Editor.",
+        });
+      }
+    }
+
+    // 2f. Missing description / highlights
+    if (
+      (!prod.description || prod.description.trim().length < 15) &&
+      (!prod.features || prod.features.length === 0)
+    ) {
+      pushIssue({
+        severity: "INFO",
+        category: "TEMPLATES_AND_CONTENT",
+        site: "CLASSIC_CONCEPTS",
+        title: "Product missing bullet highlights / description",
+        detail: `${displayName} has no structured bullet description or key features.`,
+        affectedEntity: displayName,
+        skuOrCode: prod.sku || prod.slug,
+        sourceUrl: publicUrl,
+        adminEditUrl: adminUrl,
+        suggestion: "Use 'ACRIO Generate Bullets' on the product page to add clean highlights.",
+      });
+    }
+  }
+
+  // 2g. Duplicate SKUs across products
+  for (const [sku, list] of skuMap.entries()) {
+    if (list.length > 1) {
+      pushIssue({
+        severity: "WARNING",
+        category: "PRICING_AND_SPECS",
+        site: list[0].brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS",
+        title: `Duplicate SKU "${sku}" shared by ${list.length} items`,
+        detail: `SKU "${sku}" is assigned to multiple items: ${list.map((i) => `${cleanDisplayProductName(i.name)} (${i.slug})`).join(", ")}. This can cause ambiguity when customers ask for model code "${sku}".`,
+        affectedEntity: sku,
+        skuOrCode: sku,
+        sourceUrl: list[0].url,
+        suggestion: "Assign a unique SKU code to each distinct product.",
+      });
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 3. CLASSIC EDGE 53 (classicedge.in) MACHINES, CONSUMABLES & ACCESSORIES AUDIT
+  // --------------------------------------------------------------------------
+  for (const ce of ceItems) {
+    const displayName = cleanDisplayProductName(ce.name);
+    const publicUrl = ce.url || `https://classicedge.in/machines/${ce.slug}`;
+
+    if (!ce.shortUrl || !ce.shortUrl.includes("ccapl.cc/")) {
+      pushIssue({
+        severity: "WARNING",
+        category: "SHORTLINKS_AND_CROSS_SITE",
+        site: "CLASSIC_EDGE_53",
+        title: "Classic Edge 53 item missing ccapl.cc shortlink",
+        detail: `${displayName} (${ce.itemType}) does not have a registered ccapl.cc shortlink.`,
+        affectedEntity: displayName,
+        skuOrCode: ce.sku || ce.slug,
+        sourceUrl: publicUrl,
+        autoFixAction: "SYNC_SHORTLINKS",
+        suggestion: "Run 'Auto-Fix & Sync Shortlinks' to generate its ccapl.cc shortlink.",
+      });
+    }
+
+    if (ce.itemType === "MACHINE" && !ce.mainImage && (!ce.images || ce.images.length === 0)) {
+      pushIssue({
+        severity: "WARNING",
+        category: "PRODUCT_MEDIA_AND_R2",
+        site: "CLASSIC_EDGE_53",
+        title: "Machine missing primary photo",
+        detail: `Classic Edge 53 machine "${displayName}" has no image URL configured.`,
+        affectedEntity: displayName,
+        skuOrCode: ce.sku || ce.slug,
+        sourceUrl: publicUrl,
+        suggestion: "Add a machine image URL in the Classic Edge 53 catalog.",
+      });
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 4. WHATSAPP TEMPLATES & AI.LOGS DIAGNOSTIC AUDIT
+  // --------------------------------------------------------------------------
+  for (const tpl of templateRows) {
+    const name = String(tpl.name || "");
+    const status = String(tpl.approval_status || "");
+    const rejReason = tpl.rejection_reason ? String(tpl.rejection_reason) : null;
+    const ctaUrl = tpl.cta_url ? String(tpl.cta_url) : "";
+
+    if (status === "REJECTED" || status === "PAUSED") {
+      pushIssue({
+        severity: status === "REJECTED" ? "WARNING" : "INFO",
+        category: "TEMPLATES_AND_CONTENT",
+        site: "WHATSAPP_HUB",
+        title: `WhatsApp Template "${name}" is ${status}`,
+        detail: `Template "${name}" has status=${status}${rejReason && rejReason !== "NONE" ? ` (Reason: ${rejReason})` : ""}.`,
+        affectedEntity: name,
+        sourceUrl: "/dashboard/templates",
+        suggestion: "Review template wording or variables in Templates & Button Flows.",
+      });
+    }
+
+    if (ctaUrl && /localhost|127\.0\.0\.1|:300[0-9]/i.test(ctaUrl)) {
+      pushIssue({
+        severity: "CRITICAL",
+        category: "TEMPLATES_AND_CONTENT",
+        site: "WHATSAPP_HUB",
+        title: `Template "${name}" button URL points to localhost`,
+        detail: `Template "${name}" has cta_url="${ctaUrl}".`,
+        affectedEntity: name,
+        sourceUrl: "/dashboard/templates",
+        targetUrl: ctaUrl,
+        suggestion: "Update the template button URL to use https://classicconcepts.in or https://ccapl.cc.",
+      });
+    }
+  }
+
+  // Check recent ai.logs for errors, zero-match product queries, or fallbacks
+  let recentLogsCount = 0;
+  try {
+    const logPath = path.join(/*turbopackIgnore: true*/ path.resolve(process.cwd(), "..", ".."), "ai.logs");
+    const altPath = path.join(/*turbopackIgnore: true*/ process.cwd(), "ai.logs");
+    const activeLogPath = fs.existsSync(/*turbopackIgnore: true*/ logPath)
+      ? logPath
+      : fs.existsSync(/*turbopackIgnore: true*/ altPath)
+      ? altPath
+      : null;
+
+    if (activeLogPath) {
+      const rawLog = fs.readFileSync(/*turbopackIgnore: true*/ activeLogPath, "utf8");
+      const metaLines = rawLog
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith("META_JSON: "))
+        .slice(-120);
+      recentLogsCount = metaLines.length;
+
+      const zeroMatchQueries = new Set<string>();
+      let errorTurns = 0;
+
+      for (const line of metaLines) {
+        try {
+          const entry = JSON.parse(line.slice("META_JSON: ".length)) as AiTraceLogEntry;
+          if (entry.outcomeSource === "ERROR") {
+            errorTurns++;
+          }
+          if (
+            entry.productLookupTriggered &&
+            Array.isArray(entry.productsLookedUp) &&
+            entry.productsLookedUp.length === 0 &&
+            entry.question &&
+            entry.question.length >= 3
+          ) {
+            zeroMatchQueries.add(entry.question.trim());
+          }
+        } catch {
+          // Ignore malformed log line
+        }
+      }
+
+      if (errorTurns > 0) {
+        pushIssue({
+          severity: "WARNING",
+          category: "AI_LOGS_AND_BRIDGES",
+          site: "WHATSAPP_HUB",
+          title: `${errorTurns} recent AI turn(s) recorded ERROR in ai.logs`,
+          detail: `Found ${errorTurns} error trace(s) in the last ${recentLogsCount} AI log entries.`,
+          affectedEntity: "ai.logs",
+          sourceUrl: "/dashboard/ai-logs",
+          suggestion: "Inspect AI Logs (ai.logs) filtered by Outcome = ERROR.",
+        });
+      }
+
+      if (zeroMatchQueries.size > 0) {
+        const sampleQueries = Array.from(zeroMatchQueries).slice(-6);
+        pushIssue({
+          severity: "INFO",
+          category: "AI_LOGS_AND_BRIDGES",
+          site: "WHATSAPP_HUB",
+          title: `${zeroMatchQueries.size} recent customer product query(s) returned 0 catalog matches`,
+          detail: `Recent queries with 0 matched items: ${sampleQueries.map((q) => `"${q}"`).join(", ")}.`,
+          affectedEntity: sampleQueries.join(" | "),
+          sourceUrl: "/dashboard/ai-logs",
+          suggestion:
+            "Check if these queries use new synonyms, model codes, or budget constraints not covered by current catalog products.",
+        });
+      }
+    }
+  } catch {
+    // Non-blocking
+  }
+
+  // Sort issues: CRITICAL first, then WARNING, then INFO
+  const sevRank: Record<EcosystemIssueSeverity, number> = {
+    CRITICAL: 0,
+    WARNING: 1,
+    INFO: 2,
+  };
+  issues.sort((a, b) => sevRank[a.severity] - sevRank[b.severity]);
+
+  const criticalCount = issues.filter((i) => i.severity === "CRITICAL").length;
+  const warningCount = issues.filter((i) => i.severity === "WARNING").length;
+  const infoCount = issues.filter((i) => i.severity === "INFO").length;
+
+  const healthScore = Math.max(
+    0,
+    Math.min(100, Math.round(100 - criticalCount * 8 - warningCount * 1.5 - infoCount * 0.25))
+  );
+
+  const buildSiteSummary = (
+    site: EcosystemSiteKey,
+    label: string,
+    publicDomain: string,
+    totalItemsScanned: number,
+    online: boolean
+  ): EcosystemSiteHealthSummary => {
+    const siteIssues = issues.filter((i) => i.site === site);
+    const crit = siteIssues.filter((i) => i.severity === "CRITICAL").length;
+    const warn = siteIssues.filter((i) => i.severity === "WARNING").length;
+    const inf = siteIssues.filter((i) => i.severity === "INFO").length;
+    return {
+      site,
+      label,
+      publicDomain,
+      online,
+      totalItemsScanned,
+      criticalCount: crit,
+      warningCount: warn,
+      infoCount: inf,
+      statusNote:
+        crit > 0
+          ? `${crit} critical issue(s) need attention`
+          : warn > 0
+          ? `${warn} warning(s) detected`
+          : "All checks healthy",
+    };
+  };
+
+  const siteSummaries: EcosystemSiteHealthSummary[] = [
+    buildSiteSummary(
+      "CLASSIC_CONCEPTS",
+      "Classic Concepts Main Site",
+      "classicconcepts.in",
+      ccProducts.length,
+      ccProducts.length > 0
+    ),
+    buildSiteSummary(
+      "CLASSIC_EDGE_53",
+      "Classic Edge 53 Machines & Tools",
+      "classicedge.in",
+      ceItems.length,
+      ceItems.length > 0
+    ),
+    buildSiteSummary(
+      "SHORTLINK_ROUTER",
+      "Shortlink & Cross-Site Router",
+      "ccapl.cc",
+      linkRows.length,
+      true
+    ),
+    buildSiteSummary(
+      "WHATSAPP_HUB",
+      "WhatsApp Hub & ACRIO Concierge",
+      "chat.ccapl.cc",
+      templateRows.length + recentLogsCount,
+      true
+    ),
+  ];
+
+  // Optional: Interactive ACRIO AI Diagnostic Analysis when Dev asks a question or requests AI synthesis
+  let acrioAnalysis: string | null = null;
+  let acrioModel: string | null = null;
+  if (options?.askPrompt && options.askPrompt.trim()) {
+    const { apiKey } = await resolveSharedAnthropicApiKey("admin");
+    if (apiKey) {
+      const topIssuesDigest = issues
+        .slice(0, 60)
+        .map(
+          (i, idx) =>
+            `${idx + 1}. [${i.severity} | ${i.site} | ${i.category}] ${i.title} - ${i.detail} (Entity: ${i.affectedEntity})`
+        )
+        .join("\n");
+
+      const aiRes = await callClaudeHaikuMessagesDetailed({
+        apiKey,
+        effort: "medium",
+        maxTokens: 2500,
+        timeoutMs: 22000,
+        system: `You are ACRIO Issues Identifier (Dev Mode), the ecosystem diagnostics and quality-assurance assistant for Classic Concepts (classicconcepts.in), Classic Edge 53 (classicedge.in), WhatsApp Hub (chat.ccapl.cc), and the ccapl.cc shortlink router.
+Follow all Classic Concepts plain-language rules: write in clear, direct everyday English with zero em-dashes ("—") and zero robotic filler.
+Group your findings clearly with bullet points, exact SKU/slug/shortlink names, and concrete steps to fix each discrepancy.`,
+        messages: [
+          {
+            role: "user",
+            content: `Live Ecosystem Audit Summary:
+- Health Score: ${healthScore}/100
+- Classic Concepts Products Scanned: ${ccProducts.length}
+- Classic Edge 53 Items Scanned: ${ceItems.length}
+- ccapl.cc Shortlinks Scanned: ${linkRows.length}
+- WhatsApp Templates Scanned: ${templateRows.length}
+- Total Issues Found: ${issues.length} (Critical: ${criticalCount}, Warning: ${warningCount}, Info: ${infoCount})
+
+Detected Discrepancies & Issues (Top ${Math.min(60, issues.length)}):
+${topIssuesDigest || "None"}
+
+Developer Question / Audit Focus:
+${options.askPrompt.trim()}`,
+          },
+        ],
+      });
+
+      if (aiRes.ok && aiRes.text) {
+        acrioAnalysis = formatWhatsAppOutboundText(aiRes.text);
+        acrioModel = LOCKED_CLAUDE_MODEL;
+        recordAndBroadcastAiLog({
+          website: "WHATSAPP_HUB",
+          websiteLabel: "Classic Concepts WhatsApp Hub",
+          feature: "ACRIO Dev Issues Identifier",
+          actor: options.actorName || "DEV",
+          question: options.askPrompt.trim(),
+          model: LOCKED_CLAUDE_MODEL,
+          effort: "medium",
+          outcomeSource: "LIVE_AI",
+          responseCacheStatus: "BYPASS",
+          catalogCacheStatus: catalog.cacheMeta.catalogCacheStatus,
+          cacheDetails: `Ecosystem Audit (${issues.length} issues detected across ${allItems.length} items)`,
+          productLookupTriggered: true,
+          productLookupQuery: options.askPrompt.trim(),
+          productLookupBudget: null,
+          productLookupTotalScanned: allItems.length,
+          productsLookedUp: [],
+          steps: [
+            {
+              stepNumber: 1,
+              label: "Scanned ecosystem databases, R2 media, and ccapl.cc shortlinks",
+              detail: `cc=${ccProducts.length}, ce53=${ceItems.length}, links=${linkRows.length}, issues=${issues.length}`,
+              durationMs: Date.now() - started,
+              status: "OK",
+            },
+          ],
+          response: acrioAnalysis,
+          durationMs: Date.now() - started,
+          tokenUsage: aiRes.usage,
+        });
+      }
+    }
+  }
+
+  return {
+    scannedAtIso: new Date().toISOString(),
+    scannedAtIst: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) + " IST",
+    durationMs: Date.now() - started,
+    healthScore,
+    totals: {
+      totalIssues: issues.length,
+      critical: criticalCount,
+      warning: warningCount,
+      info: infoCount,
+      classicConceptsProducts: ccProducts.length,
+      classicEdgeItems: ceItems.length,
+      shortLinksCount: linkRows.length,
+      templatesCount: templateRows.length,
+      recentAiLogsScanned: recentLogsCount,
+    },
+    siteSummaries,
+    issues,
+    acrioAnalysis,
+    acrioModel,
+  };
+}
