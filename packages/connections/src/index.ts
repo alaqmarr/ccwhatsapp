@@ -637,6 +637,81 @@ async function loadMetaWhatsAppSetupConfig(): Promise<Record<string, unknown>> {
   };
 }
 
+export type AcrioInteractive =
+  | {
+      kind: "buttons";
+      buttons: { id: string; title: string }[];
+      /** Short question shown with the buttons when the main reply is too long to share one message. */
+      promptText?: string;
+      footer?: string;
+    }
+  | {
+      kind: "list";
+      buttonLabel: string;
+      rows: { id: string; title: string; description?: string }[];
+      sectionTitle?: string;
+      promptText?: string;
+      footer?: string;
+    };
+
+const clip = (s: string, n: number) => {
+  const t = String(s || "").replace(/\s+/g, " ").trim();
+  return t.length <= n ? t : `${t.slice(0, Math.max(1, n - 1)).trimEnd()}…`;
+};
+
+/** Text version of interactive options, used when Meta rejects the interactive payload or in the inbox view. */
+export function describeInteractiveAsText(interactive: AcrioInteractive): string {
+  if (interactive.kind === "buttons") {
+    return interactive.buttons.map((b, i) => `${i + 1}. ${b.title}`).join("\n");
+  }
+  return interactive.rows.map((r, i) => `${i + 1}. ${r.title}${r.description ? ` (${r.description})` : ""}`).join("\n");
+}
+
+function buildMetaInteractivePayload(
+  interactive: AcrioInteractive,
+  bodyText: string
+): Record<string, unknown> {
+  const trimmedBody = String(bodyText || "").trim();
+  const body = {
+    text:
+      trimmedBody.length > 1024
+        ? `${trimmedBody.slice(0, 1020).trimEnd()}…`
+        : trimmedBody || "Please choose an option",
+  };
+  const footer = interactive.footer ? { footer: { text: clip(interactive.footer, 60) } } : {};
+  if (interactive.kind === "buttons") {
+    return {
+      type: "button",
+      body,
+      ...footer,
+      action: {
+        buttons: interactive.buttons.slice(0, 3).map((b) => ({
+          type: "reply",
+          reply: { id: b.id.slice(0, 256), title: clip(b.title, 20) },
+        })),
+      },
+    };
+  }
+  return {
+    type: "list",
+    body,
+    ...footer,
+    action: {
+      button: clip(interactive.buttonLabel || "View options", 20),
+      sections: [
+        {
+          title: clip(interactive.sectionTitle || "Options", 24),
+          rows: interactive.rows.slice(0, 10).map((r) => ({
+            id: r.id.slice(0, 200),
+            title: clip(r.title, 24),
+            ...(r.description ? { description: clip(r.description, 72) } : {}),
+          })),
+        },
+      ],
+    },
+  };
+}
+
 export async function sendWhatsAppCloudMessage(params: {
   toPhone: string;
   bodyText: string;
@@ -644,6 +719,7 @@ export async function sendWhatsAppCloudMessage(params: {
   languageCode?: string;
   templateComponents?: Record<string, unknown>[];
   replyToWaMessageId?: string;
+  interactive?: AcrioInteractive;
   ctaButton?: {
     label: string;
     url: string;
@@ -713,6 +789,15 @@ export async function sendWhatsAppCloudMessage(params: {
                 : {}),
             },
           }
+        : params.interactive && !params.templateName
+        ? {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: recipientDigits,
+            ...contextField,
+            type: "interactive",
+            interactive: buildMetaInteractivePayload(params.interactive, formattedBody),
+          }
         : hasInteractiveCta
         ? {
             messaging_product: "whatsapp",
@@ -777,6 +862,33 @@ export async function sendWhatsAppCloudMessage(params: {
               ...contextField,
               type: "text",
               text: { preview_url: true, body: fallbackBody },
+            }),
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        data = await res.json().catch(() => ({}));
+      }
+      // If Meta rejects a buttons/list payload (for example, a title rule), fall back to a plain text version.
+      if (!res.ok && params.interactive && !params.templateName && res.status === 400) {
+        console.warn(
+          `[WA] Interactive send rejected (${data?.error?.code || ""}): ${data?.error?.message || ""}. Falling back to text.`
+        );
+        const textFallback = `${formattedBody}\n\n${describeInteractiveAsText(params.interactive)}\n\nReply with the option you prefer.`;
+        res = await fetch(
+          `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: recipientDigits,
+              ...contextField,
+              type: "text",
+              text: { preview_url: true, body: textFallback },
             }),
             signal: AbortSignal.timeout(15000),
           }
@@ -2477,6 +2589,8 @@ export interface AcrioConversationState {
   lastMenuOptions?: string[];
   /** Slug of the single product the customer is currently talking about ("this model", "it", "the white one"). */
   focusProductSlug?: string | null;
+  /** Slugs shown in the last "View options" list, in order, so "the second one" still works after it. */
+  lastListedSlugs?: string[];
   askedQuestionsLog?: string[];
   customerProfile?: string;
   languageMode?: string;
@@ -3693,6 +3807,176 @@ export interface AcrioAutonomousTurnResult {
   smartCategory: string;
   priority: "URGENT" | "HIGH" | "NORMAL";
   conversationState?: AcrioConversationState;
+  /** Optional WhatsApp buttons / "View options" list to send with the reply. */
+  interactive?: AcrioInteractive;
+}
+
+/** What the turn matched, so the wrapper can decide between plain text, a list or buttons. */
+export interface AcrioUiSink {
+  intent?: string;
+  matches: MainWebsiteProduct[];
+  focus?: MainWebsiteProduct | null;
+  aggregate?: boolean;
+  multiItem?: boolean;
+  explicitCodes?: number;
+  hidePrices?: boolean;
+  budgetLabel?: string | null;
+  languageMode?: string;
+}
+
+export interface AcrioTurnParams {
+  conversationId?: string;
+  customerName: string;
+  inboundText: string;
+  recentMessages?: { direction: string; senderType?: string; body: string }[];
+  hasAlreadyGreeted?: boolean;
+  persistedState?: AcrioConversationState | null;
+  /** Set when the customer tapped a product in the "View options" list. */
+  forcedFocusSlug?: string;
+  /** Set false to get plain text only (website widget, tests). Defaults to true. */
+  enableInteractive?: boolean;
+  uiSink?: AcrioUiSink;
+}
+
+export const ACRIO_TEAM_ASK_TEXT = "How would you like to connect with our team?";
+
+export function buildTeamConnectInteractive(): AcrioInteractive {
+  return {
+    kind: "buttons",
+    promptText: ACRIO_TEAM_ASK_TEXT,
+    buttons: [
+      { id: "acrio:team:chat", title: "Chat with team" },
+      { id: "acrio:team:callback", title: "Request a callback" },
+      { id: "acrio:menu:keep", title: "Keep browsing" },
+    ],
+  };
+}
+
+export function buildCallbackSlotInteractive(): AcrioInteractive {
+  return {
+    kind: "buttons",
+    promptText: "When should we call you?",
+    buttons: [
+      { id: "acrio:cb:morning", title: "Morning 10-1" },
+      { id: "acrio:cb:afternoon", title: "Afternoon 2-5" },
+      { id: "acrio:cb:evening", title: "Evening 5-8" },
+    ],
+  };
+}
+
+function productRowDescription(it: MainWebsiteProduct, hidePrices: boolean): string {
+  const dims = it.dimensions || [];
+  const h = dims.find((d) => /height/i.test(d.label || d.key || ""))?.value;
+  const top = dims.find((d) => /top|size|working|bending/i.test(d.label || d.key || ""))?.value;
+  const price =
+    !hidePrices && typeof it.basePrice === "number" && it.basePrice > 0
+      ? `₹${it.basePrice.toLocaleString("en-IN")}`
+      : "";
+  const size = [h ? `H ${h}` : "", top ? `Top ${top}` : ""].filter(Boolean).join(" | ");
+  const text = [price, size].filter(Boolean).join(" | ").replace(/["”“]/g, "").replace(/\s*Inches?/gi, "");
+  return clip(text || (it.specsSummary || it.categoryName || ""), 72);
+}
+
+export function buildProductListInteractive(
+  items: MainWebsiteProduct[],
+  hidePrices: boolean
+): AcrioInteractive {
+  const rows = items.slice(0, 10).map((it) => ({
+    id: `acrio:prod:${it.slug}`,
+    title: clip(cleanDisplayProductName(it.name), 24),
+    description: productRowDescription(it, hidePrices),
+  }));
+  return {
+    kind: "list",
+    buttonLabel: "View options",
+    sectionTitle: "Matching products",
+    rows,
+    promptText: "Tap View options to choose a product.",
+  };
+}
+
+const ACRIO_KEEP_TEXT_RE =
+  /\b(cheapest|costliest|most\s+expensive|cheaper|premium|best|compare|comparison|which\s+one|suggest|recommend|difference|better|vs)\b/i;
+
+/** Decides whether a finished reply should carry buttons or a "View options" list. */
+function decorateAcrioReplyWithInteractive(
+  res: AcrioAutonomousTurnResult,
+  sink: AcrioUiSink,
+  inboundText: string
+): Partial<AcrioAutonomousTurnResult> | null {
+  const hindi = /HIND/i.test(sink.languageMode || "");
+
+  // Bulk / project quote already pinged to the team: offer the two ways to reach them.
+  if (res.needsSalesTeamPing) {
+    return { interactive: buildTeamConnectInteractive() };
+  }
+
+  if (sink.aggregate || sink.multiItem) return null;
+
+  // One product under discussion: offer next steps.
+  if (sink.focus) {
+    return {
+      interactive: {
+        kind: "buttons",
+        promptText: "What would you like to do next?",
+        buttons: [
+          { id: "acrio:team:ask", title: "Get a quote" },
+          { id: "acrio:more", title: "More options" },
+        ],
+      },
+    };
+  }
+
+  // Larger list: short intro + "View options" list the customer can open and pick from.
+  const requiresLookup = sink.intent === "PRODUCT_SEARCH" || sink.intent === "FOLLOW_UP_REFINEMENT";
+  if (
+    requiresLookup &&
+    sink.matches.length >= 4 &&
+    !(sink.explicitCodes && sink.explicitCodes > 0) &&
+    !ACRIO_KEEP_TEXT_RE.test(inboundText)
+  ) {
+    // Put products whose names match the nouns the customer used (chair, stool, table...) first.
+    const stop = new Set(["have", "show", "need", "want", "some", "what", "your", "with", "that", "this", "there", "options", "please", "looking", "about", "from", "under", "below", "above"]);
+    const nouns = (inboundText.toLowerCase().match(/[a-z]{4,}/g) || [])
+      .filter((w) => !stop.has(w))
+      .map((w) => w.replace(/(es|s)$/, ""));
+    const nameMatches = (it: MainWebsiteProduct) =>
+      nouns.some((n) => n.length >= 3 && (it.name || "").toLowerCase().includes(n));
+    const ordered = nouns.length
+      ? [...sink.matches.filter(nameMatches), ...sink.matches.filter((it) => !nameMatches(it))]
+      : sink.matches;
+    const interactive = buildProductListInteractive(ordered, Boolean(sink.hidePrices));
+    const n = interactive.kind === "list" ? interactive.rows.length : sink.matches.length;
+    const mentionsBudget = /\d|\blacs?\b|\blakhs?\b|\bcrore\b|\bk\b|budget/i.test(inboundText);
+    const budget = sink.budgetLabel && !sink.hidePrices && mentionsBudget ? ` (${sink.budgetLabel})` : "";
+    const intro = hindi
+      ? `Aapke liye ${n} options mile hain${budget}. Neeche *View options* dabaiye aur apna pasand ka product chuniye, phir main poori detail bataunga.`
+      : `I found ${n} options for you${budget}.\n\nTap *View options* below, pick one, and I will share its full details.`;
+    return { customerReply: intro, interactive };
+  }
+  return null;
+}
+
+/**
+ * Public entry point. Runs the ACRIO brain, then adds WhatsApp buttons / "View options" lists
+ * where they help the customer (long lists, next steps, connecting with the team).
+ */
+export async function runAcrioAutonomousTurn(
+  params: AcrioTurnParams
+): Promise<AcrioAutonomousTurnResult> {
+  const sink: AcrioUiSink = params.uiSink || { matches: [] };
+  const res = await runAcrioAutonomousTurnCore({ ...params, uiSink: sink });
+  if (params.enableInteractive === false || res.needsHumanHandoff || res.interactive) return res;
+  try {
+    const extra = decorateAcrioReplyWithInteractive(res, sink, params.inboundText);
+    if (extra?.interactive?.kind === "list" && res.conversationState) {
+      res.conversationState.lastListedSlugs = extra.interactive.rows.map((r) => r.id.replace(/^acrio:prod:/, ""));
+      await saveConversationAiState(params.conversationId, res.conversationState);
+    }
+    return extra ? { ...res, ...extra } : res;
+  } catch {
+    return res;
+  }
 }
 
 /**
@@ -3704,14 +3988,9 @@ export interface AcrioAutonomousTurnResult {
  * - Formats replies cleanly for WhatsApp (*bold* headers, ₹ prices, numbered shortlinks, bullet points).
  * - Logs every step, cache check, product lookup, and response to `ai.logs`.
  */
-export async function runAcrioAutonomousTurn(params: {
-  conversationId?: string;
-  customerName: string;
-  inboundText: string;
-  recentMessages?: { direction: string; senderType?: string; body: string }[];
-  hasAlreadyGreeted?: boolean;
-  persistedState?: AcrioConversationState | null;
-}): Promise<AcrioAutonomousTurnResult> {
+async function runAcrioAutonomousTurnCore(
+  params: AcrioTurnParams
+): Promise<AcrioAutonomousTurnResult> {
   const started = Date.now();
   const steps: AiTraceStep[] = [];
   const addStep = (
@@ -3778,7 +4057,7 @@ export async function runAcrioAutonomousTurn(params: {
   const hasListPickWording = isListPickText(rawText);
   if (
     hasListPickWording &&
-    /https?:\/\/ccapl\.cc\//i.test(lastOutboundBody) &&
+    (/https?:\/\/ccapl\.cc\//i.test(lastOutboundBody) || /View options/i.test(outboundBodies[0] || "")) &&
     !intentInfo.needsImmediateHandoff &&
     intentInfo.intent !== "TOPIC_RESET" &&
     intentInfo.intent !== "HUMAN_HANDOFF_REQUEST"
@@ -3788,6 +4067,61 @@ export async function runAcrioAutonomousTurn(params: {
       intent: "FOLLOW_UP_REFINEMENT",
       requiresProductLookup: true,
       reason: "Customer picked an item from the list we just sent",
+    };
+  }
+  if (params.forcedFocusSlug) {
+    intentInfo = {
+      ...intentInfo,
+      intent: "FOLLOW_UP_REFINEMENT",
+      requiresProductLookup: true,
+      needsImmediateHandoff: false,
+      reason: "Customer tapped a product in the View options list",
+    };
+  }
+
+  // 1a-2. "Talk to a person": offer Chat / Callback buttons first (unless we just asked, then hand off directly).
+  if (
+    intentInfo.intent === "HUMAN_HANDOFF_REQUEST" &&
+    params.enableInteractive !== false &&
+    !String(outboundBodies[0] || "").includes(ACRIO_TEAM_ASK_TEXT) &&
+    !String(lastOutboundBody || "").includes(ACRIO_TEAM_ASK_TEXT)
+  ) {
+    const firstNameForAsk = params.customerName.split(/[\s(]/)[0] || "there";
+    const askReply = `Sure ${firstNameForAsk}, happy to connect you with our team.\n\n${ACRIO_TEAM_ASK_TEXT}`;
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: rawText,
+      model: "rule-team-connect-choice",
+      outcomeSource: "LIVE_AI",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: "BYPASS",
+      cacheDetails: "Offered Chat with team / Request a callback buttons",
+      productLookupTriggered: false,
+      productLookupQuery: "",
+      productLookupBudget: null,
+      productLookupTotalScanned: 0,
+      productsLookedUp: [],
+      steps,
+      response: askReply,
+      durationMs: Date.now() - started,
+    });
+    const askState = reconstructAcrioConversationState({
+      persistedState: params.persistedState !== undefined ? params.persistedState : await loadConversationAiState(params.conversationId),
+      recentMessages: history,
+      currentInboundText: rawText,
+    });
+    await saveConversationAiState(params.conversationId, askState);
+    return {
+      needsHumanHandoff: false,
+      handoffReason: "",
+      customerReply: askReply,
+      smartCategory: "General Enquiry",
+      priority: "HIGH",
+      conversationState: askState,
+      interactive: buildTeamConnectInteractive(),
     };
   }
 
@@ -3986,8 +4320,27 @@ export async function runAcrioAutonomousTurn(params: {
     }
 
     aggregateResult = buildCatalogAggregateAnswer(allItems, rawText);
-    const listPickItem = resolveListPickFromLastReply(rawText, lastOutboundBody, allItems);
-    if (aggregateResult && !projectPlan.isMultiItemOrTotalling) {
+    const listPickItem =
+      resolveListPickFromLastReply(rawText, lastOutboundBody, allItems) ||
+      (isListPickText(rawText) && (storedState?.lastListedSlugs || []).length > 0 && /View options/i.test(outboundBodies[0] || "")
+        ? (() => {
+            const slugs = storedState!.lastListedSlugs!;
+            const t = rawText.toLowerCase();
+            const word = t.match(/\b(first|second|third|fourth|fifth|last|1st|2nd|3rd|4th|5th)\b/)?.[1];
+            const num = t.match(/(?:option|number|no\.?|#)\s*([1-9])\b/)?.[1] || t.match(/^\s*([1-9])[\s.)!]*$/)?.[1];
+            let idx = -2;
+            if (word) idx = ACRIO_ORDINALS[word];
+            else if (num) idx = parseInt(num, 10) - 1;
+            const slug = idx === -1 ? slugs[slugs.length - 1] : idx >= 0 ? slugs[idx] : undefined;
+            return slug ? findItemBySlug(slug) || null : null;
+          })()
+        : null);
+    const forcedItem = findItemBySlug(params.forcedFocusSlug);
+    if (forcedItem) {
+      pinnedFocusItem = forcedItem;
+      contextMatches = [forcedItem];
+      addStep("Opened product from list", `Customer tapped "${forcedItem.name}" in View options`);
+    } else if (aggregateResult && !projectPlan.isMultiItemOrTotalling) {
       contextMatches = aggregateResult.items;
     } else if (listPickItem && !projectPlan.isMultiItemOrTotalling) {
       pinnedFocusItem = listPickItem;
@@ -4129,6 +4482,22 @@ export async function runAcrioAutonomousTurn(params: {
       convState.focusProductSlug = contextMatches[0].slug;
     } else if (explicitCodesInTurn.length >= 2 || (contextMatches.length > 1 && !aggregateResult)) {
       convState.focusProductSlug = null;
+    }
+
+    if (params.uiSink) {
+      const focusForUi = convState.focusProductSlug
+        ? allItems.find((it) => (it.slug || "").toLowerCase() === String(convState.focusProductSlug).toLowerCase()) || null
+        : null;
+      Object.assign(params.uiSink, {
+        intent: intentInfo.intent,
+        matches: contextMatches,
+        focus: focusForUi,
+        aggregate: Boolean(aggregateResult),
+        multiItem: Boolean(projectPlan.isMultiItemOrTotalling),
+        explicitCodes: explicitCodesInTurn.length,
+        budgetLabel,
+        languageMode: convState.languageMode,
+      });
     }
 
     if (contextMatches.length > 0) {

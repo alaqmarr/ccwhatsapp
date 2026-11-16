@@ -10,12 +10,18 @@ import {
   type OrderTrackingRecord,
 } from "@cc/database";
 import {
+  buildCallbackSlotInteractive,
+  buildTeamConnectInteractive,
+  describeInteractiveAsText,
   executeMultiDatabaseBackup,
   formatWhatsAppOutboundText,
+  loadConversationAiState,
   runAcrioAutonomousTurn,
   runGuardedButtonFlowAiReply,
   sendStaffAssignmentEmailNotification,
   sendWhatsAppCloudMessage,
+  ACRIO_TEAM_ASK_TEXT,
+  type AcrioInteractive,
   type WhatsAppTemplateButton,
 } from "@cc/connections";
 import {
@@ -455,6 +461,285 @@ export function resetClaimedWaMessageIdsForTest(): void {
   processedAutomationWaIds.clear();
 }
 
+/**
+ * Sends one ACRIO reply (plain text, or text with WhatsApp buttons / "View options" list),
+ * saves it in the chat, schedules the sandbox receipt and records the billing entry.
+ */
+async function sendAcrioChatMessage(params: {
+  conversationId: string;
+  customerPhone: string;
+  text: string;
+  interactive?: AcrioInteractive;
+}): Promise<{
+  acrioMsgId: string;
+  replyIso: string;
+  sendRes: Awaited<ReturnType<typeof sendWhatsAppCloudMessage>>;
+}> {
+  const conv = getRawLibSqlClient("conversations");
+  const interactive = params.interactive;
+  let sendRes: Awaited<ReturnType<typeof sendWhatsAppCloudMessage>>;
+
+  if (interactive) {
+    if (params.text.length <= 1000) {
+      sendRes = await sendWhatsAppCloudMessage({
+        toPhone: params.customerPhone,
+        bodyText: params.text,
+        interactive,
+        simulateAsyncDelivery: true,
+      });
+    } else {
+      // Buttons and lists only allow ~1000 characters of body text, so send the long text first.
+      const first = await sendWhatsAppCloudMessage({
+        toPhone: params.customerPhone,
+        bodyText: params.text,
+        simulateAsyncDelivery: true,
+      });
+      sendRes = first.ok
+        ? await sendWhatsAppCloudMessage({
+            toPhone: params.customerPhone,
+            bodyText: interactive.promptText || "Please choose an option",
+            interactive,
+            simulateAsyncDelivery: true,
+          })
+        : first;
+    }
+  } else {
+    sendRes = await sendWhatsAppCloudMessage({
+      toPhone: params.customerPhone,
+      bodyText: params.text,
+      simulateAsyncDelivery: true,
+    });
+  }
+
+  const acrioMsgId = `msg_acrio_${crypto.randomUUID().slice(0, 8)}`;
+  const replyIso = new Date().toISOString();
+  const storedBody = interactive
+    ? `${params.text}\n\n[${interactive.kind === "list" ? `List: ${interactive.buttonLabel}` : "Buttons"}]\n${describeInteractiveAsText(interactive)}`
+    : params.text;
+
+  await conv.execute({
+    sql: `INSERT INTO messages (
+      id, conversation_id, direction, sender_type, sender_name, message_type,
+      billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+    ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', 'ACRIO', 'TEXT', 'ACRIO', ?, ?, ?, ?, ?)`,
+    args: [
+      acrioMsgId,
+      params.conversationId,
+      storedBody,
+      JSON.stringify(interactive ? { interactive } : {}),
+      sendRes.waMessageId,
+      sendRes.deliveryStatus,
+      replyIso,
+    ],
+  });
+
+  if (sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR") {
+    scheduleSandboxDeliveryReceipt({
+      conversationId: params.conversationId,
+      messageId: acrioMsgId,
+      waMessageId: sendRes.waMessageId,
+    });
+  }
+
+  await recordDualPricingLedgerEntry({
+    messageId: acrioMsgId,
+    conversationId: params.conversationId,
+    customerPhone: params.customerPhone,
+    category: "ACRIO",
+    staffName: "ACRIO Auto-Handler",
+  });
+
+  return { acrioMsgId, replyIso, sendRes };
+}
+
+const CALLBACK_SLOT_LABELS: Record<string, string> = {
+  morning: "Morning (10 AM to 1 PM)",
+  afternoon: "Afternoon (2 PM to 5 PM)",
+  evening: "Evening (5 PM to 8 PM)",
+};
+
+async function ensureCallbackRequestsTable(): Promise<void> {
+  const conv = getRawLibSqlClient("conversations");
+  await conv.execute(`CREATE TABLE IF NOT EXISTS callback_requests (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    customer_phone TEXT NOT NULL,
+    customer_name TEXT NOT NULL DEFAULT '',
+    preferred_slot TEXT NOT NULL,
+    topic TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    handled_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+}
+
+export async function listCallbackRequests(status?: string): Promise<Record<string, unknown>[]> {
+  await ensureDatabasesBootstrapped();
+  await ensureCallbackRequestsTable();
+  const conv = getRawLibSqlClient("conversations");
+  const res = status
+    ? await conv.execute({
+        sql: `SELECT * FROM callback_requests WHERE status = ? ORDER BY created_at DESC LIMIT 200`,
+        args: [status],
+      })
+    : await conv.execute(`SELECT * FROM callback_requests ORDER BY created_at DESC LIMIT 200`);
+  return res.rows.map((r) => ({ ...(r as Record<string, unknown>) }));
+}
+
+/**
+ * Handles taps on ACRIO's own buttons ("Chat with team", "Request a callback", slots, "Keep browsing").
+ * Returns true when the tap was fully handled. Product taps ("acrio:prod:<slug>", "acrio:more") return false
+ * so the normal ACRIO flow answers them.
+ */
+async function handleAcrioInteractiveReply(params: {
+  conversationId: string;
+  customerPhone: string;
+  payload: string;
+  isHandledByAcrio: boolean;
+}): Promise<boolean> {
+  const payload = params.payload.toLowerCase();
+  if (payload.startsWith("acrio:prod:") || payload === "acrio:more") return false;
+
+  const conv = getRawLibSqlClient("conversations");
+  const convRes = await conv.execute({
+    sql: `SELECT customer_name FROM conversations WHERE id = ? LIMIT 1`,
+    args: [params.conversationId],
+  });
+  const customerName = String(convRes.rows[0]?.customer_name || params.customerPhone);
+
+  const say = async (text: string, interactive?: AcrioInteractive) => {
+    const sent = await sendAcrioChatMessage({
+      conversationId: params.conversationId,
+      customerPhone: params.customerPhone,
+      text,
+      interactive,
+    });
+    await conv.execute({
+      sql: `UPDATE conversations SET last_message_preview = ?, last_message_at = ? WHERE id = ?`,
+      args: [`ACRIO: ${text}`.slice(0, 140), sent.replyIso, params.conversationId],
+    });
+    socketHub.emit("message:new", {
+      conversationId: params.conversationId,
+      senderName: "ACRIO",
+      text,
+    });
+  };
+
+  // A human already owns this chat: ignore old ACRIO buttons, except callback slots which are still registered.
+  if (!params.isHandledByAcrio && !payload.startsWith("acrio:cb:")) return true;
+
+  if (payload === "acrio:team:ask") {
+    await say(ACRIO_TEAM_ASK_TEXT, buildTeamConnectInteractive());
+    return true;
+  }
+
+  if (payload === "acrio:menu:keep") {
+    await say(
+      "No problem! Tell me what you would like to see next. You can also type a product code like CCP054."
+    );
+    return true;
+  }
+
+  if (payload === "acrio:team:callback") {
+    await say(
+      `Sure, we will call you on ${params.customerPhone}.\n\nWhen should we call you?`,
+      buildCallbackSlotInteractive()
+    );
+    return true;
+  }
+
+  if (payload === "acrio:team:chat") {
+    await say(
+      "Connecting you to our *Sales Team* right away.\n\nA team member will pick up this chat and reply here shortly."
+    );
+    const assigned = await smartAssignConversation({
+      conversationId: params.conversationId,
+      inboundText: "Customer chose Chat with team",
+      preferredTeamId: "team_sales",
+      onlyIfUnassigned: false,
+      startWaitingTimer: true,
+      handoffReasonFromAcrio: "Customer tapped 'Chat with team' in WhatsApp.",
+    });
+    socketHub.emit("conversation:assigned", {
+      conversationId: params.conversationId,
+      assignedTeamName: assigned.assignedTeamName,
+      assignedStaffName: assigned.assignedStaffName,
+      escalationLevel: assigned.escalationLevel,
+    });
+    return true;
+  }
+
+  if (payload.startsWith("acrio:cb:")) {
+    const slotKey = payload.replace("acrio:cb:", "");
+    const slotLabel = CALLBACK_SLOT_LABELS[slotKey] || slotKey;
+    await ensureCallbackRequestsTable();
+    const nowIso = new Date().toISOString();
+
+    // What was the customer looking at? Use the saved chat memory for a helpful note to the team.
+    const aiState = await loadConversationAiState(params.conversationId).catch(() => null);
+    const topic =
+      aiState?.focusProductSlug?.replace(/-/g, " ") ||
+      aiState?.primaryProductQuery ||
+      "General enquiry";
+
+    // One open request per chat: update it instead of creating duplicates.
+    const existing = await conv.execute({
+      sql: `SELECT id FROM callback_requests WHERE conversation_id = ? AND status = 'PENDING' ORDER BY created_at DESC LIMIT 1`,
+      args: [params.conversationId],
+    });
+    let requestId = existing.rows[0] ? String(existing.rows[0].id) : "";
+    if (requestId) {
+      await conv.execute({
+        sql: `UPDATE callback_requests SET preferred_slot = ?, topic = ?, updated_at = ? WHERE id = ?`,
+        args: [slotLabel, topic, nowIso, requestId],
+      });
+    } else {
+      requestId = `cb_${crypto.randomUUID().slice(0, 8)}`;
+      await conv.execute({
+        sql: `INSERT INTO callback_requests (id, conversation_id, customer_phone, customer_name, preferred_slot, topic, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
+        args: [requestId, params.conversationId, params.customerPhone, customerName, slotLabel, topic, nowIso, nowIso],
+      });
+    }
+
+    // Ping the internal team without moving the chat away from ACRIO.
+    const pingBody = `CALLBACK REQUEST: ${customerName} (${params.customerPhone}) wants a call in the ${slotLabel}. Interested in: ${topic}. Request ID ${requestId}.`;
+    await conv
+      .execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, delivery_status, created_at
+        ) VALUES (?, ?, 'INTERNAL', 'SYSTEM', 'ACRIO • Callback Request', 'INTERNAL_NOTE', 'FREE', ?, 'DELIVERED', ?)`,
+        args: [`msg_cb_${crypto.randomUUID().slice(0, 8)}`, params.conversationId, pingBody, nowIso],
+      })
+      .catch(() => {});
+    await conv
+      .execute({
+        sql: `UPDATE conversations
+              SET priority = 'HIGH',
+                  assigned_team_id = NULL,
+                  assigned_team_name = 'System (ACRIO) • Callback requested',
+                  unread_count = unread_count + 1
+              WHERE id = ?`,
+        args: [params.conversationId],
+      })
+      .catch(() => {});
+    socketHub.emit("message:new", {
+      conversationId: params.conversationId,
+      senderName: "ACRIO • Callback Request",
+      text: pingBody,
+    });
+
+    await say(
+      `Done! Your callback is booked for *${slotLabel}*.\n\nOur team will call you on ${params.customerPhone}. Until then, I am right here if you want to look at anything else.`
+    );
+    return true;
+  }
+
+  return false;
+}
+
 export async function processInboundAutomations(params: {
   conversationId: string;
   customerPhone: string;
@@ -512,6 +797,27 @@ export async function processInboundAutomations(params: {
       reasonLabel: "Replied STOP on WhatsApp",
     });
     return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 1b. ACRIO's own buttons and "View options" list taps (acrio:* payloads)
+  // --------------------------------------------------------------------------
+  let forcedFocusSlug: string | undefined;
+  const acrioPayload = String(params.buttonPayload || "").trim();
+  if (acrioPayload.toLowerCase().startsWith("acrio:")) {
+    const handledButton = await handleAcrioInteractiveReply({
+      conversationId: params.conversationId,
+      customerPhone: params.customerPhone,
+      payload: acrioPayload,
+      isHandledByAcrio,
+    });
+    if (handledButton) return;
+    if (acrioPayload.toLowerCase().startsWith("acrio:prod:")) {
+      forcedFocusSlug = acrioPayload.slice("acrio:prod:".length);
+      params.inboundText = `Tell me about ${params.buttonText || forcedFocusSlug.replace(/-/g, " ")}`;
+    } else if (acrioPayload.toLowerCase() === "acrio:more") {
+      params.inboundText = "Show me more options";
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -1200,6 +1506,7 @@ export async function processInboundAutomations(params: {
     inboundText: params.inboundText,
     recentMessages,
     hasAlreadyGreeted,
+    forcedFocusSlug,
   });
 
   if (params.onBeforeAcrioSend) {
@@ -1228,44 +1535,12 @@ export async function processInboundAutomations(params: {
     return;
   }
 
-  // Send ACRIO's automatic WhatsApp reply (either answering directly or confirming handoff to Sales Team)
-  const sendRes = await sendWhatsAppCloudMessage({
-    toPhone: params.customerPhone,
-    bodyText: acrioTurn.customerReply,
-    simulateAsyncDelivery: true,
-  });
-  const acrioMsgId = `msg_acrio_${crypto.randomUUID().slice(0, 8)}`;
-  const replyIso = new Date().toISOString();
-
-  await conv.execute({
-    sql: `INSERT INTO messages (
-      id, conversation_id, direction, sender_type, sender_name, message_type,
-      billing_category, body, wa_message_id, delivery_status, created_at
-    ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', 'ACRIO', 'TEXT', 'ACRIO', ?, ?, ?, ?)`,
-    args: [
-      acrioMsgId,
-      params.conversationId,
-      acrioTurn.customerReply,
-      sendRes.waMessageId,
-      sendRes.deliveryStatus,
-      replyIso,
-    ],
-  });
-
-  if (sendRes.ok && sendRes.mode === "SANDBOX_SIMULATOR") {
-    scheduleSandboxDeliveryReceipt({
-      conversationId: params.conversationId,
-      messageId: acrioMsgId,
-      waMessageId: sendRes.waMessageId,
-    });
-  }
-
-  await recordDualPricingLedgerEntry({
-    messageId: acrioMsgId,
+  // Send ACRIO's automatic WhatsApp reply (text, or text with buttons / "View options" list)
+  const { acrioMsgId, replyIso } = await sendAcrioChatMessage({
     conversationId: params.conversationId,
     customerPhone: params.customerPhone,
-    category: "ACRIO",
-    staffName: "ACRIO Auto-Handler",
+    text: acrioTurn.customerReply,
+    interactive: acrioTurn.interactive,
   });
 
   await recordAssignedFirstResponse({
@@ -1300,7 +1575,8 @@ export async function processInboundAutomations(params: {
                 last_message_at = ?
             WHERE id = ?`,
       args: [
-        acrioTurn.needsSalesTeamPing ? "team_sales" : null,
+        // Keep assigned_team_id empty so ACRIO keeps answering this chat after a Sales Team ping.
+        null,
         teamLabel,
         acrioTurn.smartCategory,
         acrioTurn.needsSalesTeamPing ? "HIGH" : acrioTurn.priority,
