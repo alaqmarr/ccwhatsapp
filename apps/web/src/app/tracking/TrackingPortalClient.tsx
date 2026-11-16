@@ -171,7 +171,7 @@ export function TrackingPortalClient({
     <div className="min-h-dvh bg-slate-50 text-slate-900 flex flex-col justify-between">
       {/* Top Brand Header */}
       <header className="bg-white border-b border-slate-200">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="w-full px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <ClassicConceptsWordmark height={40} variant="light" />
             <span className="hidden sm:inline-block h-5 w-px bg-slate-200" />

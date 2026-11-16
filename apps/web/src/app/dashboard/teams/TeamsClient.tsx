@@ -693,7 +693,7 @@ export function TeamsClient({
               <Users className="w-6 h-6 text-[#00a884] shrink-0" />
               <span>Teams, Escalation Routing & Assignment Mailer</span>
             </h1>
-            <p className="text-xs sm:text-[13.5px] leading-relaxed text-slate-600 mt-1 max-w-4xl">
+            <p className="text-xs sm:text-[13.5px] leading-relaxed text-slate-600 mt-1">
               Manage who receives customer chats after ACRIO or website form handoff, set P0 to P1 to P2 wait-time limits, and dispatch instant email alerts whenever a chat is assigned to a person.
             </p>
           </div>

@@ -135,7 +135,7 @@ export function ProfileClient({ initial }: { initial: Profile }) {
   const ss = String(secondsLeft % 60).padStart(2, "0");
 
   return (
-    <div className="p-4 md:p-6 max-w-3xl mx-auto w-full space-y-5">
+    <div className="w-full px-4 sm:px-6 py-5 space-y-5">
       <div>
         <h1 className="font-display text-xl md:text-2xl font-bold text-slate-900 flex items-center gap-2">
           <UserCircle2 className="w-6 h-6 text-[#00a884]" /> My profile
@@ -143,6 +143,7 @@ export function ProfileClient({ initial }: { initial: Profile }) {
         <p className="text-xs text-slate-500">Update your details and change the email you sign in with.</p>
       </div>
 
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
       {/* Details */}
       <form onSubmit={saveProfile} className="rounded-xl bg-white border border-neutral-200 shadow-2xs p-4 md:p-5 space-y-4">
         <h2 className="text-sm font-semibold text-slate-900">Your details</h2>
@@ -325,6 +326,7 @@ export function ProfileClient({ initial }: { initial: Profile }) {
         {emailInfo && <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{emailInfo}</p>}
         {emailErr && <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{emailErr}</p>}
       </section>
+      </div>
     </div>
   );
 }

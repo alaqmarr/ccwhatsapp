@@ -352,7 +352,7 @@ export default function AutomationsPage() {
             <Zap className="w-6 h-6 text-[#00a884]" />
             <span>Advanced Auto-Replies & AI Credit Guard</span>
           </h1>
-          <p className="text-xs sm:text-[13.5px] leading-relaxed text-slate-600 mt-1 max-w-3xl">
+          <p className="text-xs sm:text-[13.5px] leading-relaxed text-slate-600 mt-1">
             Auto-reply rules run BEFORE ACRIO AI. Matching common questions (GST, hours, order tracking, button payloads, or urgent bulk handoffs) gives customers an instant answer and saves AI credits.
           </p>
         </div>

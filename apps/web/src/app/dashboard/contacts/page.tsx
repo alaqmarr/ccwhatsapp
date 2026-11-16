@@ -782,7 +782,7 @@ export default function ContactsDatabasePage() {
             <Contact2 className="w-6 h-6 text-[#00a884] shrink-0" />
             <span>Contacts Database</span>
           </h1>
-          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
             Central WhatsApp customer directory synced across Customer Chats, Broadcast Queue, CRM Orders, and Website Enquiries.
           </p>
         </div>

@@ -715,7 +715,7 @@ export default function MarketingAndLinksPage() {
             <ShieldCheck className="w-6 h-6 text-[#00a884] shrink-0" />
             <span>Safe Broadcast Queue, ACRIO Lists & Short Links</span>
           </h1>
-          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
             Queue WhatsApp broadcasts one recipient at a time with safe anti-spam spacing, opt-out filtering, and Meta rate-limit protection.
           </p>
         </div>

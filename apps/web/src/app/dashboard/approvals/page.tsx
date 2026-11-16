@@ -167,7 +167,7 @@ export default function StaffApprovalsPage() {
           <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
             Team Approvals & Directory
           </h1>
-          <p className="text-[13px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
+          <p className="text-[13px] leading-relaxed text-slate-500 mt-1">
             Approve verified staff accounts, assign workspace roles, pause access, or permanently delete rejected and inactive members.
           </p>
         </div>

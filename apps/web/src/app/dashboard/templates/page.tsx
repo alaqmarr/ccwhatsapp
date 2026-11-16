@@ -1041,7 +1041,7 @@ export default function TemplatesStudioPage() {
           <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
             WhatsApp Message Templates Studio
           </h1>
-          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
             Design, preview, test, and submit WhatsApp templates with headers, dynamic variables, interactive buttons, and short links.
           </p>
         </div>

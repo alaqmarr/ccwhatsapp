@@ -138,7 +138,7 @@ export default function CostBreakdownPage() {
           <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
             Cost Breakdown
           </h1>
-          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1 max-w-3xl">
+          <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
             Superadmin view of WhatsApp message charges. Normal staff replies inside the 24-hour customer window and internal team notes cost ₹0.00. Charges apply only to ACRIO automated replies and approved WhatsApp templates.
           </p>
         </div>

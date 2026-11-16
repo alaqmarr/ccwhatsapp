@@ -274,7 +274,7 @@ export function DashboardClient() {
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
   return (
-    <div className="p-4 md:p-6 space-y-5 max-w-7xl mx-auto w-full">
+    <div className="w-full px-4 sm:px-6 py-5 space-y-5">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>

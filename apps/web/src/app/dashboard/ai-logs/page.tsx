@@ -256,7 +256,7 @@ export default function DevAiLogsPage() {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-5">
+    <div className="w-full px-4 sm:px-6 py-5 space-y-5">
       {/* Top Header */}
       <div className="bg-white rounded-xl border border-neutral-200 p-4 md:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 shadow-2xs">
         <div className="space-y-1">
@@ -527,7 +527,7 @@ export default function DevAiLogsPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 flex-1 justify-end">
-            <div className="relative min-w-[220px] flex-1 max-w-sm">
+            <div className="relative min-w-[220px] flex-1">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"

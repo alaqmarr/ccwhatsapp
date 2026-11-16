@@ -236,7 +236,7 @@ export default function OrderTrackingDashboardPage() {
   }, [rows]);
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
+    <div className="w-full px-4 sm:px-6 py-5 space-y-6">
       {toast && (
         <div className="fixed bottom-5 right-5 z-50 rounded-lg bg-neutral-900 text-white px-4 py-2.5 text-xs font-medium shadow-lg flex items-center gap-2">
           <Check className="w-4 h-4 text-[#00a884]" />
