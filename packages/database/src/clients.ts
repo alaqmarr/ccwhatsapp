@@ -2505,7 +2505,7 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         videoUrl: r.videoUrl ? String(r.videoUrl) : null,
         industries: indByProd.get(id) || [],
         problemStatements: probByProd.get(id) || [],
-        resources: resByProd.get(id) || [],
+        resources: resByProd.get(id) || globalResourcesList,
         specsSummary:
           allSpecs.length > 0
             ? allSpecs.map((s) => `${s.key}: ${s.value}`).join(", ")

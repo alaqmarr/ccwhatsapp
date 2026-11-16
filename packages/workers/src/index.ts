@@ -482,28 +482,47 @@ async function sendAcrioChatMessage(params: {
   const interactive = params.interactive;
   const mediaAttachments = params.mediaAttachments || [];
 
-  // Send each product / variant image from Cloudflare R2 directly as a WhatsApp IMAGE message first
+  // Send each product / variant image, video, or PDF catalogue directly as a WhatsApp media message first
   for (const att of mediaAttachments) {
     if (!att.imageUrl || !/^https?:\/\//i.test(att.imageUrl)) continue;
+    const mType: "IMAGE" | "VIDEO" | "DOCUMENT" = att.mediaType || "IMAGE";
     const imgSendRes = await sendWhatsAppCloudMessage({
       toPhone: params.customerPhone,
       bodyText: att.caption,
-      image: { url: att.imageUrl, caption: att.caption },
+      media: {
+        type: mType,
+        url: att.imageUrl,
+        caption: att.caption,
+        fileName: att.fileName || undefined,
+        mimeType: att.mimeType || undefined,
+      },
       simulateAsyncDelivery: true,
     });
-    const imgMsgId = `msg_acrio_img_${crypto.randomUUID().slice(0, 8)}`;
+    const imgMsgId = `msg_acrio_med_${crypto.randomUUID().slice(0, 8)}`;
     const imgIso = new Date().toISOString();
     await conv.execute({
       sql: `INSERT INTO messages (
         id, conversation_id, direction, sender_type, sender_name, message_type,
         billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
-      ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', 'ACRIO', 'IMAGE', 'ACRIO', ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', 'ACRIO', ?, 'ACRIO', ?, ?, ?, ?, ?)`,
       args: [
         imgMsgId,
         params.conversationId,
+        mType,
         att.caption,
         JSON.stringify({
-          imageUrl: att.imageUrl,
+          mediaType: mType,
+          mediaUrl: att.imageUrl,
+          ...(mType === "IMAGE" ? { imageUrl: att.imageUrl } : {}),
+          fileName: att.fileName || null,
+          filename: att.fileName || null,
+          mimeType:
+            att.mimeType ||
+            (mType === "DOCUMENT"
+              ? "application/pdf"
+              : mType === "VIDEO"
+              ? "video/mp4"
+              : "image/jpeg"),
           caption: att.caption,
           productName: att.productName,
           productSlug: att.productSlug,

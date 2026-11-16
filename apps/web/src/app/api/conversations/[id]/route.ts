@@ -323,14 +323,57 @@ export async function POST(
     return null;
   };
 
-  // 1. Outbound WhatsApp Reply
+  // 1. Outbound WhatsApp Reply (Text, Template, or Media Attachment: Image, Video, PDF/Document, Audio)
   // Regular 24h window chat is 100% FREE (₹0.00).
   // ONLY Templated messages (MARKETING ₹0.95, UTILITY/AUTHENTICATION ₹0.30) are billed here!
   if (action === "send_message") {
-    const text = String(body.text || "").trim();
-    if (!text) {
-      return NextResponse.json({ ok: false, error: "Message cannot be empty." }, { status: 400 });
+    const rawText = String(body.text || "").trim();
+    const rawAtt =
+      body.attachment && typeof body.attachment === "object"
+        ? (body.attachment as Record<string, unknown>)
+        : null;
+    const attachment =
+      rawAtt && String(rawAtt.url || "").trim()
+        ? {
+            mediaId: rawAtt.mediaId ? String(rawAtt.mediaId).trim() : undefined,
+            waMediaId: rawAtt.waMediaId ? String(rawAtt.waMediaId).trim() : undefined,
+            mediaType: (["IMAGE", "VIDEO", "DOCUMENT", "AUDIO"].includes(
+              String(rawAtt.mediaType || "").toUpperCase()
+            )
+              ? String(rawAtt.mediaType).toUpperCase()
+              : "DOCUMENT") as "IMAGE" | "VIDEO" | "DOCUMENT" | "AUDIO",
+            url: String(rawAtt.url).trim(),
+            fileName: rawAtt.fileName ? String(rawAtt.fileName).trim() : undefined,
+            mimeType: rawAtt.mimeType ? String(rawAtt.mimeType).trim() : undefined,
+            sizeBytes:
+              typeof rawAtt.sizeBytes === "number" ? rawAtt.sizeBytes : undefined,
+            productName: rawAtt.productName
+              ? String(rawAtt.productName).trim()
+              : undefined,
+            variantName: rawAtt.variantName
+              ? String(rawAtt.variantName).trim()
+              : undefined,
+          }
+        : null;
+
+    if (!rawText && !attachment) {
+      return NextResponse.json(
+        { ok: false, error: "Message or attachment cannot be empty." },
+        { status: 400 }
+      );
     }
+
+    const text =
+      rawText ||
+      (attachment?.mediaType === "DOCUMENT" && attachment.fileName
+        ? `[Document] ${attachment.fileName}`
+        : attachment?.mediaType === "VIDEO"
+        ? `[Video] ${attachment.fileName || "Video"}`
+        : attachment?.mediaType === "AUDIO"
+        ? `[Audio] ${attachment.fileName || "Audio"}`
+        : attachment?.productName
+        ? `*${attachment.productName}*${attachment.variantName ? ` (${attachment.variantName})` : ""}`
+        : `[${attachment?.mediaType || "Attachment"}]`);
 
     const templateName = body.templateName ? String(body.templateName).trim() : undefined;
     const isTemplate = body.messageType === "TEMPLATE" || Boolean(templateName);
@@ -384,6 +427,30 @@ export async function POST(
     const metaObj: Record<string, unknown> = {};
     if (replyMeta) metaObj.replyTo = replyMeta;
     if (ctaButtonMeta) metaObj.ctaButton = ctaButtonMeta;
+    if (attachment) {
+      metaObj.mediaType = attachment.mediaType;
+      metaObj.mediaUrl = attachment.url;
+      if (attachment.mediaType === "IMAGE") {
+        metaObj.imageUrl = attachment.url;
+      }
+      if (attachment.mediaId) metaObj.mediaId = attachment.mediaId;
+      if (attachment.waMediaId) metaObj.waMediaId = attachment.waMediaId;
+      if (attachment.fileName) {
+        metaObj.fileName = attachment.fileName;
+        metaObj.filename = attachment.fileName;
+      }
+      if (attachment.mimeType) metaObj.mimeType = attachment.mimeType;
+      if (attachment.sizeBytes) metaObj.sizeBytes = attachment.sizeBytes;
+      if (attachment.productName) metaObj.productName = attachment.productName;
+      if (attachment.variantName) metaObj.variantName = attachment.variantName;
+      metaObj.media = {
+        mediaId: attachment.mediaId || attachment.waMediaId || null,
+        mimeType: attachment.mimeType || null,
+        filename: attachment.fileName || null,
+        caption: rawText || null,
+        downloadUrl: attachment.url,
+      };
+    }
     const metadataJson = JSON.stringify(metaObj);
 
     /* Forward template components and language code to prevent Meta error 132000 */
@@ -447,6 +514,16 @@ export async function POST(
       templateComponents,
       languageCode,
       replyToWaMessageId: replyMeta?.waMessageId || undefined,
+      media: attachment
+        ? {
+            type: attachment.mediaType,
+            url: attachment.url,
+            waMediaId: attachment.waMediaId,
+            caption: rawText || undefined,
+            fileName: attachment.fileName,
+            mimeType: attachment.mimeType,
+          }
+        : undefined,
       ctaButton: ctaButtonMeta
         ? {
             label: ctaButtonMeta.label,
@@ -490,7 +567,11 @@ export async function POST(
             id,
             user.id,
             user.name,
-            isTemplate ? "TEMPLATE" : "TEXT",
+            isTemplate
+              ? "TEMPLATE"
+              : attachment
+              ? attachment.mediaType
+              : "TEXT",
             isTemplate ? templateBillingCategory : "FREE_CHAT",
             storedBody,
             templateName || null,

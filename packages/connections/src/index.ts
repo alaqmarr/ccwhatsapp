@@ -714,6 +714,92 @@ function buildMetaInteractivePayload(
   };
 }
 
+export type WhatsAppMediaAttachmentType =
+  | "IMAGE"
+  | "VIDEO"
+  | "DOCUMENT"
+  | "AUDIO";
+
+export interface OutboundWhatsAppMediaSpec {
+  type: WhatsAppMediaAttachmentType;
+  url?: string;
+  waMediaId?: string;
+  caption?: string;
+  fileName?: string;
+  mimeType?: string;
+}
+
+/**
+ * Uploads a binary file (image, video, PDF, or document) to Meta's WhatsApp Cloud API
+ * `/v21.0/{phoneNumberId}/media` endpoint so it can be delivered via `id` even when
+ * the local server is not publicly reachable.
+ */
+export async function uploadMediaToMetaCloud(params: {
+  buffer: Buffer | Uint8Array;
+  mimeType: string;
+  fileName: string;
+  forceSandbox?: boolean;
+}): Promise<{ ok: boolean; waMediaId?: string; mode: string; error?: string }> {
+  const cfg = await loadMetaWhatsAppSetupConfig();
+  const useSandbox =
+    Boolean(params.forceSandbox) ||
+    process.env.WHATSAPP_FORCE_SANDBOX_FOR_TESTS === "1";
+  const mode = useSandbox
+    ? "SANDBOX_SIMULATOR"
+    : String(cfg.mode || "SANDBOX_SIMULATOR");
+  const phoneNumberId = String(cfg.phoneNumberId || "").trim();
+  const accessToken = String(cfg.systemUserAccessToken || "").trim();
+
+  if (mode !== "LIVE_META_CLOUD" || !phoneNumberId || !accessToken) {
+    return {
+      ok: true,
+      waMediaId: `sim_media_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`,
+      mode: "SANDBOX_SIMULATOR",
+    };
+  }
+
+  try {
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", params.mimeType || "application/octet-stream");
+    const blob = new Blob([new Uint8Array(params.buffer)], {
+      type: params.mimeType || "application/octet-stream",
+    });
+    form.append("file", blob, params.fileName || "attachment");
+
+    const res = await fetch(
+      `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/media`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: form,
+        signal: AbortSignal.timeout(30000),
+      }
+    );
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.id) {
+      return {
+        ok: false,
+        mode: "LIVE_META_CLOUD",
+        error: data?.error?.message || `Meta media upload HTTP ${res.status}`,
+      };
+    }
+    return {
+      ok: true,
+      waMediaId: String(data.id),
+      mode: "LIVE_META_CLOUD",
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      mode: "LIVE_META_CLOUD",
+      error: err?.message || "Meta media upload network error",
+    };
+  }
+}
+
 export async function sendWhatsAppCloudMessage(params: {
   toPhone: string;
   bodyText: string;
@@ -726,6 +812,7 @@ export async function sendWhatsAppCloudMessage(params: {
     url: string;
     caption?: string;
   };
+  media?: OutboundWhatsAppMediaSpec;
   ctaButton?: {
     label: string;
     url: string;
@@ -781,12 +868,45 @@ export async function sendWhatsAppCloudMessage(params: {
       const hasInteractiveCta =
         !params.templateName && /^https?:\/\//i.test(ctaUrl) && Boolean(ctaLabel);
 
-      const imageUrl = String(params.image?.url || "").trim();
-      const hasImageMedia =
-        !params.templateName && !params.interactive && /^https?:\/\//i.test(imageUrl);
-      const imageCaption = params.image?.caption
-        ? formatWhatsAppOutboundText(params.image.caption)
+      const resolvedMediaSpec: OutboundWhatsAppMediaSpec | null = params.media
+        ? params.media
+        : params.image?.url
+        ? {
+            type: "IMAGE",
+            url: params.image.url,
+            caption: params.image.caption,
+          }
+        : null;
+      const mediaUrl = String(resolvedMediaSpec?.url || "").trim();
+      const rawWaMediaId = String(resolvedMediaSpec?.waMediaId || "").trim();
+      const validWaMediaId =
+        rawWaMediaId &&
+        !rawWaMediaId.startsWith("sim_") &&
+        !rawWaMediaId.startsWith("local_")
+          ? rawWaMediaId
+          : "";
+      const hasPublicMediaUrl = /^https?:\/\//i.test(mediaUrl) && !/localhost|127\.0\.0\.1/i.test(mediaUrl);
+      const hasMediaPayload =
+        !params.templateName &&
+        !params.interactive &&
+        Boolean(resolvedMediaSpec && (validWaMediaId || hasPublicMediaUrl));
+      const mediaKind = String(resolvedMediaSpec?.type || "IMAGE").toLowerCase() as
+        | "image"
+        | "video"
+        | "document"
+        | "audio";
+      const mediaCaption = resolvedMediaSpec?.caption
+        ? formatWhatsAppOutboundText(resolvedMediaSpec.caption)
         : formattedBody;
+      const mediaRefObj: Record<string, unknown> = validWaMediaId
+        ? { id: validWaMediaId }
+        : { link: mediaUrl };
+      if (mediaKind !== "audio" && mediaCaption) {
+        mediaRefObj.caption = mediaCaption.slice(0, 1024);
+      }
+      if (mediaKind === "document" && resolvedMediaSpec?.fileName) {
+        mediaRefObj.filename = resolvedMediaSpec.fileName.slice(0, 240);
+      }
 
       const payload = params.templateName
         ? {
@@ -802,17 +922,14 @@ export async function sendWhatsAppCloudMessage(params: {
                 : {}),
             },
           }
-        : hasImageMedia
+        : hasMediaPayload
         ? {
             messaging_product: "whatsapp",
             recipient_type: "individual",
             to: recipientDigits,
             ...contextField,
-            type: "image",
-            image: {
-              link: imageUrl,
-              ...(imageCaption ? { caption: imageCaption.slice(0, 1024) } : {}),
-            },
+            type: mediaKind,
+            [mediaKind]: mediaRefObj,
           }
         : params.interactive && !params.templateName
         ? {
@@ -868,10 +985,11 @@ export async function sendWhatsAppCloudMessage(params: {
       );
 
       let data: any = await res.json().catch(() => ({}));
-      if (!res.ok && hasImageMedia && res.status === 400) {
-        const fallbackBody = imageCaption
-          ? `${imageCaption}\n${imageUrl}`
-          : imageUrl;
+      if (!res.ok && hasMediaPayload && res.status === 400) {
+        const fallbackBody =
+          mediaCaption && mediaUrl
+            ? `${mediaCaption}\n${mediaUrl}`
+            : mediaCaption || mediaUrl || formattedBody;
         res = await fetch(
           `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
           {
@@ -2286,7 +2404,7 @@ const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
   /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|signages|sign|signs|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keychains|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|tables|stool|stools|chair|chairs|desk|desks|furniture|interior|interiors|interiora|decor|furnishing|seating|sit|sitting|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
-  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|image|images|photo|photos|pic|pics|picture|pictures|photograph|photographs|dikhao|photo\s*bhejo|bhejo\s*photo|close[-\s]*up|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
+  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|image|images|photo|photos|pic|pics|picture|pictures|photograph|photographs|video|videos|pdf|brochure|catalogue|catalog|dikhao|photo\s*bhejo|bhejo\s*photo|close[-\s]*up|how\s+does\s+(?:it|this|that)\s+look|look\s+like|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
 
 /**
  * Deterministic Turn-Level Intent Classifier (Phase A).
@@ -2984,24 +3102,154 @@ export function isCatalogAggregateQuestion(rawText: string): boolean {
   );
 }
 
-/** True when the customer is asking for product or variant photos/images/pictures. */
+/** True when the customer is asking for product or variant photos/images/pictures, videos, or PDF brochures/catalogues. */
 export function isProductImageRequest(rawText: string): boolean {
-  return /\b(images?|photos?|pics?|pictures?|photographs?|snaps?|visuals?|dikhao|photo\s*bhejo|bhejo\s*photo|how\s+does\s+(?:it|this|that)\s+look|look\s+like|close[-\s]*up)\b/i.test(
+  return /\b(images?|photos?|pics?|pictures?|photographs?|snaps?|visuals?|videos?|dikhao|photo\s*bhejo|bhejo\s*photo|how\s+does\s+(?:it|this|that)\s+look|look\s+like|close[-\s]*up)\b/i.test(
     String(rawText || "")
   );
 }
 
+export function isCatalogPdfRequest(rawText: string): boolean {
+  return /\b(pdf|brochures?|catalogues?|catalogs?)\b/i.test(String(rawText || ""));
+}
+
 export interface AcrioMediaAttachment {
+  mediaType?: "IMAGE" | "VIDEO" | "DOCUMENT";
   imageUrl: string;
   caption: string;
+  fileName?: string | null;
+  mimeType?: string | null;
   productName: string;
   productSlug: string;
   variantName?: string | null;
 }
 
 /**
- * Resolves the exact product or variant R2 image URLs + WhatsApp captions when a customer
- * asks for images of a product or a photo of a specific colour/variant.
+ * Resolves official PDF brochures / catalogues (or a single product's PDF spec sheet) from the
+ * ecosystem catalog when a customer asks for a PDF, brochure, catalogue, or spec sheet.
+ */
+export function resolveCatalogPdfAttachments(
+  allItems: MainWebsiteProduct[],
+  rawText: string,
+  focusItem?: MainWebsiteProduct | null
+): { attachments: AcrioMediaAttachment[]; replyText: string } | null {
+  if (!isCatalogPdfRequest(rawText)) return null;
+  const lower = String(rawText || "").toLowerCase();
+  const appOrigin = resolveWhatsAppWebAppOrigin();
+
+  // If the customer is asking for the PDF / brochure of a specific focus product
+  if (
+    focusItem &&
+    /\b(this|it|its|model|podium|machine|spec\s*sheet|datasheet|ccpo?\d{2,4})\b/i.test(lower)
+  ) {
+    const cleanName = cleanDisplayProductName(focusItem.name);
+    const link = focusItem.shortUrl || focusItem.url;
+    const prodRes = (focusItem.resources || []).find(
+      (r) => r.url && /^https?:\/\//i.test(r.url)
+    );
+    const pdfUrl =
+      prodRes?.url ||
+      `${appOrigin}/api/media/pdf_spec_${encodeURIComponent(focusItem.slug)}`;
+    const safeFile = `${focusItem.slug || "product"}-spec-sheet.pdf`;
+    return {
+      attachments: [
+        {
+          mediaType: "DOCUMENT",
+          imageUrl: pdfUrl,
+          caption: `*${cleanName}* - Official Specification Sheet (PDF)\n${link}`,
+          fileName: safeFile,
+          mimeType: "application/pdf",
+          productName: cleanName,
+          productSlug: focusItem.slug,
+          variantName: null,
+        },
+      ],
+      replyText: `Here is the *PDF Specification Sheet* for *${cleanName}*.\n• *Product page:* ${link}`,
+    };
+  }
+
+  const seenUrls = new Set<string>();
+  const allResources: { name: string; url: string }[] = [];
+
+  for (const it of allItems) {
+    const itemResList = [
+      ...(it.resources || []),
+      ...(it.models || []).flatMap((m) => m.resources || []),
+    ];
+    for (const r of itemResList) {
+      const name = String(r.title || r.name || "").trim();
+      const url = String(r.url || "").trim();
+      if (!name || !url || !/^https?:\/\//i.test(url) || seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      allResources.push({ name, url });
+    }
+  }
+
+  // Always include the built-in live-generated PDF catalogues so PDF requests never fail when DB Resource table is empty
+  const builtinCatalogues = [
+    {
+      name: "Classic Concepts - Acrylic Podiums & Pulpits Catalogue",
+      url: `${appOrigin}/api/media/pdf_podium_catalogue`,
+    },
+    {
+      name: "Classic Concepts - Acrylic Furniture, Chairs & Tables Catalogue",
+      url: `${appOrigin}/api/media/pdf_furniture_catalogue`,
+    },
+    {
+      name: "Classic Concepts - Acrylic Trophies, Mementos & Corporate Gifts Catalogue",
+      url: `${appOrigin}/api/media/pdf_memento_catalogue`,
+    },
+    {
+      name: "Classic Edge 53 - Industrial Acrylic Machines & Tools Catalogue",
+      url: `${appOrigin}/api/media/pdf_machines_catalogue`,
+    },
+    {
+      name: "Classic Concepts - Complete Product & Display Catalogue",
+      url: `${appOrigin}/api/media/pdf_full_catalogue`,
+    },
+  ];
+  for (const b of builtinCatalogues) {
+    if (!seenUrls.has(b.url)) {
+      seenUrls.add(b.url);
+      allResources.push(b);
+    }
+  }
+
+  const matched = allResources.filter((r) => {
+    const rn = r.name.toLowerCase();
+    if (/podium|pulpit|lectern/.test(lower) && /podium/.test(rn)) return true;
+    if (/furniture|chair|table|stool/.test(lower) && /furniture/.test(rn)) return true;
+    if (/trophy|trophies|memento|award|gift/.test(lower) && /memento|award|trophy/.test(rn)) return true;
+    if (/machine|polisher|bender|ce53/.test(lower) && /machine|edge|polish|bend/.test(rn)) return true;
+    return false;
+  });
+
+  const chosen = (matched.length > 0 ? matched : [builtinCatalogues[4], builtinCatalogues[0]]).slice(0, 3);
+  const attachments: AcrioMediaAttachment[] = chosen.map((r) => {
+    const safeName = r.name.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+    const fileName = /\.pdf$/i.test(safeName) ? safeName : `${safeName || "Catalogue"}.pdf`;
+    return {
+      mediaType: "DOCUMENT",
+      imageUrl: r.url,
+      caption: `*${r.name}* (PDF)`,
+      fileName,
+      mimeType: "application/pdf",
+      productName: r.name,
+      productSlug: safeName.toLowerCase(),
+      variantName: null,
+    };
+  });
+
+  const listLines = chosen.map((r) => `• *${r.name}*`).join("\n");
+  return {
+    attachments,
+    replyText: `Here ${attachments.length === 1 ? "is our official PDF catalogue" : "are our official PDF catalogues"}:\n${listLines}\n\nLet me know if you would like details, photos, or pricing for any specific model inside!`,
+  };
+}
+
+/**
+ * Resolves the exact product or variant R2 image URLs (or product video) + WhatsApp captions
+ * when a customer asks for images/videos of a product or a photo of a specific colour/variant.
  */
 export function resolveProductMediaAttachments(
   item: MainWebsiteProduct,
@@ -3024,6 +3272,48 @@ export function resolveProductMediaAttachments(
   );
 
   const lower = String(rawText || "").toLowerCase();
+
+  // Case 0: Customer asked specifically for a video of this product
+  if (/\bvideos?\b/i.test(lower) && !/\b(images?|photos?|pics?|pictures?)\b/i.test(lower)) {
+    const vidUrl = String(item.videoUrl || "").trim();
+    if (vidUrl && /\.(mp4|mov|webm|m4v)(\?|$)/i.test(vidUrl)) {
+      return {
+        attachments: [
+          {
+            mediaType: "VIDEO",
+            imageUrl: vidUrl,
+            caption: `*${name}* - Product Video${basePriceStr ? ` (${basePriceStr})` : ""}\n${link}`,
+            fileName: `${item.slug || "product"}.mp4`,
+            mimeType: "video/mp4",
+            productName: name,
+            productSlug: item.slug,
+            variantName: null,
+          },
+        ],
+        replyText: `Here is the video of *${name}*${basePriceStr ? ` (*${basePriceStr}*)` : ""}.\n• *Product page:* ${link}`,
+        matchedVariant: false,
+      };
+    }
+    if (vidUrl && /^https?:\/\//i.test(vidUrl)) {
+      const previewAttachments: AcrioMediaAttachment[] = galleryUrls[0]
+        ? [
+            {
+              mediaType: "IMAGE",
+              imageUrl: galleryUrls[0],
+              caption: `*${name}*${basePriceStr ? ` (${basePriceStr})` : ""}\nVideo: ${vidUrl}\n${link}`,
+              productName: name,
+              productSlug: item.slug,
+              variantName: null,
+            },
+          ]
+        : [];
+      return {
+        attachments: previewAttachments,
+        replyText: `Here is the video link and photo for *${name}*${basePriceStr ? ` (*${basePriceStr}*)` : ""}:\n• *Watch video:* ${vidUrl}\n• *Product page:* ${link}`,
+        matchedVariant: false,
+      };
+    }
+  }
   const sortedVariants = [...variants].sort((a, b) => b.name.length - a.name.length);
   const exactVariantMatches = sortedVariants.filter((v) => {
     const vn = v.name.trim().toLowerCase();
@@ -4978,7 +5268,61 @@ async function runAcrioAutonomousTurnCore(
 
   const hidePricesActive = Boolean(convState.hidePrices);
 
-  // 3b. Direct Product & Variant Image Sharing from Cloudflare R2 Storage
+  // 3b. Direct Product & Variant Image / Video / PDF Brochure Sharing from Storage
+  const focusForPdf =
+    pinnedFocusItem ||
+    (convState.focusProductSlug
+      ? allItems.find(
+          (it) =>
+            (it.slug || "").toLowerCase() ===
+            String(convState.focusProductSlug).toLowerCase()
+        ) || null
+      : null);
+  const pdfResolved = resolveCatalogPdfAttachments(allItems, rawText, focusForPdf);
+  if (pdfResolved && pdfResolved.attachments.length > 0 && !projectPlan.isMultiItemOrTotalling) {
+    const greetPrefix = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+    const pdfReply = stripRepeatedGreeting(
+      formatWhatsAppOutboundText(`${greetPrefix}${pdfResolved.replyText}`),
+      alreadyGreeted,
+      params.customerName
+    );
+    addStep(
+      "Resolved official PDF catalogue attachments",
+      `attachments=${pdfResolved.attachments.length}`
+    );
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: rawText,
+      model: "r2-pdf-catalogue-resolver",
+      outcomeSource: "LIVE_AI",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: cacheMeta.catalogCacheStatus,
+      cacheDetails: `Shared ${pdfResolved.attachments.length} PDF catalogue(s)`,
+      productLookupTriggered: true,
+      productLookupQuery: rawText,
+      productLookupBudget: budgetLabel,
+      productLookupTotalScanned: allItems.length,
+      productsLookedUp: [],
+      steps,
+      response: pdfReply,
+      durationMs: Date.now() - started,
+    });
+    return {
+      needsHumanHandoff: false,
+      handoffReason: "",
+      needsSalesTeamPing: false,
+      salesTeamPingNote: "",
+      customerReply: pdfReply,
+      smartCategory,
+      priority,
+      conversationState: convState,
+      mediaAttachments: pdfResolved.attachments,
+    };
+  }
+
   const asksForImages = isProductImageRequest(rawText);
   const imageTargetItem = asksForImages
     ? pinnedFocusItem ||

@@ -18,6 +18,7 @@ import {
   Link2,
   Lock,
   MoreHorizontal,
+  Paperclip,
   PanelRightClose,
   PanelRightOpen,
   PhoneCall,
@@ -56,6 +57,15 @@ import {
   stripWhatsAppFormatting,
 } from "@cc/ui";
 import { MentionTextarea } from "@/components/MentionTextarea";
+import {
+  AttachmentPickerPopover,
+  MediaPreviewLightbox,
+  MessageMediaRenderer,
+  StagedAttachmentBar,
+  extractMessageMedia,
+  type NormalizedMessageMedia,
+  type StagedComposerAttachment,
+} from "@/components/MediaAttachmentTools";
 import {
   TemplateSendDialog,
   type TemplateSendPayload,
@@ -498,6 +508,11 @@ export function InboxClient({
   // chat and tab where you typed it, so a half-written message can never end up in the wrong place.
   // ------------------------------------------------------------------------
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [stagedAttachment, setStagedAttachment] =
+    useState<StagedComposerAttachment | null>(null);
+  const [showAttachmentPicker, setShowAttachmentPicker] = useState(false);
+  const [previewMedia, setPreviewMedia] =
+    useState<NormalizedMessageMedia | null>(null);
   const draftsRef = useRef<Record<string, string>>({});
   const activeDraftKeyRef = useRef<string>("");
   const skipDraftSaveRef = useRef(false);
@@ -520,6 +535,8 @@ export function InboxClient({
       setReplyingTo(null);
       setQuickNoteDraft("");
       setTemplateDialogOpen(false);
+      setStagedAttachment(null);
+      setShowAttachmentPicker(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, composerMode]);
@@ -1039,7 +1056,8 @@ export function InboxClient({
 
   async function handleComposerSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedId || !replyText.trim() || !detail) return;
+    const hasStagedAtt = composerMode === "REPLY" && Boolean(stagedAttachment);
+    if (!selectedId || (!replyText.trim() && !hasStagedAtt) || !detail) return;
 
     // Templates are never typed freehand; they go through the picker so values are checked first.
     if (composerMode === "TEMPLATE") {
@@ -1059,19 +1077,47 @@ export function InboxClient({
       return;
     }
 
-    const textToSend = replyText.trim();
+    const activeAtt = composerMode === "REPLY" ? stagedAttachment : null;
+    const rawCaptionText = replyText.trim();
+    const textToSend =
+      rawCaptionText ||
+      (activeAtt
+        ? activeAtt.productName
+          ? `*${activeAtt.productName}*${activeAtt.variantName ? ` (${activeAtt.variantName})` : ""}`
+          : `[${activeAtt.mediaType}] ${activeAtt.fileName}`
+        : "");
     const currentConvId = selectedId;
     const activeReplyRef = replyingTo;
     setSending(true);
     setReplyText("");
     setReplyingTo(null);
+    setStagedAttachment(null);
+    setShowAttachmentPicker(false);
 
     // Optimistic UI append at 0ms: starts as SENDING (clock + "Sending") -> SENT (1 tick) -> DELIVERED (2 grey ticks) -> READ (2 blue ticks)
     const tempId = `optimistic_${Date.now()}`;
     const nowIso = new Date().toISOString();
-    const optimisticMetadata = activeReplyRef
-      ? { replyTo: activeReplyRef }
-      : null;
+    const optimisticMetadata: Record<string, unknown> | null =
+      activeReplyRef || activeAtt
+        ? {
+            ...(activeReplyRef ? { replyTo: activeReplyRef } : {}),
+            ...(activeAtt
+              ? {
+                  mediaType: activeAtt.mediaType,
+                  mediaUrl: activeAtt.url,
+                  ...(activeAtt.mediaType === "IMAGE"
+                    ? { imageUrl: activeAtt.url }
+                    : {}),
+                  fileName: activeAtt.fileName,
+                  filename: activeAtt.fileName,
+                  mimeType: activeAtt.mimeType,
+                  sizeBytes: activeAtt.sizeBytes,
+                  productName: activeAtt.productName,
+                  variantName: activeAtt.variantName,
+                }
+              : {}),
+          }
+        : null;
     const optimisticMsg: ChatMessage =
       composerMode === "NOTE"
         ? {
@@ -1092,7 +1138,7 @@ export function InboxClient({
             direction: "OUTBOUND",
             senderType: "STAFF",
             senderName: initialData.currentUserName,
-            messageType: "TEXT",
+            messageType: activeAtt ? activeAtt.mediaType : "TEXT",
             billingCategory: "FREE_CHAT",
             body: textToSend,
             templateName: null,
@@ -1208,8 +1254,9 @@ export function InboxClient({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "send_message",
-            text: textToSend,
-            messageType: "TEXT",
+            text: rawCaptionText,
+            messageType: activeAtt ? activeAtt.mediaType : "TEXT",
+            attachment: activeAtt || undefined,
             replyToMessageId: activeReplyRef?.messageId || undefined,
             replyTo: activeReplyRef || undefined,
           }),
@@ -2623,35 +2670,16 @@ export function InboxClient({
                         </button>
                       )}
 
-                      {typeof m.metadata?.imageUrl === "string" &&
-                        /^https?:\/\//i.test(String(m.metadata.imageUrl)) && (
-                          <div className="my-1.5">
-                            <a
-                              href={String(m.metadata.imageUrl)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="block rounded-md overflow-hidden border border-black/10 bg-white max-w-[260px]"
-                            >
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={String(m.metadata.imageUrl)}
-                                alt={
-                                  typeof m.metadata.productName === "string"
-                                    ? String(m.metadata.productName)
-                                    : "Product photo"
-                                }
-                                loading="lazy"
-                                className="w-full max-h-56 object-contain bg-white"
-                              />
-                              {typeof m.metadata?.variantName === "string" &&
-                                m.metadata.variantName && (
-                                  <div className="px-2 py-1 bg-neutral-50 border-t border-black/8 text-[11px] font-semibold text-[#111b21]">
-                                    Variant: {String(m.metadata.variantName)}
-                                  </div>
-                                )}
-                            </a>
-                          </div>
-                        )}
+                      {(() => {
+                        const msgMedia = extractMessageMedia(m);
+                        if (!msgMedia) return null;
+                        return (
+                          <MessageMediaRenderer
+                            media={msgMedia}
+                            onOpenPreview={(med) => setPreviewMedia(med)}
+                          />
+                        );
+                      })()}
 
                       <WhatsAppFormattedText
                         text={m.body}
@@ -2751,9 +2779,22 @@ export function InboxClient({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Popovers for Track Order Button & Product Short Links (triggered from the Composer Toolbar) */}
-            {detail && (showTrackPopover || (showShortLinksPicker && detail.customLinks.length > 0)) && (
+            {/* Popovers for Attach Media/File, Track Order Button & Product Short Links (triggered from the Composer Toolbar) */}
+            {detail && (showAttachmentPicker || showTrackPopover || (showShortLinksPicker && detail.customLinks.length > 0)) && (
               <div className="relative shrink-0 px-4">
+                <AttachmentPickerPopover
+                  open={showAttachmentPicker}
+                  onClose={() => setShowAttachmentPicker(false)}
+                  onStageAttachment={(att) => {
+                    setStagedAttachment(att);
+                    if (att.suggestedCaption && !replyText.trim()) {
+                      setReplyText(att.suggestedCaption);
+                    }
+                    setComposerMode("REPLY");
+                    setTimeout(() => composerInputRef.current?.focus(), 20);
+                  }}
+                  onShowToast={showToast}
+                />
                 {showTrackPopover && (
                   <form
                     onSubmit={handleSendOrderTracking}
@@ -3175,7 +3216,32 @@ export function InboxClient({
                       <button
                         type="button"
                         onClick={() => {
+                          setShowTrackPopover(false);
                           setShowShortLinksPicker(false);
+                          setShowAttachmentPicker((prev) => !prev);
+                        }}
+                        title="Attach & send Image, Video, PDF, CAD/Office file, or Catalog Photo/Brochure"
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-semibold cursor-pointer transition ${
+                          showAttachmentPicker || stagedAttachment
+                            ? "bg-[#00a884] text-white border-[#00a884]"
+                            : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
+                        }`}
+                      >
+                        <Paperclip
+                          className={`w-3.5 h-3.5 ${
+                            showAttachmentPicker || stagedAttachment
+                              ? "text-white"
+                              : "text-[#00a884]"
+                          }`}
+                        />
+                        <span>Attach Media / PDF</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowShortLinksPicker(false);
+                          setShowAttachmentPicker(false);
                           if (showTrackPopover) {
                             setShowTrackPopover(false);
                           } else {
@@ -3198,6 +3264,7 @@ export function InboxClient({
                           type="button"
                           onClick={() => {
                             setShowTrackPopover(false);
+                            setShowAttachmentPicker(false);
                             setShowShortLinksPicker((prev) => !prev);
                           }}
                           title="Search & insert verified product short links (ccapl.cc)"
@@ -3311,6 +3378,13 @@ export function InboxClient({
                 </div>
               )}
 
+              {stagedAttachment && composerMode === "REPLY" && (
+                <StagedAttachmentBar
+                  attachment={stagedAttachment}
+                  onClear={() => setStagedAttachment(null)}
+                />
+              )}
+
               {matchingQuickReplies.length > 0 && (
                 <div className="rounded-lg bg-white border border-[#d1d7db] shadow-md p-1.5 space-y-1 max-h-44 overflow-y-auto">
                   <div className="px-2 py-0.5 text-[10.5px] font-semibold text-[#54656f] flex items-center gap-1">
@@ -3397,7 +3471,11 @@ export function InboxClient({
                 />
                 <button
                   type="submit"
-                  disabled={sending || !replyText.trim()}
+                  disabled={
+                    sending ||
+                    (!replyText.trim() &&
+                      !(composerMode === "REPLY" && stagedAttachment))
+                  }
                   className={`h-10 px-4 rounded-lg text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0 ${
                     composerMode === "NOTE"
                       ? "bg-amber-600 hover:bg-amber-700"
@@ -3440,6 +3518,10 @@ export function InboxClient({
                 latestOrderNumber: detail?.orders?.[0]?.orderNumber || null,
               }}
               onSend={sendTemplateMessage}
+            />
+            <MediaPreviewLightbox
+              media={previewMedia}
+              onClose={() => setPreviewMedia(null)}
             />
           </>
         )}
