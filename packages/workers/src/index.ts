@@ -22,6 +22,7 @@ import {
   sendWhatsAppCloudMessage,
   ACRIO_TEAM_ASK_TEXT,
   type AcrioInteractive,
+  type AcrioMediaAttachment,
   type WhatsAppTemplateButton,
 } from "@cc/connections";
 import {
@@ -471,6 +472,7 @@ async function sendAcrioChatMessage(params: {
   customerPhone: string;
   text: string;
   interactive?: AcrioInteractive;
+  mediaAttachments?: AcrioMediaAttachment[];
 }): Promise<{
   acrioMsgId: string;
   replyIso: string;
@@ -478,6 +480,49 @@ async function sendAcrioChatMessage(params: {
 }> {
   const conv = getRawLibSqlClient("conversations");
   const interactive = params.interactive;
+  const mediaAttachments = params.mediaAttachments || [];
+
+  // Send each product / variant image from Cloudflare R2 directly as a WhatsApp IMAGE message first
+  for (const att of mediaAttachments) {
+    if (!att.imageUrl || !/^https?:\/\//i.test(att.imageUrl)) continue;
+    const imgSendRes = await sendWhatsAppCloudMessage({
+      toPhone: params.customerPhone,
+      bodyText: att.caption,
+      image: { url: att.imageUrl, caption: att.caption },
+      simulateAsyncDelivery: true,
+    });
+    const imgMsgId = `msg_acrio_img_${crypto.randomUUID().slice(0, 8)}`;
+    const imgIso = new Date().toISOString();
+    await conv.execute({
+      sql: `INSERT INTO messages (
+        id, conversation_id, direction, sender_type, sender_name, message_type,
+        billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+      ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', 'ACRIO', 'IMAGE', 'ACRIO', ?, ?, ?, ?, ?)`,
+      args: [
+        imgMsgId,
+        params.conversationId,
+        att.caption,
+        JSON.stringify({
+          imageUrl: att.imageUrl,
+          caption: att.caption,
+          productName: att.productName,
+          productSlug: att.productSlug,
+          variantName: att.variantName || null,
+        }),
+        imgSendRes.waMessageId,
+        imgSendRes.deliveryStatus,
+        imgIso,
+      ],
+    });
+    if (imgSendRes.ok && imgSendRes.mode === "SANDBOX_SIMULATOR") {
+      scheduleSandboxDeliveryReceipt({
+        conversationId: params.conversationId,
+        messageId: imgMsgId,
+        waMessageId: imgSendRes.waMessageId,
+      });
+    }
+  }
+
   let sendRes: Awaited<ReturnType<typeof sendWhatsAppCloudMessage>>;
 
   if (interactive) {
@@ -1521,6 +1566,7 @@ export async function processInboundAutomations(params: {
   const acrioTurn = await runAcrioAutonomousTurn({
     conversationId: params.conversationId,
     customerName: String(convRow.customer_name || params.customerPhone),
+    customerPhone: params.customerPhone,
     inboundText: params.inboundText,
     recentMessages,
     hasAlreadyGreeted,
@@ -1553,12 +1599,13 @@ export async function processInboundAutomations(params: {
     return;
   }
 
-  // Send ACRIO's automatic WhatsApp reply (text, or text with buttons / "View options" list)
+  // Send ACRIO's automatic WhatsApp reply (text, or text with buttons / "View options" list, plus any product/variant images)
   const { acrioMsgId, replyIso } = await sendAcrioChatMessage({
     conversationId: params.conversationId,
     customerPhone: params.customerPhone,
     text: acrioTurn.customerReply,
     interactive: acrioTurn.interactive,
+    mediaAttachments: acrioTurn.mediaAttachments,
   });
 
   await recordAssignedFirstResponse({

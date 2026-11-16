@@ -1969,6 +1969,7 @@ export interface EcosystemModelItem {
 }
 
 export interface MainWebsiteProduct {
+  images?: string[];
   features?: string[];
   dimensions?: EcosystemSpecItem[];
   specifications?: EcosystemSpecItem[];
@@ -2204,6 +2205,15 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
               ? p.basePrice
               : null,
           mainImage: p.mainImage ? String(p.mainImage) : null,
+          images: Array.isArray(p.images)
+            ? p.images
+                .map((u: any) =>
+                  String(typeof u === "string" ? u : u?.url || "").trim()
+                )
+                .filter(Boolean)
+            : p.mainImage
+            ? [String(p.mainImage)]
+            : [],
           url: String(p.url || `https://classicconcepts.in/shop/p/${p.slug}`),
           features,
           dimensions,
@@ -2260,6 +2270,7 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
       featsRes,
       specsRes,
       varsRes,
+      imgsRes,
       resLinks,
       indLinks,
       probLinks,
@@ -2298,6 +2309,11 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
       client.execute(`SELECT productId, text FROM ProductFeature`),
       client.execute(`SELECT productId, name, value, type FROM ProductSpecification`),
       client.execute(`SELECT id, productId, name, price, imageUrl FROM ProductVariant`),
+      client
+        .execute(
+          `SELECT productId, url FROM ProductImage ORDER BY isMain DESC, createdAt ASC`
+        )
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
       client
         .execute(`SELECT title, fileUrl, type FROM Resource LIMIT 30`)
         .catch(() => ({ rows: [] as Record<string, unknown>[] })),
@@ -2356,6 +2372,17 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         price,
         imageUrl: v.imageUrl ? String(v.imageUrl) : null,
       });
+    }
+
+    const imgsByProd = new Map<string, string[]>();
+    for (const img of imgsRes.rows) {
+      const pid = String(img.productId || "");
+      const url = String(img.url || "").trim();
+      if (!pid || !url) continue;
+      if (!imgsByProd.has(pid)) imgsByProd.set(pid, []);
+      if (!imgsByProd.get(pid)!.includes(url)) {
+        imgsByProd.get(pid)!.push(url);
+      }
     }
 
     const globalResourcesList: { name: string; url: string }[] = [];
@@ -2460,6 +2487,9 @@ export async function loadAllClassicConceptsProducts(): Promise<MainWebsiteProdu
         basePrice: effectivePrice,
         regularPrice,
         mainImage: r.mainImage ? String(r.mainImage) : null,
+        images:
+          imgsByProd.get(id) ||
+          (r.mainImage ? [String(r.mainImage)] : []),
         url: `https://classicconcepts.in/shop/p/${slug}`,
         features,
         dimensions,
@@ -5545,6 +5575,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
   customerPhone?: string;
   customerName?: string;
   rawQuery?: string;
+  forStaffCopilot?: boolean;
 }): Promise<string> {
   const sections: string[] = [];
   const q = String(params.rawQuery || "").toLowerCase();
@@ -5574,7 +5605,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
     ]);
 
     const teamLines: string[] = [
-      `• Official Company Details: Classic Concepts (Acrylic Display & Custom Fabrication) & Classic Edge 53 (Industrial Acrylic Machines & Tools) | Factory & Head Office: 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad, Hyderabad, Telangana | Main Phone / WhatsApp: +91 73372 22876, +91 93467 63253 | Official Emails: sales@classicconcepts.in, alaqmarak0810@gmail.com | Websites: https://www.classicconcepts.in & https://classicedge.in`,
+      `• Official Company Details: Classic Concepts (Acrylic Display & Custom Fabrication) & Classic Edge 53 (Industrial Acrylic Machines & Tools) | Factory & Head Office: 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad, Hyderabad, Telangana | Main Phone / WhatsApp: +91 73372 22876 | Official Email: sales@classicconcepts.in | Websites: https://www.classicconcepts.in & https://classicedge.in`,
     ];
     for (const t of teamsRes.rows) {
       const tMembers = membersRes.rows
@@ -5593,12 +5624,14 @@ export async function loadLiveDatabaseOperationalContext(params: {
     }
     if (usersRes.rows.length > 0) {
       teamLines.push(
-        `• Department-Wise Staff & Leadership Contacts (share freely when customer asks for chairperson, director, marketing, sales, machine specialist, or department contacts): ` +
+        `• Department-Wise Staff & Leadership Contacts: ` +
           usersRes.rows
-            .map(
-              (u) =>
-                `${u.name} — Role/Dept: ${u.department || u.role} | Email: ${u.email}${u.whatsapp_number ? ` | Phone/WhatsApp: ${u.whatsapp_number}` : ""}`
-            )
+            .map((u) => {
+              const rawPhone = String(u.whatsapp_number || "").trim();
+              const safeStaffPhone =
+                rawPhone && !/93467|63253/.test(rawPhone) ? rawPhone : "";
+              return `${u.name} — Role/Dept: ${u.department || u.role} | Email: ${u.email}${safeStaffPhone ? ` | Phone/WhatsApp: ${safeStaffPhone}` : ""}`;
+            })
             .join(" ; ")
       );
     }
@@ -5620,14 +5653,28 @@ export async function loadLiveDatabaseOperationalContext(params: {
       ]);
       for (const m of ccTeam.rows) {
         if (m.isActive === 0 || m.isActive === false) continue;
+        const mPhone =
+          m.phone && !/93467|63253/.test(String(m.phone)) ? String(m.phone) : "";
         teamLines.push(
-          `• Leadership / Key Person: ${m.name} (${m.position || m.role || "Leadership"})${m.email ? ` | Email: ${m.email}` : ""}${m.phone ? ` | Phone: ${m.phone}` : ""}${m.bio ? ` - ${String(m.bio).slice(0, 140)}` : ""}`
+          `• Leadership / Key Person: ${m.name} (${m.position || m.role || "Leadership"})${m.email ? ` | Email: ${m.email}` : ""}${mPhone ? ` | Phone: ${mPhone}` : ""}${m.bio ? ` - ${String(m.bio).slice(0, 140)}` : ""}`
         );
       }
       if (ccSettings.rows.length > 0) {
         const s = ccSettings.rows[0];
+        const safePhone1 =
+          s.phone1 && !/93467|63253/.test(String(s.phone1))
+            ? String(s.phone1)
+            : "+91 73372 22876";
+        const safePhone2 =
+          s.phone2 && !/93467|63253/.test(String(s.phone2))
+            ? ` | Phone 2: ${s.phone2}`
+            : "";
+        const safeEmail =
+          s.email && !/alaqmarak0810/i.test(String(s.email))
+            ? String(s.email)
+            : "sales@classicconcepts.in";
         teamLines.push(
-          `• Head Office & Direct Contact Numbers: Phone 1: ${s.phone1 || "+91 73372 22876"} | Phone 2: ${s.phone2 || "+91 93467 63253"} | WhatsApp: ${s.whatsappNumber || "+91 73372 22876"} | Email: ${s.email || "sales@classicconcepts.in"} | Address: ${String(s.address || "111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad, Hyderabad").replace(/\r?\n/g, ", ")}`
+          `• Head Office & Direct Contact Numbers: Phone: ${safePhone1}${safePhone2} | WhatsApp: ${s.whatsappNumber || "+91 73372 22876"} | Email: ${safeEmail} | Address: ${String(s.address || "111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad, Hyderabad").replace(/\r?\n/g, ", ")}`
         );
       }
       if (ccRes.rows.length > 0) {
@@ -5649,7 +5696,7 @@ export async function loadLiveDatabaseOperationalContext(params: {
       );
     }
 
-    // 2. Customer-specific CRM profile, orders, trackings, and enquiries
+    // 2. Customer-specific CRM profile, orders, trackings, and enquiries (strictly isolated to the current customer's 10-digit phone!)
     const cleanPhone = params.customerPhone
       ? normalizeWhatsAppPhone(params.customerPhone)
       : "";
@@ -5757,8 +5804,10 @@ export async function loadLiveDatabaseOperationalContext(params: {
       }
     }
 
-    // 3. If query explicitly asks about recent enquiries, orders, or order number / AWB
+    // 3. Global recent enquiries/orders log is STRICTLY restricted to internal staff copilot turns (`forStaffCopilot === true`).
+    // Customer-facing AI turns must NEVER see other customers' names, phone numbers, enquiries, or orders!
     if (
+      params.forStaffCopilot === true &&
       /\b(enquir(?:y|ies)|order|orders|awb|tracking|dispatch|shipment|cc-\d+|ord[-_a-z0-9]+)\b/i.test(
         q
       )

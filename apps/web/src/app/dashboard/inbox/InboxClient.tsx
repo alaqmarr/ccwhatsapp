@@ -2623,6 +2623,36 @@ export function InboxClient({
                         </button>
                       )}
 
+                      {typeof m.metadata?.imageUrl === "string" &&
+                        /^https?:\/\//i.test(String(m.metadata.imageUrl)) && (
+                          <div className="my-1.5">
+                            <a
+                              href={String(m.metadata.imageUrl)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="block rounded-md overflow-hidden border border-black/10 bg-white max-w-[260px]"
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={String(m.metadata.imageUrl)}
+                                alt={
+                                  typeof m.metadata.productName === "string"
+                                    ? String(m.metadata.productName)
+                                    : "Product photo"
+                                }
+                                loading="lazy"
+                                className="w-full max-h-56 object-contain bg-white"
+                              />
+                              {typeof m.metadata?.variantName === "string" &&
+                                m.metadata.variantName && (
+                                  <div className="px-2 py-1 bg-neutral-50 border-t border-black/8 text-[11px] font-semibold text-[#111b21]">
+                                    Variant: {String(m.metadata.variantName)}
+                                  </div>
+                                )}
+                            </a>
+                          </div>
+                        )}
+
                       <WhatsAppFormattedText
                         text={m.body}
                         className="text-[14px] leading-[1.52] tracking-[-0.006em]"

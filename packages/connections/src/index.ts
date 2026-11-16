@@ -405,6 +405,8 @@ export function formatWhatsAppOutboundText(text: string): string {
     .replace(/\bleveraged\b/gi, "used")
     .replace(/\bleverages\b/gi, "uses")
     .replace(/\bleverage\b/gi, "use")
+    .replace(/(?:\+?91[\s-]*)?73372[\s-]*22876\s*[/,]\s*(?:\+?91[\s-]*)?93467[\s-]*63253/g, "+91 73372 22876")
+    .replace(/(?:\+?91[\s-]*)?93467[\s-]*63253/g, "+91 73372 22876")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n[ \t]+/g, "\n")
@@ -720,6 +722,10 @@ export async function sendWhatsAppCloudMessage(params: {
   templateComponents?: Record<string, unknown>[];
   replyToWaMessageId?: string;
   interactive?: AcrioInteractive;
+  image?: {
+    url: string;
+    caption?: string;
+  };
   ctaButton?: {
     label: string;
     url: string;
@@ -775,6 +781,13 @@ export async function sendWhatsAppCloudMessage(params: {
       const hasInteractiveCta =
         !params.templateName && /^https?:\/\//i.test(ctaUrl) && Boolean(ctaLabel);
 
+      const imageUrl = String(params.image?.url || "").trim();
+      const hasImageMedia =
+        !params.templateName && !params.interactive && /^https?:\/\//i.test(imageUrl);
+      const imageCaption = params.image?.caption
+        ? formatWhatsAppOutboundText(params.image.caption)
+        : formattedBody;
+
       const payload = params.templateName
         ? {
             messaging_product: "whatsapp",
@@ -787,6 +800,18 @@ export async function sendWhatsAppCloudMessage(params: {
               ...(params.templateComponents && params.templateComponents.length > 0
                 ? { components: params.templateComponents }
                 : {}),
+            },
+          }
+        : hasImageMedia
+        ? {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: recipientDigits,
+            ...contextField,
+            type: "image",
+            image: {
+              link: imageUrl,
+              ...(imageCaption ? { caption: imageCaption.slice(0, 1024) } : {}),
             },
           }
         : params.interactive && !params.templateName
@@ -843,6 +868,31 @@ export async function sendWhatsAppCloudMessage(params: {
       );
 
       let data: any = await res.json().catch(() => ({}));
+      if (!res.ok && hasImageMedia && res.status === 400) {
+        const fallbackBody = imageCaption
+          ? `${imageCaption}\n${imageUrl}`
+          : imageUrl;
+        res = await fetch(
+          `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: recipientDigits,
+              ...contextField,
+              type: "text",
+              text: { preview_url: true, body: fallbackBody },
+            }),
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        data = await res.json().catch(() => ({}));
+      }
       if (!res.ok && hasInteractiveCta && res.status === 400) {
         const fallbackBody = formattedBody.includes(ctaUrl)
           ? formattedBody
@@ -2236,7 +2286,7 @@ const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
   /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|signages|sign|signs|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keychains|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|tables|stool|stools|chair|chairs|desk|desks|furniture|interior|interiors|interiora|decor|furnishing|seating|sit|sitting|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
-  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
+  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|image|images|photo|photos|pic|pics|picture|pictures|photograph|photographs|dikhao|photo\s*bhejo|bhejo\s*photo|close[-\s]*up|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
 
 /**
  * Deterministic Turn-Level Intent Classifier (Phase A).
@@ -2934,15 +2984,224 @@ export function isCatalogAggregateQuestion(rawText: string): boolean {
   );
 }
 
+/** True when the customer is asking for product or variant photos/images/pictures. */
+export function isProductImageRequest(rawText: string): boolean {
+  return /\b(images?|photos?|pics?|pictures?|photographs?|snaps?|visuals?|dikhao|photo\s*bhejo|bhejo\s*photo|how\s+does\s+(?:it|this|that)\s+look|look\s+like|close[-\s]*up)\b/i.test(
+    String(rawText || "")
+  );
+}
+
+export interface AcrioMediaAttachment {
+  imageUrl: string;
+  caption: string;
+  productName: string;
+  productSlug: string;
+  variantName?: string | null;
+}
+
+/**
+ * Resolves the exact product or variant R2 image URLs + WhatsApp captions when a customer
+ * asks for images of a product or a photo of a specific colour/variant.
+ */
+export function resolveProductMediaAttachments(
+  item: MainWebsiteProduct,
+  rawText: string,
+  hidePrices = false
+): { attachments: AcrioMediaAttachment[]; replyText: string; matchedVariant: boolean } {
+  const name = cleanDisplayProductName(item.name);
+  const link = item.shortUrl || item.url;
+  const basePriceStr =
+    !hidePrices && typeof item.basePrice === "number" && item.basePrice > 0
+      ? `₹${item.basePrice.toLocaleString("en-IN")}`
+      : "";
+  const variants = item.variants || [];
+  const galleryUrls = Array.from(
+    new Set(
+      [item.mainImage, ...(item.images || [])]
+        .map((u) => String(u || "").trim())
+        .filter((u) => /^https?:\/\//i.test(u))
+    )
+  );
+
+  const lower = String(rawText || "").toLowerCase();
+  const sortedVariants = [...variants].sort((a, b) => b.name.length - a.name.length);
+  const exactVariantMatches = sortedVariants.filter((v) => {
+    const vn = v.name.trim().toLowerCase();
+    return (
+      vn.length >= 2 &&
+      new RegExp(`\\b${vn.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(lower)
+    );
+  });
+
+  let matchedVariants = exactVariantMatches;
+  if (matchedVariants.length > 1) {
+    const maxWords = Math.max(
+      ...matchedVariants.map((v) => v.name.trim().split(/\s+/).length)
+    );
+    if (maxWords >= 2) {
+      matchedVariants = matchedVariants.filter(
+        (v) => v.name.trim().split(/\s+/).length >= 2
+      );
+    }
+  }
+
+  const colourAsked = ACRIO_COLOUR_WORDS.find((c) =>
+    new RegExp(`\\b${c}\\b`, "i").test(lower)
+  );
+  if (matchedVariants.length === 0 && colourAsked && variants.length > 0) {
+    const re = new RegExp(`\\b${colourAsked}\\b`, "i");
+    matchedVariants = variants.filter((v) => re.test(v.name || ""));
+  }
+
+  // Case 1: Customer asked for a specific variant/colour that exists on this product
+  if (matchedVariants.length > 0) {
+    const attachments: AcrioMediaAttachment[] = [];
+    const seenKeys = new Set<string>();
+    for (const v of matchedVariants.slice(0, 4)) {
+      const imgUrl =
+        (v.imageUrl && /^https?:\/\//i.test(v.imageUrl)
+          ? v.imageUrl.trim()
+          : galleryUrls[0]) || "";
+      if (!imgUrl) continue;
+      const key = `${imgUrl}#${v.name.toLowerCase()}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      const effPrice = !hidePrices
+        ? typeof v.price === "number" && v.price > 0
+          ? v.price
+          : item.basePrice
+        : null;
+      const pricePart =
+        typeof effPrice === "number" && effPrice > 0
+          ? ` (₹${effPrice.toLocaleString("en-IN")})`
+          : "";
+      attachments.push({
+        imageUrl: imgUrl,
+        caption: `*${name}* - *${v.name}* variant${pricePart}\n${link}`,
+        productName: name,
+        productSlug: item.slug,
+        variantName: v.name,
+      });
+    }
+
+    const allVarNames = variants.map((v) => v.name).join(", ");
+    const firstV = matchedVariants[0];
+    const firstPrice = !hidePrices
+      ? typeof firstV.price === "number" && firstV.price > 0
+        ? firstV.price
+        : item.basePrice
+      : null;
+    const priceNote =
+      typeof firstPrice === "number" && firstPrice > 0
+        ? ` (*₹${firstPrice.toLocaleString("en-IN")}*)`
+        : "";
+    const replyText =
+      matchedVariants.length === 1
+        ? `Here is the photo of *${name}* in the *${firstV.name}* variant${priceNote}.\n• *All available variants:* ${allVarNames}\n• *Product page:* ${link}`
+        : `Here are the photos of the ${matchedVariants
+            .map((v) => `*${v.name}*`)
+            .join(", ")} variants of *${name}*.\n• *All available variants:* ${allVarNames}\n• *Product page:* ${link}`;
+
+    return { attachments, replyText, matchedVariant: true };
+  }
+
+  // Case 2: Customer asked for a colour that is not listed on this product
+  if (colourAsked) {
+    const attachments: AcrioMediaAttachment[] = galleryUrls[0]
+      ? [
+          {
+            imageUrl: galleryUrls[0],
+            caption: `*${name}*${basePriceStr ? ` (${basePriceStr})` : ""}\n${link}`,
+            productName: name,
+            productSlug: item.slug,
+            variantName: null,
+          },
+        ]
+      : [];
+    const availLine =
+      variants.length > 0
+        ? `Available variants for *${name}* are: *${variants.map((v) => v.name).join(", ")}*.`
+        : `*${name}* comes in one standard finish.`;
+    return {
+      attachments,
+      replyText: `*${name}* is not listed in *${colourAsked}*. ${availLine}\n\nI have shared the standard product photo here, and our Sales Team can also check custom colour fabrication if needed.\n${link}`,
+      matchedVariant: false,
+    };
+  }
+
+  // Case 3: General product images request ("send me its images", "show photos of CCP054")
+  const attachments: AcrioMediaAttachment[] = [];
+  const usedUrls = new Set<string>();
+
+  if (galleryUrls[0]) {
+    usedUrls.add(galleryUrls[0]);
+    attachments.push({
+      imageUrl: galleryUrls[0],
+      caption: `*${name}*${basePriceStr ? ` (${basePriceStr})` : ""}\n${link}`,
+      productName: name,
+      productSlug: item.slug,
+      variantName: null,
+    });
+  }
+
+  // Include distinct variant photos with their variant labels
+  for (const v of variants) {
+    if (attachments.length >= 4) break;
+    const vUrl = String(v.imageUrl || "").trim();
+    if (!vUrl || !/^https?:\/\//i.test(vUrl) || usedUrls.has(vUrl)) continue;
+    usedUrls.add(vUrl);
+    const vPrice = !hidePrices
+      ? typeof v.price === "number" && v.price > 0
+        ? v.price
+        : item.basePrice
+      : null;
+    const vPricePart =
+      typeof vPrice === "number" && vPrice > 0
+        ? ` (₹${vPrice.toLocaleString("en-IN")})`
+        : "";
+    attachments.push({
+      imageUrl: vUrl,
+      caption: `*${name}* - *${v.name}* variant${vPricePart}\n${link}`,
+      productName: name,
+      productSlug: item.slug,
+      variantName: v.name,
+    });
+  }
+
+  // Fill remaining slots (up to 4 total) from gallery images
+  for (const gUrl of galleryUrls.slice(1)) {
+    if (attachments.length >= 4) break;
+    if (usedUrls.has(gUrl)) continue;
+    usedUrls.add(gUrl);
+    attachments.push({
+      imageUrl: gUrl,
+      caption: `*${name}* (Photo ${attachments.length + 1})\n${link}`,
+      productName: name,
+      productSlug: item.slug,
+      variantName: null,
+    });
+  }
+
+  const allVarNames = variants.map((v) => v.name).join(", ");
+  const replyText =
+    variants.length > 0
+      ? `Here ${attachments.length === 1 ? "is the photo" : `are the photos`} of *${name}*${basePriceStr ? ` (*${basePriceStr}*)` : ""}.\n• *Available variants:* ${allVarNames}\n• *Product page:* ${link}\n\nTell me if you want a photo of a specific variant (such as *${variants[0].name}*)!`
+      : `Here ${attachments.length === 1 ? "is the photo" : `are the photos`} of *${name}*${basePriceStr ? ` (*${basePriceStr}*)` : ""}.\n• *Product page:* ${link}`;
+
+  return { attachments, replyText, matchedVariant: false };
+}
+
 /**
  * Does this turn refer back to the product we were already discussing?
- * ("in this model", "its warranty", "the white one", "what about the price")
+ * ("in this model", "its warranty", "the white one", "send me its images", "photo of the black variant")
  */
 export function isFocusedProductFollowUp(rawText: string): boolean {
   const t = rawText.toLowerCase();
   if (isCatalogAggregateQuestion(t)) return false;
   if (extractExplicitProductOrModelCodes(rawText).length > 0) return false;
+  const asksForImages = isProductImageRequest(rawText);
   if (
+    !asksForImages &&
     /\b(cheaper|alternative|other\s+options?|more\s+options?|any\s+more|similar|something\s+else|different|another|compare|comparison|show\s+me|suggest|recommend|budget|under\s+(?:rs|inr|₹|\d))\b/i.test(
       t
     )
@@ -2950,15 +3209,15 @@ export function isFocusedProductFollowUp(rawText: string): boolean {
     return false;
   }
   const anaphora =
-    /\b(this|that|it|its|same|above|(?:this|that|the)\s+(?:one|model|product|podium|item|piece)|(?:black|white|clear|gold|silver|blue|yellow|red|green|frosted|led)\s+one)\b/i.test(
+    /\b(this|that|it|its|same|above|(?:this|that|the)\s+(?:one|model|product|podium|item|piece|variant|colou?r)|(?:black|white|clear|gold|silver|blue|yellow|red|green|frosted|led)\s+(?:one|variant|colou?r|photo|image|pic|picture))\b/i.test(
       t
     );
   const attribute =
-    /\b(variants?|colou?rs?|warranty|price|cost|rate|mrp|size|dimensions?|height|width|weight|logo|led|delivery|material|pillars?|shelf|wheels?|assembly|available|stock|in\s+(?:black|white|clear|gold|silver))\b/i.test(
+    /\b(variants?|colou?rs?|images?|photos?|pics?|pictures?|photographs?|warranty|price|cost|rate|mrp|size|dimensions?|height|width|weight|logo|led|delivery|material|pillars?|shelf|wheels?|assembly|available|stock|in\s+(?:black|white|clear|gold|silver))\b/i.test(
       t
     );
   const newFamilyNoun = /\b(podiums?|pulpits?|chairs?|stools?|tables?|machines?|trophy|trophies|signages?|boxes|stands?)\b/i.test(t);
-  return anaphora || (attribute && !newFamilyNoun && t.split(/\s+/).length <= 12);
+  return anaphora || asksForImages || (attribute && !newFamilyNoun && t.split(/\s+/).length <= 12);
 }
 
 /** Catalogue-wide count for questions like "how many products do you have with black variant?" */
@@ -3560,8 +3819,10 @@ export async function runAcrioStaffQuestion(params: {
   addStep("Looked up catalog for the question", `matched=${matches.length} of ${allItems.length}`);
 
   const liveContext = await loadLiveDatabaseOperationalContext({
+    customerPhone: params.customerPhone,
     customerName: params.customerName,
     rawQuery: question,
+    forStaffCopilot: true,
   }).catch(() => "");
 
   const transcript = params.chatMessages
@@ -3939,6 +4200,8 @@ export interface AcrioAutonomousTurnResult {
   conversationState?: AcrioConversationState;
   /** Optional WhatsApp buttons / "View options" list to send with the reply. */
   interactive?: AcrioInteractive;
+  /** Optional product / variant photos from Cloudflare R2 to send directly in the WhatsApp chat. */
+  mediaAttachments?: AcrioMediaAttachment[];
 }
 
 /** What the turn matched, so the wrapper can decide between plain text, a list or buttons. */
@@ -3957,6 +4220,7 @@ export interface AcrioUiSink {
 export interface AcrioTurnParams {
   conversationId?: string;
   customerName: string;
+  customerPhone?: string;
   inboundText: string;
   recentMessages?: { direction: string; senderType?: string; body: string }[];
   hasAlreadyGreeted?: boolean;
@@ -4381,8 +4645,10 @@ async function runAcrioAutonomousTurnCore(
   const fetchedCatalog = await getCachedEcosystemCatalog();
   allItems = fetchedCatalog.allItems;
   const liveOperationalContext = await loadLiveDatabaseOperationalContext({
+    customerPhone: params.customerPhone,
     customerName: params.customerName,
     rawQuery: rawText,
+    forStaffCopilot: false,
   });
 
   // Build shortlink map for multi-item project planner
@@ -4446,6 +4712,10 @@ async function runAcrioAutonomousTurnCore(
             `${it.sku || ""} ${it.slug}`.toLowerCase().replace(/[^a-z0-9]/g, "").includes(codes[0].toLowerCase().replace(/[^a-z0-9]/g, ""))
           );
         }
+      }
+      // Or if the previous turn recommended a single product (or top product in lastRecommendedProducts), use it when the customer asks for "its images" / "this model".
+      if (!focusItem && convState.lastRecommendedProducts.length > 0 && isProductImageRequest(rawText)) {
+        focusItem = findItemBySlug(convState.lastRecommendedProducts[0].slug);
       }
     }
 
@@ -4708,6 +4978,86 @@ async function runAcrioAutonomousTurnCore(
 
   const hidePricesActive = Boolean(convState.hidePrices);
 
+  // 3b. Direct Product & Variant Image Sharing from Cloudflare R2 Storage
+  const asksForImages = isProductImageRequest(rawText);
+  const imageTargetItem = asksForImages
+    ? pinnedFocusItem ||
+      (convState.focusProductSlug
+        ? allItems.find(
+            (it) =>
+              (it.slug || "").toLowerCase() ===
+              String(convState.focusProductSlug).toLowerCase()
+          ) || null
+        : null) ||
+      top ||
+      (convState.lastRecommendedProducts[0]
+        ? allItems.find(
+            (it) =>
+              (it.slug || "").toLowerCase() ===
+              String(convState.lastRecommendedProducts[0].slug).toLowerCase()
+          ) || null
+        : null)
+    : null;
+  const resolvedMedia =
+    asksForImages && imageTargetItem
+      ? resolveProductMediaAttachments(imageTargetItem, rawText, hidePricesActive)
+      : null;
+
+  if (
+    resolvedMedia &&
+    resolvedMedia.attachments.length > 0 &&
+    imageTargetItem &&
+    !projectPlan.isMultiItemOrTotalling &&
+    intentInfo.intent !== "PRODUCT_COMPARISON"
+  ) {
+    convState.focusProductSlug = imageTargetItem.slug;
+    if (params.uiSink) {
+      params.uiSink.focus = imageTargetItem;
+    }
+    await saveConversationAiState(params.conversationId, convState);
+    const greetPrefix = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+    const mediaReply = stripRepeatedGreeting(
+      formatWhatsAppOutboundText(`${greetPrefix}${resolvedMedia.replyText}`),
+      alreadyGreeted,
+      params.customerName
+    );
+    addStep(
+      "Resolved product & variant images from R2 storage",
+      `product="${cleanDisplayProductName(imageTargetItem.name)}", attachments=${resolvedMedia.attachments.length}, matchedVariant=${resolvedMedia.matchedVariant}`
+    );
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: rawText,
+      model: "r2-product-media-resolver",
+      outcomeSource: "LIVE_AI",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: cacheMeta.catalogCacheStatus,
+      cacheDetails: `Shared ${resolvedMedia.attachments.length} R2 product/variant image(s) for ${imageTargetItem.slug}`,
+      productLookupTriggered: true,
+      productLookupQuery: usedLookupQuery || rawText,
+      productLookupBudget: budgetLabel,
+      productLookupTotalScanned: allItems.length,
+      productsLookedUp: [mapProductToLogItem(imageTargetItem)],
+      steps,
+      response: mediaReply,
+      durationMs: Date.now() - started,
+    });
+    return {
+      needsHumanHandoff: false,
+      handoffReason: "",
+      needsSalesTeamPing: false,
+      salesTeamPingNote: "",
+      customerReply: mediaReply,
+      smartCategory,
+      priority,
+      conversationState: convState,
+      mediaAttachments: resolvedMedia.attachments,
+    };
+  }
+
   const prebuiltGroupedBlock =
     intentInfo.requiresProductLookup && !projectPlan.isMultiItemOrTotalling
       ? buildGroupedProductShortLinksSection({
@@ -4835,7 +5185,7 @@ Answer directly in 2-3 short lines: you are *ACRIO*, the WhatsApp product & fabr
 CRITICAL: Do NOT list or repeat specific products or links from earlier turns in this reply!`;
         } else if (intentInfo.intent === "COMPANY_INFO") {
           catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about our company, factory location, contact details, or what we do).
-Answer directly: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, acrylic furniture & chairs, office signages, trophies, hotel/retail stands, custom boxes) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility at 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad / Hyderabad (+91 73372 22876, +91 93467 63253, sales@classicconcepts.in) with pan-India delivery and GST billing.`;
+Answer directly: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, acrylic furniture & chairs, office signages, trophies, hotel/retail stands, custom boxes) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility at 111/1, Sakina Manzil, R.T.C Colony, Tirumalgherry, Secunderabad / Hyderabad (+91 73372 22876, sales@classicconcepts.in) with pan-India delivery and GST billing.`;
         } else if (intentInfo.intent === "TOPIC_RESET") {
           catalogContext = `Turn Intent: TOPIC_RESET (The customer wants to ask a different query or start a new topic).
 Acknowledge warmly in 1-2 short lines and invite them to share their new question or requirement.
@@ -4922,7 +5272,9 @@ CORE CONVERSATION, ACCURACY, GIST FORMATTING & BUSINESS RULES:
 3. MULTI-ITEM PROJECT TOTALLING & BUDGET SOLVING:
    - When a customer asks for multiple items with quantities and a budget (e.g. "3 Acrylic podiums, 10 signages for office name plates and 10 chairs within 1 lac rupees"), ALWAYS show the exact unit price × quantity = line total for each item, the grand total, and 2 smart combinations (Option 1: Within-budget combination; Option 2: Full-quantity package with bulk discount check from our Sales Team).
 4. COMPANY DETAILS, CHAIRPERSON/LEADERSHIP & DEPARTMENT CONTACTS:
-   - When asked about company details, leadership/chairperson/director, marketing, sales, or department contacts, share the exact names, roles, emails, and phone/WhatsApp numbers from the Live Database Operational Context (e.g., Head Office: +91 73372 22876 / +91 93467 63253, sales@classicconcepts.in; Platform & Leadership: AL AQMAR app@rapidshiftlabs.in +919618443558; Senior Sales & Hospitality: Ananya Deshmukh ananya.deshmukh@classiconcepts.in +919848022102; Corporate & Hotel Sales: Priya Menon priya.menon@classiconcepts.in +919848055110; Sales Team: Rohan Kulkarni rohan.kulkarni@classiconcepts.in +919848022101; Classic Edge 53 Machines: Karthik Nair karthik.nair@classiconcepts.in +919848022103).
+   - When asked about company details, leadership/chairperson/director, marketing, sales, or department contacts, share the exact names, roles, emails, and phone/WhatsApp numbers from the Live Database Operational Context (e.g., Head Office: +91 73372 22876, sales@classicconcepts.in; Platform & Leadership: AL AQMAR app@rapidshiftlabs.in +919618443558; Senior Sales & Hospitality: Ananya Deshmukh ananya.deshmukh@classiconcepts.in +919848022102; Corporate & Hotel Sales: Priya Menon priya.menon@classiconcepts.in +919848055110; Sales Team: Rohan Kulkarni rohan.kulkarni@classiconcepts.in +919848022101; Classic Edge 53 Machines: Karthik Nair karthik.nair@classiconcepts.in +919848022103).
+   - PRIVACY RULE: NEVER share any other customer's phone number, email, enquiry, or order details.
+   - IMAGE SHARING CAPABILITY: Our system automatically attaches and sends product and variant photos from our Cloudflare R2 storage whenever a customer asks for images/photos. NEVER say "I cannot send images directly here".
 5. CONSULTATIVE SALES TEAM PING vs FULL HANDOFF (CRITICAL):
    - You make the best decision possible autonomously and keep handling the conversation ("needsHumanHandoff": false).
    - When a customer needs bulk discount confirmation, multi-item renovation pricing, or custom quote verification, set "needsSalesTeamPing": true and "needsHumanHandoff": false so our Sales Team gets pinged internally to drop a single reply while you remain active on the chat!
@@ -5051,6 +5403,9 @@ Return ONLY valid JSON:
             smartCategory: parsed.smartCategory || smartCategory,
             priority: parsed.priority || priority,
             conversationState: convState,
+            ...(resolvedMedia && resolvedMedia.attachments.length > 0
+              ? { mediaAttachments: resolvedMedia.attachments }
+              : {}),
           };
         } else {
           lastAiError = "Claude returned text that could not be parsed as JSON.";
@@ -5088,7 +5443,7 @@ Return ONLY valid JSON:
     fallbackReply = `${greetOnce}${podiumSubCategoriesText}`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "LEADERSHIP_CONTACT_INFO") {
-    fallbackReply = `${greetOnce}Here are the direct contact details for our leadership and specialist departments at *Classic Concepts* & *Classic Edge 53*:\n\n• *Management & Platform Head:* AL AQMAR (app@rapidshiftlabs.in, +91 96184 43558)\n• *Senior Sales & Hospitality Head:* Ananya Deshmukh (ananya.deshmukh@classiconcepts.in, +91 98480 22102)\n• *Corporate, Office & Institutional Sales:* Priya Menon (priya.menon@classiconcepts.in, +91 98480 55110) & Rohan Kulkarni (rohan.kulkarni@classiconcepts.in, +91 98480 22101)\n• *Classic Edge 53 Machines & Technical Head:* Karthik Nair (karthik.nair@classiconcepts.in, +91 98480 22103)\n• *Main Factory & Sales Desk (Secunderabad, Hyderabad):* +91 73372 22876 / +91 93467 63253 | sales@classicconcepts.in`;
+    fallbackReply = `${greetOnce}Here are the direct contact details for our leadership and specialist departments at *Classic Concepts* & *Classic Edge 53*:\n\n• *Management & Platform Head:* AL AQMAR (app@rapidshiftlabs.in, +91 96184 43558)\n• *Senior Sales & Hospitality Head:* Ananya Deshmukh (ananya.deshmukh@classiconcepts.in, +91 98480 22102)\n• *Corporate, Office & Institutional Sales:* Priya Menon (priya.menon@classiconcepts.in, +91 98480 55110) & Rohan Kulkarni (rohan.kulkarni@classiconcepts.in, +91 98480 22101)\n• *Classic Edge 53 Machines & Technical Head:* Karthik Nair (karthik.nair@classiconcepts.in, +91 98480 22103)\n• *Main Factory & Sales Desk (Secunderabad, Hyderabad):* +91 73372 22876 | sales@classicconcepts.in`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "CHAT_HISTORY_META") {
     const prevUserTopics = history
@@ -7016,6 +7371,9 @@ export async function sendStaffAlertEmail(params: {
   ctaLabel?: string;
   dispatchType: "STAFF_MENTION" | "STAFF_CALLBACK";
 }): Promise<{ ok: boolean; via: string; error?: string }> {
+  if (process.env.WHATSAPP_FORCE_SANDBOX_FOR_TESTS === "1") {
+    return { ok: true, via: "sandbox_test_skip" };
+  }
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
   const to = String(params.staffEmail || "").trim();
