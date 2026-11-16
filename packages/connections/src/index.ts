@@ -118,7 +118,39 @@ export function parseClaudeJson<T = any>(raw: string | null | undefined): T | nu
   const s = unfenced.indexOf("{");
   const e = unfenced.lastIndexOf("}");
   if (s !== -1 && e > s) {
-    return tryParse(unfenced.slice(s, e + 1));
+    const sliced = tryParse(unfenced.slice(s, e + 1));
+    if (sliced !== null) return sliced;
+  }
+
+  // Salvage: Claude often leaves inch marks (22" x 16") unescaped inside "customerReply", which breaks JSON.parse.
+  // Pull the fields out manually so we NEVER fall back to the bulky deterministic dump for a valid answer.
+  const replyKey = unfenced.match(/"customerReply"\s*:\s*"/);
+  if (replyKey && replyKey.index !== undefined) {
+    const start = replyKey.index + replyKey[0].length;
+    const tail = unfenced.slice(start);
+    const endMatch = tail.match(/"\s*\n?\s*\}\s*$/);
+    const rawReply = endMatch && endMatch.index !== undefined ? tail.slice(0, endMatch.index) : tail.replace(/"?\s*\}?\s*$/, "");
+    const customerReply = rawReply
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, " ")
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\")
+      .trim();
+    if (customerReply) {
+      const boolOf = (key: string) =>
+        new RegExp(`"${key}"\\s*:\\s*true`, "i").test(unfenced.slice(0, replyKey.index));
+      const strOf = (key: string) =>
+        unfenced.slice(0, replyKey.index).match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`))?.[1] || "";
+      return {
+        needsHumanHandoff: boolOf("needsHumanHandoff"),
+        handoffReason: strOf("handoffReason"),
+        needsSalesTeamPing: boolOf("needsSalesTeamPing"),
+        salesTeamPingNote: strOf("salesTeamPingNote"),
+        smartCategory: strOf("smartCategory"),
+        priority: strOf("priority"),
+        customerReply,
+      } as unknown as T;
+    }
   }
   return null;
 }
@@ -2443,6 +2475,8 @@ export interface AcrioConversationState {
   quantity: string | null;
   shownProductSlugs?: string[];
   lastMenuOptions?: string[];
+  /** Slug of the single product the customer is currently talking about ("this model", "it", "the white one"). */
+  focusProductSlug?: string | null;
   askedQuestionsLog?: string[];
   customerProfile?: string;
   languageMode?: string;
@@ -2774,6 +2808,130 @@ function extractMetadataFromTurn(rawText: string): {
   };
 }
 
+const ACRIO_COLOUR_WORDS = [
+  "black", "white", "clear", "transparent", "gold", "golden", "silver", "blue", "yellow",
+  "red", "green", "grey", "gray", "orange", "pink", "frosted", "wood", "wooden", "brown",
+];
+
+/** "how many products have a black variant?" style questions need a catalogue-wide count, not a single product. */
+export function isCatalogAggregateQuestion(rawText: string): boolean {
+  return /\b(how\s+many|number\s+of|count\s+of|total\s+(?:number|products|models)|kitne|kitni|list\s+all|all\s+the\s+products|all\s+products)\b/i.test(
+    rawText
+  );
+}
+
+/**
+ * Does this turn refer back to the product we were already discussing?
+ * ("in this model", "its warranty", "the white one", "what about the price")
+ */
+export function isFocusedProductFollowUp(rawText: string): boolean {
+  const t = rawText.toLowerCase();
+  if (isCatalogAggregateQuestion(t)) return false;
+  if (extractExplicitProductOrModelCodes(rawText).length > 0) return false;
+  if (
+    /\b(cheaper|alternative|other\s+options?|more\s+options?|any\s+more|similar|something\s+else|different|another|compare|comparison|show\s+me|suggest|recommend|budget|under\s+(?:rs|inr|₹|\d))\b/i.test(
+      t
+    )
+  ) {
+    return false;
+  }
+  const anaphora =
+    /\b(this|that|it|its|same|above|(?:this|that|the)\s+(?:one|model|product|podium|item|piece)|(?:black|white|clear|gold|silver|blue|yellow|red|green|frosted|led)\s+one)\b/i.test(
+      t
+    );
+  const attribute =
+    /\b(variants?|colou?rs?|warranty|price|cost|rate|mrp|size|dimensions?|height|width|weight|logo|led|delivery|material|pillars?|shelf|wheels?|assembly|available|stock|in\s+(?:black|white|clear|gold|silver))\b/i.test(
+      t
+    );
+  const newFamilyNoun = /\b(podiums?|pulpits?|chairs?|stools?|tables?|machines?|trophy|trophies|signages?|boxes|stands?)\b/i.test(t);
+  return anaphora || (attribute && !newFamilyNoun && t.split(/\s+/).length <= 12);
+}
+
+/** Catalogue-wide count for questions like "how many products do you have with black variant?" */
+export function buildCatalogAggregateAnswer(
+  allItems: MainWebsiteProduct[],
+  rawText: string
+): { answer: string; items: MainWebsiteProduct[] } | null {
+  if (!isCatalogAggregateQuestion(rawText)) return null;
+  const lower = rawText.toLowerCase();
+  const colour = ACRIO_COLOUR_WORDS.find((c) => new RegExp(`\\b${c}\\b`, "i").test(lower));
+  if (!colour) return null;
+  const re = new RegExp(`\\b${colour}\\b`, "i");
+  const hits = allItems.filter(
+    (it) =>
+      it.brand === "CLASSIC_CONCEPTS" &&
+      it.itemType === "PRODUCT" &&
+      ((it.variants || []).some((v) => re.test(v.name || "")) || re.test(it.name || ""))
+  );
+  if (hits.length === 0) {
+    return {
+      answer: `I checked our full Classic Concepts catalogue and found no products listed in ${colour}. We can still make custom colours, so I can check that with our Sales Team if you like.`,
+      items: [],
+    };
+  }
+  const byCat = new Map<string, number>();
+  for (const it of hits) {
+    const cat = it.categoryName || "Other";
+    byCat.set(cat, (byCat.get(cat) || 0) + 1);
+  }
+  const catLines = Array.from(byCat.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([c, n]) => `• ${c}: ${n}`);
+  const sample = hits.slice(0, 3);
+  const sampleLines = sample.map(
+    (it) => `• *${cleanDisplayProductName(it.name)}* ${it.shortUrl || it.url}`
+  );
+  return {
+    answer: `*${hits.length} products* in our Classic Concepts catalogue come in *${colour}*:\n${catLines.join("\n")}\n\nA few examples:\n${sampleLines.join("\n")}\n\nTell me which type you want (podium, chair, signage, etc.) and I will narrow it down.`,
+    items: sample,
+  };
+}
+
+/** Short, direct answer about ONE product (variant, warranty, price, size) instead of a full spec dump. */
+export function buildFocusedAttributeAnswer(item: MainWebsiteProduct, rawText: string): string | null {
+  const t = rawText.toLowerCase();
+  const name = cleanDisplayProductName(item.name);
+  const link = item.shortUrl || item.url;
+  const priceText =
+    typeof item.basePrice === "number" && item.basePrice > 0
+      ? `₹${item.basePrice.toLocaleString("en-IN")}`
+      : "price on request";
+  const variants = item.variants || [];
+  const colourAsked = ACRIO_COLOUR_WORDS.find((c) => new RegExp(`\\b${c}\\b`, "i").test(t));
+
+  if (/\b(variants?|colou?rs?|finish|available\s+in)\b/i.test(t) || colourAsked) {
+    if (variants.length === 0) {
+      return `*${name}* is sold in one standard finish. ${link}`;
+    }
+    const names = variants.map((v) => v.name).join(", ");
+    if (colourAsked) {
+      const re = new RegExp(`\\b${colourAsked}\\b`, "i");
+      const match = variants.filter((v) => re.test(v.name || ""));
+      if (match.length > 0) {
+        const m = match[0];
+        const price =
+          typeof m.price === "number" && m.price > 0 ? ` at ₹${m.price.toLocaleString("en-IN")}` : "";
+        return `Yes, *${name}* comes in *${match.map((v) => v.name).join(", ")}*${price}.\n\nAll options: ${names}.\n${link}`;
+      }
+      return `*${name}* is not listed in ${colourAsked}. Available options: ${names}.\n${link}`;
+    }
+    return `*${name}* is available in: ${names}.\n${link}`;
+  }
+  if (/\bwarranty\b/i.test(t)) {
+    const w = (item.specifications || []).find((s) => /warranty/i.test(s.label || s.key || ""));
+    if (w) return `*${name}* comes with a *${w.value}* warranty.\n${link}`;
+  }
+  if (/\b(price|cost|rate|mrp)\b/i.test(t)) {
+    const mrp =
+      item.regularPrice && item.basePrice && item.regularPrice > item.basePrice
+        ? ` (MRP ₹${item.regularPrice.toLocaleString("en-IN")})`
+        : "";
+    return `*${name}* is *${priceText}*${mrp}.\n${link}`;
+  }
+  return null;
+}
+
 /**
  * Deterministically updates `AcrioConversationState` for a single customer inbound turn.
  */
@@ -2911,6 +3069,7 @@ export function applyTurnToAcrioConversationState(
     base.quantity = meta.quantity;
     base.lastRecommendedProducts = [];
     base.shownProductSlugs = [];
+    base.focusProductSlug = null;
     return base;
   }
 
@@ -3661,6 +3820,8 @@ export async function runAcrioAutonomousTurn(params: {
   let budgetLabel: string | null = null;
   let usedLookupQuery = "";
   let contextMatches: MainWebsiteProduct[] = [];
+  let pinnedFocusItem: MainWebsiteProduct | null = null;
+  let aggregateResult: { answer: string; items: MainWebsiteProduct[] } | null = null;
   let top: MainWebsiteProduct | undefined;
   let budgetFallbackLowestPrice: number | null = null;
   let budgetFallbackLowestItem: MainWebsiteProduct | null = null;
@@ -3719,7 +3880,31 @@ export async function runAcrioAutonomousTurn(params: {
       dimsInTurn.ranges.length > 0;
     const budgetChangedInTurn = prevMaxPrice !== convState.maxPrice;
 
-    if (projectPlan.isMultiItemOrTotalling && projectPlan.matchedProducts.length > 0) {
+    // Resolve the product the customer is currently talking about (survives across turns).
+    const findItemBySlug = (slug?: string | null) =>
+      slug ? allItems.find((it) => (it.slug || "").toLowerCase() === slug.toLowerCase()) : undefined;
+    let focusItem = findItemBySlug(convState.focusProductSlug);
+    if (!focusItem) {
+      // Derive from earlier customer turns (e.g. "tell me about ccp065") when no state was persisted.
+      const priorInbound = history.filter((m) => m.direction === "INBOUND").map((m) => m.body);
+      for (let i = priorInbound.length - 1; i >= 0 && !focusItem; i--) {
+        const codes = extractExplicitProductOrModelCodes(priorInbound[i]);
+        if (codes.length === 1) {
+          focusItem = allItems.find((it) =>
+            `${it.sku || ""} ${it.slug}`.toLowerCase().replace(/[^a-z0-9]/g, "").includes(codes[0].toLowerCase().replace(/[^a-z0-9]/g, ""))
+          );
+        }
+      }
+    }
+
+    aggregateResult = buildCatalogAggregateAnswer(allItems, rawText);
+    if (aggregateResult && !projectPlan.isMultiItemOrTotalling) {
+      contextMatches = aggregateResult.items;
+    } else if (focusItem && !projectPlan.isMultiItemOrTotalling && isFocusedProductFollowUp(rawText)) {
+      pinnedFocusItem = focusItem;
+      contextMatches = [focusItem];
+      addStep("Pinned focus product", `Follow-up refers to "${focusItem.name}" (kept from earlier in the chat)`);
+    } else if (projectPlan.isMultiItemOrTotalling && projectPlan.matchedProducts.length > 0) {
       contextMatches = projectPlan.matchedProducts;
     } else if (intentInfo.intent === "MENU_SELECTION" && /essential\s*podium/i.test(convState.primaryProductQuery || "")) {
       contextMatches = allItems
@@ -3837,6 +4022,22 @@ export async function runAcrioAutonomousTurn(params: {
 
     top = contextMatches[0];
 
+    // Remember the single product under discussion so the next message ("this model", "its price") stays on it.
+    if (pinnedFocusItem) {
+      convState.focusProductSlug = pinnedFocusItem.slug;
+    } else if (explicitCodesInTurn.length === 1 && contextMatches.length > 0) {
+      const codeKey = explicitCodesInTurn[0].toLowerCase().replace(/[^a-z0-9]/g, "");
+      const exact = contextMatches.find((it) =>
+        `${it.sku || ""} ${it.slug}`.toLowerCase().replace(/[^a-z0-9]/g, "").includes(codeKey)
+      );
+      convState.focusProductSlug = (exact || contextMatches[0]).slug;
+      top = exact || top;
+    } else if (contextMatches.length === 1) {
+      convState.focusProductSlug = contextMatches[0].slug;
+    } else if (explicitCodesInTurn.length >= 2 || (contextMatches.length > 1 && !aggregateResult)) {
+      convState.focusProductSlug = null;
+    }
+
     if (contextMatches.length > 0) {
       convState.lastRecommendedProducts = contextMatches.slice(0, 5).map((it) => ({
         id: it.id,
@@ -3929,7 +4130,7 @@ export async function runAcrioAutonomousTurn(params: {
       : "";
 
   const deepProductInfo =
-    intentInfo.requiresProductLookup && !projectPlan.isMultiItemOrTotalling
+    intentInfo.requiresProductLookup && !projectPlan.isMultiItemOrTotalling && !aggregateResult
       ? buildEcosystemDeepProductContextAndAnswer({
           rawQuery: rawText,
           matchedItems: contextMatches,
@@ -4066,7 +4267,11 @@ Welcome the customer briefly and ask what they are looking to display, build, or
           budgetFallbackLowestPrice && budgetFallbackLowestItem
             ? ` The lowest verified price in this category is ₹${budgetFallbackLowestPrice.toLocaleString("en-IN")} (*${cleanDisplayProductName(budgetFallbackLowestItem.name)}* - ${budgetFallbackLowestItem.shortUrl || budgetFallbackLowestItem.url}).`
             : "";
-        const deepBlock = deepProductInfo?.promptCatalogContext
+        const deepBlock = aggregateResult
+          ? `\n\nVerified Catalogue-Wide Count (the customer asked HOW MANY; answer with this exact count and breakdown, do not describe one single product):\n${aggregateResult.answer}`
+          : pinnedFocusItem
+          ? `\n\nFOCUS PRODUCT (the customer's words like "this model", "it", "the white one" refer to THIS product from earlier in the chat; answer ONLY about it, in 2-4 short lines, answering exactly what they asked and nothing more):\n${cleanDisplayProductName(pinnedFocusItem.name)} | ${pinnedFocusItem.shortUrl || pinnedFocusItem.url}\n${deepProductInfo?.promptCatalogContext || ""}`
+          : deepProductInfo?.promptCatalogContext
           ? `\n\nVerified Deep Product Specifications, Dimensions, Variants & Machine Models:\n${deepProductInfo.promptCatalogContext}`
           : "";
         const verifiedDeepReference = deepProductInfo?.deterministicDeepAnswer
@@ -4131,6 +4336,9 @@ CORE CONVERSATION, ACCURACY, GIST FORMATTING & BUSINESS RULES:
    - When a customer needs bulk discount confirmation, multi-item renovation pricing, or custom quote verification, set "needsSalesTeamPing": true and "needsHumanHandoff": false so our Sales Team gets pinged internally to drop a single reply while you remain active on the chat!
    - Set "needsHumanHandoff": true ONLY if the customer explicitly asks to speak to a human/person right now or reports a damaged delivery/dispute.
 6. PLAIN EVERYDAY LANGUAGE & ANTI-REPETITION:
+   - FOLLOW-UP MEMORY: When the customer says "this model", "it", "its price", "the white one" or asks a short question about colour, warranty, price or size, they mean the FOCUS PRODUCT from earlier in this chat. Answer ONLY that question about THAT product in 2-4 short lines. NEVER switch to a different product and NEVER repeat the full product description again.
+   - COUNT QUESTIONS: When asked "how many products ...", use the Verified Catalogue-Wide Count if provided and answer with the number first.
+   - JSON SAFETY: Write inches as the word "inch" or "in" (for example 22 x 16 inch), NEVER with a double quote character inside customerReply, so the JSON stays valid.
    - Primary languages: English and Hindi/Hinglish. Use other languages only if the user clearly does not understand English or Hindi.
    - Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords.
    - Do NOT repeat "which city is the event/delivery in?" or "do you need logo printing?" if it was already asked in recent turns or if the user is a student/exploring.
@@ -4156,7 +4364,11 @@ Return ONLY valid JSON:
           "Called Anthropic claude-haiku-5-5 (effort=medium)",
           `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms (keySource=${keySource}, in=${aiCall.usage?.inputTokens ?? 0}, think=${aiCall.usage?.thinkingTokens ?? 0}, out=${aiCall.usage?.outputTokens ?? 0})`
         );
-        const parsed = parseClaudeJson<any>(aiCall.text);
+        const parsed =
+          parseClaudeJson<any>(aiCall.text) ??
+          (!/[{}]/.test(String(aiCall.text)) && String(aiCall.text).trim().length > 5
+            ? { customerReply: String(aiCall.text).trim() }
+            : null);
         if (parsed && typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
           const handoff =
             intentInfo.intent === "HUMAN_HANDOFF_INFO" ||
@@ -4249,10 +4461,12 @@ Return ONLY valid JSON:
           };
         } else {
           lastAiError = "Claude returned text that could not be parsed as JSON.";
+          console.warn(`[ACRIO] JSON parse failure. intent=${intentInfo.intent} raw=${String(aiCall.text).slice(0, 400)}`);
           addStep("JSON parse warning", lastAiError, "WARN");
         }
       } else {
         lastAiError = aiCall.error || "Anthropic call failed";
+        console.warn(`[ACRIO] Claude call failed. intent=${intentInfo.intent} http=${aiCall.statusCode} err=${lastAiError} ms=${aiCall.durationMs}`);
         addStep(
           "Anthropic claude-haiku-5-5 call failed",
           `HTTP ${aiCall.statusCode}: ${lastAiError}`,
@@ -4347,6 +4561,10 @@ Return ONLY valid JSON:
     salesTeamPingNote = `ACRIO Consultative Ping: Customer shared 3D custom dimensions for quote ("${rawText.slice(0, 120)}").`;
     smartCategory = "Custom Fabrication";
     priority = "HIGH";
+  } else if (aggregateResult) {
+    fallbackReply = `${greetOnce}${aggregateResult.answer}`;
+  } else if (pinnedFocusItem && buildFocusedAttributeAnswer(pinnedFocusItem, rawText)) {
+    fallbackReply = `${greetOnce}${buildFocusedAttributeAnswer(pinnedFocusItem, rawText)}`;
   } else if (deepProductInfo?.deterministicDeepAnswer) {
     fallbackReply = `${greetOnce}${deepProductInfo.deterministicDeepAnswer}`;
   } else if (top && prebuiltGroupedBlock) {
