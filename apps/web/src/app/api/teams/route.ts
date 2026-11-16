@@ -241,54 +241,65 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  if (action === "add_member") {
+  if (action === "add_member" || action === "add_members_bulk") {
     const teamId = String(body.teamId || "");
-    const staffId = String(body.staffId || "");
+    const rawIds: string[] = Array.isArray(body.staffIds)
+      ? body.staffIds.map((x: unknown) => String(x || "").trim()).filter(Boolean)
+      : body.staffId
+      ? [String(body.staffId).trim()]
+      : [];
+    const uniqueStaffIds = Array.from(new Set(rawIds));
     const tier = body.tier === "P1" || body.tier === "P2" ? body.tier : "P0";
+    const maxCap = Math.max(1, Number(body.maxActiveChats || 15));
 
-    const uRes = await auth.execute({
-      sql: `SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1`,
-      args: [staffId],
-    });
-    const staffRow = uRes.rows[0];
-    if (!staffRow || !teamId) {
+    if (!teamId || uniqueStaffIds.length === 0) {
       return NextResponse.json(
-        { ok: false, error: "Select a valid team and staff member." },
+        { ok: false, error: "Select a valid team and at least one staff member." },
         { status: 400 }
       );
     }
-    if (String(staffRow.role) === "DEV") {
+
+    const placeholders = uniqueStaffIds.map(() => "?").join(",");
+    const uRes = await auth.execute({
+      sql: `SELECT id, name, email, role FROM users WHERE id IN (${placeholders})`,
+      args: uniqueStaffIds,
+    });
+    const validRows = uRes.rows.filter((r) => String(r.role) !== "DEV");
+    if (validRows.length === 0) {
       return NextResponse.json(
         {
           ok: false,
           error:
-            "Dev accounts cannot be placed in automated round-robin pools. Managers and Superadmins can assign a chat to Dev manually, or Dev can step into any chat directly.",
+            "Dev accounts cannot be placed in automated round-robin pools. Please select active staff, admin, or manager accounts.",
         },
-        { status: 403 }
+        { status: 400 }
       );
     }
 
-    await conv.execute({
-      sql: `DELETE FROM team_members WHERE team_id = ? AND staff_id = ?`,
-      args: [teamId, staffId],
-    });
+    for (const staffRow of validRows) {
+      const sid = String(staffRow.id);
+      await conv.execute({
+        sql: `DELETE FROM team_members WHERE team_id = ? AND staff_id = ?`,
+        args: [teamId, sid],
+      });
+      await conv.execute({
+        sql: `INSERT INTO team_members (
+          id, team_id, staff_id, staff_name, staff_email, tier, max_active_chats, is_available, email_alerts_enabled, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`,
+        args: [
+          `tm_${crypto.randomUUID().slice(0, 8)}`,
+          teamId,
+          sid,
+          String(staffRow.name),
+          String(staffRow.email || ""),
+          tier,
+          maxCap,
+          nowIso,
+        ],
+      });
+    }
 
-    await conv.execute({
-      sql: `INSERT INTO team_members (
-        id, team_id, staff_id, staff_name, staff_email, tier, max_active_chats, is_available, email_alerts_enabled, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`,
-      args: [
-        `tm_${crypto.randomUUID().slice(0, 8)}`,
-        teamId,
-        staffId,
-        String(staffRow.name),
-        String(staffRow.email || ""),
-        tier,
-        Math.max(1, Number(body.maxActiveChats || 15)),
-        nowIso,
-      ],
-    });
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, addedCount: validRows.length });
   }
 
   if (action === "toggle_member_availability") {

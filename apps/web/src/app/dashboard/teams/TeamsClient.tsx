@@ -176,6 +176,16 @@ export function TeamsClient({
     Record<string, { staffId: string; tier: "P0" | "P1" | "P2" }>
   >({});
 
+  // Quick inline multi-select adder state per (teamId + tier)
+  const [quickAddLane, setQuickAddLane] = useState<{
+    teamId: string;
+    tier: "P0" | "P1" | "P2";
+  } | null>(null);
+  const [quickAddSelectedIds, setQuickAddSelectedIds] = useState<string[]>([]);
+  const [quickAddQuery, setQuickAddQuery] = useState<string>("");
+  const [quickAddMaxChats, setQuickAddMaxChats] = useState<number>(15);
+  const [savingQuickAdd, setSavingQuickAdd] = useState<boolean>(false);
+
   const showNotice = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(""), 3500);
@@ -364,6 +374,39 @@ export function TeamsClient({
     }
   }
 
+  async function handleQuickAddBulk(teamId: string, tier: "P0" | "P1" | "P2") {
+    if (quickAddSelectedIds.length === 0) return;
+    setSavingQuickAdd(true);
+    try {
+      const res = await fetch("/api/teams", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add_members_bulk",
+          teamId,
+          tier,
+          staffIds: quickAddSelectedIds,
+          maxActiveChats: quickAddMaxChats,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.ok) {
+        const count = data.addedCount || quickAddSelectedIds.length;
+        setQuickAddLane(null);
+        setQuickAddSelectedIds([]);
+        setQuickAddQuery("");
+        await reloadSilently();
+        showNotice(
+          `Added ${count} ${count === 1 ? "member" : "members"} to ${tier} lane.`
+        );
+      } else {
+        showNotice(data.error || "Could not add selected members.");
+      }
+    } finally {
+      setSavingQuickAdd(false);
+    }
+  }
+
   async function handleToggleAvailability(member: TeamMemberItem) {
     await fetch("/api/teams", {
       method: "POST",
@@ -507,6 +550,22 @@ export function TeamsClient({
     headerBgClass: string
   ) {
     const tierMembers = team.members.filter((m) => m.tier === tier);
+    const isQuickAddOpen =
+      quickAddLane?.teamId === team.id && quickAddLane?.tier === tier;
+    const existingInSameTier = new Set(tierMembers.map((m) => m.staffId));
+    const existingOtherTierByStaffId = new Map<string, "P0" | "P1" | "P2">();
+    for (const m of team.members) {
+      if (m.tier !== tier) existingOtherTierByStaffId.set(m.staffId, m.tier);
+    }
+    const eligibleStaff = activeStaff.filter((s) => {
+      if (existingInSameTier.has(s.id)) return false;
+      const q = quickAddQuery.trim().toLowerCase();
+      if (!q) return true;
+      return `${s.name} ${s.email} ${s.role} ${s.department || ""}`
+        .toLowerCase()
+        .includes(q);
+    });
+
     return (
       <div className="rounded-xl border border-neutral-200 bg-neutral-50/70 flex flex-col overflow-hidden">
         <div className={`px-3.5 py-2.5 border-b border-neutral-200/80 ${headerBgClass}`}>
@@ -514,18 +573,187 @@ export function TeamsClient({
             <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${accentClass}`}>
               {tier} • {title}
             </span>
-            <span className="text-[11px] font-semibold text-neutral-600">
-              {tierMembers.length} {tierMembers.length === 1 ? "member" : "members"}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-neutral-600">
+                {tierMembers.length} {tierMembers.length === 1 ? "member" : "members"}
+              </span>
+              {canManage && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isQuickAddOpen) {
+                      setQuickAddLane(null);
+                      setQuickAddSelectedIds([]);
+                      setQuickAddQuery("");
+                    } else {
+                      setQuickAddLane({ teamId: team.id, tier });
+                      setQuickAddSelectedIds([]);
+                      setQuickAddQuery("");
+                      setQuickAddMaxChats(15);
+                    }
+                  }}
+                  title={`Quickly add one or more staff members to ${tier}`}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border transition cursor-pointer ${
+                    isQuickAddOpen
+                      ? "bg-neutral-900 text-white border-neutral-900"
+                      : "bg-white hover:bg-neutral-900 hover:text-white text-neutral-800 border-neutral-300 shadow-2xs"
+                  }`}
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>Add</span>
+                </button>
+              )}
+            </div>
           </div>
           <p className="text-[11.5px] text-neutral-600 mt-1">{subtitle}</p>
         </div>
 
+        {/* Inline Multi-Select Quick Adder */}
+        {canManage && isQuickAddOpen && (
+          <div className="p-3 bg-white border-b border-neutral-200 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wide text-slate-700">
+                Select staff for {tier} ({quickAddSelectedIds.length} chosen)
+              </span>
+              <div className="flex items-center gap-2 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setQuickAddSelectedIds(eligibleStaff.map((s) => s.id))
+                  }
+                  className="font-semibold text-[#008069] hover:underline cursor-pointer"
+                >
+                  Select all
+                </button>
+                <span className="text-neutral-300">•</span>
+                <button
+                  type="button"
+                  onClick={() => setQuickAddSelectedIds([])}
+                  className="text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            {activeStaff.length > 4 && (
+              <input
+                type="text"
+                value={quickAddQuery}
+                onChange={(e) => setQuickAddQuery(e.target.value)}
+                placeholder="Search name or email..."
+                className="w-full rounded-md border border-neutral-300 px-2.5 py-1 text-xs focus:outline-none focus:border-[#00a884]"
+              />
+            )}
+
+            {eligibleStaff.length === 0 ? (
+              <p className="text-[11px] text-neutral-500 py-2 text-center">
+                All eligible staff members are already in {tier}.
+              </p>
+            ) : (
+              <div className="max-h-44 overflow-y-auto divide-y divide-neutral-100 border border-neutral-200 rounded-lg">
+                {eligibleStaff.map((s) => {
+                  const checked = quickAddSelectedIds.includes(s.id);
+                  const otherTier = existingOtherTierByStaffId.get(s.id);
+                  return (
+                    <label
+                      key={s.id}
+                      className={`flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs cursor-pointer transition ${
+                        checked ? "bg-emerald-50/70" : "hover:bg-neutral-50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setQuickAddSelectedIds((prev) => [...prev, s.id]);
+                            } else {
+                              setQuickAddSelectedIds((prev) =>
+                                prev.filter((id) => id !== s.id)
+                              );
+                            }
+                          }}
+                          className="rounded border-neutral-300 accent-[#00a884]"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-semibold text-neutral-900 truncate">
+                            {s.name}{" "}
+                            <span className="font-normal text-[10.5px] text-neutral-500">
+                              ({s.role})
+                            </span>
+                          </div>
+                          <div className="text-[10.5px] text-neutral-500 truncate">
+                            {s.email}
+                          </div>
+                        </div>
+                      </div>
+                      {otherTier && (
+                        <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold shrink-0">
+                          Move from {otherTier}
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <select
+                value={quickAddMaxChats}
+                onChange={(e) => setQuickAddMaxChats(Number(e.target.value))}
+                className="px-2 py-1 rounded-md border border-neutral-300 bg-neutral-50 text-[11px] font-medium text-neutral-700"
+              >
+                {[5, 10, 15, 25, 40, 60].map((lim) => (
+                  <option key={lim} value={lim}>
+                    Max {lim} chats
+                  </option>
+                ))}
+              </select>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuickAddLane(null);
+                    setQuickAddSelectedIds([]);
+                  }}
+                  className="px-2.5 py-1 rounded-md text-xs text-neutral-600 hover:bg-neutral-100 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={savingQuickAdd || quickAddSelectedIds.length === 0}
+                  onClick={() => void handleQuickAddBulk(team.id, tier)}
+                  className="px-3 py-1 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                >
+                  {savingQuickAdd
+                    ? "Adding..."
+                    : `Add ${quickAddSelectedIds.length || ""} to ${tier}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="p-3 space-y-2 flex-1">
           {tierMembers.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-neutral-300 bg-white/70 p-4 text-center text-xs text-neutral-500">
-              No {tier} responder assigned yet. Add someone below so escalations never stall.
-            </div>
+            <button
+              type="button"
+              disabled={!canManage}
+              onClick={() => {
+                setQuickAddLane({ teamId: team.id, tier });
+                setQuickAddSelectedIds([]);
+                setQuickAddQuery("");
+                setQuickAddMaxChats(15);
+              }}
+              className="w-full rounded-lg border border-dashed border-neutral-300 bg-white/70 hover:bg-white hover:border-[#00a884] p-4 text-center text-xs text-neutral-500 hover:text-neutral-800 transition cursor-pointer disabled:cursor-default"
+            >
+              No {tier} responder assigned yet. Click <strong>+ Add</strong> to select one or more teammates.
+            </button>
           ) : (
             tierMembers.map((m) => {
               const cap = Math.max(1, m.maxActiveChats || 15);

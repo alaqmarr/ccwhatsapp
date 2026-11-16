@@ -2389,18 +2389,46 @@ export function InboxClient({
                               Template
                             </span>
                           )}
-                          <button
-                            type="button"
-                            onClick={(ev) => {
-                              ev.stopPropagation();
-                              startReplyToMessage(m);
-                            }}
-                            title="Reply to this message"
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-medium text-[#54656f] hover:text-[#111b21] hover:bg-black/8 opacity-75 group-hover:opacity-100 transition cursor-pointer"
-                          >
-                            <CornerUpLeft className="w-3 h-3" />
-                            <span>Reply</span>
-                          </button>
+                          <div className="inline-flex items-center gap-0.5 opacity-75 group-hover:opacity-100 transition">
+                            <button
+                              type="button"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                startReplyToMessage(m);
+                              }}
+                              title="Quote & reply to customer"
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-medium text-[#54656f] hover:text-[#111b21] hover:bg-black/8 cursor-pointer"
+                            >
+                              <CornerUpLeft className="w-3 h-3" />
+                              <span>Reply</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                startReplyToMessage(m);
+                                setComposerMode("NOTE");
+                                setTimeout(() => composerInputRef.current?.focus(), 20);
+                              }}
+                              title="Quote this message in a private team note (@mention or @ACRIO)"
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-medium text-amber-800 hover:bg-amber-500/15 cursor-pointer"
+                            >
+                              <StickyNote className="w-3 h-3" />
+                              <span>Note</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                void navigator.clipboard?.writeText(stripWhatsAppFormatting(m.body));
+                                showToast("Message text copied.");
+                              }}
+                              title="Copy message text"
+                              className="p-1 rounded text-[#54656f] hover:text-[#111b21] hover:bg-black/8 cursor-pointer"
+                            >
+                              <Copy className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
                       </div>
 
@@ -2539,98 +2567,13 @@ export function InboxClient({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Sticky Bottom Live Chat Status & Ownership Bar (always visible right above composer!) */}
-            <div
-              className={`px-3.5 sm:px-4 py-1.5 border-t text-xs flex flex-wrap items-center justify-between gap-2 shrink-0 ${
-                activeConv.status === "RESOLVED"
-                  ? "bg-emerald-50 border-emerald-200 text-emerald-950"
-                  : isAcrioHandling
-                  ? "bg-indigo-50/90 border-indigo-200 text-indigo-950"
-                  : "bg-white border-[#d1d7db] text-[#111b21]"
-              }`}
-            >
-              <div className="flex flex-wrap items-center gap-2 min-w-0">
-                {activeConv.status === "RESOLVED" ? (
-                  <>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10.5px] font-semibold">
-                      <Check className="w-3 h-3" />
-                      <span>Resolved</span>
-                    </span>
-                    <span className="font-medium truncate">
-                      Closed by {activeConv.resolvedByName || "Staff"}
-                      {activeConv.resolutionSummary
-                        ? ` • ${activeConv.resolutionSummary}`
-                        : ""}
-                    </span>
-                  </>
-                ) : isAcrioHandling ? (
-                  <>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[10.5px] font-semibold">
-                      <Sparkles className="w-3 h-3" />
-                      <span>System (ACRIO)</span>
-                    </span>
-                    <span className="text-[11.5px] text-indigo-900 truncate">
-                      Answering automatically • Send a reply or Take Over anytime
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#e7fce3] text-[#008069] border border-[#b7ebaf] text-[10.5px] font-semibold">
-                      <UserCheck className="w-3 h-3" />
-                      <span>
-                        {activeConv.assignedStaffName || "Unassigned"} •{" "}
-                        {activeConv.assignedTeamName || "Sales Team"} (
-                        {activeConv.escalationLevel || "P0"})
-                      </span>
-                    </span>
-                    {activeWait && (
-                      <span suppressHydrationWarning className="text-[11px] font-semibold text-amber-800">
-                        Waiting {activeWait.text}
-                      </span>
-                    )}
-                  </>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1.5 shrink-0">
-                {activeConv.status === "RESOLVED" ? (
-                  <button
-                    type="button"
-                    onClick={handleReopen}
-                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-white border border-emerald-300 hover:bg-emerald-100 text-[11px] font-semibold text-emerald-900 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>Reopen Chat</span>
-                  </button>
-                ) : isAcrioHandling ? (
-                  <button
-                    type="button"
-                    onClick={handleTakeOverFromAcrio}
-                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold cursor-pointer"
-                  >
-                    <UserCheck className="w-3 h-3" />
-                    <span>Take Over</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setShowResolveModal(true)}
-                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold cursor-pointer"
-                  >
-                    <Check className="w-3 h-3" />
-                    <span>Resolve</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Dynamic Order Tracking Button (track.ccapl.cc/{id}) + Quick Short Links Bar */}
-            {detail && (
-              <div className="bg-[#f8f9fa] border-t border-[#d1d7db] px-4 py-1.5 shrink-0 relative">
+            {/* Popovers for Track Order Button & Product Short Links (triggered from the Composer Toolbar) */}
+            {detail && (showTrackPopover || (showShortLinksPicker && detail.customLinks.length > 0)) && (
+              <div className="relative shrink-0 px-4">
                 {showTrackPopover && (
                   <form
                     onSubmit={handleSendOrderTracking}
-                    className="absolute bottom-full left-4 right-4 mb-1.5 z-30 rounded-lg bg-white border border-[#d1d7db] shadow-xl p-3.5 space-y-2.5 max-w-xl"
+                    className="absolute bottom-full left-4 right-4 mb-1.5 z-30 rounded-xl bg-white border border-[#d1d7db] shadow-2xl p-3.5 space-y-2.5 max-w-2xl"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-[#111b21]">
@@ -2959,66 +2902,6 @@ export function InboxClient({
                     </div>
                   </div>
                 )}
-
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (showTrackPopover) {
-                          setShowTrackPopover(false);
-                        } else {
-                          openTrackPopoverForOrder();
-                        }
-                      }}
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded border text-[11px] font-semibold cursor-pointer whitespace-nowrap ${
-                        showTrackPopover
-                          ? "bg-[#00a884] text-white border-[#00a884]"
-                          : "bg-white hover:bg-[#e7fce3] border-[#00a884]/45 text-[#008069]"
-                      }`}
-                    >
-                      <Truck className="w-3 h-3" />
-                      <span>Send Track Button (track.ccapl.cc)</span>
-                    </button>
-                    {detail.customLinks.length > 0 && (
-                      <span className="text-[11px] font-medium text-[#54656f] hidden md:inline">
-                        Short Links:
-                      </span>
-                    )}
-                  </div>
-
-                  {detail.customLinks.length > 0 && (
-                    <div className="flex items-center gap-1.5 overflow-x-auto">
-                      {detail.customLinks.slice(0, 3).map((lnk) => (
-                        <button
-                          key={lnk.id}
-                          type="button"
-                          onClick={() =>
-                            appendToComposer(formatShortLinkUrl(lnk.code))
-                          }
-                          title={lnk.title}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-neutral-100 border border-[#d1d7db] text-[11px] text-[#3b4a54] cursor-pointer whitespace-nowrap"
-                        >
-                          <Link2 className="w-3 h-3 text-[#00a884]" />
-                          <span className="font-mono">
-                            {SHORTLINK_PUBLIC_DOMAIN}/{lnk.code}
-                          </span>
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowTrackPopover(false);
-                          setShowShortLinksPicker((prev) => !prev);
-                        }}
-                        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#e7fce3] hover:bg-[#d9fdd3] border border-[#00a884]/35 text-[11px] font-semibold text-[#008069] cursor-pointer whitespace-nowrap"
-                      >
-                        <Search className="w-3 h-3" />
-                        <span>All Products ({detail.customLinks.length})</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
               </div>
             )}
 
@@ -3101,24 +2984,85 @@ export function InboxClient({
                   </button>
                 </div>
 
-                {composerMode === "REPLY" && (
-                  <span className="text-[11px] text-[#54656f] font-medium hidden sm:inline">
-                    Type <strong>/</strong> for quick replies • *bold*, _italic_ • Shift+Enter for new line
-                  </span>
-                )}
+                {/* Unified Quick-Action Tools right on the Composer Toolbar */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {detail && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowShortLinksPicker(false);
+                          if (showTrackPopover) {
+                            setShowTrackPopover(false);
+                          } else {
+                            openTrackPopoverForOrder();
+                          }
+                        }}
+                        title="Create & send a dynamic order tracking button (track.ccapl.cc)"
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
+                          showTrackPopover
+                            ? "bg-[#00a884] text-white border-[#00a884]"
+                            : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
+                        }`}
+                      >
+                        <Truck className="w-3.5 h-3.5 text-[#00a884]" />
+                        <span>Track Order</span>
+                      </button>
 
-                {composerMode === "TEMPLATE" && (
-                  <span className="text-[11px] text-[#54656f] font-medium hidden sm:inline">
-                    Pick an approved template, fill in the values, and review before it is sent
-                  </span>
-                )}
+                      {detail.customLinks.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowTrackPopover(false);
+                            setShowShortLinksPicker((prev) => !prev);
+                          }}
+                          title="Search & insert verified product short links (ccapl.cc)"
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
+                            showShortLinksPicker
+                              ? "bg-[#00a884] text-white border-[#00a884]"
+                              : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
+                          }`}
+                        >
+                          <Link2 className="w-3.5 h-3.5 text-[#00a884]" />
+                          <span>Product Links ({detail.customLinks.length})</span>
+                        </button>
+                      )}
+                    </>
+                  )}
 
-                {composerMode === "NOTE" && (
-                  <span className="text-[11px] text-amber-900 font-medium inline-flex items-center gap-1">
-                    <Lock className="w-3 h-3" />
-                    <span>Private note visible only to our staff</span>
-                  </span>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setComposerMode("NOTE");
+                      setTimeout(() => {
+                        setReplyText((prev) =>
+                          prev.includes("@ACRIO") ? prev : `@ACRIO ${prev}`
+                        );
+                        composerInputRef.current?.focus();
+                      }, 20);
+                    }}
+                    title="Ask ACRIO a private question in an internal note"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-violet-200 bg-violet-50 hover:bg-violet-100 text-violet-900 text-xs font-semibold cursor-pointer transition"
+                  >
+                    <Sparkles className="w-3 h-3 text-violet-700" />
+                    <span>Ask @ACRIO</span>
+                  </button>
+
+                  {composerMode === "REPLY" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReplyText((prev) => (prev.startsWith("/") ? prev : "/"));
+                        composerInputRef.current?.focus();
+                      }}
+                      title="Open quick canned replies (/)"
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-[#d1d7db] bg-white hover:bg-neutral-50 text-[#54656f] hover:text-[#111b21] text-xs font-medium cursor-pointer"
+                    >
+                      <Zap className="w-3 h-3 text-[#00a884]" />
+                      <span className="hidden sm:inline">Quick Reply (/)</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               {replyingTo && (
