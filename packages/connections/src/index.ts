@@ -2404,7 +2404,7 @@ const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
   /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|signages|sign|signs|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keychains|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|tables|stool|stools|chair|chairs|desk|desks|furniture|interior|interiors|interiora|decor|furnishing|seating|sit|sitting|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
-  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|image|images|photo|photos|pic|pics|picture|pictures|photograph|photographs|video|videos|pdf|brochure|catalogue|catalog|dikhao|photo\s*bhejo|bhejo\s*photo|close[-\s]*up|how\s+does\s+(?:it|this|that)\s+look|look\s+like|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
+  /\b(under|below|above|over|between|within|around|budget|price|cost|rate|how\s*much|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|all\s*(?:three|two|four|five|of\s*them)|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs|pieces|nos|units|qty|quantity)|transparent|clear|frost|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|imag[a-z]*|phot[a-z]*|phto[a-z]*|pics?|pictures?|snaps?|visuals?|videos?|pdf|brochure|catalogue|catalog|dikha[a-z]*|photo\s*bhejo|bhejo\s*photo|close[-\s]*up|how\s+does\s+(?:it|this|that)\s+look|look\s+like|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
 
 /**
  * Deterministic Turn-Level Intent Classifier (Phase A).
@@ -3092,8 +3092,128 @@ function extractMetadataFromTurn(rawText: string): {
 
 const ACRIO_COLOUR_WORDS = [
   "black", "white", "clear", "transparent", "gold", "golden", "silver", "blue", "yellow",
-  "red", "green", "grey", "gray", "orange", "pink", "frosted", "wood", "wooden", "brown",
+  "red", "green", "grey", "gray", "orange", "pink", "frost", "frosted", "wood", "wooden", "brown",
 ];
+
+function normalizeColourToken(word: string): string {
+  const w = word.toLowerCase().trim();
+  if (w === "frost" || w === "frosted") return "frosted";
+  if (w === "golden" || w === "gold") return "gold";
+  if (w === "transparent" || w === "clear") return "clear";
+  if (w === "wooden" || w === "wood") return "wood";
+  if (w === "gray" || w === "grey") return "grey";
+  return w;
+}
+
+/**
+ * Extracts normalized colour/finish tokens from any text ("frost white" -> ["frosted", "white"],
+ * "White Frosted" -> ["white", "frosted"]) so variant matching is 100% word-order independent!
+ */
+export function extractNormalizedColourTokens(text: string): string[] {
+  const lower = String(text || "").toLowerCase();
+  const found: string[] = [];
+  for (const cw of ACRIO_COLOUR_WORDS) {
+    if (new RegExp(`\\b${cw}\\b`, "i").test(lower)) {
+      const norm = normalizeColourToken(cw);
+      if (!found.includes(norm)) found.push(norm);
+    }
+  }
+  return found;
+}
+
+/**
+ * Word-order-independent variant matcher:
+ * - For "frost white" / "frosted white" (tokens=["frosted","white"]), matches ONLY variants
+ *   that contain BOTH "white" and "frosted" (e.g. "White Frosted"), and NEVER matches plain "White"!
+ * - For single-token "black" (tokens=["black"]), prefers exact single-token variant "Black" over "Black Clear" / "Black Frosted".
+ */
+export function matchProductVariantsByColourTokens(
+  variants: { id?: string; name: string; price: number | null; imageUrl?: string | null }[],
+  queryText: string
+): { id?: string; name: string; price: number | null; imageUrl?: string | null }[] {
+  const queryTokens = extractNormalizedColourTokens(queryText);
+  if (queryTokens.length === 0 || !variants || variants.length === 0) return [];
+
+  // 1. Variants that contain EVERY requested colour/finish token (word-order independent!)
+  const fullMatches = variants.filter((v) => {
+    const vTokens = extractNormalizedColourTokens(v.name);
+    return queryTokens.every((qt) => vTokens.includes(qt));
+  });
+
+  if (fullMatches.length === 0) return [];
+
+  // 2. Prefer exact token-set match (e.g. if user asked for ["black"], prefer "Black" ["black"] over "Black Frosted" ["black","frosted"])
+  const exactTokenCountMatches = fullMatches.filter(
+    (v) => extractNormalizedColourTokens(v.name).length === queryTokens.length
+  );
+  return exactTokenCountMatches.length > 0 ? exactTokenCountMatches : fullMatches;
+}
+
+/**
+ * Finds all products in the catalog (optionally filtered by family like "podium") that have a variant
+ * matching ALL colour/finish tokens in `rawText` (e.g. "podiums with frost white color" -> CCP053, CCP060, CCP055).
+ */
+export function findCatalogProductsByVariantTokens(
+  allItems: MainWebsiteProduct[],
+  rawText: string,
+  productFamily?: string | null
+): { item: MainWebsiteProduct; matchedVariant: { name: string; price: number | null; imageUrl?: string | null } }[] {
+  const queryTokens = extractNormalizedColourTokens(rawText);
+  if (queryTokens.length === 0) return [];
+  const lower = rawText.toLowerCase();
+  const wantsPodium =
+    productFamily === "podium" ||
+    /\b(podiums?|pulpits?|lecterns?|rostrums?)\b/i.test(lower);
+
+  const results: {
+    item: MainWebsiteProduct;
+    matchedVariant: { name: string; price: number | null; imageUrl?: string | null };
+  }[] = [];
+
+  for (const it of allItems) {
+    if (it.brand !== "CLASSIC_CONCEPTS" || it.itemType !== "PRODUCT") continue;
+    if (
+      wantsPodium &&
+      !/podium|pulpit|lectern/i.test(`${it.name} ${it.categoryName || ""}`)
+    ) {
+      continue;
+    }
+    const matchedVars = matchProductVariantsByColourTokens(it.variants || [], rawText);
+    if (matchedVars.length > 0) {
+      results.push({ item: it, matchedVariant: matchedVars[0] });
+    }
+  }
+  return results.sort((a, b) => (a.item.basePrice || 999999) - (b.item.basePrice || 999999));
+}
+
+/** True when the customer refers to multiple products from the previous reply ("all three", "both", "these three", "all of them"). */
+export function isMultiProductReference(rawText: string): boolean {
+  return /\b(all\s+(?:three|two|four|five|\d+|of\s+them)|both(?:\s+of\s+them)?|(?:these|those|the)\s+(?:two|three|four|five|\d+)|each\s+of\s+them|their\s+(?:imag[a-z]*|phot[a-z]*|pics?|pictures?))\b/i.test(
+    String(rawText || "")
+  );
+}
+
+/** Resolves all products whose `ccapl.cc` shortlinks appeared in an outbound message, in order. */
+export function resolveProductsFromOutboundText(
+  outboundText: string,
+  allItems: MainWebsiteProduct[]
+): MainWebsiteProduct[] {
+  if (!outboundText) return [];
+  const links = Array.from(
+    outboundText.matchAll(/https?:\/\/ccapl\.cc\/[^\s)*>,]+/gi)
+  ).map((m) => m[0].replace(/[.,;!?]+$/, ""));
+  const seen = new Set<string>();
+  const resolved: MainWebsiteProduct[] = [];
+  for (const link of links) {
+    if (seen.has(link)) continue;
+    seen.add(link);
+    const found = allItems.find(
+      (it) => (it.shortUrl || "").replace(/[.,;!?]+$/, "") === link
+    );
+    if (found) resolved.push(found);
+  }
+  return resolved;
+}
 
 /** "how many products have a black variant?" style questions need a catalogue-wide count, not a single product. */
 export function isCatalogAggregateQuestion(rawText: string): boolean {
@@ -3102,9 +3222,9 @@ export function isCatalogAggregateQuestion(rawText: string): boolean {
   );
 }
 
-/** True when the customer is asking for product or variant photos/images/pictures, videos, or PDF brochures/catalogues. */
+/** True when the customer is asking for product or variant photos/images/pictures (including common typos like "imagea", "imags", "phto"). */
 export function isProductImageRequest(rawText: string): boolean {
-  return /\b(images?|photos?|pics?|pictures?|photographs?|snaps?|visuals?|videos?|dikhao|photo\s*bhejo|bhejo\s*photo|how\s+does\s+(?:it|this|that)\s+look|look\s+like|close[-\s]*up)\b/i.test(
+  return /\b(imag[a-z]*|phot[a-z]*|phto[a-z]*|pics?|pictures?|snaps?|visuals?|videos?|dikha[a-z]*|photo\s*bhejo|bhejo\s*photo|how\s+does\s+(?:it|this|that)\s+look|look\s+like|close[-\s]*up)\b/i.test(
     String(rawText || "")
   );
 }
@@ -3314,34 +3434,9 @@ export function resolveProductMediaAttachments(
       };
     }
   }
-  const sortedVariants = [...variants].sort((a, b) => b.name.length - a.name.length);
-  const exactVariantMatches = sortedVariants.filter((v) => {
-    const vn = v.name.trim().toLowerCase();
-    return (
-      vn.length >= 2 &&
-      new RegExp(`\\b${vn.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(lower)
-    );
-  });
-
-  let matchedVariants = exactVariantMatches;
-  if (matchedVariants.length > 1) {
-    const maxWords = Math.max(
-      ...matchedVariants.map((v) => v.name.trim().split(/\s+/).length)
-    );
-    if (maxWords >= 2) {
-      matchedVariants = matchedVariants.filter(
-        (v) => v.name.trim().split(/\s+/).length >= 2
-      );
-    }
-  }
-
-  const colourAsked = ACRIO_COLOUR_WORDS.find((c) =>
-    new RegExp(`\\b${c}\\b`, "i").test(lower)
-  );
-  if (matchedVariants.length === 0 && colourAsked && variants.length > 0) {
-    const re = new RegExp(`\\b${colourAsked}\\b`, "i");
-    matchedVariants = variants.filter((v) => re.test(v.name || ""));
-  }
+  const queryColourTokens = extractNormalizedColourTokens(rawText);
+  const matchedVariants = matchProductVariantsByColourTokens(variants, rawText);
+  const requestedColourLabel = queryColourTokens.join(" ");
 
   // Case 1: Customer asked for a specific variant/colour that exists on this product
   if (matchedVariants.length > 0) {
@@ -3366,6 +3461,7 @@ export function resolveProductMediaAttachments(
           ? ` (₹${effPrice.toLocaleString("en-IN")})`
           : "";
       attachments.push({
+        mediaType: "IMAGE",
         imageUrl: imgUrl,
         caption: `*${name}* - *${v.name}* variant${pricePart}\n${link}`,
         productName: name,
@@ -3395,11 +3491,12 @@ export function resolveProductMediaAttachments(
     return { attachments, replyText, matchedVariant: true };
   }
 
-  // Case 2: Customer asked for a colour that is not listed on this product
-  if (colourAsked) {
+  // Case 2: Customer asked for a colour/finish combination (e.g. "frost white") that is NOT listed on this product
+  if (queryColourTokens.length > 0) {
     const attachments: AcrioMediaAttachment[] = galleryUrls[0]
       ? [
           {
+            mediaType: "IMAGE",
             imageUrl: galleryUrls[0],
             caption: `*${name}*${basePriceStr ? ` (${basePriceStr})` : ""}\n${link}`,
             productName: name,
@@ -3414,7 +3511,7 @@ export function resolveProductMediaAttachments(
         : `*${name}* comes in one standard finish.`;
     return {
       attachments,
-      replyText: `*${name}* is not listed in *${colourAsked}*. ${availLine}\n\nI have shared the standard product photo here, and our Sales Team can also check custom colour fabrication if needed.\n${link}`,
+      replyText: `*${name}* does not come in *${requestedColourLabel}*. ${availLine}\n\nI have shared the standard product photo here, and our Sales Team can also check custom colour fabrication if needed.\n${link}`,
       matchedVariant: false,
     };
   }
@@ -3482,32 +3579,142 @@ export function resolveProductMediaAttachments(
 }
 
 /**
- * Does this turn refer back to the product we were already discussing?
- * ("in this model", "its warranty", "the white one", "send me its images", "photo of the black variant")
+ * Builds media attachments for a list of multiple products (e.g. when the customer says
+ * "Please share images of all three" or "Can you share images of podiums with frost white color?").
  */
-export function isFocusedProductFollowUp(rawText: string): boolean {
-  const t = rawText.toLowerCase();
+export function resolveMultiProductMediaAttachments(
+  items: MainWebsiteProduct[],
+  colourContextText: string,
+  hidePrices = false
+): { attachments: AcrioMediaAttachment[]; replyText: string } {
+  const attachments: AcrioMediaAttachment[] = [];
+  const lineSummaries: string[] = [];
+
+  for (const it of items.slice(0, 4)) {
+    const cleanName = cleanDisplayProductName(it.name);
+    const link = it.shortUrl || it.url;
+    const matchedVars = matchProductVariantsByColourTokens(
+      it.variants || [],
+      colourContextText
+    );
+    const chosenVar = matchedVars[0] || null;
+    const effPrice = !hidePrices
+      ? chosenVar && typeof chosenVar.price === "number" && chosenVar.price > 0
+        ? chosenVar.price
+        : it.basePrice
+      : null;
+    const priceTag =
+      typeof effPrice === "number" && effPrice > 0
+        ? ` (₹${effPrice.toLocaleString("en-IN")})`
+        : "";
+    const imgUrl =
+      (chosenVar?.imageUrl && /^https?:\/\//i.test(chosenVar.imageUrl)
+        ? chosenVar.imageUrl.trim()
+        : it.mainImage || it.images?.[0] || "") || "";
+    if (!imgUrl) continue;
+
+    const varLabel = chosenVar ? ` - *${chosenVar.name}* variant` : "";
+    attachments.push({
+      mediaType: "IMAGE",
+      imageUrl: imgUrl,
+      caption: `*${cleanName}*${varLabel}${priceTag}\n${link}`,
+      productName: cleanName,
+      productSlug: it.slug,
+      variantName: chosenVar?.name || null,
+    });
+    lineSummaries.push(
+      `${attachments.length}. *${cleanName}*${varLabel}${priceTag}\n   ${link}`
+    );
+  }
+
+  const replyText =
+    attachments.length > 0
+      ? `Here are the photos for the *${attachments.length} matching models*:\n\n${lineSummaries.join(
+          "\n\n"
+        )}\n\nLet me know which one you would like to check in detail!`
+      : "";
+
+  return { attachments, replyText };
+}
+
+/**
+ * Does this turn refer back to the SINGLE product we were already discussing?
+ * ("in this model", "its warranty", "the white one", "send me its images", "Black please")
+ * NEVER returns true when the customer asks for plural/category-wide items ("podiums with frost white",
+ * "podiums that have...", "all three", "both").
+ */
+export function isFocusedProductFollowUp(
+  rawText: string,
+  focusItem?: MainWebsiteProduct | null
+): boolean {
+  const t = rawText.toLowerCase().trim();
   if (isCatalogAggregateQuestion(t)) return false;
   if (extractExplicitProductOrModelCodes(rawText).length > 0) return false;
+  if (isMultiProductReference(t)) return false;
+
+  // Plural product nouns ("podiums with frost white", "I want podiums that have...") ask for a catalog search across models!
+  const hasPluralFamilyNoun =
+    /\b(podiums|pulpits|lecterns|rostrums|chairs|stools|tables|desks|machines|polishers|benders|trophies|mementos|awards|plaques|signages|signs|nameplates|boxes|cases|covers|stands|holders|risers|models|options|products)\b/i.test(
+      t
+    );
+  const hasExplicitSingularPointer =
+    /\b(this\s+(?:model|podium|pulpit|product|one|item|piece|machine)|that\s+(?:model|podium|pulpit|product|one|item|piece|machine)|in\s+this|of\s+this|for\s+this|its)\b/i.test(
+      t
+    );
+  if (hasPluralFamilyNoun && !hasExplicitSingularPointer) {
+    return false;
+  }
+
   const asksForImages = isProductImageRequest(rawText);
   if (
     !asksForImages &&
-    /\b(cheaper|alternative|other\s+options?|more\s+options?|any\s+more|similar|something\s+else|different|another|compare|comparison|show\s+me|suggest|recommend|budget|under\s+(?:rs|inr|₹|\d))\b/i.test(
+    /\b(cheaper|alternative|other\s+options?|more\s+options?|any\s+more|similar|something\s+else|different|another|compare|comparison|suggest|recommend|budget|under\s+(?:rs|inr|₹|\d))\b/i.test(
       t
     )
   ) {
     return false;
   }
+
+  // If the user specifies a colour/finish (e.g. "frosted white") alongside a general noun ("podium") without "this/its",
+  // and the current focusItem does NOT have that variant, do not stay locked on focusItem!
+  const colourTokens = extractNormalizedColourTokens(t);
+  const hasAnyFamilyNoun =
+    /\b(podiums?|pulpits?|lecterns?|chairs?|stools?|tables?|machines?|trophy|trophies|signages?|boxes|stands?)\b/i.test(
+      t
+    );
+  if (
+    focusItem &&
+    colourTokens.length > 0 &&
+    hasAnyFamilyNoun &&
+    !hasExplicitSingularPointer &&
+    matchProductVariantsByColourTokens(focusItem.variants || [], t).length === 0
+  ) {
+    return false;
+  }
+
+  // True singular anaphora (NOTE: bare "that" in "podiums that have..." is a relative pronoun, NOT anaphora!)
   const anaphora =
-    /\b(this|that|it|its|same|above|(?:this|that|the)\s+(?:one|model|product|podium|item|piece|variant|colou?r)|(?:black|white|clear|gold|silver|blue|yellow|red|green|frosted|led)\s+(?:one|variant|colou?r|photo|image|pic|picture))\b/i.test(
+    /\b(this|it|its|same|above|(?:this|that|the)\s+(?:one|model|product|podium|pulpit|item|piece|variant|colou?r)|(?:of|for|about|in|on)\s+that\b|(?:black|white|clear|gold|silver|blue|yellow|red|green|frosted|frost|led)\s+(?:one|variant|colou?r|photo|image|pic|picture))\b/i.test(
       t
     );
   const attribute =
-    /\b(variants?|colou?rs?|images?|photos?|pics?|pictures?|photographs?|warranty|price|cost|rate|mrp|size|dimensions?|height|width|weight|logo|led|delivery|material|pillars?|shelf|wheels?|assembly|available|stock|in\s+(?:black|white|clear|gold|silver))\b/i.test(
+    /\b(variants?|colou?rs?|imag[a-z]*|phot[a-z]*|phto[a-z]*|pics?|pictures?|warranty|price|cost|rate|mrp|size|dimensions?|height|width|weight|logo|led|delivery|material|pillars?|shelf|wheels?|assembly|available|stock|in\s+(?:black|white|clear|gold|silver|frost|frosted))\b/i.test(
       t
     );
-  const newFamilyNoun = /\b(podiums?|pulpits?|chairs?|stools?|tables?|machines?|trophy|trophies|signages?|boxes|stands?)\b/i.test(t);
-  return anaphora || asksForImages || (attribute && !newFamilyNoun && t.split(/\s+/).length <= 12);
+  // Short variant reply (e.g. "Black please", "White", "Black Clear", "White Frosted")
+  const isShortVariantReply =
+    colourTokens.length > 0 &&
+    !hasAnyFamilyNoun &&
+    t.split(/\s+/).length <= 5 &&
+    (!focusItem ||
+      matchProductVariantsByColourTokens(focusItem.variants || [], t).length > 0);
+
+  return (
+    anaphora ||
+    isShortVariantReply ||
+    (asksForImages && !hasAnyFamilyNoun) ||
+    (attribute && !hasAnyFamilyNoun && t.split(/\s+/).length <= 12)
+  );
 }
 
 /** Catalogue-wide count for questions like "how many products do you have with black variant?" */
@@ -4595,7 +4802,15 @@ function decorateAcrioReplyWithInteractive(
     return { interactive: buildTeamConnectInteractive() };
   }
 
-  if (sink.aggregate || sink.multiItem) return null;
+  if (
+    sink.aggregate ||
+    sink.multiItem ||
+    (res.mediaAttachments && res.mediaAttachments.length > 0) ||
+    isProductImageRequest(inboundText) ||
+    extractNormalizedColourTokens(inboundText).length > 0
+  ) {
+    return null;
+  }
 
   // One product under discussion: offer next steps.
   if (sink.focus) {
@@ -4693,7 +4908,9 @@ async function runAcrioAutonomousTurnCore(
 
   const rawText = params.inboundText.trim();
   const lower = rawText.toLowerCase();
-  const firstName = params.customerName.split(/[\s(]/)[0] || "there";
+  const rawFirstToken = (params.customerName || "").split(/[\s(]/)[0] || "";
+  const firstName =
+    !rawFirstToken || /^[\d+\s()+.-]+$/.test(rawFirstToken) ? "there" : rawFirstToken;
 
   const history = (params.recentMessages || []).filter(
     (m) =>
@@ -4705,6 +4922,56 @@ async function runAcrioAutonomousTurnCore(
     Boolean(params.hasAlreadyGreeted) ||
     history.some((m) => m.direction === "OUTBOUND");
 
+  const storedState =
+    params.persistedState !== undefined
+      ? params.persistedState
+      : await loadConversationAiState(params.conversationId);
+
+  // Handle non-text webhook placeholders ([Message], [Image], [Document], [Video], [Audio]) deterministically
+  if (/^\[(?:message|image|photo|video|document|pdf|file|audio|voice\s*note|sticker)\]$/i.test(rawText)) {
+    const isMediaPlaceholder = /^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note)\]$/i.test(rawText);
+    const greetLine = alreadyGreeted ? "" : `Hi ${firstName}, welcome to *Classic Concepts*!\n\n`;
+    const placeholderReply = isMediaPlaceholder
+      ? `${greetLine}I received your attachment. Please share a brief note on what you need (such as matching a ready model, custom fabrication dimensions, or quantity), and I will help you right away.`
+      : `${greetLine}What are you looking to explore today?\n1. *Acrylic Podiums & Pulpits* for stages, auditoriums, or classrooms\n2. *Acrylic Furniture, Chairs & Tables* for interiors or events\n3. *Signages, Trophies & Custom Boxes*\n4. *Classic Edge 53 Machines* for acrylic bending and polishing\n\nReply with *1*, *2*, *3*, *4*, or a model code to get started!`;
+    const formattedPlaceholder = formatWhatsAppOutboundText(placeholderReply);
+    const phState = reconstructAcrioConversationState({
+      persistedState: storedState,
+      recentMessages: history,
+      currentInboundText: rawText,
+    });
+    await saveConversationAiState(params.conversationId, phState);
+    addStep("Handled non-text webhook placeholder", `placeholder="${rawText}"`);
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: rawText,
+      model: "rule-webhook-placeholder",
+      outcomeSource: "LIVE_AI",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: "BYPASS",
+      cacheDetails: `Deterministic reply for webhook placeholder ${rawText}`,
+      productLookupTriggered: false,
+      productLookupQuery: "",
+      productLookupBudget: null,
+      productLookupTotalScanned: 0,
+      productsLookedUp: [],
+      steps,
+      response: formattedPlaceholder,
+      durationMs: Date.now() - started,
+    });
+    return {
+      needsHumanHandoff: false,
+      handoffReason: "",
+      customerReply: formattedPlaceholder,
+      smartCategory: phState.activeCategory || "General Enquiry",
+      priority: "NORMAL",
+      conversationState: phState,
+    };
+  }
+
   const recentInboundWindow = [
     ...history
       .filter((m) => m.direction === "INBOUND")
@@ -4713,11 +4980,6 @@ async function runAcrioAutonomousTurnCore(
     rawText,
   ].join(" ");
   const contextLower = recentInboundWindow.toLowerCase();
-
-  const storedState =
-    params.persistedState !== undefined
-      ? params.persistedState
-      : await loadConversationAiState(params.conversationId);
 
   // 1. Classify turn intent BEFORE any catalog fetch or product lookup (Phase A)
   let intentInfo = classifyAcrioInboundIntent(
@@ -4770,7 +5032,7 @@ async function runAcrioAutonomousTurnCore(
     !String(outboundBodies[0] || "").includes(ACRIO_TEAM_ASK_TEXT) &&
     !String(lastOutboundBody || "").includes(ACRIO_TEAM_ASK_TEXT)
   ) {
-    const firstNameForAsk = params.customerName.split(/[\s(]/)[0] || "there";
+    const firstNameForAsk = firstName;
     const askReply = `Sure ${firstNameForAsk}, happy to connect you with our team.\n\n${ACRIO_TEAM_ASK_TEXT}`;
     recordAndBroadcastAiLog({
       website: "WHATSAPP_HUB",
@@ -4992,7 +5254,7 @@ async function runAcrioAutonomousTurnCore(
     const findItemBySlug = (slug?: string | null) =>
       slug ? allItems.find((it) => (it.slug || "").toLowerCase() === slug.toLowerCase()) : undefined;
     let focusItem = findItemBySlug(convState.focusProductSlug);
-    if (!focusItem) {
+    if (!focusItem && !isMultiProductReference(rawText)) {
       // Derive from earlier customer turns (e.g. "tell me about ccp065") when no state was persisted.
       const priorInbound = history.filter((m) => m.direction === "INBOUND").map((m) => m.body);
       for (let i = priorInbound.length - 1; i >= 0 && !focusItem; i--) {
@@ -5003,8 +5265,12 @@ async function runAcrioAutonomousTurnCore(
           );
         }
       }
-      // Or if the previous turn recommended a single product (or top product in lastRecommendedProducts), use it when the customer asks for "its images" / "this model".
-      if (!focusItem && convState.lastRecommendedProducts.length > 0 && isProductImageRequest(rawText)) {
+      // Or if the previous turn recommended a single product, use it when the customer asks for "its images" / "this model".
+      if (
+        !focusItem &&
+        convState.lastRecommendedProducts.length === 1 &&
+        isProductImageRequest(rawText)
+      ) {
         focusItem = findItemBySlug(convState.lastRecommendedProducts[0].slug);
       }
     }
@@ -5036,7 +5302,11 @@ async function runAcrioAutonomousTurnCore(
       pinnedFocusItem = listPickItem;
       contextMatches = [listPickItem];
       addStep("Resolved list pick", `Customer picked "${listPickItem.name}" from the list we just sent`);
-    } else if (focusItem && !projectPlan.isMultiItemOrTotalling && isFocusedProductFollowUp(rawText)) {
+    } else if (
+      focusItem &&
+      !projectPlan.isMultiItemOrTotalling &&
+      isFocusedProductFollowUp(rawText, focusItem)
+    ) {
       pinnedFocusItem = focusItem;
       contextMatches = [focusItem];
       addStep("Pinned focus product", `Follow-up refers to "${focusItem.name}" (kept from earlier in the chat)`);
@@ -5076,24 +5346,67 @@ async function runAcrioAutonomousTurnCore(
       convState.lastRecommendedProducts.length > 0 &&
       (intentInfo.intent === "PRODUCT_COMPARISON" ||
         intentInfo.intent === "FOLLOW_UP_REFINEMENT") &&
-      /\b(first\s*two|top\s*two|both|these|those|them|which\s+one|which\s+of\s+these|wider|widest|larger|largest|bigger|biggest|taller|tallest|reading\s*top|top\s*sheet|dimension|dimensions|spec|specs|specification|specifications|variant|variants|color|colors|colour|colours|feature|features|pillar|pillars|warranty)\b/i.test(
-        rawText
+      (isMultiProductReference(rawText) ||
+        /\b(first\s*two|top\s*two|both|these|those|them|which\s+one|which\s+of\s+these|wider|widest|larger|largest|bigger|biggest|taller|tallest|reading\s*top|top\s*sheet|dimension|dimensions|spec|specs|specification|specifications|variant|variants|color|colors|colour|colours|feature|features|pillar|pillars|warranty)\b/i.test(
+          rawText
+        )) &&
+      !(
+        extractNormalizedColourTokens(rawText).length > 0 &&
+        /\b(podiums|pulpits|lecterns|chairs|tables|stands|trophies|awards|boxes|models|options|products|have|with)\b/i.test(
+          rawText
+        )
       ) &&
       !/\b(any\s*more|more\s*options|other\s*options|cheaper\s*alternative|smaller\s*top|save\s*more)\b/i.test(rawText)
     ) {
-      const sliceCount = /\b(first\s*two|top\s*two|both|these\s*two|those\s*two)\b/i.test(
-        rawText
-      )
-        ? 2
-        : convState.lastRecommendedProducts.length;
-      const targetSlugs = new Set(
-        convState.lastRecommendedProducts
-          .slice(0, sliceCount)
-          .map((p) => p.slug || p.id)
+      // First check if the last outbound message explicitly listed products (e.g. CCP053, CCP060, CCP055)
+      const outboundListed = resolveProductsFromOutboundText(
+        outboundBodies[0] || lastOutboundBody,
+        allItems
       );
-      contextMatches = allItems.filter((it) =>
-        targetSlugs.has(it.slug || it.id)
+      if (isMultiProductReference(rawText) && outboundListed.length >= 2) {
+        const sliceCount = /\b(first\s*two|top\s*two|both|these\s*two|those\s*two)\b/i.test(
+          rawText
+        )
+          ? 2
+          : /\b(all\s*three|these\s*three|those\s*three|three)\b/i.test(rawText)
+          ? 3
+          : outboundListed.length;
+        contextMatches = outboundListed.slice(0, sliceCount);
+      } else {
+        const sliceCount = /\b(first\s*two|top\s*two|both|these\s*two|those\s*two)\b/i.test(
+          rawText
+        )
+          ? 2
+          : convState.lastRecommendedProducts.length;
+        const targetSlugs = new Set(
+          convState.lastRecommendedProducts
+            .slice(0, sliceCount)
+            .map((p) => p.slug || p.id)
+        );
+        contextMatches = allItems.filter((it) =>
+          targetSlugs.has(it.slug || it.id)
+        );
+      }
+    }
+
+    // If the customer is searching across a category for a specific colour/variant (e.g. "podiums with frost white color" or "podiums that have frosted white variant"), prioritize products that actually have that variant!
+    if (
+      !pinnedFocusItem &&
+      !hasExplicitCodeOrDimInTurn &&
+      extractNormalizedColourTokens(rawText).length > 0
+    ) {
+      const variantCatalogHits = findCatalogProductsByVariantTokens(
+        allItems,
+        rawText,
+        convState.productFamily
       );
+      if (variantCatalogHits.length > 0) {
+        contextMatches = variantCatalogHits.map((h) => h.item).slice(0, 8);
+        addStep(
+          "Filtered catalog by variant colour tokens",
+          `tokens=[${extractNormalizedColourTokens(rawText).join(",")}], matched=${variantCatalogHits.length} (${contextMatches.slice(0, 4).map((m) => m.sku || m.slug).join(", ")})`
+        );
+      }
     }
 
     if (contextMatches.length === 0) {
@@ -5323,7 +5636,116 @@ async function runAcrioAutonomousTurnCore(
     };
   }
 
-  const asksForImages = isProductImageRequest(rawText);
+  const isShortVariantFollowUp =
+    Boolean(pinnedFocusItem) &&
+    extractNormalizedColourTokens(rawText).length > 0 &&
+    rawText.trim().split(/\s+/).length <= 6 &&
+    matchProductVariantsByColourTokens(pinnedFocusItem?.variants || [], rawText).length > 0 &&
+    (/\b(photos?|images?|pictures?|variant|colour|color)\b/i.test(outboundBodies[0] || "") ||
+      !/\b(price|cost|height|size|dimension|warranty)\b/i.test(rawText));
+
+  const asksForImages = isProductImageRequest(rawText) || isShortVariantFollowUp;
+  const explicitCodesForImg = extractExplicitProductOrModelCodes(rawText);
+  const isMultiImageTurn =
+    asksForImages &&
+    !projectPlan.isMultiItemOrTotalling &&
+    (isMultiProductReference(rawText) ||
+      explicitCodesForImg.length >= 2 ||
+      (!pinnedFocusItem &&
+        explicitCodesForImg.length === 0 &&
+        contextMatches.length >= 2 &&
+        /\b(podiums|pulpits|lecterns|chairs|tables|stands|trophies|awards|boxes|models|options|products)\b/i.test(
+          rawText
+        )));
+
+  if (isMultiImageTurn) {
+    const outboundListed = resolveProductsFromOutboundText(
+      outboundBodies[0] || lastOutboundBody,
+      allItems
+    );
+    let multiTargetItems: MainWebsiteProduct[] = [];
+    if (isMultiProductReference(rawText) && outboundListed.length >= 2) {
+      const sliceCount = /\b(first\s*two|top\s*two|both|these\s*two|those\s*two)\b/i.test(rawText)
+        ? 2
+        : /\b(all\s*three|these\s*three|those\s*three|three)\b/i.test(rawText)
+        ? 3
+        : outboundListed.length;
+      multiTargetItems = outboundListed.slice(0, sliceCount);
+    } else if (contextMatches.length >= 2) {
+      multiTargetItems = contextMatches.slice(0, 3);
+    } else if (convState.lastRecommendedProducts.length >= 2) {
+      const recSlugs = new Set(convState.lastRecommendedProducts.slice(0, 3).map((p) => p.slug || p.id));
+      multiTargetItems = allItems.filter((it) => recSlugs.has(it.slug || it.id)).slice(0, 3);
+    }
+
+    if (multiTargetItems.length >= 2) {
+      const colourQuerySource =
+        extractNormalizedColourTokens(rawText).length > 0
+          ? rawText
+          : extractNormalizedColourTokens(outboundBodies[0] || "").length > 0
+          ? outboundBodies[0] || ""
+          : recentInboundWindow;
+      const multiMedia = resolveMultiProductMediaAttachments(
+        multiTargetItems,
+        colourQuerySource,
+        hidePricesActive
+      );
+      if (multiMedia.attachments.length > 0) {
+        convState.focusProductSlug = null;
+        convState.lastRecommendedProducts = multiTargetItems.map((it) => ({
+          id: it.id,
+          name: cleanDisplayProductName(it.name),
+          slug: it.slug,
+          priceInr: it.basePrice,
+          shortUrl: it.shortUrl || it.url,
+          itemType: it.itemType,
+        }));
+        await saveConversationAiState(params.conversationId, convState);
+        const greetPrefix = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+        const multiReply = stripRepeatedGreeting(
+          formatWhatsAppOutboundText(`${greetPrefix}${multiMedia.replyText}`),
+          alreadyGreeted,
+          params.customerName
+        );
+        addStep(
+          "Resolved multi-product & variant images from R2 storage",
+          `products=[${multiTargetItems.map((p) => p.sku || p.slug).join(", ")}], attachments=${multiMedia.attachments.length}`
+        );
+        recordAndBroadcastAiLog({
+          website: "WHATSAPP_HUB",
+          websiteLabel: "Classic Concepts WhatsApp Hub",
+          feature: "Autonomous WhatsApp Concierge (ACRIO)",
+          actor: params.customerName,
+          question: rawText,
+          model: "r2-multi-product-media-resolver",
+          outcomeSource: "LIVE_AI",
+          responseCacheStatus: "BYPASS",
+          catalogCacheStatus: cacheMeta.catalogCacheStatus,
+          cacheDetails: `Shared ${multiMedia.attachments.length} R2 product/variant image(s) across ${multiTargetItems.length} products`,
+          productLookupTriggered: true,
+          productLookupQuery: usedLookupQuery || rawText,
+          productLookupBudget: budgetLabel,
+          productLookupTotalScanned: allItems.length,
+          productsLookedUp: multiTargetItems.map(mapProductToLogItem),
+          steps,
+          response: multiReply,
+          durationMs: Date.now() - started,
+        });
+        return {
+          needsHumanHandoff: false,
+          handoffReason: "",
+          needsSalesTeamPing: false,
+          salesTeamPingNote: "",
+          customerReply: multiReply,
+          smartCategory,
+          priority,
+          conversationState: convState,
+          mediaAttachments: multiMedia.attachments,
+        };
+      }
+    }
+  }
+
   const imageTargetItem = asksForImages
     ? pinnedFocusItem ||
       (convState.focusProductSlug
@@ -5472,7 +5894,9 @@ async function runAcrioAutonomousTurnCore(
       for (const msg of historyWithoutDuplicateCurrent) {
         const role: "user" | "assistant" =
           msg.direction === "INBOUND" ? "user" : "assistant";
-        const body = String(msg.body || "").trim();
+        const body = String(msg.body || "")
+          .replace(/93467\s*63253/g, "73372 22876")
+          .trim();
         if (!body) continue;
         const prev = claudeMessages[claudeMessages.length - 1];
         if (prev && prev.role === role) {
@@ -5574,8 +5998,12 @@ Welcome the customer briefly and ask what they are looking to display, build, or
       const stateSummaryLine = `Active Conversation Memory: product="${convState.primaryProductQuery || "unspecified"}", family="${convState.productFamily || "open"}", category="${smartCategory}", budget="${hidePricesActive ? "HIDE_PRICES_ACTIVE" : budgetLabel || "open"}", preferCheapest=${Boolean(convState.preferCheapest)}, customerProfile="${customerProfileInfo.customerProfile}", languageMode="${customerProfileInfo.languageMode}"`;
 
       const completeDatabaseDirectory = buildCompleteEcosystemDatabaseDirectory(allItems);
+      const safePromptCustomerName =
+        firstName === "there"
+          ? "Valued Customer (do NOT greet with a phone number; say 'Hi there' if greeting)"
+          : params.customerName;
       const latestPromptPayload = `[Internal Context for ACRIO - never echo raw labels]
-Customer Name: ${params.customerName}
+Customer Name: ${safePromptCustomerName}
 Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Start directly with the helpful answer.)" : `NO (First reply: greet "${firstName}" warmly once in 1 short line.)`}
 Customer Persona & Language Instruction: ${customerProfileInfo.instructionNote}
 ${antiRepeatRule ? `${antiRepeatRule}\n` : ""}${stateSummaryLine}
@@ -5704,6 +6132,64 @@ Return ONLY valid JSON:
                   .trim()
               : rawFormatted;
 
+          // Sync conversation state with the exact products Claude actually listed in cleanedReply
+          // so follow-up turns ("Please share images of all three", "the second one") know the exact products shown!
+          const linkedInReply = resolveProductsFromOutboundText(cleanedReply, allItems);
+          if (linkedInReply.length === 1) {
+            convState.focusProductSlug = linkedInReply[0].slug;
+            convState.lastRecommendedProducts = [
+              {
+                id: linkedInReply[0].id,
+                name: cleanDisplayProductName(linkedInReply[0].name),
+                slug: linkedInReply[0].slug,
+                priceInr: linkedInReply[0].basePrice,
+                shortUrl: linkedInReply[0].shortUrl || linkedInReply[0].url,
+                itemType: linkedInReply[0].itemType,
+              },
+            ];
+            await saveConversationAiState(params.conversationId, convState);
+          } else if (linkedInReply.length >= 2) {
+            convState.focusProductSlug = null;
+            convState.lastRecommendedProducts = linkedInReply.slice(0, 5).map((it) => ({
+              id: it.id,
+              name: cleanDisplayProductName(it.name),
+              slug: it.slug,
+              priceInr: it.basePrice,
+              shortUrl: it.shortUrl || it.url,
+              itemType: it.itemType,
+            }));
+            await saveConversationAiState(params.conversationId, convState);
+          }
+
+          let finalMediaAttachments =
+            resolvedMedia && resolvedMedia.attachments.length > 0
+              ? resolvedMedia.attachments
+              : [];
+          if (
+            finalMediaAttachments.length === 0 &&
+            linkedInReply.length > 0 &&
+            (asksForImages ||
+              /\b(photos?|images?|pictures?)\b[^.!?\n]{0,60}\b(coming|attached|shared|here|with\s+this\s+message)\b/i.test(
+                cleanedReply
+              ))
+          ) {
+            const autoMulti =
+              linkedInReply.length === 1
+                ? resolveProductMediaAttachments(linkedInReply[0], rawText, hidePricesActive)
+                : resolveMultiProductMediaAttachments(
+                    linkedInReply.slice(0, 3),
+                    rawText,
+                    hidePricesActive
+                  );
+            if (autoMulti.attachments.length > 0) {
+              finalMediaAttachments = autoMulti.attachments;
+              addStep(
+                "Auto-attached R2 images for products referenced in reply",
+                `products=[${linkedInReply.slice(0, 3).map((p) => p.sku || p.slug).join(", ")}], attachments=${finalMediaAttachments.length}`
+              );
+            }
+          }
+
           addStep(
             "Parsed JSON & formatted WhatsApp outbound message",
             `intent=${intentInfo.intent}, smartCategory="${parsed.smartCategory || smartCategory}", handoff=${handoff}, salesPing=${pingSales}, chars=${cleanedReply.length}`
@@ -5728,7 +6214,9 @@ Return ONLY valid JSON:
               intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling
                 ? allItems.length
                 : 0,
-            productsLookedUp: contextMatches.map(mapProductToLogItem),
+            productsLookedUp: (linkedInReply.length > 0 ? linkedInReply : contextMatches).map(
+              mapProductToLogItem
+            ),
             steps,
             response: cleanedReply,
             durationMs: Date.now() - started,
@@ -5747,8 +6235,8 @@ Return ONLY valid JSON:
             smartCategory: parsed.smartCategory || smartCategory,
             priority: parsed.priority || priority,
             conversationState: convState,
-            ...(resolvedMedia && resolvedMedia.attachments.length > 0
-              ? { mediaAttachments: resolvedMedia.attachments }
+            ...(finalMediaAttachments.length > 0
+              ? { mediaAttachments: finalMediaAttachments }
               : {}),
           };
         } else {
