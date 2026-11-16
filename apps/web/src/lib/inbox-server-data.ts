@@ -174,13 +174,25 @@ export interface StaffOption {
   department: string;
 }
 
+export interface TemplateVariableSpecOption {
+  index: number;
+  label: string;
+  sourceField: string;
+  sampleValue: string;
+}
+
 export interface ApprovedTemplateOption {
   id: string;
   name: string;
   category: "MARKETING" | "UTILITY" | "AUTHENTICATION";
+  language: string;
   headerText: string | null;
+  headerType: string;
   bodyText: string;
+  footerText: string | null;
   ctaUrl: string | null;
+  buttons: { type: string; text: string }[];
+  variablesSchema: TemplateVariableSpecOption[];
 }
 
 export interface CustomLinkItem {
@@ -457,7 +469,7 @@ export async function getInitialInboxPayload(params: {
          ORDER BY name ASC`
       ),
       mkt.execute(
-        `SELECT id, name, category, header_text, body_text, cta_url
+        `SELECT id, name, category, language, header_text, header_type, body_text, footer_text, cta_url, buttons_json, variables_schema_json
          FROM templates
          WHERE approval_status = 'APPROVED'
          ORDER BY category ASC, name ASC`
@@ -552,13 +564,43 @@ export async function getInitialInboxPayload(params: {
     const rawCat = String(tpl.category || "UTILITY");
     const category: "MARKETING" | "UTILITY" | "AUTHENTICATION" =
       rawCat === "MARKETING" || rawCat === "AUTHENTICATION" ? rawCat : "UTILITY";
+    let buttons: { type: string; text: string }[] = [];
+    try {
+      const parsed = JSON.parse(String(tpl.buttons_json || "[]"));
+      if (Array.isArray(parsed)) {
+        buttons = parsed
+          .map((b: Record<string, unknown>) => ({ type: String(b.type || ""), text: String(b.text || "") }))
+          .filter((b) => b.text);
+      }
+    } catch {
+      buttons = [];
+    }
+    let variablesSchema: TemplateVariableSpecOption[] = [];
+    try {
+      const parsed = JSON.parse(String(tpl.variables_schema_json || "[]"));
+      if (Array.isArray(parsed)) {
+        variablesSchema = parsed.map((v: Record<string, unknown>) => ({
+          index: Number(v.index),
+          label: String(v.label || ""),
+          sourceField: String(v.sourceField || "custom"),
+          sampleValue: String(v.sampleValue || ""),
+        }));
+      }
+    } catch {
+      variablesSchema = [];
+    }
     return {
       id: String(tpl.id),
       name: String(tpl.name),
       category,
+      language: String(tpl.language || "en"),
       headerText: tpl.header_text ? String(tpl.header_text) : null,
+      headerType: String(tpl.header_type || "NONE"),
       bodyText: String(tpl.body_text || ""),
+      footerText: tpl.footer_text ? String(tpl.footer_text) : null,
       ctaUrl: tpl.cta_url ? String(tpl.cta_url) : null,
+      buttons,
+      variablesSchema,
     };
   });
 

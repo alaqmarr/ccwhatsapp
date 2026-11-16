@@ -52,6 +52,10 @@ import {
   stripWhatsAppFormatting,
 } from "@cc/ui";
 import { MentionTextarea } from "@/components/MentionTextarea";
+import {
+  TemplateSendDialog,
+  type TemplateSendPayload,
+} from "@/components/TemplateSendDialog";
 import type {
   ApprovedTemplateOption,
   ChatMessage,
@@ -435,6 +439,91 @@ export function InboxClient({
     showToast("Marked as called.");
   }
 
+  // ------------------------------------------------------------------------
+  // Drafts are kept per chat AND per tab (reply / note). Whatever you typed is only ever shown in the
+  // chat and tab where you typed it, so a half-written message can never end up in the wrong place.
+  // ------------------------------------------------------------------------
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const draftsRef = useRef<Record<string, string>>({});
+  const activeDraftKeyRef = useRef<string>("");
+  const skipDraftSaveRef = useRef(false);
+  const lastDraftChatRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const key = `${selectedId || ""}|${composerMode}`;
+    if (activeDraftKeyRef.current === key) return;
+    if (skipDraftSaveRef.current) {
+      skipDraftSaveRef.current = false;
+    } else if (activeDraftKeyRef.current) {
+      draftsRef.current[activeDraftKeyRef.current] = replyText;
+    }
+    activeDraftKeyRef.current = key;
+    setReplyText(draftsRef.current[key] ?? "");
+
+    // Moving to another chat: drop anything attached to the old one.
+    if (lastDraftChatRef.current !== (selectedId || null)) {
+      lastDraftChatRef.current = selectedId || null;
+      setReplyingTo(null);
+      setQuickNoteDraft("");
+      setTemplateDialogOpen(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, composerMode]);
+
+  /** Moves what the person typed into this chat's Note draft (used when they @mention in the reply box). */
+  function moveDraftToNote(text: string) {
+    if (!selectedId) return;
+    draftsRef.current[`${selectedId}|NOTE`] = text;
+    draftsRef.current[`${selectedId}|REPLY`] = "";
+    skipDraftSaveRef.current = true;
+    setComposerMode("NOTE");
+  }
+
+  async function sendTemplateMessage(
+    p: TemplateSendPayload
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!selectedId) return { ok: false, error: "No chat is open." };
+    const chatId = selectedId;
+    const components: Record<string, unknown>[] = [];
+    if (p.headerValues.length > 0) {
+      components.push({
+        type: "header",
+        parameters: p.headerValues.map((v) => ({ type: "text", text: v })),
+      });
+    }
+    if (p.bodyValues.length > 0) {
+      components.push({
+        type: "body",
+        parameters: p.bodyValues.map((v) => ({ type: "text", text: v })),
+      });
+    }
+    try {
+      const res = await fetch(`/api/conversations/${chatId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send_message",
+          text: p.renderedText,
+          messageType: "TEMPLATE",
+          templateName: p.template.name,
+          billingCategory: p.template.category,
+          languageCode: p.template.language,
+          ...(components.length > 0 ? { templateComponents: components } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        return { ok: false, error: data.error || "The template could not be sent." };
+      }
+      showToast("Template sent.");
+      setComposerMode("REPLY");
+      await Promise.all([fetchAndCacheDetail(chatId, false), refreshThreadsSilently()]);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "Network error. The template was not sent." };
+    }
+  }
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -690,20 +779,6 @@ export function InboxClient({
     [templates, selectedTemplateId]
   );
 
-  function applyTemplateToDraft(tpl: ApprovedTemplateOption | null) {
-    if (!tpl) return;
-    const firstName =
-      activeConv?.customerName?.trim().split(/\s+/)[0] || "Sir/Madam";
-    const latestOrder = detail?.orders[0]?.orderNumber || "CC-2026";
-    const filled = tpl.bodyText
-      .replace(/\{\{1\}\}/g, firstName)
-      .replace(/\{\{2\}\}/g, latestOrder)
-      .replace(/\{\{3\}\}/g, "ready for dispatch");
-    setReplyText(
-      tpl.ctaUrl ? `${filled}\n${tpl.ctaUrl}` : filled
-    );
-  }
-
   const waitingThreadsCount = useMemo(
     () =>
       threads.filter((t) => t.status !== "RESOLVED" && Boolean(t.waitingSince))
@@ -912,13 +987,19 @@ export function InboxClient({
     e.preventDefault();
     if (!selectedId || !replyText.trim() || !detail) return;
 
+    // Templates are never typed freehand; they go through the picker so values are checked first.
+    if (composerMode === "TEMPLATE") {
+      setTemplateDialogOpen(true);
+      return;
+    }
+
     // An @teammate or @ACRIO in a customer reply is almost certainly meant for the team. Never send it to the customer.
     if (composerMode !== "NOTE" && hasTeamMention(replyText, staffList)) {
       const asNote = window.confirm(
         "This message has an @mention, so it looks meant for your team. Sent as a reply, the CUSTOMER would see it on WhatsApp.\n\nPress OK to switch to a private note (then press Save Note).\nPress Cancel to go back and edit it."
       );
       if (asNote) {
-        setComposerMode("NOTE");
+        moveDraftToNote(replyText);
         showToast("Switched to Note mode. Press Save Note to post it privately.");
       }
       return;
@@ -957,16 +1038,10 @@ export function InboxClient({
             direction: "OUTBOUND",
             senderType: "STAFF",
             senderName: initialData.currentUserName,
-            messageType: composerMode === "TEMPLATE" ? "TEMPLATE" : "TEXT",
-            billingCategory:
-              composerMode === "TEMPLATE" && activeTemplate
-                ? activeTemplate.category
-                : "FREE_CHAT",
+            messageType: "TEXT",
+            billingCategory: "FREE_CHAT",
             body: textToSend,
-            templateName:
-              composerMode === "TEMPLATE" && activeTemplate
-                ? activeTemplate.name
-                : null,
+            templateName: null,
             deliveryStatus: "SENDING",
             createdAt: nowIso,
             metadata: optimisticMetadata,
@@ -1073,33 +1148,6 @@ export function InboxClient({
         });
         const noteData = await noteRes.json().catch(() => ({}));
         showToast(describeNoteResult(noteData));
-      } else if (composerMode === "TEMPLATE" && activeTemplate) {
-        const res = await fetch(`/api/conversations/${currentConvId}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "send_message",
-            text: textToSend,
-            messageType: "TEMPLATE",
-            templateName: activeTemplate.name,
-            billingCategory: activeTemplate.category,
-            replyToMessageId: activeReplyRef?.messageId || undefined,
-            replyTo: activeReplyRef || undefined,
-          }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          patchOptimisticReceipt(data.messageId || tempId, "FAILED");
-          showToast(data.error || "Template failed to send.");
-          return;
-        }
-        patchOptimisticReceipt(
-          String(data.messageId || tempId),
-          String(data.deliveryStatus || "SENT"),
-          data.waMessageId ? String(data.waMessageId) : null
-        );
-        showToast("Template sent.");
-        setComposerMode("REPLY");
       } else {
         const res = await fetch(`/api/conversations/${currentConvId}`, {
           method: "POST",
@@ -3027,9 +3075,7 @@ export function InboxClient({
                     type="button"
                     onClick={() => {
                       setComposerMode("TEMPLATE");
-                      if (!replyText.trim() && activeTemplate) {
-                        applyTemplateToDraft(activeTemplate);
-                      }
+                      setTemplateDialogOpen(true);
                     }}
                     className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer ${
                       composerMode === "TEMPLATE"
@@ -3062,30 +3108,9 @@ export function InboxClient({
                 )}
 
                 {composerMode === "TEMPLATE" && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      value={selectedTemplateId}
-                      onChange={(e) => {
-                        const nextId = e.target.value;
-                        setSelectedTemplateId(nextId);
-                        const found = templates.find((t) => t.id === nextId) || null;
-                        applyTemplateToDraft(found);
-                      }}
-                      className="px-2.5 py-1 rounded-md bg-white border border-[#d1d7db] text-xs text-[#111b21]"
-                    >
-                      {templates.map((tpl) => (
-                        <option key={tpl.id} value={tpl.id}>
-                          {tpl.name} (
-                          {tpl.category === "MARKETING"
-                            ? "Marketing"
-                            : tpl.category === "AUTHENTICATION"
-                            ? "Auth"
-                            : "Utility"}
-                          )
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  <span className="text-[11px] text-[#54656f] font-medium hidden sm:inline">
+                    Pick an approved template, fill in the values, and review before it is sent
+                  </span>
                 )}
 
                 {composerMode === "NOTE" && (
@@ -3190,14 +3215,30 @@ export function InboxClient({
                 </div>
               )}
 
+              {composerMode === "TEMPLATE" ? (
+                <div className="flex flex-wrap items-center gap-3 rounded-lg bg-white border border-[#d1d7db] px-3.5 py-3">
+                  <p className="text-xs text-[#54656f] flex-1 min-w-[220px]">
+                    Templates are sent exactly as Meta approved them, so the text cannot be edited here. Choose one, check
+                    the values we fill in for {activeConv?.customerName || "the customer"}, and review it before sending.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setTemplateDialogOpen(true)}
+                    className="h-10 px-4 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Choose template</span>
+                  </button>
+                </div>
+              ) : (
               <div className="flex items-end gap-2">
                 <MentionTextarea
                   textareaRef={composerInputRef}
                   rows={2}
                   enabled
-                  onPickMention={() => {
+                  onPickMention={(nextText) => {
                     if (composerMode !== "NOTE") {
-                      setComposerMode("NOTE");
+                      moveDraftToNote(nextText);
                       showToast("Switched to Note mode, so the customer will not see this.");
                     }
                   }}
@@ -3218,8 +3259,6 @@ export function InboxClient({
                   placeholder={
                     composerMode === "NOTE"
                       ? "Private note. Type @ to ping a teammate or ask @ACRIO a question..."
-                      : composerMode === "TEMPLATE"
-                      ? "Review template message before sending to customer..."
                       : "Type a WhatsApp reply (Enter to send, Shift+Enter for new line)..."
                   }
                   className={`w-full rounded-lg px-3.5 py-2 text-sm text-[#111b21] resize-none focus:outline-none border ${
@@ -3234,8 +3273,6 @@ export function InboxClient({
                   className={`h-10 px-4 rounded-lg text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0 ${
                     composerMode === "NOTE"
                       ? "bg-amber-600 hover:bg-amber-700"
-                      : composerMode === "TEMPLATE"
-                      ? "bg-neutral-900 hover:bg-neutral-800"
                       : "bg-[#00a884] hover:bg-[#008f6f]"
                   }`}
                 >
@@ -3243,11 +3280,6 @@ export function InboxClient({
                     <>
                       <Lock className="w-3.5 h-3.5" />
                       <span>Save Note</span>
-                    </>
-                  ) : composerMode === "TEMPLATE" ? (
-                    <>
-                      <WhatsAppLogoIcon size={14} />
-                      <span>Send Template</span>
                     </>
                   ) : (
                     <>
@@ -3257,7 +3289,30 @@ export function InboxClient({
                   )}
                 </button>
               </div>
+              )}
             </form>
+
+            <TemplateSendDialog
+              open={templateDialogOpen && composerMode === "TEMPLATE"}
+              onClose={() => setTemplateDialogOpen(false)}
+              templates={templates}
+              windowOpen={
+                Boolean(activeConv?.windowExpiresAt) &&
+                new Date(String(activeConv?.windowExpiresAt)).getTime() > nowMs
+              }
+              customer={{
+                name:
+                  detail?.customer?.name?.trim() ||
+                  activeConv?.customerName ||
+                  activeConv?.customerPhone ||
+                  "",
+                phone: activeConv?.customerPhone || "",
+                companyName: detail?.customer?.companyName || null,
+                city: detail?.customer?.city || null,
+                latestOrderNumber: detail?.orders?.[0]?.orderNumber || null,
+              }}
+              onSend={sendTemplateMessage}
+            />
           </>
         )}
       </div>

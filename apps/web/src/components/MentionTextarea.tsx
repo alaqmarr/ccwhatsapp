@@ -36,7 +36,7 @@ export function MentionTextarea({
   /** Turn mention suggestions on or off. */
   enabled?: boolean;
   /** Called when someone picks a name from the list (used to switch a reply box into note mode). */
-  onPickMention?: () => void;
+  onPickMention?: (nextText: string) => void;
 }) {
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
@@ -79,7 +79,7 @@ export function MentionTextarea({
     const insert = `@${person.name} `;
     const next = `${before}${insert}${after}`;
     onChange(next);
-    onPickMention?.();
+    onPickMention?.(next);
     setActive(0);
     const pos = before.length + insert.length;
     requestAnimationFrame(() => {
