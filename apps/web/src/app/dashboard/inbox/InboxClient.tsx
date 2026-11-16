@@ -4,19 +4,23 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link";
 import {
   ArrowLeft,
+  AtSign,
   BarChart3,
   Check,
   CheckSquare,
   Clock,
   Copy,
   CornerUpLeft,
+  Download,
   ExternalLink,
   FileText,
   Info,
   Link2,
   Lock,
+  MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
+  PhoneCall,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -379,7 +383,8 @@ export function InboxClient({
     initialData.initialDetail?.customer?.notes || ""
   );
   const [quickNoteDraft, setQuickNoteDraft] = useState<string>("");
-  // Pending "Request a callback" for the open chat (shown as a banner above the composer)
+  const [showHeaderMenu, setShowHeaderMenu] = useState<boolean>(false);
+  // Pending "Request a callback" for the open chat + across the thread list
   const [pendingCallback, setPendingCallback] = useState<{
     id: string;
     slot: string;
@@ -387,46 +392,94 @@ export function InboxClient({
     phone: string;
     createdAt: string;
   } | null>(null);
+  const [callbackConvIds, setCallbackConvIds] = useState<string[]>([]);
+  const [unreadMentionConvIds, setUnreadMentionConvIds] = useState<string[]>([]);
 
   useEffect(() => {
-    if (!selectedId) {
-      setPendingCallback(null);
-      return;
-    }
     let cancelled = false;
-    const loadCallback = async () => {
+    const loadSignals = async () => {
       try {
-        const res = await fetch("/api/callback-requests?status=PENDING", { cache: "no-store" });
-        const data = await res.json();
-        if (cancelled || !data?.ok) return;
-        const row = (data.requests || []).find(
-          (r: Record<string, unknown>) => String(r.conversation_id) === selectedId
-        );
-        setPendingCallback(
-          row
-            ? {
-                id: String(row.id),
-                slot: String(row.preferred_slot || ""),
-                topic: String(row.topic || ""),
-                phone: String(row.customer_phone || ""),
-                createdAt: String(row.created_at || ""),
-              }
-            : null
-        );
+        const [cbRes, ntfRes] = await Promise.all([
+          fetch("/api/callback-requests?status=PENDING", { cache: "no-store" }),
+          fetch("/api/notifications", { cache: "no-store" }),
+        ]);
+        const [cbData, ntfData] = await Promise.all([
+          cbRes.json().catch(() => ({})),
+          ntfRes.json().catch(() => ({})),
+        ]);
+        if (cancelled) return;
+        if (cbData?.ok) {
+          const reqs = (cbData.requests || []) as Record<string, unknown>[];
+          setCallbackConvIds(reqs.map((r) => String(r.conversation_id)));
+          const row = selectedId
+            ? reqs.find((r) => String(r.conversation_id) === selectedId)
+            : undefined;
+          setPendingCallback(
+            row
+              ? {
+                  id: String(row.id),
+                  slot: String(row.preferred_slot || ""),
+                  topic: String(row.topic || ""),
+                  phone: String(row.customer_phone || ""),
+                  createdAt: String(row.created_at || ""),
+                }
+              : null
+          );
+        }
+        if (ntfData?.ok) {
+          const unreadIds = ((ntfData.notifications || []) as Record<string, unknown>[])
+            .filter((n) => !n.isRead && n.type !== "CALLBACK")
+            .map((n) => String(n.conversationId));
+          setUnreadMentionConvIds(Array.from(new Set(unreadIds)));
+        }
       } catch {
         // ignore
       }
     };
-    void loadCallback();
-    const timer = setInterval(loadCallback, 30000);
+    void loadSignals();
+    const timer = setInterval(loadSignals, 30000);
     const es = new EventSource("/api/realtime/stream");
-    es.addEventListener("callback:new", loadCallback);
+    es.addEventListener("callback:new", loadSignals);
+    es.addEventListener("staff:mention", loadSignals);
     return () => {
       cancelled = true;
       clearInterval(timer);
       es.close();
     };
   }, [selectedId]);
+
+  // Global keyboard shortcuts for fast desk handling (Alt+R Reply, Alt+N Note, Alt+T Template, Alt+A Ask @ACRIO, Alt+D Drawer)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "r") {
+        e.preventDefault();
+        setComposerMode("REPLY");
+        setTimeout(() => composerInputRef.current?.focus(), 20);
+      } else if (k === "n") {
+        e.preventDefault();
+        setComposerMode("NOTE");
+        setTimeout(() => composerInputRef.current?.focus(), 20);
+      } else if (k === "t") {
+        e.preventDefault();
+        setComposerMode("TEMPLATE");
+        setTemplateDialogOpen(true);
+      } else if (k === "a") {
+        e.preventDefault();
+        setComposerMode("NOTE");
+        setTimeout(() => {
+          setReplyText((prev) => (prev.includes("@ACRIO") ? prev : `@ACRIO ${prev}`));
+          composerInputRef.current?.focus();
+        }, 20);
+      } else if (k === "d") {
+        e.preventDefault();
+        setShowRightDrawer((p) => !p);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   async function markPendingCallbackDone() {
     if (!pendingCallback) return;
@@ -436,6 +489,7 @@ export function InboxClient({
       body: JSON.stringify({ id: pendingCallback.id, status: "DONE" }),
     });
     setPendingCallback(null);
+    setCallbackConvIds((prev) => prev.filter((cid) => cid !== selectedId));
     showToast("Marked as called.");
   }
 
@@ -1706,6 +1760,19 @@ export function InboxClient({
                   ? formatWaitingDuration(t.waitingSince, nowMs)
                   : null;
               const isOverdue = waitObj && waitObj.minutes >= 5;
+              const hasThreadCallback = callbackConvIds.includes(t.id);
+              const hasUnreadMention = unreadMentionConvIds.includes(t.id);
+              const leftBorderClass = hasThreadCallback
+                ? "border-l-[3.5px] border-l-rose-500"
+                : hasUnreadMention
+                ? "border-l-[3.5px] border-l-violet-500"
+                : isOverdue
+                ? "border-l-[3.5px] border-l-red-500"
+                : waitObj
+                ? "border-l-[3.5px] border-l-amber-500"
+                : active
+                ? "border-l-[3.5px] border-l-[#00a884]"
+                : "border-l-[3.5px] border-l-transparent";
 
               return (
                 <button
@@ -1716,7 +1783,7 @@ export function InboxClient({
                       ? toggleBulkSelectThread(t.id)
                       : handleSelectConversation(t.id)
                   }
-                  className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors cursor-pointer ${
+                  className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors cursor-pointer ${leftBorderClass} ${
                     active ? "bg-[#f0f2f5]" : "hover:bg-[#f5f6f6]"
                   }`}
                 >
@@ -1788,6 +1855,18 @@ export function InboxClient({
 
                     {/* ACRIO / Team / Escalation / Live Wait Row */}
                     <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                      {hasThreadCallback && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200 font-semibold inline-flex items-center gap-0.5">
+                          <PhoneCall className="w-2.5 h-2.5" />
+                          <span>Callback</span>
+                        </span>
+                      )}
+                      {hasUnreadMention && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 border border-violet-200 font-semibold inline-flex items-center gap-0.5">
+                          <AtSign className="w-2.5 h-2.5" />
+                          <span>You</span>
+                        </span>
+                      )}
                       {t.status === "RESOLVED" ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-medium">
                           Resolved
@@ -1997,32 +2076,17 @@ export function InboxClient({
                 </div>
               </div>
 
-              {/* Right Header Actions: ACRIO Takeover / Sales Team / Assign / Read Test / Resolve */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                {hasUnreadOutboundByCustomer && (
-                  <button
-                    type="button"
-                    onClick={handleSimulateCustomerRead}
-                    title="Simulate customer reading your messages (blue Read receipt)"
-                    className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-sky-50 text-[11px] font-medium text-[#0088cc] cursor-pointer"
-                  >
-                    <WhatsAppMessageTicks
-                      status="READ"
-                      showLabel={false}
-                      size={13}
-                    />
-                    <span>Mark Read</span>
-                  </button>
-                )}
+              {/* Right Header Actions: Compact Primary Actions + More Menu + Drawer Toggle */}
+              <div className="flex items-center gap-1.5 relative">
                 {activeConv.status !== "RESOLVED" && isAcrioHandling ? (
                   <>
                     <button
                       type="button"
                       onClick={handleTakeOverFromAcrio}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-medium cursor-pointer"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold cursor-pointer shadow-2xs"
                     >
                       <UserCheck className="w-3.5 h-3.5" />
-                      <span>Take Over Chat</span>
+                      <span>Take Over</span>
                     </button>
                     <button
                       type="button"
@@ -2031,63 +2095,50 @@ export function InboxClient({
                       title="Connect to Sales Team P0 member with fewest active chats"
                     >
                       <Users className="w-3.5 h-3.5 text-[#00a884]" />
-                      <span>Connect Sales Team</span>
+                      <span className="hidden sm:inline">Assign Sales</span>
                     </button>
                   </>
                 ) : (
                   activeConv.status !== "RESOLVED" && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAssignTeamId(
-                            activeConv.assignedTeamId || "team_sales"
-                          );
-                          setAssignStaffId(
-                            activeConv.assignedStaffId &&
-                              activeConv.assignedStaffId !== "ACRIO"
-                              ? activeConv.assignedStaffId
-                              : ""
-                          );
-                          setAssignTier(
-                            activeConv.escalationLevel === "P1" ||
-                              activeConv.escalationLevel === "P2"
-                              ? activeConv.escalationLevel
-                              : "P0"
-                          );
-                          setShowAssignModal(true);
-                        }}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-xs text-[#111b21] cursor-pointer"
-                      >
-                        <UserCheck className="w-3.5 h-3.5 text-[#00a884]" />
-                        <span className="font-medium">
-                          {activeConv.assignedTeamName || "Sales Team"}
-                        </span>
-                        <span className="text-[#54656f]">•</span>
-                        <span>{activeConv.assignedStaffName || "Assign"}</span>
-                        <span
-                          className={`px-1.5 py-0.2 rounded text-[10px] font-semibold ${
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAssignTeamId(
+                          activeConv.assignedTeamId || "team_sales"
+                        );
+                        setAssignStaffId(
+                          activeConv.assignedStaffId &&
+                            activeConv.assignedStaffId !== "ACRIO"
+                            ? activeConv.assignedStaffId
+                            : ""
+                        );
+                        setAssignTier(
+                          activeConv.escalationLevel === "P1" ||
                             activeConv.escalationLevel === "P2"
-                              ? "bg-red-600 text-white"
-                              : activeConv.escalationLevel === "P1"
-                              ? "bg-amber-500 text-white"
-                              : "bg-neutral-100 text-neutral-700"
-                          }`}
-                        >
-                          {activeConv.escalationLevel || "P0"}
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleReturnToAcrio}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-xs font-medium text-indigo-800 cursor-pointer"
-                        title="Assign chat to System (ACRIO) for automatic handling"
+                            ? activeConv.escalationLevel
+                            : "P0"
+                        );
+                        setShowAssignModal(true);
+                      }}
+                      title="Click to reassign team, responder, or escalation tier"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-xs text-[#111b21] cursor-pointer"
+                    >
+                      <UserCheck className="w-3.5 h-3.5 text-[#00a884]" />
+                      <span className="font-medium truncate max-w-[110px]">
+                        {activeConv.assignedStaffName || activeConv.assignedTeamName || "Sales Team"}
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.2 rounded text-[10px] font-semibold ${
+                          activeConv.escalationLevel === "P2"
+                            ? "bg-red-600 text-white"
+                            : activeConv.escalationLevel === "P1"
+                            ? "bg-amber-500 text-white"
+                            : "bg-neutral-100 text-neutral-700"
+                        }`}
                       >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>Assign to System</span>
-                      </button>
-                    </>
+                        {activeConv.escalationLevel || "P0"}
+                      </span>
+                    </button>
                   )
                 )}
 
@@ -2095,7 +2146,7 @@ export function InboxClient({
                   <button
                     type="button"
                     onClick={handleReopen}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#d1d7db] bg-white hover:bg-neutral-50 text-xs font-medium text-[#111b21] cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#d1d7db] bg-white hover:bg-neutral-50 text-xs font-semibold text-[#111b21] cursor-pointer"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                     <span>Reopen</span>
@@ -2104,12 +2155,111 @@ export function InboxClient({
                   <button
                     type="button"
                     onClick={() => setShowResolveModal(true)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-medium cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white border border-[#00a884]/60 hover:bg-[#e7fce3] text-[#008069] text-xs font-semibold cursor-pointer"
                   >
                     <Check className="w-3.5 h-3.5" />
-                    <span>Mark Resolved</span>
+                    <span>Resolve</span>
                   </button>
                 )}
+
+                {/* Secondary Actions Overflow Menu */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowHeaderMenu((v) => !v)}
+                    title="More chat actions"
+                    className="p-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-[#54656f] cursor-pointer"
+                  >
+                    <MoreHorizontal className="w-4 h-4" />
+                  </button>
+
+                  {showHeaderMenu && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-30"
+                        onClick={() => setShowHeaderMenu(false)}
+                      />
+                      <div className="absolute right-0 top-full mt-1.5 w-56 rounded-xl bg-white border border-neutral-200 shadow-xl py-1 z-40 text-xs">
+                        {activeConv.status !== "RESOLVED" && !isAcrioHandling && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowHeaderMenu(false);
+                              void handleReturnToAcrio();
+                            }}
+                            className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2 font-medium text-indigo-800 cursor-pointer"
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Hand back to System (ACRIO)</span>
+                          </button>
+                        )}
+                        {hasUnreadOutboundByCustomer && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowHeaderMenu(false);
+                              void handleSimulateCustomerRead();
+                            }}
+                            className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2 text-[#0088cc] font-medium cursor-pointer"
+                          >
+                            <WhatsAppMessageTicks
+                              status="READ"
+                              showLabel={false}
+                              size={13}
+                            />
+                            <span>Mark customer Read (test)</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowHeaderMenu(false);
+                            void navigator.clipboard?.writeText(activeConv.customerPhone);
+                            showToast(`Copied ${activeConv.customerPhone}`);
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                        >
+                          <Copy className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Copy phone ({activeConv.customerPhone})</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowHeaderMenu(false);
+                            const url = `${window.location.origin}/dashboard/inbox?chat=${encodeURIComponent(activeConv.id)}`;
+                            void navigator.clipboard?.writeText(url);
+                            showToast("Copied direct chat link.");
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                        >
+                          <Link2 className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Copy direct chat link</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowHeaderMenu(false);
+                            const lines = messages.map(
+                              (m) =>
+                                `[${formatDateTimeShortIst(m.createdAt)}] ${m.senderName} (${m.direction}): ${m.body}`
+                            );
+                            const blob = new Blob([lines.join("\n\n")], {
+                              type: "text/plain;charset=utf-8",
+                            });
+                            const a = document.createElement("a");
+                            a.href = URL.createObjectURL(blob);
+                            a.download = `chat_${activeConv.customerPhone.replace(/\D/g, "")}.txt`;
+                            a.click();
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Export transcript (.txt)</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
 
                 <button
                   type="button"
@@ -2126,10 +2276,14 @@ export function InboxClient({
                   onClick={() => setShowRightDrawer((p) => !p)}
                   title={
                     showRightDrawer
-                      ? "Hide Customer Panel"
-                      : "Show Customer Panel"
+                      ? "Hide Customer Panel (Alt+D)"
+                      : "Show Customer Panel (Alt+D)"
                   }
-                  className="hidden lg:inline-flex p-1.5 rounded-md bg-white border border-[#d1d7db] hover:bg-neutral-50 text-[#54656f] cursor-pointer"
+                  className={`hidden lg:inline-flex p-1.5 rounded-md border cursor-pointer transition ${
+                    showRightDrawer
+                      ? "bg-[#e7fce3] border-[#00a884]/50 text-[#008069]"
+                      : "bg-white border-[#d1d7db] hover:bg-neutral-50 text-[#54656f]"
+                  }`}
                 >
                   {showRightDrawer ? (
                     <PanelRightClose className="w-4 h-4" />
@@ -3284,6 +3438,47 @@ export function InboxClient({
             {activeConv?.customerName || "Customer Details"}
           </span>
         </div>
+        {/* Pinned Customer Context Card at Top of Right Drawer */}
+        {activeConv && (
+          <div className="px-3.5 py-2.5 bg-slate-50 border-b border-[#e9edef] space-y-1.5 text-xs shrink-0">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-slate-900 truncate">
+                {detail?.customer?.companyName ||
+                  detail?.customer?.organizationType ||
+                  "Direct Customer"}
+              </span>
+              <span className="text-[11px] text-slate-500 shrink-0">
+                {detail?.customer?.city || "City not set"}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
+              <span className="px-1.5 py-0.5 rounded bg-white border border-neutral-200 font-medium">
+                {detail?.orders?.length
+                  ? `${detail.orders.length} order${detail.orders.length > 1 ? "s" : ""} • #${detail.orders[0].orderNumber}`
+                  : "0 orders"}
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-white border border-neutral-200 font-medium">
+                {internalNotes.length} {internalNotes.length === 1 ? "note" : "notes"}
+              </span>
+              {detail?.acrio?.suggestedReplies?.[0] && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setComposerMode("REPLY");
+                    setReplyText(detail.acrio!.suggestedReplies[0]);
+                    composerInputRef.current?.focus();
+                  }}
+                  title="Insert ACRIO's suggested reply into the composer"
+                  className="px-2 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 font-semibold inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>Use AI Draft</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-4 border-b border-[#e9edef] text-[11px] font-semibold shrink-0 bg-[#f0f2f5]">
             {(
               [
