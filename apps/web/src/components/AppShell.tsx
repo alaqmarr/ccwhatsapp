@@ -256,9 +256,9 @@ export function AppShell({
 
   const renderSidebarContent = () => (
     <>
-      <div className="px-4 py-3.5 border-b border-neutral-200 space-y-2 shrink-0">
+      <div className="px-3.5 py-2.5 border-b border-neutral-200 space-y-1.5 shrink-0">
         <div className="flex items-center justify-between gap-2">
-          <ClassicConceptsWordmark height={38} variant="light" />
+          <ClassicConceptsWordmark height={34} variant="light" />
           <button
             type="button"
             onClick={() => setMobileNavOpen(false)}
@@ -282,7 +282,7 @@ export function AppShell({
         </div>
       </div>
 
-      <div className="px-4 py-3 border-b border-neutral-200 bg-slate-50/75 space-y-1 shrink-0">
+      <div className="px-3.5 py-2 border-b border-neutral-200 bg-slate-50/75 space-y-1 shrink-0">
         <div className="flex items-start justify-between gap-2">
           <Link
             href="/dashboard/profile"
@@ -290,29 +290,26 @@ export function AppShell({
             className="min-w-0 block group"
             title="Edit my profile and email"
           >
-            <div className="font-display text-[13.5px] font-bold tracking-tight text-slate-900 truncate group-hover:text-[#008069]">
+            <div className="font-display text-[13px] font-bold tracking-tight text-slate-900 truncate group-hover:text-[#008069]">
               {user.name}
             </div>
             <div className="text-[11px] text-slate-500 truncate">{user.email}</div>
-            <div className="text-[10.5px] font-medium text-[#008069] opacity-0 group-hover:opacity-100 transition-opacity">
-              Edit profile
-            </div>
           </Link>
           {isActiveAccount && user.role !== "CLIENT" && <NotificationBell userId={user.id} />}
         </div>
-        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
           <RoleBadge role={user.role} />
           <AccountStatusBadge status={user.status} />
         </div>
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto px-2.5 py-3 space-y-4">
+      <nav className="flex-1 min-h-0 overflow-y-auto px-2.5 py-2 space-y-2.5">
         {navSections.map((section) => {
           const visibleItems = section.items.filter((item) => item.visible);
           if (visibleItems.length === 0) return null;
           return (
             <div key={section.heading} className="space-y-0.5">
-              <div className="px-2.5 pb-1 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400 select-none">
+              <div className="px-2.5 pb-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400 select-none">
                 {section.heading}
               </div>
               {visibleItems.map((item) => {
@@ -323,19 +320,19 @@ export function AppShell({
                     key={item.href}
                     href={item.href}
                     onClick={() => setMobileNavOpen(false)}
-                    className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-[13px] tracking-[-0.01em] transition-colors ${
+                    className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12.5px] tracking-[-0.01em] transition-colors ${
                       active
                         ? "bg-[#00a884] text-white font-semibold shadow-2xs"
                         : "text-slate-700 font-medium hover:bg-slate-100/90 hover:text-slate-950"
                     }`}
                   >
-                    <span className="flex items-center gap-2.5 truncate">
+                    <span className="flex items-center gap-2 truncate">
                       <Icon className="w-4 h-4 shrink-0" />
                       <span className="truncate">{item.label}</span>
                     </span>
                     {item.badge && (
                       <span
-                        className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-[0.05em] tabular-nums ${
+                        className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-bold uppercase tracking-[0.05em] tabular-nums ${
                           active
                             ? "bg-white/20 text-white"
                             : "bg-amber-100 text-amber-900"
@@ -352,7 +349,7 @@ export function AppShell({
         })}
       </nav>
 
-      <div className="p-3 border-t border-neutral-200 shrink-0 bg-white space-y-2">
+      <div className="p-2.5 border-t border-neutral-200 shrink-0 bg-white space-y-1.5">
         {bridgeSummary.loaded && (
           <div className="px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200/80 flex items-center justify-between text-[10.5px] text-slate-600">
             <span className="font-medium">Ecosystem Sync</span>

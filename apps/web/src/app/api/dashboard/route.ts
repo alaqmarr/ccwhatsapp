@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { formatInTimeZone, fromZonedTime, toZonedTime } from "date-fns-tz";
 import { listAllStaffAccounts } from "@cc/auth";
-import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+  syncAndListEcosystemEnquiries,
+} from "@cc/database";
 import { hasPermission } from "@cc/rbac";
 import { listCallbackRequests, listStaffNotifications } from "@cc/workers";
 import { getCurrentUser } from "@/lib/session";
@@ -60,41 +64,60 @@ export async function GET() {
   const cutoff7 = new Date(nowMs - 7 * 86400000).toISOString();
   const cutoff30 = new Date(nowMs - 30 * 86400000).toISOString();
 
-  const [openRes, resolvedRes, assignRes, outboundRes, inboundRes, newTodayRes, callbacksAll, notif, accounts] =
-    await Promise.all([
-      conv.execute(
-        `SELECT id, customer_name, customer_phone, status, priority, smart_category,
-                assigned_staff_id, assigned_staff_name, assigned_team_name, waiting_since,
-                unread_count, last_message_preview, last_message_at, created_at
-         FROM conversations WHERE status != 'RESOLVED'
-         ORDER BY last_message_at DESC LIMIT 500`
-      ),
-      conv.execute({
-        sql: `SELECT resolved_by_name, resolved_at FROM conversations
-              WHERE status = 'RESOLVED' AND resolved_at >= ?`,
-        args: [cutoff30],
-      }),
-      conv.execute({
-        sql: `SELECT to_staff_id, first_response_seconds FROM conversation_assignments WHERE assigned_at >= ?`,
-        args: [cutoff30],
-      }),
-      conv.execute({
-        sql: `SELECT sender_name, created_at FROM messages
-              WHERE direction = 'OUTBOUND' AND billing_category != 'ACRIO' AND sender_name != 'ACRIO' AND created_at >= ?`,
-        args: [cutoff7],
-      }),
-      conv.execute({
-        sql: `SELECT created_at FROM messages WHERE direction = 'INBOUND' AND created_at >= ?`,
-        args: [cutoff7],
-      }),
-      conv.execute({
-        sql: `SELECT COUNT(*) AS c FROM conversations WHERE created_at >= ?`,
-        args: [todayStartIso],
-      }),
-      listCallbackRequests(),
-      listStaffNotifications(user.id, 8),
-      listAllStaffAccounts(),
-    ]);
+  const [
+    openRes,
+    recentChatsRes,
+    resolvedRes,
+    assignRes,
+    outboundRes,
+    inboundRes,
+    newTodayRes,
+    callbacksAll,
+    notif,
+    accounts,
+    enquiriesAll,
+  ] = await Promise.all([
+    conv.execute(
+      `SELECT id, customer_name, customer_phone, status, priority, smart_category,
+              assigned_staff_id, assigned_staff_name, assigned_team_name, waiting_since,
+              unread_count, last_message_preview, last_message_at, created_at
+       FROM conversations WHERE status != 'RESOLVED'
+       ORDER BY last_message_at DESC LIMIT 500`
+    ),
+    conv.execute(
+      `SELECT id, customer_name, customer_phone, status, priority, smart_category,
+              assigned_staff_id, assigned_staff_name, assigned_team_name, waiting_since,
+              unread_count, last_message_preview, last_message_at, created_at
+       FROM conversations
+       ORDER BY last_message_at DESC LIMIT 12`
+    ),
+    conv.execute({
+      sql: `SELECT resolved_by_name, resolved_at FROM conversations
+            WHERE status = 'RESOLVED' AND resolved_at >= ?`,
+      args: [cutoff30],
+    }),
+    conv.execute({
+      sql: `SELECT to_staff_id, first_response_seconds FROM conversation_assignments WHERE assigned_at >= ?`,
+      args: [cutoff30],
+    }),
+    conv.execute({
+      sql: `SELECT sender_name, created_at FROM messages
+            WHERE direction = 'OUTBOUND' AND billing_category != 'ACRIO' AND sender_name != 'ACRIO' AND created_at >= ?`,
+      args: [cutoff7],
+    }),
+    conv.execute({
+      sql: `SELECT created_at FROM messages WHERE direction = 'INBOUND' AND created_at >= ?`,
+      args: [cutoff7],
+    }),
+    conv.execute({
+      sql: `SELECT COUNT(*) AS c FROM conversations WHERE created_at >= ?`,
+      args: [todayStartIso],
+    }),
+    listCallbackRequests(),
+    listStaffNotifications(user.id, 8),
+    listAllStaffAccounts(),
+    syncAndListEcosystemEnquiries({ limit: 50 }).catch(() => []),
+  ]);
 
   const staff = accounts.filter((a) => a.status === "ACTIVE" && a.role !== "CLIENT");
   const nameById = new Map(staff.map((s) => [s.id, s.name]));
@@ -253,8 +276,50 @@ export async function GET() {
     const k = istDay(String(r.created_at));
     if (inboundByDay.has(k)) inboundByDay.set(k, (inboundByDay.get(k) || 0) + 1);
   }
+
+  const recentChats = recentChatsRes.rows.map((r) => {
+    const id = String(r.id);
+    const waitingSince = r.waiting_since ? String(r.waiting_since) : null;
+    const owner = String(r.assigned_staff_name || "ACRIO");
+    const status = String(r.status || "OPEN");
+    return {
+      id,
+      customerName: String(r.customer_name || r.customer_phone),
+      customerPhone: String(r.customer_phone || ""),
+      category: String(r.smart_category || "General Enquiry"),
+      priority: String(r.priority || "NORMAL"),
+      status,
+      owner,
+      isMine: String(r.assigned_staff_id || "") === user.id,
+      isAcrio: String(r.assigned_staff_id || "ACRIO") === "ACRIO",
+      waitingSeconds: waitingSince
+        ? Math.max(0, Math.floor((nowMs - new Date(waitingSince).getTime()) / 1000))
+        : null,
+      unread: Number(r.unread_count || 0),
+      lastMessage: String(r.last_message_preview || "").slice(0, 140),
+      lastMessageAt: String(r.last_message_at || ""),
+      hasCallback: callbackConvIds.has(id),
+      heat: (status === "RESOLVED" ? "NEW" : "WARM") as "HOT" | "WARM" | "NEW",
+    };
+  });
+
   const categoryCounts = new Map<string, number>();
-  for (const l of openLeads) categoryCounts.set(l.category, (categoryCounts.get(l.category) || 0) + 1);
+  for (const l of openLeads) {
+    categoryCounts.set(l.category, (categoryCounts.get(l.category) || 0) + 1);
+  }
+  if (categoryCounts.size === 0) {
+    for (const c of recentChats) {
+      categoryCounts.set(c.category, (categoryCounts.get(c.category) || 0) + 1);
+    }
+    for (const eq of enquiriesAll) {
+      const cat = eq.productName
+        ? eq.productName
+        : eq.brand === "CLASSIC_EDGE_53"
+        ? "Classic Edge 53"
+        : "Website Enquiry";
+      categoryCounts.set(cat, (categoryCounts.get(cat) || 0) + 1);
+    }
+  }
 
   const waitingForHuman = openLeads.filter((l) => !l.isAcrio && l.waitingSeconds !== null).length;
   const acrioOpen = openLeads.filter((l) => l.isAcrio).length;
@@ -265,6 +330,20 @@ export async function GET() {
         (a, b) => b.resolved30d - a.resolved30d || b.openChats - a.openChats
       )
     : [];
+
+  const recentEnquiries = enquiriesAll.slice(0, 6).map((e) => ({
+    id: e.id,
+    brand: e.brand,
+    customerName: e.customerName,
+    customerEmail: e.customerEmail,
+    customerPhone: e.customerPhone,
+    productName: e.productName,
+    message: e.message.slice(0, 140),
+    status: e.status,
+    createdAt: e.createdAt,
+    repliedByName: e.repliedByName,
+  }));
+  const newEnquiriesCount = enquiriesAll.filter((e) => e.status === "New").length;
 
   return NextResponse.json({
     ok: true,
@@ -281,8 +360,12 @@ export async function GET() {
       callbacksPending: callRequests.length,
       callbacksDoneToday,
       hotLeads: openLeads.filter((l) => l.heat === "HOT").length,
+      websiteEnquiriesNew: newEnquiriesCount,
+      websiteEnquiriesTotal: enquiriesAll.length,
     },
     openLeads: openLeads.slice(0, 60),
+    recentChats,
+    recentEnquiries,
     callRequests,
     team,
     notifications: notif.notifications,

@@ -8,13 +8,13 @@ import {
   CheckCircle2,
   Clock,
   Flame,
+  Mail,
   MessageSquare,
   PhoneCall,
   RefreshCw,
   Reply,
   Timer,
   Trophy,
-  Users,
 } from "lucide-react";
 
 interface Metrics {
@@ -39,6 +39,7 @@ interface Lead {
   customerPhone: string;
   category: string;
   priority: string;
+  status?: string;
   owner: string;
   isMine: boolean;
   isAcrio: boolean;
@@ -48,6 +49,18 @@ interface Lead {
   lastMessageAt: string;
   hasCallback: boolean;
   heat: "HOT" | "WARM" | "NEW";
+}
+interface RecentEnquiry {
+  id: string;
+  brand: "CLASSIC_CONCEPTS" | "CLASSIC_EDGE_53";
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  productName: string;
+  message: string;
+  status: string;
+  createdAt: string;
+  repliedByName?: string | null;
 }
 interface CallReq {
   id: string;
@@ -84,8 +97,12 @@ interface DashboardData {
     callbacksPending: number;
     callbacksDoneToday: number;
     hotLeads: number;
+    websiteEnquiriesNew?: number;
+    websiteEnquiriesTotal?: number;
   };
   openLeads: Lead[];
+  recentChats?: Lead[];
+  recentEnquiries?: RecentEnquiry[];
   callRequests: CallReq[];
   team: Metrics[];
   notifications: Notif[];
@@ -120,12 +137,14 @@ function Kpi({
   hint,
   icon,
   tone = "slate",
+  href,
 }: {
   label: string;
   value: React.ReactNode;
   hint?: string;
   icon: React.ReactNode;
   tone?: "slate" | "emerald" | "amber" | "rose" | "violet" | "sky";
+  href?: string;
 }) {
   const tones: Record<string, string> = {
     slate: "bg-slate-100 text-slate-700",
@@ -135,16 +154,21 @@ function Kpi({
     violet: "bg-violet-100 text-violet-700",
     sky: "bg-sky-100 text-sky-700",
   };
-  return (
-    <div className="rounded-xl bg-white border border-neutral-200 p-3.5 shadow-2xs">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
-        <span className={`w-7 h-7 rounded-lg flex items-center justify-center ${tones[tone]}`}>{icon}</span>
+  const card = (
+    <div className="rounded-xl bg-white border border-neutral-200 px-3 py-2.5 shadow-2xs hover:border-neutral-300 transition-colors h-full">
+      <div className="flex items-center justify-between gap-1.5">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-slate-500 truncate">
+          {label}
+        </span>
+        <span className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${tones[tone]}`}>
+          {icon}
+        </span>
       </div>
-      <div className="mt-1.5 text-2xl font-bold text-slate-900 tabular-nums">{value}</div>
-      {hint && <div className="text-[11px] text-slate-500 mt-0.5">{hint}</div>}
+      <div className="mt-1 text-xl font-bold text-slate-900 tabular-nums leading-tight">{value}</div>
+      {hint && <div className="text-[10.5px] text-slate-500 mt-0.5 truncate">{hint}</div>}
     </div>
   );
+  return href ? <Link href={href}>{card}</Link> : card;
 }
 
 function Panel({
@@ -160,7 +184,7 @@ function Panel({
 }) {
   return (
     <section className="rounded-xl bg-white border border-neutral-200 shadow-2xs overflow-hidden">
-      <header className="px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-2">
+      <header className="px-4 py-2.5 border-b border-neutral-100 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
           {icon}
           {title}
@@ -182,7 +206,8 @@ export function DashboardClient() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [leadTab, setLeadTab] = useState<"MINE" | "HOT" | "WAITING" | "ALL">("MINE");
+  const [leadTab, setLeadTab] = useState<"MINE" | "HOT" | "WAITING" | "ALL" | "RECENT">("ALL");
+  const [didAutoSelectTab, setDidAutoSelectTab] = useState(false);
   const [busyCb, setBusyCb] = useState<string | null>(null);
 
   const load = useCallback(async (silent = false) => {
@@ -217,6 +242,8 @@ export function DashboardClient() {
       "conversation:updated",
       "callback:new",
       "staff:mention",
+      "enquiry:new",
+      "enquiry:updated",
     ]) {
       es.addEventListener(t, refresh);
     }
@@ -226,6 +253,19 @@ export function DashboardClient() {
       es.close();
     };
   }, [load]);
+
+  useEffect(() => {
+    if (!data || didAutoSelectTab) return;
+    setDidAutoSelectTab(true);
+    const mineCount = data.openLeads.filter((l) => l.isMine).length;
+    if (mineCount > 0) {
+      setLeadTab("MINE");
+    } else if (data.openLeads.length > 0) {
+      setLeadTab("ALL");
+    } else {
+      setLeadTab("RECENT");
+    }
+  }, [data, didAutoSelectTab]);
 
   async function markCallbackDone(id: string) {
     setBusyCb(id);
@@ -250,12 +290,25 @@ export function DashboardClient() {
     await load(true);
   }
 
+  const tabCounts = useMemo(() => {
+    if (!data) return { MINE: 0, HOT: 0, WAITING: 0, ALL: 0, RECENT: 0 };
+    const all = data.openLeads;
+    return {
+      MINE: all.filter((l) => l.isMine).length,
+      HOT: all.filter((l) => l.heat === "HOT").length,
+      WAITING: all.filter((l) => l.waitingSeconds !== null).length,
+      ALL: all.length,
+      RECENT: (data.recentChats || []).length,
+    };
+  }, [data]);
+
   const leads = useMemo(() => {
     if (!data) return [];
     const all = data.openLeads;
     if (leadTab === "MINE") return all.filter((l) => l.isMine);
     if (leadTab === "HOT") return all.filter((l) => l.heat === "HOT");
     if (leadTab === "WAITING") return all.filter((l) => l.waitingSeconds !== null);
+    if (leadTab === "RECENT") return data.recentChats || [];
     return all;
   }, [data, leadTab]);
 
@@ -268,24 +321,25 @@ export function DashboardClient() {
   }
 
   const { me, snapshot } = data;
+  const recentEnquiries = data.recentEnquiries || [];
   const maxInbound = Math.max(1, ...data.inboundLast7Days.map((d) => d.count));
   const maxCat = Math.max(1, ...data.leadsByCategory.map((c) => c.count));
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
   return (
-    <div className="w-full px-4 sm:px-6 py-5 space-y-5">
+    <div className="w-full px-4 sm:px-5 py-4 space-y-4">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="font-display text-xl md:text-2xl font-bold text-slate-900">
+          <h1 className="font-display text-lg md:text-xl font-bold text-slate-900">
             {greeting}, {data.viewer.name.split(" ")[0]}
           </h1>
           <p className="text-xs text-slate-500">
-            Your work, open leads and call requests. Updated {ago(data.generatedAt)}.
+            Live workspace overview • Updated {ago(data.generatedAt)}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => void load()}
@@ -293,6 +347,17 @@ export function DashboardClient() {
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
           </button>
+          <Link
+            href="/dashboard/enquiries"
+            className="px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5"
+          >
+            <Mail className="w-3.5 h-3.5 text-[#008069]" /> Website enquiries
+            {(snapshot.websiteEnquiriesNew ?? 0) > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-900 text-[10px] font-bold">
+                {snapshot.websiteEnquiriesNew}
+              </span>
+            )}
+          </Link>
           <Link
             href="/dashboard/inbox"
             className="px-3 py-1.5 rounded-lg bg-[#00a884] text-white text-xs font-semibold hover:bg-[#008f6f] inline-flex items-center gap-1.5"
@@ -302,42 +367,81 @@ export function DashboardClient() {
         </div>
       </div>
 
-      {/* My performance */}
-      <div>
-        <h2 className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400 mb-2">My performance</h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-          <Kpi label="My open chats" value={me.openChats} hint={`${me.waitingChats} waiting for my reply`} icon={<MessageSquare className="w-4 h-4" />} tone="emerald" />
-          <Kpi label="Resolved today" value={me.resolvedToday} hint={`${me.resolved7d} in 7 days`} icon={<CheckCircle2 className="w-4 h-4" />} tone="sky" />
-          <Kpi label="Avg first reply" value={fmtDuration(me.avgFirstResponseSec)} hint={`Median ${fmtDuration(me.medianFirstResponseSec)} (30d)`} icon={<Timer className="w-4 h-4" />} tone="violet" />
-          <Kpi label="Replies sent" value={me.repliesToday} hint={`${me.replies7d} in 7 days`} icon={<Reply className="w-4 h-4" />} tone="slate" />
-          <Kpi label="Chats received" value={me.assignments30d} hint="Assigned to me, 30 days" icon={<Users className="w-4 h-4" />} tone="amber" />
-          <Kpi label="Calls done" value={me.callbacksDone30d} hint="Callback requests, 30d" icon={<PhoneCall className="w-4 h-4" />} tone="rose" />
-        </div>
+      {/* Unified Compact KPI Strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2.5">
+        <Kpi
+          label="My open chats"
+          value={me.openChats}
+          hint={`${me.waitingChats} waiting`}
+          icon={<MessageSquare className="w-3.5 h-3.5" />}
+          tone="emerald"
+          href="/dashboard/inbox"
+        />
+        <Kpi
+          label="Resolved today"
+          value={me.resolvedToday}
+          hint={`${me.resolved7d} in 7d`}
+          icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+          tone="sky"
+        />
+        <Kpi
+          label="Avg first reply"
+          value={fmtDuration(me.avgFirstResponseSec)}
+          hint={`Med ${fmtDuration(me.medianFirstResponseSec)}`}
+          icon={<Timer className="w-3.5 h-3.5" />}
+          tone="violet"
+        />
+        <Kpi
+          label="Replies sent"
+          value={me.repliesToday}
+          hint={`${me.replies7d} in 7d`}
+          icon={<Reply className="w-3.5 h-3.5" />}
+          tone="slate"
+        />
+        <Kpi
+          label="All open leads"
+          value={snapshot.openChats}
+          hint={`${snapshot.newChatsToday} new today`}
+          icon={<MessageSquare className="w-3.5 h-3.5" />}
+          tone="emerald"
+          href="/dashboard/inbox"
+        />
+        <Kpi
+          label="Hot leads"
+          value={snapshot.hotLeads}
+          hint={`${snapshot.callbacksPending} call reqs`}
+          icon={<Flame className="w-3.5 h-3.5" />}
+          tone="rose"
+        />
+        <Kpi
+          label="Web enquiries"
+          value={snapshot.websiteEnquiriesNew ?? 0}
+          hint={`${snapshot.websiteEnquiriesTotal ?? 0} total (CC+CE53)`}
+          icon={<Mail className="w-3.5 h-3.5" />}
+          tone="amber"
+          href="/dashboard/enquiries"
+        />
+        <Kpi
+          label="ACRIO handling"
+          value={snapshot.acrioHandling}
+          hint={`${snapshot.waitingForHuman} need human`}
+          icon={<Bot className="w-3.5 h-3.5" />}
+          tone="violet"
+        />
       </div>
 
-      {/* Team snapshot */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Kpi label="Open leads" value={snapshot.openChats} hint={`${snapshot.newChatsToday} new chats today`} icon={<MessageSquare className="w-4 h-4" />} tone="emerald" />
-        <Kpi label="Hot leads" value={snapshot.hotLeads} hint="Callback, high priority or sales pinged" icon={<Flame className="w-4 h-4" />} tone="rose" />
-        <Kpi label="Call requests" value={snapshot.callbacksPending} hint={`${snapshot.callbacksDoneToday} done today`} icon={<PhoneCall className="w-4 h-4" />} tone="amber" />
-        <Kpi label="ACRIO handling" value={snapshot.acrioHandling} hint={`${snapshot.waitingForHuman} waiting for a human`} icon={<Bot className="w-4 h-4" />} tone="violet" />
-      </div>
-
-      <div className="grid lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 space-y-5">
-          {/* Call request leads */}
-          <Panel
-            title={`Call request leads (${data.callRequests.length})`}
-            icon={<PhoneCall className="w-4 h-4 text-amber-700" />}
-          >
-            {data.callRequests.length === 0 ? (
-              <p className="p-5 text-center text-xs text-slate-500">
-                No pending call requests. Customers who tap "Request a callback" in WhatsApp show up here.
-              </p>
-            ) : (
+      {/* Main 3-Column Balanced Grid */}
+      <div className="grid lg:grid-cols-3 gap-4 items-start">
+        <div className="lg:col-span-2 space-y-4">
+          {/* Call request leads — only expanded when pending callbacks exist */}
+          {data.callRequests.length > 0 && (
+            <Panel
+              title={`Pending callback requests (${data.callRequests.length})`}
+              icon={<PhoneCall className="w-4 h-4 text-amber-700" />}
+            >
               <div className="divide-y divide-neutral-100">
                 {data.callRequests.map((c) => (
-                  <div key={c.id} className="px-4 py-3 flex flex-wrap items-center gap-3">
+                  <div key={c.id} className="px-4 py-2.5 flex flex-wrap items-center gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                         <span className="truncate">{c.customerName || c.customerPhone}</span>
@@ -354,7 +458,7 @@ export function DashboardClient() {
                         {" • "}Wants a call: <strong>{c.slot}</strong>
                       </div>
                       <div className="text-[11px] text-slate-500 truncate">
-                        About: {c.topic || "General enquiry"} • Asked {ago(c.createdAt)} • Chat owner: {c.ownerName}
+                        About: {c.topic || "General enquiry"} • Asked {ago(c.createdAt)} • Owner: {c.ownerName}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -376,29 +480,32 @@ export function DashboardClient() {
                   </div>
                 ))}
               </div>
-            )}
-          </Panel>
+            </Panel>
+          )}
 
-          {/* Open leads */}
+          {/* Open leads & recent chats */}
           <Panel
-            title="Open leads"
+            title="Customer chats & open leads"
             icon={<Flame className="w-4 h-4 text-rose-600" />}
             right={
-              <div className="flex items-center gap-1 text-[11px]">
+              <div className="flex flex-wrap items-center gap-1 text-[11px]">
                 {(
                   [
-                    ["MINE", "Mine"],
-                    ["HOT", "Hot"],
-                    ["WAITING", "Waiting"],
-                    ["ALL", "All"],
+                    ["MINE", `Mine (${tabCounts.MINE})`],
+                    ["HOT", `Hot (${tabCounts.HOT})`],
+                    ["WAITING", `Waiting (${tabCounts.WAITING})`],
+                    ["ALL", `Open (${tabCounts.ALL})`],
+                    ["RECENT", `Recent (${tabCounts.RECENT})`],
                   ] as const
                 ).map(([key, label]) => (
                   <button
                     key={key}
                     type="button"
                     onClick={() => setLeadTab(key)}
-                    className={`px-2.5 py-1 rounded-full font-semibold cursor-pointer ${
-                      leadTab === key ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    className={`px-2.5 py-1 rounded-full font-semibold cursor-pointer transition-colors ${
+                      leadTab === key
+                        ? "bg-slate-900 text-white"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
                     }`}
                   >
                     {label}
@@ -408,22 +515,43 @@ export function DashboardClient() {
             }
           >
             {leads.length === 0 ? (
-              <p className="p-5 text-center text-xs text-slate-500">Nothing here right now.</p>
+              <div className="p-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                <span>No chats in this filter right now.</span>
+                {tabCounts.RECENT > 0 && leadTab !== "RECENT" && (
+                  <button
+                    type="button"
+                    onClick={() => setLeadTab("RECENT")}
+                    className="text-[#008069] font-semibold hover:underline cursor-pointer"
+                  >
+                    View {tabCounts.RECENT} recent customer chats →
+                  </button>
+                )}
+              </div>
             ) : (
-              <div className="divide-y divide-neutral-100 max-h-[28rem] overflow-y-auto">
+              <div className="divide-y divide-neutral-100 max-h-80 overflow-y-auto">
                 {leads.map((l) => (
                   <Link
                     key={l.id}
                     href={`/dashboard/inbox?chat=${encodeURIComponent(l.id)}`}
                     className="px-4 py-2.5 flex items-start gap-3 hover:bg-slate-50"
                   >
-                    <span className={`mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${heatStyle[l.heat]}`}>{l.heat}</span>
+                    <span
+                      className={`mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        l.status === "RESOLVED"
+                          ? "bg-slate-100 text-slate-600"
+                          : heatStyle[l.heat]
+                      }`}
+                    >
+                      {l.status === "RESOLVED" ? "DONE" : l.heat}
+                    </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                         <span className="truncate">{l.customerName}</span>
                         {l.hasCallback && <PhoneCall className="w-3.5 h-3.5 text-amber-600 shrink-0" />}
                         {l.unread > 0 && (
-                          <span className="px-1.5 rounded-full bg-[#00a884] text-white text-[10px] font-bold tabular-nums">{l.unread}</span>
+                          <span className="px-1.5 rounded-full bg-[#00a884] text-white text-[10px] font-bold tabular-nums">
+                            {l.unread}
+                          </span>
                         )}
                       </span>
                       <span className="block text-[11px] text-slate-500 truncate">
@@ -445,16 +573,131 @@ export function DashboardClient() {
               </div>
             )}
           </Panel>
+
+          {/* Website Enquiries across Classic Concepts & Classic Edge 53 */}
+          <Panel
+            title="Recent website enquiries (CC + CE53)"
+            icon={<Mail className="w-4 h-4 text-[#008069]" />}
+            right={
+              <Link
+                href="/dashboard/enquiries"
+                className="text-xs font-semibold text-[#008069] hover:underline"
+              >
+                Manage & reply ({snapshot.websiteEnquiriesTotal ?? recentEnquiries.length}) →
+              </Link>
+            }
+          >
+            {recentEnquiries.length === 0 ? (
+              <p className="p-4 text-center text-xs text-slate-500">
+                No website enquiries synced yet.
+              </p>
+            ) : (
+              <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto">
+                {recentEnquiries.map((eq) => (
+                  <Link
+                    key={eq.id}
+                    href="/dashboard/enquiries"
+                    className="px-4 py-2.5 flex items-start justify-between gap-3 hover:bg-slate-50"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            eq.brand === "CLASSIC_EDGE_53"
+                              ? "bg-indigo-100 text-indigo-800"
+                              : "bg-emerald-100 text-emerald-800"
+                          }`}
+                        >
+                          {eq.brand === "CLASSIC_EDGE_53" ? "CE53" : "CC"}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            eq.status === "Replied"
+                              ? "bg-slate-100 text-slate-600"
+                              : "bg-amber-100 text-amber-800"
+                          }`}
+                        >
+                          {eq.status}
+                        </span>
+                        <span className="text-sm font-semibold text-slate-900 truncate">
+                          {eq.customerName}
+                        </span>
+                        {eq.productName && (
+                          <span className="text-xs text-slate-500 truncate">
+                            • {eq.productName}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-600 truncate mt-0.5">
+                        {eq.message}
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-slate-400 shrink-0">
+                      {ago(eq.createdAt)}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          {/* Team performance — placed directly inside the main column to eliminate vertical space wastage */}
+          {data.canSeeTeam && (
+            <Panel title="Team performance" icon={<Trophy className="w-4 h-4 text-amber-600" />}>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-[10.5px] uppercase tracking-wide text-slate-500 bg-slate-50">
+                      <th className="px-3.5 py-2 font-semibold">Teammate</th>
+                      <th className="px-2 py-2 font-semibold text-right">Open</th>
+                      <th className="px-2 py-2 font-semibold text-right">Waiting</th>
+                      <th className="px-2 py-2 font-semibold text-right">Today</th>
+                      <th className="px-2 py-2 font-semibold text-right">30d</th>
+                      <th className="px-2 py-2 font-semibold text-right">Avg 1st reply</th>
+                      <th className="px-2 py-2 font-semibold text-right">Replies 7d</th>
+                      <th className="px-2 py-2 font-semibold text-right">Assigned</th>
+                      <th className="px-3.5 py-2 font-semibold text-right">Calls</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {data.team.map((t) => (
+                      <tr key={t.staffId} className={t.staffId === data.viewer.id ? "bg-emerald-50/40" : ""}>
+                        <td className="px-3.5 py-2">
+                          <div className="font-semibold text-slate-900">{t.name}</div>
+                          <div className="text-[10.5px] text-slate-500">{t.role}</div>
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums">{t.openChats}</td>
+                        <td className={`px-2 py-2 text-right tabular-nums ${t.waitingChats > 0 ? "text-amber-700 font-semibold" : ""}`}>
+                          {t.waitingChats}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums">{t.resolvedToday}</td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold">{t.resolved30d}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">{fmtDuration(t.avgFirstResponseSec)}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">{t.replies7d}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">{t.assignments30d}</td>
+                        <td className="px-3.5 py-2 text-right tabular-nums">{t.callbacksDone30d}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          )}
         </div>
 
-        <div className="space-y-5">
+        {/* Right Rail */}
+        <div className="space-y-4">
           {/* Mentions */}
           <Panel
-            title={`Mentions and ACRIO replies${data.unreadNotifications ? ` (${data.unreadNotifications})` : ""}`}
+            title={`Mentions & ACRIO replies${data.unreadNotifications ? ` (${data.unreadNotifications})` : ""}`}
             icon={<AtSign className="w-4 h-4 text-amber-700" />}
             right={
               data.unreadNotifications > 0 ? (
-                <button type="button" onClick={() => void markNotificationsRead()} className="text-[11px] font-medium text-[#008069] hover:underline cursor-pointer">
+                <button
+                  type="button"
+                  onClick={() => void markNotificationsRead()}
+                  className="text-[11px] font-medium text-[#008069] hover:underline cursor-pointer"
+                >
                   Mark read
                 </button>
               ) : undefined
@@ -465,7 +708,7 @@ export function DashboardClient() {
                 Type @ in a chat note to ping a teammate, or @ACRIO to ask ACRIO a question.
               </p>
             ) : (
-              <div className="divide-y divide-neutral-100">
+              <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto">
                 {data.notifications.map((n) => (
                   <Link
                     key={n.id}
@@ -492,7 +735,7 @@ export function DashboardClient() {
 
           {/* Inbound chart */}
           <Panel title="Customer messages, last 7 days" icon={<MessageSquare className="w-4 h-4 text-sky-600" />}>
-            <div className="p-4 flex items-end gap-2 h-36">
+            <div className="p-4 flex items-end gap-2 h-32">
               {data.inboundLast7Days.map((d) => (
                 <div key={d.day} className="flex-1 flex flex-col items-center justify-end gap-1 h-full">
                   <span className="text-[10px] font-semibold text-slate-600 tabular-nums">{d.count}</span>
@@ -507,10 +750,10 @@ export function DashboardClient() {
           </Panel>
 
           {/* Category bars */}
-          <Panel title="Open leads by topic" icon={<Flame className="w-4 h-4 text-rose-600" />}>
+          <Panel title="Leads & enquiries by topic" icon={<Flame className="w-4 h-4 text-rose-600" />}>
             <div className="p-4 space-y-2">
               {data.leadsByCategory.length === 0 ? (
-                <p className="text-xs text-slate-500 text-center">No open leads.</p>
+                <p className="text-xs text-slate-500 text-center">No recent topic activity.</p>
               ) : (
                 data.leadsByCategory.slice(0, 7).map((c) => (
                   <div key={c.category}>
@@ -519,7 +762,10 @@ export function DashboardClient() {
                       <span className="font-semibold tabular-nums">{c.count}</span>
                     </div>
                     <div className="h-1.5 rounded-full bg-slate-100">
-                      <div className="h-1.5 rounded-full bg-violet-500" style={{ width: `${(c.count / maxCat) * 100}%` }} />
+                      <div
+                        className="h-1.5 rounded-full bg-violet-500"
+                        style={{ width: `${(c.count / maxCat) * 100}%` }}
+                      />
                     </div>
                   </div>
                 ))
@@ -528,47 +774,6 @@ export function DashboardClient() {
           </Panel>
         </div>
       </div>
-
-      {/* Team performance */}
-      {data.canSeeTeam && (
-        <Panel title="Team performance" icon={<Trophy className="w-4 h-4 text-amber-600" />}>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-[10.5px] uppercase tracking-wide text-slate-500 bg-slate-50">
-                  <th className="px-4 py-2 font-semibold">Teammate</th>
-                  <th className="px-2 py-2 font-semibold text-right">Open</th>
-                  <th className="px-2 py-2 font-semibold text-right">Waiting</th>
-                  <th className="px-2 py-2 font-semibold text-right">Resolved today</th>
-                  <th className="px-2 py-2 font-semibold text-right">Resolved 30d</th>
-                  <th className="px-2 py-2 font-semibold text-right">Avg first reply</th>
-                  <th className="px-2 py-2 font-semibold text-right">Replies 7d</th>
-                  <th className="px-2 py-2 font-semibold text-right">Chats received</th>
-                  <th className="px-4 py-2 font-semibold text-right">Calls done</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-neutral-100">
-                {data.team.map((t) => (
-                  <tr key={t.staffId} className={t.staffId === data.viewer.id ? "bg-emerald-50/40" : ""}>
-                    <td className="px-4 py-2">
-                      <div className="font-semibold text-slate-900">{t.name}</div>
-                      <div className="text-[10.5px] text-slate-500">{t.role}</div>
-                    </td>
-                    <td className="px-2 py-2 text-right tabular-nums">{t.openChats}</td>
-                    <td className={`px-2 py-2 text-right tabular-nums ${t.waitingChats > 0 ? "text-amber-700 font-semibold" : ""}`}>{t.waitingChats}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{t.resolvedToday}</td>
-                    <td className="px-2 py-2 text-right tabular-nums font-semibold">{t.resolved30d}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{fmtDuration(t.avgFirstResponseSec)}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{t.replies7d}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">{t.assignments30d}</td>
-                    <td className="px-4 py-2 text-right tabular-nums">{t.callbacksDone30d}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-      )}
     </div>
   );
 }
