@@ -15,10 +15,12 @@ import {
   buildTeamConnectInteractive,
   describeInteractiveAsText,
   executeMultiDatabaseBackup,
+  extractQuoteRequestDetails,
   formatWhatsAppOutboundText,
   loadConversationAiState,
   runAcrioAutonomousTurn,
   runGuardedButtonFlowAiReply,
+  sendQuoteRequestAlertTemplate,
   sendStaffAssignmentEmailNotification,
   sendWhatsAppCloudMessage,
   ACRIO_TEAM_ASK_TEXT,
@@ -895,6 +897,74 @@ export async function processInboundAutomations(params: {
   }
 
   // --------------------------------------------------------------------------
+  // 1a. Handle Staff Quick-Reply Taps from Meta Alert Templates
+  // (`cc_staff_client_assignment` & `cc_callback_request_alert`)
+  // --------------------------------------------------------------------------
+  const incomingBtnText = String(params.buttonText || params.buttonPayload || params.inboundText || "").trim();
+  if (/^(Accept Assignment|View Client Details|Accept Callback|Snooze 30 Minutes)$/i.test(incomingBtnText)) {
+    const auth = getRawLibSqlClient("core_auth");
+    const digitsSuffix = params.customerPhone.replace(/\D/g, "").slice(-10);
+    const staffRows = digitsSuffix.length >= 10
+      ? await auth.execute({
+          sql: `SELECT id, name, whatsapp_number FROM users WHERE status = 'ACTIVE' AND whatsapp_number IS NOT NULL AND whatsapp_number != ''`,
+        })
+      : { rows: [] as Record<string, unknown>[] };
+    const staffCaller = staffRows.rows.find(
+      (u) => String(u.whatsapp_number || "").replace(/\D/g, "").slice(-10) === digitsSuffix
+    );
+    if (staffCaller) {
+      const sId = String(staffCaller.id);
+      const sName = String(staffCaller.name || "Team Member");
+      const latestAssigned = await conv.execute({
+        sql: `SELECT id, customer_name, customer_phone, smart_category, last_message_preview
+              FROM conversations
+              WHERE assigned_staff_id = ? AND status != 'RESOLVED'
+              ORDER BY last_message_at DESC LIMIT 1`,
+        args: [sId],
+      });
+      const targetConv = latestAssigned.rows[0];
+      const hubBase = process.env.NEXT_PUBLIC_APP_URL || "https://whatsapp.ccapl.cc";
+      let replyText = "";
+      if (/Accept Assignment/i.test(incomingBtnText)) {
+        if (targetConv) {
+          await conv.execute({
+            sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, delivery_status, created_at)
+                  VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+            args: [
+              `msg_ack_${crypto.randomUUID().slice(0, 8)}`,
+              String(targetConv.id),
+              sName,
+              `${sName} accepted assignment via WhatsApp.`,
+              nowIso,
+            ],
+          }).catch(() => {});
+          replyText = `Thanks ${sName}! Confirmed your acceptance for *${String(targetConv.customer_name || targetConv.customer_phone)}*.\n\nOpen chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`;
+        } else {
+          replyText = `Thanks ${sName}! Open your assigned queue here: ${hubBase}/dashboard/inbox`;
+        }
+      } else if (/View Client Details/i.test(incomingBtnText)) {
+        if (targetConv) {
+          replyText = `*Latest Assigned Client:*\n• *Name:* ${String(targetConv.customer_name || "Customer")}\n• *Phone:* ${String(targetConv.customer_phone)}\n• *Topic:* ${String(targetConv.smart_category || "General Enquiry")}\n• *Last msg:* ${String(targetConv.last_message_preview || "")}\n\nOpen chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`;
+        } else {
+          replyText = `No open client chat is currently waiting for you. Check your inbox: ${hubBase}/dashboard/inbox`;
+        }
+      } else if (/Accept Callback/i.test(incomingBtnText)) {
+        replyText = targetConv
+          ? `Callback accepted! Please call *${String(targetConv.customer_name || "")}* at ${String(targetConv.customer_phone)} and log the outcome in ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`
+          : `Callback accepted! Check pending callbacks in ${hubBase}/dashboard/inbox`;
+      } else {
+        replyText = `Snoozed alert for 30 minutes, ${sName}. You can still pick up the client anytime in ${hubBase}/dashboard/inbox`;
+      }
+      await sendWhatsAppCloudMessage({
+        toPhone: params.customerPhone,
+        bodyText: replyText,
+        simulateAsyncDelivery: true,
+      }).catch(() => {});
+      return;
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // 1b. ACRIO's own buttons and "View options" list taps (acrio:* payloads)
   // --------------------------------------------------------------------------
   let forcedFocusSlug: string | undefined;
@@ -1098,6 +1168,33 @@ export async function processInboundAutomations(params: {
         effectiveAction = "OPT_OUT_DND";
       } else if (/track|order\s*status|where\s*is/i.test(btnLabel)) {
         effectiveAction = "SEND_ORDER_TRACKING";
+      } else if (/view\s*catalog|browse\s*catalog|catalogue/i.test(btnLabel)) {
+        const catalogMsg = formatWhatsAppOutboundText(
+          `Here are our full product websites:\n\n• *Classic Concepts* (Acrylic Podiums, Stands, Trophies, Furniture, Signages): https://classicconcepts.in\n• *Classic Edge 53* (Polishing & Bending Machines, Diamond Tools & Hardware): https://classicedge.in\n\nTell me which category or model you are looking for and I will share pricing and details right away.`
+        );
+        const catSend = await sendWhatsAppCloudMessage({
+          toPhone: params.customerPhone,
+          bodyText: catalogMsg,
+          simulateAsyncDelivery: true,
+        });
+        await conv.execute({
+          sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, wa_message_id, delivery_status, created_at)
+                VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', 'Template Flow (View Catalog)', 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+          args: [
+            `msg_cat_${crypto.randomUUID().slice(0, 8)}`,
+            params.conversationId,
+            catalogMsg,
+            catSend.waMessageId,
+            catSend.deliveryStatus,
+            nowIso,
+          ],
+        }).catch(() => {});
+        socketHub.emit("message:new", {
+          conversationId: params.conversationId,
+          senderName: "Template Flow (View Catalog)",
+          text: catalogMsg,
+        });
+        return;
       } else if (/sales|talk|speak|call|quote|team|support|agent|book/i.test(btnLabel)) {
         effectiveAction = "ASSIGN_TEAM";
       } else if (flow?.replyText?.trim()) {
@@ -1868,6 +1965,29 @@ export async function processInboundAutomations(params: {
         senderName: "ACRIO • Sales Ping",
         text: pingBody,
       });
+
+      // Notify available Sales P0 staff via WhatsApp `cc_quote_request_alert` template
+      const quoteInfo = extractQuoteRequestDetails({
+        text: params.inboundText,
+        smartCategory: acrioTurn.smartCategory,
+      });
+      if (quoteInfo.isQuoteRequest) {
+        const salesMembersRes = await conv
+          .execute(
+            `SELECT staff_id, staff_name FROM team_members WHERE team_id = 'team_sales' AND is_available = 1 ORDER BY tier ASC LIMIT 2`
+          )
+          .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+        for (const sm of salesMembersRes.rows) {
+          void sendQuoteRequestAlertTemplate({
+            staffId: String(sm.staff_id),
+            staffName: String(sm.staff_name || "Sales Team"),
+            customerName: String(convRow.customer_name || params.customerPhone),
+            customerPhone: params.customerPhone,
+            productName: quoteInfo.product,
+            quantity: quoteInfo.quantity,
+          }).catch(() => {});
+        }
+      }
     }
 
     socketHub.emit("message:new", {
@@ -1928,6 +2048,8 @@ export async function smartAssignConversation(params: {
   startWaitingTimer?: boolean;
   triggeredByName?: string;
   handoffReasonFromAcrio?: string;
+  quoteProduct?: string;
+  quoteQuantity?: string;
 }): Promise<{
   assignedTeamId: string | null;
   assignedTeamName: string | null;
@@ -2179,7 +2301,7 @@ export async function smartAssignConversation(params: {
     assignedAt: nowIso,
   });
 
-  // Notify assigned individual staff member via email dispatch
+  // Notify assigned individual staff member via email & WhatsApp template (`cc_quote_request_alert` or `cc_staff_client_assignment`)
   if (staffId && staffId !== "ACRIO" && staffId !== existingStaffId) {
     void sendStaffAssignmentEmailNotification({
       staffId,
@@ -2194,6 +2316,8 @@ export async function smartAssignConversation(params: {
       latestMessage: String(
         params.inboundText || current.last_message_preview || ""
       ),
+      quoteProduct: params.quoteProduct,
+      quoteQuantity: params.quoteQuantity,
       conversationId: params.conversationId,
       isEscalation: false,
     }).catch(() => {});

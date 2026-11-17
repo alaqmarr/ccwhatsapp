@@ -4,6 +4,8 @@ import { getCurrentUser } from "@/lib/session";
 import {
   dispatchSystemEmail,
   evaluateWebsiteEnquiryWithAi,
+  extractQuoteRequestDetails,
+  sendWebsiteEnquiryReceivedTemplate,
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
 import {
@@ -394,7 +396,39 @@ export async function POST(req: Request) {
         });
       }
     } else {
-      // Save AI evaluation + email-sent confirmation as an internal team note so Sales sees what AI already answered!
+      // Customer is outside 24h window: send approved Meta template `cc_website_enquiry_received` first!
+      const tplDispatch = await sendWebsiteEnquiryReceivedTemplate({
+        toPhone: normalizedPhone,
+        customerName,
+      });
+      whatsappDelivered = tplDispatch.ok;
+      const outTplMsgId = `msg_${crypto.randomUUID().slice(0, 10)}`;
+      await conv.execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, wa_message_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, template_name, delivery_status, created_at
+        ) VALUES (?, ?, ?, 'OUTBOUND', 'AUTOMATION', 'ACRIO Website Concierge', 'TEMPLATE', 'MARKETING', ?, ?, ?, ?)`,
+        args: [
+          outTplMsgId,
+          conversationId,
+          tplDispatch.waMessageId,
+          tplDispatch.bodyText,
+          tplDispatch.templateName,
+          tplDispatch.deliveryStatus,
+          new Date(Date.now() + 200).toISOString(),
+        ],
+      });
+      if (tplDispatch.ok) {
+        await recordDualPricingLedgerEntry({
+          messageId: outTplMsgId,
+          conversationId,
+          customerPhone: normalizedPhone,
+          category: "MARKETING",
+          staffName: "ACRIO Website Concierge",
+        });
+      }
+
+      // Save AI evaluation + confirmation as an internal team note so Sales sees what AI prepared
       await conv.execute({
         sql: `INSERT INTO messages (
           id, conversation_id, direction, sender_type, sender_name, message_type,
@@ -403,19 +437,26 @@ export async function POST(req: Request) {
         args: [
           `msg_${crypto.randomUUID().slice(0, 10)}`,
           conversationId,
-          `Smart AI First Reply prepared & emailed to ${customerEmail || customerName}:\n\n${aiEval.whatsappSummaryText}\n\n(Customer has not messaged on WhatsApp in the last 24h, so send an approved Meta template to start WhatsApp outreach.)`,
+          `Sent WhatsApp template *cc_website_enquiry_received* to ${customerName} (${normalizedPhone}).\n\nPrepared AI summary & emailed ${customerEmail || customerName}:\n${aiEval.whatsappSummaryText}`,
           new Date(Date.now() + 250).toISOString(),
         ],
       });
     }
 
-    // Route conversation to Sales Team (and trigger Staff Assignment Email Notification!)
+    // Extract quote details if applicable and route conversation to Sales Team (triggers Email + WhatsApp cc_quote_request_alert / cc_staff_client_assignment!)
+    const extractedQuote = extractQuoteRequestDetails({
+      text: messageText,
+      smartCategory: aiEval.smartCategory,
+      productName: productName || aiEval.matchedItems?.[0]?.name || "",
+    });
     await smartAssignConversation({
       conversationId,
       inboundText: inboundDisplayBody,
       preferredTeamId: "team_sales",
       startWaitingTimer: true,
       triggeredByName: "Website Enquiry Router",
+      quoteProduct: extractedQuote.isQuoteRequest ? extractedQuote.product : productName || undefined,
+      quoteQuantity: extractedQuote.isQuoteRequest ? extractedQuote.quantity : undefined,
       handoffReasonFromAcrio: `New ${brandTag} website enquiry evaluated by ACRIO AI and routed to Sales Team for follow-up.`,
     });
 

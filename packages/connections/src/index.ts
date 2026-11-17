@@ -8499,6 +8499,7 @@ export async function listRecentEmailDispatchLogs(limit = 30): Promise<
 export async function sendStaffAssignmentEmailNotification(params: {
   staffId?: string | null;
   staffEmail?: string | null;
+  staffWhatsapp?: string | null;
   staffName: string;
   customerName: string;
   customerPhone: string;
@@ -8508,24 +8509,31 @@ export async function sendStaffAssignmentEmailNotification(params: {
   teamName?: string;
   reason?: string;
   latestMessage?: string;
+  quoteProduct?: string;
+  quoteQuantity?: string;
+  sendWhatsApp?: boolean;
   conversationId: string;
   isEscalation?: boolean;
-}): Promise<{ ok: boolean; via: string; error?: string }> {
+}): Promise<{ ok: boolean; via: string; whatsappSent?: boolean; error?: string }> {
   await ensureDatabasesBootstrapped();
   const auth = getRawLibSqlClient("core_auth");
   const conv = getRawLibSqlClient("conversations");
 
   let targetEmail = (params.staffEmail || "").trim();
-  if (!targetEmail && params.staffId && params.staffId !== "ACRIO") {
+  let targetWhatsapp = (params.staffWhatsapp || "").trim();
+  let alertsDisabled = false;
+
+  if (params.staffId && params.staffId !== "ACRIO") {
     const uRes = await auth.execute({
-      sql: `SELECT email, status FROM users WHERE id = ? LIMIT 1`,
+      sql: `SELECT email, whatsapp_number, status FROM users WHERE id = ? LIMIT 1`,
       args: [params.staffId],
     });
     const uRow = uRes.rows[0];
     if (!uRow || String(uRow.status) !== "ACTIVE") {
       return { ok: false, via: "none", error: "Staff member is not active." };
     }
-    targetEmail = String(uRow.email || "").trim();
+    if (!targetEmail) targetEmail = String(uRow.email || "").trim();
+    if (!targetWhatsapp) targetWhatsapp = String(uRow.whatsapp_number || "").trim();
 
     // Respect per-member email_alerts_enabled flag if present
     const tmRes = await conv
@@ -8539,12 +8547,50 @@ export async function sendStaffAssignmentEmailNotification(params: {
       tmRes.rows[0].email_alerts_enabled !== undefined &&
       Number(tmRes.rows[0].email_alerts_enabled) === 0
     ) {
-      return { ok: false, via: "disabled_by_preference" };
+      alertsDisabled = true;
     }
   }
 
+  let whatsappSent = false;
+  if (params.sendWhatsApp !== false && targetWhatsapp && !alertsDisabled) {
+    const quoteInfo = extractQuoteRequestDetails({
+      text: `${params.latestMessage || ""} ${params.reason || ""}`,
+      smartCategory: params.smartCategory,
+      productName: params.quoteProduct,
+      explicitQuantity: params.quoteQuantity,
+    });
+    if (quoteInfo.isQuoteRequest) {
+      const waQuoteRes = await sendQuoteRequestAlertTemplate({
+        toPhone: targetWhatsapp,
+        staffName: params.staffName,
+        customerName: params.customerName,
+        customerPhone: params.customerPhone,
+        productName: quoteInfo.product,
+        quantity: quoteInfo.quantity,
+      }).catch(() => ({ ok: false }));
+      whatsappSent = waQuoteRes.ok;
+    } else {
+      const waAssignRes = await sendStaffClientAssignmentTemplate({
+        toPhone: targetWhatsapp,
+        staffName: params.staffName,
+        customerName: params.customerName,
+        customerPhone: params.customerPhone,
+      }).catch(() => ({ ok: false }));
+      whatsappSent = waAssignRes.ok;
+    }
+  }
+
+  if (alertsDisabled) {
+    return { ok: whatsappSent, via: "disabled_by_preference", whatsappSent };
+  }
+
   if (!targetEmail) {
-    return { ok: false, via: "none", error: "No staff email found." };
+    return {
+      ok: whatsappSent,
+      via: whatsappSent ? "whatsapp_only" : "none",
+      whatsappSent,
+      error: whatsappSent ? undefined : "No staff email found.",
+    };
   }
 
   const appOrigin = resolveWhatsAppWebAppOrigin();
@@ -8607,7 +8653,7 @@ export async function sendStaffAssignmentEmailNotification(params: {
     </div>
   `;
 
-  return dispatchSystemEmail({
+  const emailRes = await dispatchSystemEmail({
     to: targetEmail,
     recipientName: params.staffName,
     subject,
@@ -8616,6 +8662,7 @@ export async function sendStaffAssignmentEmailNotification(params: {
     dispatchType: params.isEscalation ? "STAFF_ESCALATION" : "STAFF_ASSIGNMENT",
     conversationId: params.conversationId,
   });
+  return { ...emailRes, whatsappSent };
 }
 
 export async function sendStaffVerificationEmail(params: {
@@ -8701,10 +8748,244 @@ export async function sendStaffAlertEmail(params: {
   });
 }
 
+function cleanMetaTemplateParam(raw: string | null | undefined, maxLen = 200): string {
+  const cleaned = String(raw || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, maxLen);
+  return cleaned || "-";
+}
+
+async function resolveStaffWhatsappPhone(params: {
+  toPhone?: string | null;
+  staffId?: string | null;
+}): Promise<string> {
+  const direct = String(params.toPhone || "").trim();
+  if (direct) return direct;
+  if (!params.staffId || params.staffId === "ACRIO") return "";
+  try {
+    await ensureDatabasesBootstrapped();
+    const auth = getRawLibSqlClient("core_auth");
+    const u = await auth.execute({
+      sql: `SELECT whatsapp_number, status FROM users WHERE id = ? LIMIT 1`,
+      args: [params.staffId],
+    });
+    if (u.rows[0] && String(u.rows[0].status) === "ACTIVE") {
+      return String(u.rows[0].whatsapp_number || "").trim();
+    }
+  } catch {
+    // ignore lookup failure
+  }
+  return "";
+}
+
+export function extractQuoteRequestDetails(params: {
+  text: string;
+  smartCategory?: string;
+  productName?: string;
+  explicitQuantity?: string;
+}): { isQuoteRequest: boolean; product: string; quantity: string } {
+  const raw = String(params.text || "").trim();
+  const explicitProd = String(params.productName || "").trim();
+  const isQuoteRequest =
+    Boolean(explicitProd) ||
+    /\b(quote|quotation|price|pricing|cost|rate|rates|estimate|bulk|qty|quantity|proforma|rfq|requirements?|how\s+much|give\s+me\s+(?:the\s+)?best)\b/i.test(
+      raw
+    ) ||
+    /\b\d+\s*(?:nos|pcs|pieces|units|podiums?|machines?|chairs?|tables?|sheets?|awards?|trophies?|boxes?|sets?)\b/i.test(
+      raw
+    );
+
+  const qtyMatch =
+    raw.match(/\b(?:qty|quantity)\s*[:=-]?\s*(\d{1,5}(?:\s*(?:nos|pcs|pieces|units|sets?))?)\b/i) ||
+    raw.match(/\b(\d{1,5}\s*(?:nos|pcs|pieces|units|podiums?|machines?|chairs?|tables?|sheets?|awards?|trophies?|boxes?|sets?))\b/i);
+  const quantity =
+    String(params.explicitQuantity || "").trim() ||
+    (qtyMatch?.[1] ? qtyMatch[1].trim() : "As requested");
+
+  const skuMatch = raw.match(/\b(CCP\d{2,4}[A-Z]?|YN-[A-Z0-9-]+|JW-?\d+[A-Z]?|ZD-?\d+)\b/i);
+  const product =
+    explicitProd ||
+    (skuMatch?.[1] ? skuMatch[1].toUpperCase() : "") ||
+    (params.smartCategory && params.smartCategory !== "General Enquiry"
+      ? params.smartCategory
+      : raw.slice(0, 80) || "Acrylic / Machine Requirement");
+
+  return { isQuoteRequest, product, quantity };
+}
+
+/** Sends `cc_website_enquiry_received` (Meta-approved MARKETING template, body {{1}}=customerName). */
+export async function sendWebsiteEnquiryReceivedTemplate(params: {
+  toPhone: string;
+  customerName: string;
+}): Promise<
+  OutboundWhatsAppSendResult & {
+    bodyText: string;
+    templateName: "cc_website_enquiry_received";
+    billingCategory: "MARKETING";
+  }
+> {
+  const firstOrFull = cleanMetaTemplateParam(
+    params.customerName && !/^\+?\d/.test(params.customerName.trim())
+      ? params.customerName
+      : "there",
+    80
+  );
+  const renderedBody = [
+    "We Have Received Your Enquiry",
+    "",
+    `Hello ${firstOrFull},`,
+    "",
+    "Thank you for reaching out to *Classic Concepts*. We have received your enquiry, and our team is reviewing the details you shared.",
+    "",
+    "*What happens next:*",
+    "• A team member will review your requirements",
+    "• You will hear back from us within *1 business day*",
+    "• Keep an eye on this chat for updates",
+    "",
+    "In the meantime, you can browse our latest designs here:",
+    "https://ccapl.cc/TD6QEo",
+    "",
+    "We look forward to working with you.",
+  ].join("\n");
+
+  const res = await sendWhatsAppCloudMessage({
+    toPhone: params.toPhone,
+    bodyText: renderedBody,
+    templateName: "cc_website_enquiry_received",
+    languageCode: "en",
+    templateComponents: [
+      {
+        type: "body",
+        parameters: [{ type: "text", text: firstOrFull }],
+      },
+    ],
+  });
+
+  return {
+    ...res,
+    bodyText: renderedBody,
+    templateName: "cc_website_enquiry_received",
+    billingCategory: "MARKETING",
+  };
+}
+
+/** Sends `cc_quote_request_alert` (Meta-approved UTILITY template: {{1}}=staffName, {{2}}=customer, {{3}}=product, {{4}}=quantity). */
+export async function sendQuoteRequestAlertTemplate(params: {
+  toPhone?: string | null;
+  staffId?: string | null;
+  staffName: string;
+  customerName: string;
+  customerPhone?: string;
+  productName: string;
+  quantity?: string;
+}): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
+  const toPhone = await resolveStaffWhatsappPhone(params);
+  if (!toPhone) return { ok: false, skipped: true };
+
+  const staffVar = cleanMetaTemplateParam(params.staffName, 80);
+  const custVar = cleanMetaTemplateParam(
+    params.customerPhone
+      ? `${params.customerName || params.customerPhone} (${params.customerPhone})`
+      : params.customerName,
+    120
+  );
+  const prodVar = cleanMetaTemplateParam(params.productName, 140);
+  const qtyVar = cleanMetaTemplateParam(params.quantity || "As requested", 80);
+
+  const res = await sendWhatsAppCloudMessage({
+    toPhone,
+    bodyText: `New Quote Request Received: ${custVar} - Product: ${prodVar} (Qty: ${qtyVar})`,
+    templateName: "cc_quote_request_alert",
+    languageCode: "en",
+    templateComponents: [
+      {
+        type: "body",
+        parameters: [staffVar, custVar, prodVar, qtyVar].map((text) => ({
+          type: "text",
+          text,
+        })),
+      },
+    ],
+  });
+  if (!res.ok) console.warn("[WA] cc_quote_request_alert failed:", res.error);
+  return { ok: res.ok, error: res.error };
+}
+
+/** Sends `cc_staff_client_assignment` (Meta-approved MARKETING template: {{1}}=staffName, {{2}}=clientName, {{3}}=clientPhone). */
+export async function sendStaffClientAssignmentTemplate(params: {
+  toPhone?: string | null;
+  staffId?: string | null;
+  staffName: string;
+  customerName: string;
+  customerPhone: string;
+}): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
+  const toPhone = await resolveStaffWhatsappPhone(params);
+  if (!toPhone) return { ok: false, skipped: true };
+
+  const staffVar = cleanMetaTemplateParam(params.staffName, 80);
+  const clientVar = cleanMetaTemplateParam(params.customerName || params.customerPhone, 100);
+  const phoneVar = cleanMetaTemplateParam(params.customerPhone || "Not provided", 40);
+
+  const res = await sendWhatsAppCloudMessage({
+    toPhone,
+    bodyText: `New Client Assigned to You: ${clientVar} (${phoneVar})`,
+    templateName: "cc_staff_client_assignment",
+    languageCode: "en",
+    templateComponents: [
+      {
+        type: "body",
+        parameters: [staffVar, clientVar, phoneVar].map((text) => ({
+          type: "text",
+          text,
+        })),
+      },
+    ],
+  });
+  if (!res.ok) console.warn("[WA] cc_staff_client_assignment failed:", res.error);
+  return { ok: res.ok, error: res.error };
+}
+
+/** Sends `cc_callback_request_alert` (Meta-approved MARKETING template: {{1}}=staffName, {{2}}=clientName, {{3}}=clientPhone, {{4}}=preferredTime). */
+export async function sendCallbackRequestAlertTemplate(params: {
+  toPhone?: string | null;
+  staffId?: string | null;
+  staffName: string;
+  customerName: string;
+  customerPhone: string;
+  preferredTime?: string;
+}): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
+  const toPhone = await resolveStaffWhatsappPhone(params);
+  if (!toPhone) return { ok: false, skipped: true };
+
+  const staffVar = cleanMetaTemplateParam(params.staffName, 80);
+  const clientVar = cleanMetaTemplateParam(params.customerName || params.customerPhone, 100);
+  const phoneVar = cleanMetaTemplateParam(params.customerPhone || "Not provided", 40);
+  const slotVar = cleanMetaTemplateParam(params.preferredTime || "As soon as possible", 100);
+
+  const res = await sendWhatsAppCloudMessage({
+    toPhone,
+    bodyText: `New Callback Request Received: ${clientVar} (${phoneVar}) - Preferred time: ${slotVar}`,
+    templateName: "cc_callback_request_alert",
+    languageCode: "en",
+    templateComponents: [
+      {
+        type: "body",
+        parameters: [staffVar, clientVar, phoneVar, slotVar].map((text) => ({
+          type: "text",
+          text,
+        })),
+      },
+    ],
+  });
+  if (!res.ok) console.warn("[WA] cc_callback_request_alert failed:", res.error);
+  return { ok: res.ok, error: res.error };
+}
+
 /**
  * Optional WhatsApp ping to a teammate's own number. WhatsApp only allows free text inside a 24 hour
- * window, so this needs an approved utility template. Set WHATSAPP_STAFF_ALERT_TEMPLATE to its name
- * (body must have 3 variables: name, headline, detail). Without it, nothing is sent.
+ * window, so this uses WHATSAPP_STAFF_ALERT_TEMPLATE or falls back to cc_staff_client_assignment.
  */
 export async function sendStaffWhatsAppAlert(params: {
   toPhone: string;
@@ -8713,8 +8994,16 @@ export async function sendStaffWhatsAppAlert(params: {
   detail: string;
 }): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
   const templateName = String(process.env.WHATSAPP_STAFF_ALERT_TEMPLATE || "").trim();
-  if (!templateName || !params.toPhone) return { ok: false, skipped: true };
-  const clean = (s: string) => String(s || "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, 300);
+  if (!params.toPhone) return { ok: false, skipped: true };
+  if (!templateName) {
+    return sendStaffClientAssignmentTemplate({
+      toPhone: params.toPhone,
+      staffName: params.staffName,
+      customerName: params.headline,
+      customerPhone: params.detail.slice(0, 40),
+    });
+  }
+  const clean = (s: string) => cleanMetaTemplateParam(s, 300);
   const res = await sendWhatsAppCloudMessage({
     toPhone: params.toPhone,
     bodyText: `${params.headline} ${params.detail}`,
@@ -8723,7 +9012,7 @@ export async function sendStaffWhatsAppAlert(params: {
     templateComponents: [
       {
         type: "body",
-        parameters: [params.staffName, params.headline, params.detail].map((t) => ({ type: "text", text: clean(t) || "-" })),
+        parameters: [params.staffName, params.headline, params.detail].map((t) => ({ type: "text", text: clean(t) })),
       },
     ],
   });

@@ -9,7 +9,9 @@ import {
 } from "@cc/database";
 import {
   runAcrioStaffQuestion,
+  sendCallbackRequestAlertTemplate,
   sendStaffAlertEmail,
+  sendStaffAssignmentEmailNotification,
   sendStaffWhatsAppAlert,
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
@@ -257,19 +259,37 @@ export async function notifyCallbackRequest(params: {
         customerName: params.customerName,
         text: detail,
       }).catch(() => {});
-      void alertStaffOutsideApp({
-        staff: {
-          id: staffId,
-          name: String(m.staff_name || "Team"),
-          email: String(m.staff_email || ""),
-          whatsappNumber: phoneRes.rows[0]?.whatsapp_number ? String(phoneRes.rows[0].whatsapp_number) : undefined,
-        },
-        type: "STAFF_CALLBACK",
-        subject: `Callback request: ${params.customerName} (${params.customerPhone})`,
-        headline: "New callback request",
-        detail,
-        conversationId: params.conversationId,
-      });
+
+      const staffWaPhone = phoneRes.rows[0]?.whatsapp_number
+        ? String(phoneRes.rows[0].whatsapp_number).trim()
+        : "";
+      const staffNameStr = String(m.staff_name || "Team");
+      const staffEmailStr = String(m.staff_email || "").trim();
+
+      if (staffEmailStr) {
+        void sendStaffAlertEmail({
+          staffId,
+          staffEmail: staffEmailStr,
+          staffName: staffNameStr,
+          subject: `Callback request: ${params.customerName} (${params.customerPhone})`,
+          headline: "New callback request",
+          detail,
+          conversationId: params.conversationId,
+          ctaLabel: "Open the chat",
+          dispatchType: "STAFF_CALLBACK",
+        }).catch(() => {});
+      }
+
+      if (staffWaPhone) {
+        void sendCallbackRequestAlertTemplate({
+          toPhone: staffWaPhone,
+          staffId,
+          staffName: staffNameStr,
+          customerName: params.customerName,
+          customerPhone: params.customerPhone,
+          preferredTime: params.slot || "As soon as possible",
+        }).catch(() => {});
+      }
     }
   } catch (err) {
     console.warn("[notify] callback notification failed:", (err as Error)?.message || err);
@@ -355,6 +375,20 @@ async function answerAcrioNote(params: {
             });
             executedSummaries.push(`Assigned chat to ${target.name}`);
             socketHub.emit("conversation:assigned", { conversationId: params.conversationId, staffName: target.name });
+            if (target.id !== params.author.id) {
+              void sendStaffAssignmentEmailNotification({
+                staffId: target.id,
+                staffName: target.name,
+                customerName: params.customerName,
+                customerPhone: params.customerPhone,
+                smartCategory: cRow?.smart_category ? String(cRow.smart_category) : "General Enquiry",
+                priority: cRow?.priority ? String(cRow.priority) : "NORMAL",
+                teamName: "Sales Team",
+                reason: `Assigned by @ACRIO (requested by ${params.author.name})`,
+                latestMessage: params.question,
+                conversationId: params.conversationId,
+              }).catch(() => {});
+            }
           }
         }
       } else if (act.type === "add_collaborator" && act.staffQuery) {
@@ -367,6 +401,20 @@ async function answerAcrioNote(params: {
           });
           executedSummaries.push(`Granted dual access to ${target.name}`);
           socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+          if (target.id !== params.author.id) {
+            void sendStaffAssignmentEmailNotification({
+              staffId: target.id,
+              staffName: target.name,
+              customerName: params.customerName,
+              customerPhone: params.customerPhone,
+              smartCategory: cRow?.smart_category ? String(cRow.smart_category) : "General Enquiry",
+              priority: cRow?.priority ? String(cRow.priority) : "NORMAL",
+              teamName: "Sales Team (Co-handler)",
+              reason: `Added as co-handler by @ACRIO (${params.author.name})`,
+              latestMessage: params.question,
+              conversationId: params.conversationId,
+            }).catch(() => {});
+          }
         }
       } else if (act.type === "set_priority" && act.priority) {
         const pri = ["URGENT", "HIGH", "NORMAL"].includes(act.priority) ? act.priority : "NORMAL";

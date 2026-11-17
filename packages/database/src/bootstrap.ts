@@ -1512,6 +1512,114 @@ async function seedInitialOperationalData(): Promise<void> {
     ],
   });
 
+  // Ensure the 4 approved Meta alert/acknowledgment templates exist in marketing.templates
+  await mkt.batch(
+    [
+      {
+        sql: `INSERT OR IGNORE INTO templates (
+          id, meta_template_id, name, language, category, header_type, header_text, body_text, footer_text,
+          buttons_json, variables_schema_json, approval_status, meta_quality_score, sent_count, created_at, updated_at
+        ) VALUES (?, ?, ?, 'en', ?, 'TEXT', ?, ?, ?, ?, ?, 'APPROVED', 'GREEN', 0, ?, ?)`,
+        args: [
+          "tpl_meta_website_enquiry",
+          "1520380163242586",
+          "cc_website_enquiry_received",
+          "MARKETING",
+          "We Have Received Your Enquiry",
+          "Hello {{1}},\n\nThank you for reaching out to *Classic Concepts*. We have received your enquiry, and our team is reviewing the details you shared.\n\n*What happens next:*\n• A team member will review your requirements\n• You will hear back from us within *1 business day*\n• Keep an eye on this chat for updates\n\nIn the meantime, you can browse our latest designs here:\nhttps://ccapl.cc/TD6QEo\n\nWe look forward to working with you.",
+          "Classic Concepts Acrylic Private Limited",
+          JSON.stringify([
+            { id: "btn_we_talk", type: "QUICK_REPLY", text: "Talk to Our Team", flowAction: { actionType: "ASSIGN_TEAM", assignTeamId: "team_sales", stopFurtherAi: true } },
+            { id: "btn_we_cat", type: "QUICK_REPLY", text: "View Catalog" },
+          ]),
+          JSON.stringify([
+            { index: 1, label: "Customer First Name", sourceField: "customer.firstName", sampleValue: "Rahul" },
+          ]),
+          isoNow,
+          isoNow,
+        ],
+      },
+      {
+        sql: `INSERT OR IGNORE INTO templates (
+          id, meta_template_id, name, language, category, header_type, header_text, body_text, footer_text,
+          buttons_json, variables_schema_json, approval_status, meta_quality_score, sent_count, created_at, updated_at
+        ) VALUES (?, ?, ?, 'en', ?, 'TEXT', ?, ?, ?, ?, ?, 'APPROVED', 'GREEN', 0, ?, ?)`,
+        args: [
+          "tpl_meta_quote_alert",
+          "921149787749862",
+          "cc_quote_request_alert",
+          "UTILITY",
+          "New Quote Request Received",
+          "Hello {{1}},\n\nA new *quote request* just came in from {{2}}.\n\n• Product: {{3}}\n• Quantity: {{4}}\n\nPlease reply within *1 working hour* to keep the lead warm.\n\nCatalog: https://ccapl.cc/eSzcdT",
+          "Classic Concepts",
+          "[]",
+          JSON.stringify([
+            { index: 1, label: "Staff Name", sourceField: "custom", sampleValue: "Priya" },
+            { index: 2, label: "Customer Name", sourceField: "customer.fullName", sampleValue: "Rahul Sharma" },
+            { index: 3, label: "Product", sourceField: "custom", sampleValue: "Acrylic Podium" },
+            { index: 4, label: "Quantity", sourceField: "custom", sampleValue: "10" },
+          ]),
+          isoNow,
+          isoNow,
+        ],
+      },
+      {
+        sql: `INSERT OR IGNORE INTO templates (
+          id, meta_template_id, name, language, category, header_type, header_text, body_text, footer_text,
+          buttons_json, variables_schema_json, approval_status, meta_quality_score, sent_count, created_at, updated_at
+        ) VALUES (?, ?, ?, 'en', ?, 'TEXT', ?, ?, ?, ?, ?, 'APPROVED', 'GREEN', 0, ?, ?)`,
+        args: [
+          "tpl_meta_staff_assignment",
+          "1866822621170402",
+          "cc_staff_client_assignment",
+          "MARKETING",
+          "New Client Assigned to You",
+          "Hello {{1}},\n\nA new client has been assigned to you in Classic Concepts.\n\n*Client Name:* {{2}}\n*Client Phone:* {{3}}\n\n• Review the client profile before reaching out\n• Reply within 1 working hours for the best response\n• Update the lead status once you have spoken to them\n\nReply below to confirm or get help.",
+          "Classic Concepts • Reply STOP to opt out",
+          JSON.stringify([
+            { id: "btn_sa_view", type: "QUICK_REPLY", text: "View Client Details" },
+            { id: "btn_sa_acc", type: "QUICK_REPLY", text: "Accept Assignment" },
+          ]),
+          JSON.stringify([
+            { index: 1, label: "Staff Name", sourceField: "custom", sampleValue: "Priya" },
+            { index: 2, label: "Client Name", sourceField: "customer.fullName", sampleValue: "Rahul Mehta" },
+            { index: 3, label: "Client Phone", sourceField: "custom", sampleValue: "+91 98765 43210" },
+          ]),
+          isoNow,
+          isoNow,
+        ],
+      },
+      {
+        sql: `INSERT OR IGNORE INTO templates (
+          id, meta_template_id, name, language, category, header_type, header_text, body_text, footer_text,
+          buttons_json, variables_schema_json, approval_status, meta_quality_score, sent_count, created_at, updated_at
+        ) VALUES (?, ?, ?, 'en', ?, 'TEXT', ?, ?, ?, ?, ?, 'APPROVED', 'GREEN', 0, ?, ?)`,
+        args: [
+          "tpl_meta_callback_alert",
+          "1859792241814272",
+          "cc_callback_request_alert",
+          "MARKETING",
+          "New Callback Request Received",
+          "Hello {{1}},\n\nA client has requested a *callback*.\n\n• Client: {{2}}\n• Phone: {{3}}\n• Preferred time: {{4}}\n\nPlease reach out within the next *30 minutes* so the client feels looked after. Log the outcome in the CRM once the call is done.",
+          "CCAPL",
+          JSON.stringify([
+            { id: "btn_cb_acc", type: "QUICK_REPLY", text: "Accept Callback" },
+            { id: "btn_cb_snz", type: "QUICK_REPLY", text: "Snooze 30 Minutes" },
+          ]),
+          JSON.stringify([
+            { index: 1, label: "Staff Name", sourceField: "custom", sampleValue: "Ananya" },
+            { index: 2, label: "Client Name", sourceField: "customer.fullName", sampleValue: "Rahul Mehta" },
+            { index: 3, label: "Client Phone", sourceField: "custom", sampleValue: "+91 98765 43210" },
+            { index: 4, label: "Preferred Time", sourceField: "custom", sampleValue: "Today, 4:00 PM" },
+          ]),
+          isoNow,
+          isoNow,
+        ],
+      },
+    ],
+    "write"
+  );
+
   // Strict Meta Template Policy: in live production (without demo seed), any local template that has NOT been synced/approved by Meta (no meta_template_id) must stay DRAFT until submitted & approved on Meta!
   if (!shouldSeedDemoData && envMeta.hasLiveCredentials) {
     await mkt.execute(`
