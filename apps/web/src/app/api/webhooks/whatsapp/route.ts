@@ -290,8 +290,9 @@ export async function POST(req: Request) {
             sql: `INSERT INTO conversations (
               id, customer_phone, customer_name, customer_id, status, priority,
               smart_category, assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name,
-              escalation_level, waiting_since, unread_count, last_message_preview, last_message_at, window_expires_at, created_at
-            ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', 'ACRIO', 'ACRIO', NULL, 'System (ACRIO)', 'P0', NULL, 1, ?, ?, ?, ?)`,
+              escalation_level, waiting_since, unread_count, last_message_preview, last_message_at,
+              last_message_direction, last_message_status, window_expires_at, created_at
+            ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', 'ACRIO', 'ACRIO', NULL, 'System (ACRIO)', 'P0', NULL, 1, ?, ?, 'INBOUND', 'DELIVERED', ?, ?)`,
             args: [convId, e164, contactName, custId, String(textBody).slice(0, 140), msgTimestampIso, msgWindowExp, nowIso],
           });
         } else {
@@ -309,6 +310,8 @@ export async function POST(req: Request) {
                       unread_count = unread_count + 1,
                       last_message_preview = ?,
                       last_message_at = ?,
+                      last_message_direction = 'INBOUND',
+                      last_message_status = 'DELIVERED',
                       window_expires_at = ?
                   WHERE id = ?`,
             args: [

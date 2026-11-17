@@ -4729,9 +4729,9 @@ export async function runAcrioStaffQuestion(params: {
   if (apiKey) {
     const aiCall = await callClaudeHaikuMessagesDetailed({
       apiKey,
-      maxTokens: 2048,
-      effort: "medium",
-      timeoutMs: 30000,
+      maxTokens: 1600,
+      effort: "low",
+      timeoutMs: 24000,
       system: `You are ACRIO, the assistant and action copilot for the Classic Concepts and Classic Edge 53 team. A teammate (${params.staffName}) is asking you a question OR asking you to perform an action inside a PRIVATE internal note on a customer chat.
 
 CAPABILITIES (STAFF COPILOT ACTIONS):
@@ -7014,10 +7014,14 @@ ${rawText}`;
         claudeMessages.push({ role: "user", content: latestPromptPayload });
       }
 
+      const needsMediumReasoning =
+        projectPlan.isMultiItemOrTotalling ||
+        (!deepProductInfo?.isDeepQuestion && contextMatches.length > 3);
+      const turnEffort: "low" | "medium" = needsMediumReasoning ? "medium" : "low";
       const aiCall = await callClaudeHaikuMessagesDetailed({
         apiKey,
-        maxTokens: 4096,
-        effort: "medium",
+        maxTokens: needsMediumReasoning ? 3072 : 1800,
+        effort: turnEffort,
         timeoutMs: 26000,
         system: `You are ACRIO, the intelligent WhatsApp product, project & fabrication specialist for Classic Concepts (acrylic products: classicconcepts.in) and Classic Edge 53 (acrylic fabrication machines, tools & hardware accessories: classicedge.in).
 
@@ -7075,7 +7079,7 @@ Return ONLY valid JSON:
       lastUsage = aiCall.usage;
       if (aiCall.ok && aiCall.text) {
         addStep(
-          "Called Anthropic claude-haiku-5-5 (effort=medium)",
+          `Called Anthropic claude-haiku-5-5 (effort=${turnEffort})`,
           `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms (keySource=${keySource}, in=${aiCall.usage?.inputTokens ?? 0}, think=${aiCall.usage?.thinkingTokens ?? 0}, out=${aiCall.usage?.outputTokens ?? 0})`
         );
         const parsed =

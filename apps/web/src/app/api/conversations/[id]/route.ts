@@ -26,7 +26,6 @@ import { canAssignToDev, hasPermission, isDevRole } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
 import { listCustomAdminLinks, rememberWhatsAppCache } from "@cc/storage";
 import {
-  checkAndEscalateWaitingChats,
   closeActiveAssignmentOnResolve,
   executeAcrioPendingNoteAction,
   logConversationAssignment,
@@ -55,7 +54,6 @@ export async function GET(
   }
 
   await ensureDatabasesBootstrapped();
-  await checkAndEscalateWaitingChats().catch(() => {});
 
   const { id } = await context.params;
   const conv = getRawLibSqlClient("conversations");
@@ -89,7 +87,9 @@ export async function GET(
     orderTrackings,
   ] = await Promise.all([
     conv.execute({
-      sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
+      sql: `SELECT * FROM (
+              SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 250
+            ) ORDER BY created_at ASC`,
       args: [id],
     }),
     conv.execute({
@@ -620,7 +620,9 @@ export async function POST(
                     last_response_seconds = ?,
                     escalation_level = 'P0',
                     last_message_preview = ?,
-                    last_message_at = ?
+                    last_message_at = ?,
+                    last_message_direction = 'OUTBOUND',
+                    last_message_status = ?
                 WHERE id = ?`,
           args: [
             shouldAutoAssignSender ? 1 : 0,
@@ -632,6 +634,7 @@ export async function POST(
             responseSeconds,
             previewBody,
             nowIso,
+            sendRes.deliveryStatus,
             id,
           ],
         },

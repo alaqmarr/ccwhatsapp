@@ -29,7 +29,7 @@ async function runBootstrapInternal(): Promise<void> {
   const bill = getRawLibSqlClient("billing_ops");
   const queue = getRawLibSqlClient("queue_jobs");
 
-  // Enable WAL mode across all 7 LibSQL databases for fast concurrent reads & writes
+  // Enable WAL mode & busy timeout across all 7 LibSQL databases for fast concurrent reads & writes
   await Promise.all([
     auth.execute("PRAGMA journal_mode = WAL;"),
     conv.execute("PRAGMA journal_mode = WAL;"),
@@ -38,6 +38,13 @@ async function runBootstrapInternal(): Promise<void> {
     mkt.execute("PRAGMA journal_mode = WAL;"),
     bill.execute("PRAGMA journal_mode = WAL;"),
     queue.execute("PRAGMA journal_mode = WAL;"),
+    auth.execute("PRAGMA busy_timeout = 5000;"),
+    conv.execute("PRAGMA busy_timeout = 5000;"),
+    contacts.execute("PRAGMA busy_timeout = 5000;"),
+    crm.execute("PRAGMA busy_timeout = 5000;"),
+    mkt.execute("PRAGMA busy_timeout = 5000;"),
+    bill.execute("PRAGMA busy_timeout = 5000;"),
+    queue.execute("PRAGMA busy_timeout = 5000;"),
   ]);
 
   // 1. core_auth.db
@@ -237,6 +244,8 @@ async function runBootstrapInternal(): Promise<void> {
     `ALTER TABLE conversations ADD COLUMN escalated_at TEXT`,
     `ALTER TABLE conversations ADD COLUMN resolved_by_id TEXT`,
     `ALTER TABLE conversations ADD COLUMN collaborators_json TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE conversations ADD COLUMN last_message_direction TEXT`,
+    `ALTER TABLE conversations ADD COLUMN last_message_status TEXT`,
     `ALTER TABLE messages ADD COLUMN sender_staff_id TEXT`,
     `ALTER TABLE automations ADD COLUMN priority_order INTEGER NOT NULL DEFAULT 10`,
     `ALTER TABLE team_members ADD COLUMN email_alerts_enabled INTEGER NOT NULL DEFAULT 1`,
@@ -247,6 +256,50 @@ async function runBootstrapInternal(): Promise<void> {
     } catch {
       // Column already exists
     }
+  }
+
+  // High-volume scaling indexes for 100+ chats/day & 300k+ messages/year
+  const scaleConvIndexes = [
+    `CREATE INDEX IF NOT EXISTS idx_conv_status_last_msg ON conversations (status, last_message_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_conv_last_msg ON conversations (last_message_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_conv_staff_status ON conversations (assigned_staff_id, status, last_message_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_conv_waiting ON conversations (waiting_since, assigned_staff_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_conv_created ON conversations (created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_conv_resolved ON conversations (status, resolved_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_msg_conv_created ON messages (conversation_id, created_at ASC)`,
+    `CREATE INDEX IF NOT EXISTS idx_msg_conv_dir_created ON messages (conversation_id, direction, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_msg_wa_id ON messages (wa_message_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_msg_created_dir ON messages (created_at DESC, direction)`,
+  ];
+  for (const idxSql of scaleConvIndexes) {
+    try {
+      await conv.execute(idxSql);
+    } catch {
+      // Non-blocking index ensure
+    }
+  }
+
+  try {
+    await conv.execute(
+      `UPDATE conversations
+       SET last_message_direction = (
+             SELECT m.direction FROM messages m
+             WHERE m.conversation_id = conversations.id
+               AND m.direction IN ('INBOUND', 'OUTBOUND')
+             ORDER BY m.created_at DESC, m.rowid DESC
+             LIMIT 1
+           ),
+           last_message_status = (
+             SELECT m.delivery_status FROM messages m
+             WHERE m.conversation_id = conversations.id
+               AND m.direction IN ('INBOUND', 'OUTBOUND')
+             ORDER BY m.created_at DESC, m.rowid DESC
+             LIMIT 1
+           )
+       WHERE last_message_direction IS NULL`
+    );
+  } catch {
+    // Non-blocking backfill
   }
 
   const extraContactsColumns = [
@@ -698,6 +751,8 @@ async function runBootstrapInternal(): Promise<void> {
         processed_count INTEGER NOT NULL DEFAULT 0,
         info_json TEXT DEFAULT '{}'
       )`,
+      `CREATE INDEX IF NOT EXISTS idx_jobs_queue_status ON jobs (queue_name, status, run_after)`,
+      `CREATE INDEX IF NOT EXISTS idx_jobs_cleanup ON jobs (status, created_at)`,
     ],
     "write"
   );

@@ -5986,21 +5986,22 @@ export function buildCompleteEcosystemDatabaseDirectory(
   for (const p of podiums) {
     const cleanTitle = cleanDisplayProductName(p.name);
     const skuTag = p.sku ? ` [${p.sku}]` : "";
-    const hasMrp = p.regularPrice && p.basePrice && p.regularPrice > p.basePrice;
     const priceTag = p.basePrice
-      ? `₹${p.basePrice.toLocaleString("en-IN")}${hasMrp ? ` (MRP ₹${p.regularPrice!.toLocaleString("en-IN")})` : ""}`
+      ? `₹${p.basePrice.toLocaleString("en-IN")}`
       : "Quote";
     const dimSummary =
       (p.dimensions || [])
-        .map((d) => `${d.label || d.key}: ${d.value}`)
+        .slice(0, 2)
+        .map((d) => `${d.label || d.key}:${d.value}`)
         .join(", ") || "";
     const varSummary =
       p.variants && p.variants.length > 0
-        ? ` | Variants: ${p.variants
+        ? ` | Vars:${p.variants
+            .slice(0, 4)
             .map((v) =>
-              v.price ? `${v.name} (₹${v.price.toLocaleString("en-IN")})` : v.name
+              v.price ? `${v.name}(₹${v.price.toLocaleString("en-IN")})` : v.name
             )
-            .join(", ")}`
+            .join(",")}`
         : "";
     lines.push(
       `- ${cleanTitle}${skuTag} | ${priceTag}${dimSummary ? ` | ${dimSummary}` : ""}${varSummary} | ${p.shortUrl || p.url}`
@@ -6014,12 +6015,12 @@ export function buildCompleteEcosystemDatabaseDirectory(
     const cleanTitle = cleanDisplayProductName(m.name);
     const priceTag = m.basePrice
       ? `from ₹${m.basePrice.toLocaleString("en-IN")}`
-      : "Quote on request";
-    const modelsTag = m.modelsSummary ? ` | Models: ${m.modelsSummary}` : "";
+      : "Quote";
+    const modelsTag = m.modelsSummary ? ` | Models:${m.modelsSummary}` : "";
     const specsTag = (m.specifications || [])
-      .slice(0, 5)
-      .map((s) => `${s.label || s.key}: ${s.value}`)
-      .join(", ");
+      .slice(0, 3)
+      .map((s) => `${s.label || s.key}:${s.value}`)
+      .join(",");
     lines.push(
       `- ${cleanTitle} | ${priceTag}${modelsTag}${specsTag ? ` | ${specsTag}` : ""} | ${m.shortUrl || m.url}`
     );
@@ -6040,7 +6041,7 @@ export function buildCompleteEcosystemDatabaseDirectory(
       ? `₹${c.basePrice.toLocaleString("en-IN")}`
       : "Quote";
     lines.push(
-      `- ${cleanDisplayProductName(c.name)} | ${priceTag}${c.description ? ` | ${c.description.slice(0, 90)}` : ""} | ${c.shortUrl || c.url}`
+      `- ${cleanDisplayProductName(c.name)} | ${priceTag} | ${c.shortUrl || c.url}`
     );
   }
 
@@ -6055,7 +6056,7 @@ export function buildCompleteEcosystemDatabaseDirectory(
       ? `₹${acc.basePrice.toLocaleString("en-IN")}`
       : "Quote";
     lines.push(
-      `- ${cleanDisplayProductName(acc.name)} | ${priceTag}${acc.description ? ` | ${acc.description.slice(0, 80)}` : ""} | ${acc.shortUrl || acc.url}`
+      `- ${cleanDisplayProductName(acc.name)} | ${priceTag} | ${acc.shortUrl || acc.url}`
     );
   }
 
@@ -6070,7 +6071,10 @@ export function buildCompleteEcosystemDatabaseDirectory(
       : "Quote";
     const sizeTag =
       p.dimensions && p.dimensions.length > 0
-        ? ` | ${p.dimensions.map((d) => `${d.label || d.key}: ${d.value}`).join(", ")}`
+        ? ` | ${p.dimensions
+            .slice(0, 2)
+            .map((d) => `${d.label || d.key}:${d.value}`)
+            .join(",")}`
         : "";
     lines.push(
       `- [${p.categoryName}] ${cleanTitle}${skuTag} | ${priceTag}${sizeTag} | ${p.shortUrl || p.url}`

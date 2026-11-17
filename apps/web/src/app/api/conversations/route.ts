@@ -10,7 +10,6 @@ import {
 import { canAssignToDev, hasPermission, normalizeWhatsAppNumber } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
 import {
-  checkAndEscalateWaitingChats,
   closeActiveAssignmentOnResolve,
   ensureBackgroundWorkersRunning,
   logConversationAssignment,
@@ -33,7 +32,6 @@ export async function GET(req: Request) {
 
   await ensureDatabasesBootstrapped();
   ensureBackgroundWorkersRunning();
-  await checkAndEscalateWaitingChats().catch(() => {});
 
   const conv = getRawLibSqlClient("conversations");
   const { searchParams } = new URL(req.url);
@@ -45,40 +43,73 @@ export async function GET(req: Request) {
   const mineOnly = searchParams.get("mine") === "1";
   const staffFilter = searchParams.get("staffId") || "ALL";
   const activeOnly = searchParams.get("activeOnly") === "1";
+  const searchQuery = (searchParams.get("q") || "").trim();
+  const requestedLimit = Number(searchParams.get("limit") || 400);
+  const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 400, 50), 1000);
 
-  const [res, latestMsgRes] = await Promise.all([
-    conv.execute(
-      `SELECT * FROM conversations ORDER BY
-        CASE WHEN status != 'RESOLVED' AND waiting_since IS NOT NULL THEN 0
-             WHEN status != 'RESOLVED' THEN 1
-             ELSE 2 END,
-        last_message_at DESC`
-    ),
-    conv.execute(
-      `SELECT conversation_id, direction, delivery_status
-       FROM messages
-       WHERE direction IN ('INBOUND', 'OUTBOUND')
-       ORDER BY created_at DESC, rowid DESC`
-    ),
-  ]);
-
-  const latestByConv = new Map<
-    string,
-    { direction: string; deliveryStatus: string }
-  >();
-  for (const m of latestMsgRes.rows) {
-    const cid = String(m.conversation_id);
-    if (!latestByConv.has(cid)) {
-      latestByConv.set(cid, {
-        direction: String(m.direction),
-        deliveryStatus: String(m.delivery_status || "SENT"),
-      });
-    }
+  const whereParts: string[] = [];
+  const args: (string | number)[] = [];
+  if (statusFilter !== "ALL") {
+    whereParts.push(`c.status = ?`);
+    args.push(statusFilter);
   }
+  if (activeOnly || waitingOnly || acrioOnly) {
+    whereParts.push(`c.status != 'RESOLVED'`);
+  }
+  if (categoryFilter !== "ALL") {
+    whereParts.push(`c.smart_category = ?`);
+    args.push(categoryFilter);
+  }
+  if (teamFilter !== "ALL") {
+    whereParts.push(`c.assigned_team_id = ?`);
+    args.push(teamFilter);
+  }
+  if (waitingOnly) {
+    whereParts.push(`c.waiting_since IS NOT NULL`);
+  }
+  if (acrioOnly) {
+    whereParts.push(`c.assigned_staff_id = 'ACRIO'`);
+  }
+  if (searchQuery) {
+    const like = `%${searchQuery}%`;
+    whereParts.push(`(c.customer_name LIKE ? OR c.customer_phone LIKE ? OR c.last_message_preview LIKE ?)`);
+    args.push(like, like, like);
+  }
+
+  const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
+  args.push(limit);
+
+  const res = await conv.execute({
+    sql: `SELECT c.*,
+            COALESCE(
+              c.last_message_direction,
+              (
+                SELECT m.direction FROM messages m
+                WHERE m.conversation_id = c.id AND m.direction IN ('INBOUND', 'OUTBOUND')
+                ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
+              )
+            ) AS resolved_last_dir,
+            COALESCE(
+              c.last_message_status,
+              (
+                SELECT m.delivery_status FROM messages m
+                WHERE m.conversation_id = c.id AND m.direction IN ('INBOUND', 'OUTBOUND')
+                ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
+              )
+            ) AS resolved_last_status
+          FROM conversations c
+          ${whereSql}
+          ORDER BY
+            CASE WHEN c.status != 'RESOLVED' AND c.waiting_since IS NOT NULL THEN 0
+                 WHEN c.status != 'RESOLVED' THEN 1
+                 ELSE 2 END,
+            c.last_message_at DESC
+          LIMIT ?`,
+    args,
+  });
 
   let items = res.rows.map((r) => {
     const cid = String(r.id);
-    const latest = latestByConv.get(cid);
     return {
       id: cid,
       customerPhone: String(r.customer_phone),
@@ -101,8 +132,8 @@ export async function GET(req: Request) {
       unreadCount: Number(r.unread_count ?? 0),
       lastMessagePreview: String(r.last_message_preview || ""),
       lastMessageAt: String(r.last_message_at),
-      lastMessageDirection: latest?.direction || null,
-      lastMessageStatus: latest?.deliveryStatus || null,
+      lastMessageDirection: r.resolved_last_dir ? String(r.resolved_last_dir) : null,
+      lastMessageStatus: r.resolved_last_status ? String(r.resolved_last_status) : null,
       windowExpiresAt: r.window_expires_at ? String(r.window_expires_at) : null,
       resolutionSummary: r.resolution_summary ? String(r.resolution_summary) : null,
       resolvedByName: r.resolved_by_name ? String(r.resolved_by_name) : null,

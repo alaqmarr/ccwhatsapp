@@ -15,10 +15,7 @@ import {
   listCustomAdminLinks,
   rememberWhatsAppCache,
 } from "@cc/storage";
-import {
-  checkAndEscalateWaitingChats,
-  ensureBackgroundWorkersRunning,
-} from "@cc/workers";
+import { ensureBackgroundWorkersRunning } from "@cc/workers";
 
 export interface ConversationSummary {
   id: string;
@@ -294,7 +291,9 @@ export async function getConversationDetailServer(
   const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks, orderTrackings] =
     await Promise.all([
       conv.execute({
-        sql: `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
+        sql: `SELECT * FROM (
+                SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 250
+              ) ORDER BY created_at ASC`,
         args: [conversationId],
       }),
       conv.execute({
@@ -474,26 +473,38 @@ export async function getInitialInboxPayload(params: {
 }): Promise<InitialInboxPayload> {
   await ensureDatabasesBootstrapped();
   ensureBackgroundWorkersRunning();
-  await checkAndEscalateWaitingChats().catch(() => {});
 
   const conv = getRawLibSqlClient("conversations");
   const auth = getRawLibSqlClient("core_auth");
   const mkt = getRawLibSqlClient("marketing");
 
-  const [threadsRes, latestMsgRes, teamsRes, staffRes, templatesRes, quickRepliesRes] =
+  const [threadsRes, teamsRes, staffRes, templatesRes, quickRepliesRes] =
     await Promise.all([
       conv.execute(
-        `SELECT * FROM conversations ORDER BY
-          CASE WHEN status != 'RESOLVED' AND waiting_since IS NOT NULL THEN 0
-               WHEN status != 'RESOLVED' THEN 1
-               ELSE 2 END,
-          last_message_at DESC`
-      ),
-      conv.execute(
-        `SELECT conversation_id, direction, delivery_status
-         FROM messages
-         WHERE direction IN ('INBOUND', 'OUTBOUND')
-         ORDER BY created_at DESC, rowid DESC`
+        `SELECT c.*,
+           COALESCE(
+             c.last_message_direction,
+             (
+               SELECT m.direction FROM messages m
+               WHERE m.conversation_id = c.id AND m.direction IN ('INBOUND', 'OUTBOUND')
+               ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
+             )
+           ) AS resolved_last_dir,
+           COALESCE(
+             c.last_message_status,
+             (
+               SELECT m.delivery_status FROM messages m
+               WHERE m.conversation_id = c.id AND m.direction IN ('INBOUND', 'OUTBOUND')
+               ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
+             )
+           ) AS resolved_last_status
+         FROM conversations c
+         ORDER BY
+           CASE WHEN c.status != 'RESOLVED' AND c.waiting_since IS NOT NULL THEN 0
+                WHEN c.status != 'RESOLVED' THEN 1
+                ELSE 2 END,
+           c.last_message_at DESC
+         LIMIT 400`
       ),
       conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
       auth.execute(
@@ -516,23 +527,8 @@ export async function getInitialInboxPayload(params: {
         .catch(() => ({ rows: [] as Record<string, unknown>[] })),
     ]);
 
-  const latestByConv = new Map<
-    string,
-    { direction: string; deliveryStatus: string }
-  >();
-  for (const m of latestMsgRes.rows) {
-    const cid = String(m.conversation_id);
-    if (!latestByConv.has(cid)) {
-      latestByConv.set(cid, {
-        direction: String(m.direction),
-        deliveryStatus: String(m.delivery_status || "SENT"),
-      });
-    }
-  }
-
   const threads: ConversationSummary[] = threadsRes.rows.map((r) => {
     const cid = String(r.id);
-    const latest = latestByConv.get(cid);
     return {
       id: cid,
       customerPhone: String(r.customer_phone),
@@ -559,8 +555,8 @@ export async function getInitialInboxPayload(params: {
       unreadCount: Number(r.unread_count ?? 0),
       lastMessagePreview: String(r.last_message_preview || ""),
       lastMessageAt: String(r.last_message_at),
-      lastMessageDirection: latest?.direction || null,
-      lastMessageStatus: latest?.deliveryStatus || null,
+      lastMessageDirection: r.resolved_last_dir ? String(r.resolved_last_dir) : null,
+      lastMessageStatus: r.resolved_last_status ? String(r.resolved_last_status) : null,
       windowExpiresAt: r.window_expires_at ? String(r.window_expires_at) : null,
       resolutionSummary: r.resolution_summary
         ? String(r.resolution_summary)
@@ -694,7 +690,6 @@ export async function getInitialInboxPayload(params: {
 export async function getInitialTeamsPayload(canManage: boolean) {
   await ensureDatabasesBootstrapped();
   ensureBackgroundWorkersRunning();
-  await checkAndEscalateWaitingChats().catch(() => {});
 
   const conv = getRawLibSqlClient("conversations");
   const auth = getRawLibSqlClient("core_auth");

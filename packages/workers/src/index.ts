@@ -693,7 +693,7 @@ async function handleAcrioInteractiveReply(params: {
       interactive,
     });
     await conv.execute({
-      sql: `UPDATE conversations SET last_message_preview = ?, last_message_at = ? WHERE id = ?`,
+      sql: `UPDATE conversations SET last_message_preview = ?, last_message_at = ?, last_message_direction = 'OUTBOUND', last_message_status = 'SENT' WHERE id = ?`,
       args: [`ACRIO: ${text}`.slice(0, 140), sent.replyIso, params.conversationId],
     });
     socketHub.emit("message:new", {
@@ -2524,7 +2524,9 @@ async function processInboundAutomationsLocked(
                 waiting_since = NULL,
                 unread_count = ?,
                 last_message_preview = ?,
-                last_message_at = ?
+                last_message_at = ?,
+                last_message_direction = 'OUTBOUND',
+                last_message_status = 'SENT'
             WHERE id = ?`,
       args: [
         // Keep assigned_team_id empty so ACRIO keeps answering this chat after a Sales Team ping.
@@ -4203,6 +4205,14 @@ export async function applyWhatsAppMessageReceipt(params: {
           sql: `UPDATE messages SET delivery_status = ?, metadata_json = ? WHERE id = ?`,
           args: [nextStatus, JSON.stringify(meta), resolvedMsgId],
         });
+        await conv
+          .execute({
+            sql: `UPDATE conversations
+                  SET last_message_status = ?
+                  WHERE id = ? AND last_message_direction = 'OUTBOUND'`,
+            args: [nextStatus, conversationId],
+          })
+          .catch(() => {});
         updated = true;
       }
     }
@@ -4806,6 +4816,29 @@ export function ensureBackgroundWorkersRunning(): void {
       // Non-blocking cron guard
     }
   }, 30000);
+
+  // Periodic queue hygiene: prune completed jobs older than 7 days & failed jobs older than 30 days
+  const pruneOldJobs = async () => {
+    try {
+      await ensureDatabasesBootstrapped();
+      const qDb = getRawLibSqlClient("queue_jobs");
+      const nowMs = Date.now();
+      const completedCutoff = new Date(nowMs - 7 * 86400000).toISOString();
+      const failedCutoff = new Date(nowMs - 30 * 86400000).toISOString();
+      await qDb.execute({
+        sql: `DELETE FROM jobs
+              WHERE (status = 'COMPLETED' AND created_at < ?)
+                 OR (status = 'FAILED' AND created_at < ?)`,
+        args: [completedCutoff, failedCutoff],
+      });
+    } catch {
+      // Non-blocking cleanup
+    }
+  };
+  void pruneOldJobs();
+  setInterval(() => {
+    void pruneOldJobs();
+  }, 6 * 60 * 60 * 1000);
 }
 
 export * from "./staff-notes";

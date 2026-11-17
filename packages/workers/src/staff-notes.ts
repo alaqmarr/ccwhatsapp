@@ -330,7 +330,9 @@ async function dispatchStaffCustomerReply(params: {
               END,
               waiting_since = NULL,
               last_message_preview = ?,
-              last_message_at = ?
+              last_message_at = ?,
+              last_message_direction = 'OUTBOUND',
+              last_message_status = ?
           WHERE id = ?`,
     args: [
       shouldAutoAssign ? 1 : 0,
@@ -342,6 +344,7 @@ async function dispatchStaffCustomerReply(params: {
       shouldAutoAssign ? 1 : 0,
       previewText,
       nowIso,
+      sendRes.deliveryStatus,
       params.conversationId,
     ],
   });
