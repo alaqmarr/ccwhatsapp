@@ -21,7 +21,10 @@ export type Permission =
   | "inbox:smart_resolve"
   | "enquiries:view"
   | "enquiries:reply"
+  | "call_queue:view"
+  | "call_queue:manage"
   | "acrio:use_chat_copilot"
+  | "acrio:manage_training"
   | "crm:view_customer_360"
   | "crm:manage_orders_notes"
   | "contacts:view"
@@ -55,6 +58,8 @@ const STAFF_PERMISSIONS: Permission[] = [
   "inbox:smart_resolve",
   "enquiries:view",
   "enquiries:reply",
+  "call_queue:view",
+  "call_queue:manage",
   "analytics:view",
   "acrio:use_chat_copilot",
   "crm:view_customer_360",
@@ -72,6 +77,7 @@ const ADMIN_PERMISSIONS: Permission[] = [
   "marketing:manage_lists",
   "marketing:send_broadcasts",
   "automations:manage",
+  "acrio:manage_training",
   "templates:manage",
 ];
 

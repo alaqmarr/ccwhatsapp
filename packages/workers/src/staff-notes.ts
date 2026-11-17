@@ -1,9 +1,17 @@
 import crypto from "node:crypto";
-import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  addConversationCollaborators,
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+  listActiveNonClientStaff,
+  resolveStaffMemberByQuery,
+  upsertSyncedContact,
+} from "@cc/database";
 import {
   runAcrioStaffQuestion,
   sendStaffAlertEmail,
   sendStaffWhatsAppAlert,
+  sendWhatsAppCloudMessage,
 } from "@cc/connections";
 import { claimPendingJobs, completeJob, enqueueJob, failJob } from "@cc/queue";
 import { socketHub } from "@cc/sockets";
@@ -93,7 +101,7 @@ export function parseNoteMentions(
   return { mentions: Array.from(found.values()), askAcrio };
 }
 
-async function createNotification(params: {
+export async function createNotification(params: {
   staffId: string;
   type: StaffNotification["type"];
   conversationId: string;
@@ -277,6 +285,7 @@ async function answerAcrioNote(params: {
   customerPhone: string;
 }): Promise<void> {
   const conv = getRawLibSqlClient("conversations");
+  const crm = getRawLibSqlClient("crm_orders");
 
   // Already answered (for example the job was retried after a restart)? Then do nothing.
   const already = await conv.execute({
@@ -285,11 +294,22 @@ async function answerAcrioNote(params: {
     args: [params.conversationId, `%"inReplyToNoteId":"${params.noteId}"%`],
   });
   if (already.rows[0]) return;
-  const msgRes = await conv.execute({
-    sql: `SELECT direction, sender_name, message_type, body FROM messages
-          WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 30`,
-    args: [params.conversationId],
-  });
+
+  const [msgRes, convRes, availableStaff] = await Promise.all([
+    conv.execute({
+      sql: `SELECT direction, sender_name, message_type, body FROM messages
+            WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 30`,
+      args: [params.conversationId],
+    }),
+    conv.execute({
+      sql: `SELECT status, assigned_staff_id, assigned_staff_name, assigned_team_name, priority, smart_category, customer_id
+            FROM conversations WHERE id = ? LIMIT 1`,
+      args: [params.conversationId],
+    }),
+    listActiveNonClientStaff().catch(() => []),
+  ]);
+
+  const cRow = convRes.rows[0] as Record<string, unknown> | undefined;
   const chatMessages = [...msgRes.rows].reverse().map((m) => ({
     direction: String(m.direction),
     senderName: String(m.sender_name || ""),
@@ -303,11 +323,160 @@ async function answerAcrioNote(params: {
     customerName: params.customerName,
     customerPhone: params.customerPhone,
     chatMessages,
+    availableStaff: availableStaff.map((s) => ({
+      id: s.id,
+      name: s.name,
+      role: s.role,
+      department: s.department,
+    })),
+    currentOwnerName: cRow?.assigned_staff_name ? String(cRow.assigned_staff_name) : null,
+    conversationStatus: cRow?.status ? String(cRow.status) : "OPEN",
   });
+
+  const executedSummaries: string[] = [];
+  const nowActionIso = new Date().toISOString();
+
+  for (const act of result.actions || []) {
+    try {
+      if (act.type === "assign_staff" && act.staffQuery) {
+        if (/^(acrio|system|ai)$/i.test(act.staffQuery.trim())) {
+          await conv.execute({
+            sql: `UPDATE conversations SET status = 'OPEN', assigned_staff_id = 'ACRIO', assigned_staff_name = 'ACRIO', assigned_team_id = NULL, assigned_team_name = 'System (ACRIO)', waiting_since = NULL WHERE id = ?`,
+            args: [params.conversationId],
+          });
+          executedSummaries.push("Assigned chat back to System (ACRIO)");
+          socketHub.emit("conversation:assigned", { conversationId: params.conversationId, staffName: "ACRIO" });
+        } else {
+          const target = resolveStaffMemberByQuery(act.staffQuery, availableStaff);
+          if (target) {
+            await conv.execute({
+              sql: `UPDATE conversations SET status = 'ASSIGNED', assigned_staff_id = ?, assigned_staff_name = ?, assigned_team_id = COALESCE(assigned_team_id, 'team_sales'), assigned_team_name = COALESCE(NULLIF(assigned_team_name, 'System (ACRIO)'), 'Sales Team') WHERE id = ?`,
+              args: [target.id, target.name, params.conversationId],
+            });
+            executedSummaries.push(`Assigned chat to ${target.name}`);
+            socketHub.emit("conversation:assigned", { conversationId: params.conversationId, staffName: target.name });
+          }
+        }
+      } else if (act.type === "add_collaborator" && act.staffQuery) {
+        const target = resolveStaffMemberByQuery(act.staffQuery, availableStaff);
+        if (target) {
+          await addConversationCollaborators({
+            conversationId: params.conversationId,
+            members: [{ staffId: target.id, staffName: target.name }],
+            addedBy: `ACRIO (requested by ${params.author.name})`,
+          });
+          executedSummaries.push(`Granted dual access to ${target.name}`);
+          socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+        }
+      } else if (act.type === "set_priority" && act.priority) {
+        const pri = ["URGENT", "HIGH", "NORMAL"].includes(act.priority) ? act.priority : "NORMAL";
+        await conv.execute({
+          sql: `UPDATE conversations SET priority = ? WHERE id = ?`,
+          args: [pri, params.conversationId],
+        });
+        executedSummaries.push(`Priority set to ${pri}`);
+        socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+      } else if (act.type === "set_category" && act.category) {
+        await conv.execute({
+          sql: `UPDATE conversations SET smart_category = ? WHERE id = ?`,
+          args: [act.category, params.conversationId],
+        });
+        executedSummaries.push(`Category set to ${act.category}`);
+        socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+      } else if (act.type === "resolve_chat") {
+        const summary = act.summary?.trim() || `Resolved via ACRIO by ${params.author.name}.`;
+        await conv.execute({
+          sql: `UPDATE conversations SET status = 'RESOLVED', waiting_since = NULL, resolution_summary = ?, resolved_by_id = ?, resolved_by_name = ?, resolved_at = ? WHERE id = ?`,
+          args: [summary, params.author.id, params.author.name, nowActionIso, params.conversationId],
+        });
+        executedSummaries.push("Marked chat Resolved");
+        socketHub.emit("conversation:resolved", { conversationId: params.conversationId, resolvedBy: params.author.name });
+      } else if (act.type === "reopen_chat") {
+        await conv.execute({
+          sql: `UPDATE conversations SET status = 'ASSIGNED', resolved_at = NULL WHERE id = ?`,
+          args: [params.conversationId],
+        });
+        executedSummaries.push("Reopened chat");
+        socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+      } else if (act.type === "update_customer" && params.customerPhone) {
+        const prefStaff = act.preferredStaffQuery
+          ? resolveStaffMemberByQuery(act.preferredStaffQuery, availableStaff)
+          : null;
+        await upsertSyncedContact({
+          phone: params.customerPhone,
+          companyName: act.companyName || undefined,
+          city: act.city || undefined,
+          notes: act.notes || undefined,
+          preferredStaffId: prefStaff ? prefStaff.id : undefined,
+          preferredStaffName: prefStaff ? prefStaff.name : undefined,
+        });
+        executedSummaries.push("Updated customer CRM profile");
+        socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+      } else if (act.type === "create_callback" && params.customerPhone) {
+        await ensureCallbackRequestsTableInline();
+        const cbId = `cb_${crypto.randomUUID().slice(0, 8)}`;
+        await conv.execute({
+          sql: `INSERT INTO callback_requests (id, conversation_id, customer_phone, customer_name, preferred_slot, topic, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
+          args: [
+            cbId,
+            params.conversationId,
+            params.customerPhone,
+            params.customerName,
+            act.callbackSlot || "Morning (10 AM to 1 PM)",
+            act.callbackTopic || "Customer enquiry",
+            nowActionIso,
+            nowActionIso,
+          ],
+        });
+        executedSummaries.push(`Created callback request (${act.callbackSlot || "Morning"})`);
+        socketHub.emit("callback:new", { conversationId: params.conversationId });
+      } else if (act.type === "send_customer_reply" && act.messageText && params.customerPhone) {
+        const sendRes = await sendWhatsAppCloudMessage({
+          toPhone: params.customerPhone,
+          bodyText: act.messageText,
+          simulateAsyncDelivery: true,
+        });
+        const outId = `msg_acrio_act_${crypto.randomUUID().slice(0, 8)}`;
+        await conv.execute({
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_staff_id, sender_name,
+            message_type, billing_category, body, wa_message_id, delivery_status, created_at
+          ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+          args: [
+            outId,
+            params.conversationId,
+            params.author.id,
+            `${params.author.name} via ACRIO`,
+            act.messageText,
+            sendRes.waMessageId,
+            sendRes.deliveryStatus,
+            nowActionIso,
+          ],
+        });
+        await conv.execute({
+          sql: `UPDATE conversations SET waiting_since = NULL, last_message_preview = ?, last_message_at = ? WHERE id = ?`,
+          args: [act.messageText.slice(0, 140), nowActionIso, params.conversationId],
+        });
+        executedSummaries.push("Sent WhatsApp message to customer");
+        socketHub.emit("message:new", { conversationId: params.conversationId, senderName: params.author.name, text: act.messageText });
+      }
+    } catch (err) {
+      console.warn("[acrio-staff-action] failed:", act.type, (err as Error)?.message || err);
+    }
+  }
 
   const replyId = `msg_note_acrio_${crypto.randomUUID().slice(0, 8)}`;
   const nowIso = new Date().toISOString();
-  const body = `@${params.author.name} ${result.answer}`;
+  const actionFooter =
+    executedSummaries.length > 0
+      ? `\n\n*Actions done:* ${executedSummaries.join(" | ")}`
+      : "";
+  const suggestedFooter =
+    result.suggestedReply && !executedSummaries.some((s) => s.includes("Sent WhatsApp"))
+      ? `\n\n*Suggested reply:*\n${result.suggestedReply}`
+      : "";
+  const body = `@${params.author.name} ${result.answer}${actionFooter}${suggestedFooter}`;
   await conv.execute({
     sql: `INSERT INTO messages (
       id, conversation_id, direction, sender_type, sender_name, message_type,
@@ -322,6 +491,8 @@ async function answerAcrioNote(params: {
         inReplyToNoteId: params.noteId,
         forStaffId: params.author.id,
         forStaffName: params.author.name,
+        actionsExecuted: executedSummaries,
+        suggestedReply: result.suggestedReply || null,
       }),
       nowIso,
     ],
@@ -338,8 +509,24 @@ async function answerAcrioNote(params: {
     messageId: replyId,
     fromName: "ACRIO",
     customerName: params.customerName,
-    text: result.answer.replace(/\s+/g, " "),
+    text: `${result.answer}${actionFooter}`.replace(/\s+/g, " "),
   });
+}
+
+async function ensureCallbackRequestsTableInline(): Promise<void> {
+  const conv = getRawLibSqlClient("conversations");
+  await conv.execute(`CREATE TABLE IF NOT EXISTS callback_requests (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    customer_phone TEXT NOT NULL,
+    customer_name TEXT NOT NULL DEFAULT '',
+    preferred_slot TEXT NOT NULL,
+    topic TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    handled_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
 }
 
 /**
@@ -352,11 +539,17 @@ export async function processStaffNote(params: {
   noteText: string;
   author: { id: string; name: string };
   staff: MentionableStaff[];
-}): Promise<{ mentioned: { id: string; name: string }[]; askedAcrio: boolean }> {
+}): Promise<{
+  mentioned: { id: string; name: string }[];
+  askedAcrio: boolean;
+  collaboratorsAdded: { staffId: string; staffName: string }[];
+}> {
   await ensureStaffNotificationsTable();
   const conv = getRawLibSqlClient("conversations");
   const { mentions, askAcrio } = parseNoteMentions(params.noteText, params.staff);
-  if (mentions.length === 0 && !askAcrio) return { mentioned: [], askedAcrio: false };
+  if (mentions.length === 0 && !askAcrio) {
+    return { mentioned: [], askedAcrio: false, collaboratorsAdded: [] };
+  }
 
   const convRes = await conv.execute({
     sql: `SELECT customer_name, customer_phone FROM conversations WHERE id = ? LIMIT 1`,
@@ -364,6 +557,26 @@ export async function processStaffNote(params: {
   });
   const customerName = String(convRes.rows[0]?.customer_name || "a customer");
   const customerPhone = String(convRes.rows[0]?.customer_phone || "");
+
+  // Dual assignment: grant chat access to every mentioned teammate automatically
+  let collaboratorsAdded: { staffId: string; staffName: string }[] = [];
+  if (mentions.length > 0) {
+    const updatedCollabs = await addConversationCollaborators({
+      conversationId: params.conversationId,
+      members: mentions.map((m) => ({ staffId: m.id, staffName: m.name })),
+      addedBy: params.author.name,
+    }).catch(() => []);
+    collaboratorsAdded = updatedCollabs.map((c) => ({
+      staffId: c.staffId,
+      staffName: c.staffName,
+    }));
+    if (collaboratorsAdded.length > 0) {
+      socketHub.emit("conversation:assigned", {
+        conversationId: params.conversationId,
+        collaborators: updatedCollabs,
+      });
+    }
+  }
 
   // Save who was mentioned on the note itself (so the chat can highlight them).
   const noteRes = await conv.execute({
@@ -422,6 +635,7 @@ export async function processStaffNote(params: {
   return {
     mentioned: mentions.filter((m) => m.id !== params.author.id).map((m) => ({ id: m.id, name: m.name })),
     askedAcrio: askAcrio,
+    collaboratorsAdded,
   };
 }
 

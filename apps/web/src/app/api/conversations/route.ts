@@ -4,6 +4,7 @@ import { sendStaffAssignmentEmailNotification, sendWhatsAppCloudMessage } from "
 import {
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
+  parseConversationCollaborators,
   upsertSyncedContact,
 } from "@cc/database";
 import { canAssignToDev, hasPermission, normalizeWhatsAppNumber } from "@cc/rbac";
@@ -42,6 +43,8 @@ export async function GET(req: Request) {
   const waitingOnly = searchParams.get("waiting") === "1";
   const acrioOnly = searchParams.get("acrio") === "1";
   const mineOnly = searchParams.get("mine") === "1";
+  const staffFilter = searchParams.get("staffId") || "ALL";
+  const activeOnly = searchParams.get("activeOnly") === "1";
 
   const [res, latestMsgRes] = await Promise.all([
     conv.execute(
@@ -110,11 +113,15 @@ export async function GET(req: Request) {
           return [];
         }
       })(),
+      collaborators: parseConversationCollaborators(r.collaborators_json),
     };
   });
 
   if (statusFilter !== "ALL") {
     items = items.filter((c) => c.status === statusFilter);
+  }
+  if (activeOnly) {
+    items = items.filter((c) => c.status !== "RESOLVED");
   }
   if (categoryFilter !== "ALL") {
     items = items.filter((c) => c.smartCategory === categoryFilter);
@@ -129,7 +136,18 @@ export async function GET(req: Request) {
     items = items.filter((c) => c.status !== "RESOLVED" && c.assignedStaffId === "ACRIO");
   }
   if (mineOnly) {
-    items = items.filter((c) => c.assignedStaffId === user.id);
+    items = items.filter(
+      (c) =>
+        c.assignedStaffId === user.id ||
+        c.collaborators.some((cb) => cb.staffId === user.id)
+    );
+  }
+  if (staffFilter !== "ALL") {
+    items = items.filter(
+      (c) =>
+        c.assignedStaffId === staffFilter ||
+        c.collaborators.some((cb) => cb.staffId === staffFilter)
+    );
   }
 
   return NextResponse.json({ ok: true, conversations: items });

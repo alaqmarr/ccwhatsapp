@@ -3,7 +3,9 @@ import {
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
   listOrderTrackings,
+  parseConversationCollaborators,
   resolveSharedAnthropicApiKey,
+  type ConversationCollaborator,
   type OrderTrackingRecord,
 } from "@cc/database";
 import { getCachedEcosystemCatalog } from "@cc/connections";
@@ -43,6 +45,7 @@ export interface ConversationSummary {
   resolutionSummary: string | null;
   resolvedByName: string | null;
   tags: string[];
+  collaborators: ConversationCollaborator[];
 }
 
 export interface QuotedMessageRef {
@@ -104,6 +107,9 @@ export interface CustomerProfile {
   lifetimeValueInr: number;
   totalOrdersCount: number;
   notes: string;
+  preferredStaffId?: string | null;
+  preferredStaffName?: string | null;
+  tags?: string[];
 }
 
 export interface CustomerOrder {
@@ -223,6 +229,7 @@ export interface ConversationDetailBundle {
     resolutionSummary: string | null;
     resolvedByName: string | null;
     windowExpiresAt: string | null;
+    collaborators: ConversationCollaborator[];
   };
   messages: ChatMessage[];
   assignments?: ConversationAssignmentItem[];
@@ -233,6 +240,17 @@ export interface ConversationDetailBundle {
   websiteEnquiries: WebsiteEnquiry[];
   acrio: AcrioCopilot | null;
   customLinks: CustomLinkItem[];
+}
+
+export interface QuickReplyItem {
+  id: string;
+  staffId: string;
+  staffName: string;
+  cmd: string;
+  title: string;
+  body: string;
+  isShared: boolean;
+  isMine: boolean;
 }
 
 export interface InitialInboxPayload {
@@ -246,6 +264,7 @@ export interface InitialInboxPayload {
   teams: TeamOption[];
   staffList: StaffOption[];
   templates: ApprovedTemplateOption[];
+  quickReplies: QuickReplyItem[];
 }
 
 export async function getConversationDetailServer(
@@ -404,6 +423,7 @@ export async function getConversationDetailServer(
       resolutionSummary: cRow.resolution_summary ? String(cRow.resolution_summary) : null,
       resolvedByName: cRow.resolved_by_name ? String(cRow.resolved_by_name) : null,
       windowExpiresAt: cRow.window_expires_at ? String(cRow.window_expires_at) : null,
+      collaborators: parseConversationCollaborators(cRow.collaborators_json),
     },
     messages,
     assignments,
@@ -421,6 +441,20 @@ export async function getConversationDetailServer(
           lifetimeValueInr: Number(customerRow.lifetime_value_inr ?? 0),
           totalOrdersCount: Number(customerRow.total_orders_count ?? 0),
           notes: String(customerRow.notes || ""),
+          preferredStaffId: customerRow.preferred_staff_id
+            ? String(customerRow.preferred_staff_id)
+            : null,
+          preferredStaffName: customerRow.preferred_staff_name
+            ? String(customerRow.preferred_staff_name)
+            : null,
+          tags: (() => {
+            try {
+              const p = JSON.parse(String(customerRow.tags_json || "[]"));
+              return Array.isArray(p) ? p.map(String).filter(Boolean) : [];
+            } catch {
+              return [];
+            }
+          })(),
         }
       : null,
     orders,
@@ -446,7 +480,7 @@ export async function getInitialInboxPayload(params: {
   const auth = getRawLibSqlClient("core_auth");
   const mkt = getRawLibSqlClient("marketing");
 
-  const [threadsRes, latestMsgRes, teamsRes, staffRes, templatesRes] =
+  const [threadsRes, latestMsgRes, teamsRes, staffRes, templatesRes, quickRepliesRes] =
     await Promise.all([
       conv.execute(
         `SELECT * FROM conversations ORDER BY
@@ -474,6 +508,12 @@ export async function getInitialInboxPayload(params: {
          WHERE approval_status = 'APPROVED'
          ORDER BY category ASC, name ASC`
       ),
+      conv
+        .execute({
+          sql: `SELECT * FROM staff_quick_replies WHERE staff_id = ? OR is_shared = 1 ORDER BY usage_count DESC, updated_at DESC`,
+          args: [params.userId],
+        })
+        .catch(() => ({ rows: [] as Record<string, unknown>[] })),
     ]);
 
   const latestByConv = new Map<
@@ -533,6 +573,7 @@ export async function getInitialInboxPayload(params: {
           return [];
         }
       })(),
+      collaborators: parseConversationCollaborators(r.collaborators_json),
     };
   });
 
@@ -604,11 +645,27 @@ export async function getInitialInboxPayload(params: {
     };
   });
 
+  const quickReplies: QuickReplyItem[] = quickRepliesRes.rows.map((qr) => ({
+    id: String(qr.id),
+    staffId: String(qr.staff_id),
+    staffName: String(qr.staff_name || ""),
+    cmd: String(qr.cmd),
+    title: String(qr.title),
+    body: String(qr.body),
+    isShared: Number(qr.is_shared ?? 0) === 1,
+    isMine: String(qr.staff_id) === params.userId,
+  }));
+
+  const mineFirst = threads.find(
+    (t) =>
+      t.assignedStaffId === params.userId ||
+      t.collaborators.some((c) => c.staffId === params.userId)
+  );
   const preferredId =
     params.selectedConversationId &&
     threads.some((t) => t.id === params.selectedConversationId)
       ? params.selectedConversationId
-      : threads[0]?.id || null;
+      : mineFirst?.id || threads[0]?.id || null;
 
   const initialDetail = preferredId
     ? await getConversationDetailServer(preferredId, true)
@@ -630,6 +687,7 @@ export async function getInitialInboxPayload(params: {
     teams,
     staffList,
     templates,
+    quickReplies,
   };
 }
 

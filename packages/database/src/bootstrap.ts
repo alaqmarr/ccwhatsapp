@@ -236,6 +236,7 @@ async function runBootstrapInternal(): Promise<void> {
     `ALTER TABLE conversations ADD COLUMN last_response_seconds INTEGER`,
     `ALTER TABLE conversations ADD COLUMN escalated_at TEXT`,
     `ALTER TABLE conversations ADD COLUMN resolved_by_id TEXT`,
+    `ALTER TABLE conversations ADD COLUMN collaborators_json TEXT NOT NULL DEFAULT '[]'`,
     `ALTER TABLE messages ADD COLUMN sender_staff_id TEXT`,
     `ALTER TABLE automations ADD COLUMN priority_order INTEGER NOT NULL DEFAULT 10`,
     `ALTER TABLE team_members ADD COLUMN email_alerts_enabled INTEGER NOT NULL DEFAULT 1`,
@@ -247,6 +248,104 @@ async function runBootstrapInternal(): Promise<void> {
       // Column already exists
     }
   }
+
+  const extraContactsColumns = [
+    `ALTER TABLE contacts ADD COLUMN preferred_staff_id TEXT`,
+    `ALTER TABLE contacts ADD COLUMN preferred_staff_name TEXT DEFAULT ''`,
+  ];
+  for (const ddl of extraContactsColumns) {
+    try {
+      await contacts.execute(ddl);
+    } catch {
+      // Column already exists
+    }
+  }
+
+  const extraCrmColumns = [
+    `ALTER TABLE customers ADD COLUMN preferred_staff_id TEXT`,
+    `ALTER TABLE customers ADD COLUMN preferred_staff_name TEXT DEFAULT ''`,
+  ];
+  for (const ddl of extraCrmColumns) {
+    try {
+      await crm.execute(ddl);
+    } catch {
+      // Column already exists
+    }
+  }
+
+  await conv.batch(
+    [
+      `CREATE TABLE IF NOT EXISTS staff_quick_replies (
+        id TEXT PRIMARY KEY,
+        staff_id TEXT NOT NULL,
+        staff_name TEXT NOT NULL DEFAULT '',
+        cmd TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        is_shared INTEGER NOT NULL DEFAULT 0,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_quick_replies_staff ON staff_quick_replies (staff_id, is_shared)`,
+      `CREATE TABLE IF NOT EXISTS ai_training_examples (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'Product Knowledge',
+        customer_question TEXT NOT NULL,
+        ideal_answer TEXT NOT NULL,
+        do_not_say TEXT DEFAULT '',
+        product_slug TEXT DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'NORMAL',
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        created_by_name TEXT NOT NULL DEFAULT 'Team',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ai_train_ex_enabled ON ai_training_examples (is_enabled, category)`,
+      `CREATE TABLE IF NOT EXISTS ai_training_rules (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        rule_text TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'BOTH',
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        created_by_name TEXT NOT NULL DEFAULT 'Team',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS call_dispatch_queue (
+        id TEXT PRIMARY KEY,
+        customer_phone TEXT NOT NULL DEFAULT '',
+        customer_name TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'Direct Call',
+        product_topic TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        recording_url TEXT DEFAULT '',
+        recording_file_name TEXT DEFAULT '',
+        recording_mime_type TEXT DEFAULT '',
+        attachment_url TEXT DEFAULT '',
+        attachment_name TEXT DEFAULT '',
+        assignment_mode TEXT NOT NULL DEFAULT 'AUTO_PERFORMANCE',
+        assignment_reason TEXT DEFAULT '',
+        assigned_staff_id TEXT,
+        assigned_staff_name TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        priority TEXT NOT NULL DEFAULT 'NORMAL',
+        conversation_id TEXT,
+        resolution_notes TEXT DEFAULT '',
+        submitted_by_id TEXT,
+        submitted_by_name TEXT NOT NULL DEFAULT 'Desk',
+        picked_up_at TEXT,
+        resolved_at TEXT,
+        resolved_by_name TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_call_queue_status ON call_dispatch_queue (status, assigned_staff_id, created_at DESC)`,
+    ],
+    "write"
+  );
 
   // 2b. contacts.db - Master WhatsApp Contacts Directory, Groups & Import History
   await contacts.batch(

@@ -7,6 +7,7 @@ import {
   getRawLibSqlClient,
   lookupCustomerOrdersAcrossEcosystem,
   resolvePublicTrackingOrigin,
+  resolveRequestedOrPreferredStaffForInbound,
   type OrderTrackingRecord,
 } from "@cc/database";
 import {
@@ -33,6 +34,12 @@ import {
   recordWorkerHeartbeat,
 } from "@cc/queue";
 import { socketHub } from "@cc/sockets";
+export {
+  createNotification,
+  notifyCallbackRequest,
+  requeueStaleStaffNoteJobs,
+  runStaffNoteAnswerJob,
+} from "./staff-notes";
 import { notifyCallbackRequest, requeueStaleStaffNoteJobs, runStaffNoteAnswerJob } from "./staff-notes";
 
 export type BillingMessageCategory =
@@ -832,6 +839,12 @@ export async function processInboundAutomations(params: {
   buttonText?: string;
   replyToWaMessageId?: string;
   waMessageId?: string;
+  attachment?: {
+    mediaType?: string;
+    filename?: string;
+    mimeType?: string;
+    caption?: string;
+  } | null;
   onBeforeAcrioSend?: () => Promise<void> | void;
 }): Promise<void> {
   const cleanWaId = String(params.waMessageId || "").trim();
@@ -899,6 +912,125 @@ export async function processInboundAutomations(params: {
       params.inboundText = `Tell me about ${params.buttonText || forcedFocusSlug.replace(/-/g, " ")}`;
     } else if (acrioPayload.toLowerCase() === "acrio:more") {
       params.inboundText = "Show me more options";
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 1c. Staff Preference, Explicit Person Request, or Previous Handler Sticky Auto-Assign
+  // --------------------------------------------------------------------------
+  if (isHandledByAcrio) {
+    const staffPref = await resolveRequestedOrPreferredStaffForInbound({
+      customerPhone: params.customerPhone,
+      inboundText: params.inboundText,
+      conversationId: params.conversationId,
+    }).catch(() => null);
+
+    if (
+      staffPref &&
+      (staffPref.matchType === "REQUESTED_BY_CUSTOMER" ||
+        (params.isNewConversation &&
+          (staffPref.matchType === "PREFERRED_STAFF" ||
+            staffPref.matchType === "PAST_HANDLER")))
+    ) {
+      await conv.execute({
+        sql: `UPDATE conversations
+              SET status = 'ASSIGNED',
+                  assigned_staff_id = ?,
+                  assigned_staff_name = ?,
+                  assigned_team_id = 'team_sales',
+                  assigned_team_name = 'Sales Team',
+                  escalation_level = 'P0',
+                  waiting_since = COALESCE(waiting_since, ?)
+              WHERE id = ?`,
+        args: [staffPref.staffId, staffPref.staffName, nowIso, params.conversationId],
+      });
+
+      await logConversationAssignment({
+        conversationId: params.conversationId,
+        customerPhone: params.customerPhone,
+        customerName: String(convRow.customer_name || params.customerPhone),
+        fromStaffId: currentAssignedId || "ACRIO",
+        fromStaffName: currentAssignedId === "ACRIO" ? "ACRIO" : String(convRow.assigned_staff_name || "System"),
+        fromTeamName: String(convRow.assigned_team_name || "System (ACRIO)"),
+        toStaffId: staffPref.staffId,
+        toStaffName: staffPref.staffName,
+        toTeamId: "team_sales",
+        toTeamName: "Sales Team",
+        escalationLevel: "P0",
+        assignmentSource: staffPref.matchType,
+        assignedByName: "System (Sticky Routing)",
+        reason: staffPref.reason,
+        assignedAt: nowIso,
+      }).catch(() => {});
+
+      await conv
+        .execute({
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, delivery_status, created_at
+          ) VALUES (?, ?, 'INTERNAL', 'SYSTEM', 'Auto-Routing', 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+          args: [
+            `msg_pref_${crypto.randomUUID().slice(0, 8)}`,
+            params.conversationId,
+            `Auto-assigned directly to @${staffPref.staffName} (${staffPref.reason}).`,
+            nowIso,
+          ],
+        })
+        .catch(() => {});
+
+      void sendStaffAssignmentEmailNotification({
+        staffId: staffPref.staffId,
+        staffName: staffPref.staffName,
+        customerName: String(convRow.customer_name || params.customerPhone),
+        customerPhone: params.customerPhone,
+        smartCategory: String(convRow.smart_category || "General Enquiry"),
+        priority: "HIGH",
+        escalationLevel: "P0",
+        teamName: "Sales Team",
+        reason: staffPref.reason,
+        latestMessage: params.inboundText,
+        conversationId: params.conversationId,
+      }).catch(() => {});
+
+      if (staffPref.matchType === "REQUESTED_BY_CUSTOMER") {
+        const confirmText = formatWhatsAppOutboundText(
+          `Sure, I have connected you directly with *${staffPref.staffName}* as requested. They will reply to you here shortly.`
+        );
+        const sendRes = await sendWhatsAppCloudMessage({
+          toPhone: params.customerPhone,
+          bodyText: confirmText,
+          simulateAsyncDelivery: true,
+        });
+        await conv
+          .execute({
+            sql: `INSERT INTO messages (
+              id, conversation_id, direction, sender_type, sender_name, message_type,
+              billing_category, body, wa_message_id, delivery_status, created_at
+            ) VALUES (?, ?, 'OUTBOUND', 'AUTOMATION', 'Auto-Routing', 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
+            args: [
+              `msg_req_${crypto.randomUUID().slice(0, 8)}`,
+              params.conversationId,
+              confirmText,
+              sendRes.waMessageId,
+              sendRes.deliveryStatus,
+              nowIso,
+            ],
+          })
+          .catch(() => {});
+        socketHub.emit("message:new", {
+          conversationId: params.conversationId,
+          senderName: "Auto-Routing",
+          text: confirmText,
+        });
+      }
+
+      socketHub.emit("conversation:assigned", {
+        conversationId: params.conversationId,
+        assignedTeamName: "Sales Team",
+        assignedStaffName: staffPref.staffName,
+        escalationLevel: "P0",
+      });
+      return;
     }
   }
 
@@ -1634,6 +1766,7 @@ export async function processInboundAutomations(params: {
     hasAlreadyGreeted,
     forcedFocusSlug,
     replyToMessage,
+    attachment: params.attachment || null,
   });
 
   if (params.onBeforeAcrioSend) {
@@ -1920,8 +2053,25 @@ export async function smartAssignConversation(params: {
 
   let chosenMember: Record<string, unknown> | null = null;
   let chosenTier: "P0" | "P1" | "P2" = params.preferredTier || "P0";
+  let stickyReasonOverride: string | null = null;
+
+  // Check if customer requested someone specific, has a preferred staff member, or has an existing previous handler
+  const stickyMatch = await resolveRequestedOrPreferredStaffForInbound({
+    customerPhone: String(current.customer_phone || ""),
+    inboundText: params.inboundText,
+    conversationId: params.conversationId,
+  }).catch(() => null);
+  if (stickyMatch && !devUserIds.has(stickyMatch.staffId)) {
+    chosenMember = {
+      staff_id: stickyMatch.staffId,
+      staff_name: stickyMatch.staffName,
+      tier: chosenTier,
+    };
+    stickyReasonOverride = stickyMatch.reason;
+  }
 
   for (const tier of tierOrder) {
+    if (chosenMember) break;
     const candidates = (membersRes.rows as Record<string, unknown>[]).filter(
       (m) => String(m.tier) === tier && !devUserIds.has(String(m.staff_id))
     );
@@ -2003,6 +2153,7 @@ export async function smartAssignConversation(params: {
   });
 
   const assignmentReason =
+    stickyReasonOverride ||
     params.handoffReasonFromAcrio ||
     `Smart-assigned to least-loaded ${chosenTier} responder in ${teamName}`;
 
@@ -3436,7 +3587,11 @@ export type AssignmentSourceType =
   | "AUTO_ESCALATION"
   | "REOPEN"
   | "OUTBOUND_START"
-  | "RETURN_TO_SYSTEM";
+  | "RETURN_TO_SYSTEM"
+  | "CALL_DISPATCH_QUEUE"
+  | "REQUESTED_BY_CUSTOMER"
+  | "PREFERRED_STAFF"
+  | "PAST_HANDLER";
 
 async function patchAssignmentEventMessageMeta(
   assignmentId: string,

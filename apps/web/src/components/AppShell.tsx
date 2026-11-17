@@ -25,6 +25,8 @@ import {
   X,
   Link2,
   Mail,
+  PhoneCall,
+  Bot,
 } from "lucide-react";
 import type { AuthenticatedUser } from "@cc/auth";
 import {
@@ -129,6 +131,13 @@ export function AppShell({
           badge: "CC+CE53",
         },
         {
+          href: "/dashboard/call-queue",
+          label: "Call & Lead Queue",
+          icon: PhoneCall,
+          visible: isActiveAccount && user.role !== "CLIENT",
+          badge: "Queue",
+        },
+        {
           href: "/dashboard/contacts",
           label: "Contacts Database",
           icon: Contact2,
@@ -180,6 +189,13 @@ export function AppShell({
           label: "Auto-Replies Builder",
           icon: Workflow,
           visible: canManageFlows,
+        },
+        {
+          href: "/dashboard/ai-training",
+          label: "AI Training Studio",
+          icon: Bot,
+          visible: isActiveAccount && user.role !== "CLIENT",
+          badge: "ACRIO",
         },
       ],
     },

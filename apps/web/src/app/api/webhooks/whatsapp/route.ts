@@ -238,6 +238,15 @@ export async function POST(req: Request) {
           textBody = mediaMeta?.caption || "[Video]";
         } else if (messageType === "AUDIO") {
           textBody = msg?.audio?.voice ? "[Voice Note]" : "[Audio]";
+        } else if (rawType === "contacts" && Array.isArray(msg?.contacts) && msg.contacts.length > 0) {
+          const contactLines = msg.contacts.map((c: any) => {
+            const cname = String(c?.name?.formatted_name || c?.name?.first_name || "Contact").trim();
+            const phones = Array.isArray(c?.phones)
+              ? c.phones.map((p: any) => String(p?.phone || p?.wa_id || "")).filter(Boolean).join(", ")
+              : "";
+            return phones ? `${cname}: ${phones}` : cname;
+          });
+          textBody = `[Shared Contact]\n${contactLines.join("\n")}`;
         } else {
           textBody = msg?.text?.body || buttonText || "[Message]";
         }
@@ -438,6 +447,14 @@ export async function POST(req: Request) {
           buttonText: buttonText ? String(buttonText) : undefined,
           replyToWaMessageId: contextWaId || undefined,
           waMessageId: inboundWaMessageId || undefined,
+          attachment: mediaMeta
+            ? {
+                mediaType: messageType,
+                filename: mediaMeta.filename,
+                mimeType: mediaMeta.mimeType,
+                caption: mediaMeta.caption,
+              }
+            : null,
         });
 
         socketHub.emit("message:new", { conversationId: convId, customerName: contactName });

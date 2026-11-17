@@ -61,6 +61,8 @@ interface ContactItem {
   optInMarketing: boolean;
   optOutReason: string;
   assignedOwnerName: string;
+  preferredStaffId?: string | null;
+  preferredStaffName?: string;
   lifetimeValueInr: number;
   totalOrdersCount: number;
   totalMessagesCount: number;
@@ -141,6 +143,7 @@ interface ContactsPayload {
     importedByName: string;
     createdAt: string;
   }>;
+  staffList?: Array<{ id: string; name: string; role: string }>;
   contacts: ContactItem[];
 }
 
@@ -245,6 +248,7 @@ export default function ContactsDatabasePage() {
     tagsText: "",
     groups: [] as string[],
     optInMarketing: true,
+    preferredStaffId: "",
     notes: "",
   });
 
@@ -441,6 +445,7 @@ export default function ContactsDatabasePage() {
             .filter(Boolean),
           groups: addForm.groups,
           optInMarketing: addForm.optInMarketing,
+          preferredStaffId: addForm.preferredStaffId || undefined,
           notes: addForm.notes,
           source: "MANUAL",
         }),
@@ -465,6 +470,7 @@ export default function ContactsDatabasePage() {
         tagsText: "",
         groups: [],
         optInMarketing: true,
+        preferredStaffId: "",
         notes: "",
       });
       showNotice(json.isNew ? "New contact added to database." : "Existing contact updated.");
@@ -500,6 +506,8 @@ export default function ContactsDatabasePage() {
           groups: drawerDetail.groups,
           optInMarketing: drawerDetail.optInMarketing,
           optOutReason: drawerDetail.optOutReason,
+          preferredStaffId: drawerDetail.preferredStaffId || "",
+          preferredStaffName: drawerDetail.preferredStaffName || "",
           notes: drawerDetail.notes,
         }),
       });
@@ -582,9 +590,9 @@ export default function ContactsDatabasePage() {
 
   function handleDownloadSampleCsv() {
     const sample = [
-      "Name,Phone,Company,Email,City,State,GST,Organization Type,Stage,Tags,Notes",
-      '"Rajesh Sharma","+919849011223","Taj Deccan Banquets","rajesh@tajbanquets.in","Hyderabad","Telangana","36AABCT1234F1Z5","Hospitality","QUALIFIED","Podiums|Banquet","Needs 4 clear acrylic podiums"',
-      '"Dr. Meenakshi Rao","9848122334","Osmania Auditorium","registrar@uni.edu.in","Secunderabad","Telangana","","Educational","NEW_LEAD","Auditorium|Mementos","Enquired about motorized lectern"',
+      "Name,Phone,Company,Email,City,State,GST,Organization Type,Stage,Preferred Staff,Tags,Notes",
+      '"Rajesh Sharma","+919849011223","Taj Deccan Banquets","rajesh@tajbanquets.in","Hyderabad","Telangana","36AABCT1234F1Z5","Hospitality","QUALIFIED","Priya","Podiums|Banquet","Needs 4 clear acrylic podiums"',
+      '"Dr. Meenakshi Rao","9848122334","Osmania Auditorium","registrar@uni.edu.in","Secunderabad","Telangana","","Educational","NEW_LEAD","Rahul","Auditorium|Mementos","Enquired about motorized lectern"',
     ].join("\n");
     const blob = new Blob([sample], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -615,6 +623,7 @@ export default function ContactsDatabasePage() {
         "State",
         "GST Number",
         "Stage",
+        "Preferred Staff",
         "Broadcast Opt-In",
         "Tags",
         "Orders Count",
@@ -635,6 +644,7 @@ export default function ContactsDatabasePage() {
           esc(c.state),
           esc(c.gstNumber),
           esc(c.stage),
+          esc(c.preferredStaffName || c.assignedOwnerName || ""),
           esc(c.optInMarketing ? "Yes" : "No"),
           esc(c.tags.join(" | ")),
           c.totalOrdersCount,
@@ -1887,6 +1897,26 @@ export default function ContactsDatabasePage() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Preferred Staff Member (Sticky Auto-Assignment)
+                </label>
+                <select
+                  value={addForm.preferredStaffId}
+                  onChange={(e) =>
+                    setAddForm({ ...addForm, preferredStaffId: e.target.value })
+                  }
+                  className="w-full px-3 py-2 rounded-lg border border-neutral-300 text-sm bg-white"
+                >
+                  <option value="">No preference (use normal routing)</option>
+                  {(data?.staffList || []).map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.name} ({st.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Internal Notes
                 </label>
                 <textarea
@@ -1992,14 +2022,14 @@ export default function ContactsDatabasePage() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Paste CSV or Excel Rows (Name, Phone, Company, Email, City...)
+                  Paste CSV or Excel Rows (Name, Phone, Company, Email, City, Preferred Staff, Tags...)
                 </label>
                 <textarea
                   rows={7}
                   required
                   value={csvText}
                   onChange={(e) => setCsvText(e.target.value)}
-                  placeholder={`Name,Phone,Company,Email,City,Tags\nRajesh Sharma,9849011223,Taj Banquets,rajesh@taj.in,Hyderabad,Podiums`}
+                  placeholder={`Name,Phone,Company,Email,City,Preferred Staff,Tags\nRajesh Sharma,9849011223,Taj Banquets,rajesh@taj.in,Hyderabad,Priya,Podiums`}
                   className="w-full px-3 py-2 rounded-lg border border-neutral-300 font-mono text-xs leading-relaxed"
                 />
               </div>
@@ -2392,6 +2422,32 @@ export default function ContactsDatabasePage() {
                           }
                           className="w-full px-3 py-2 rounded-lg border border-neutral-300 font-mono text-sm uppercase"
                         />
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Preferred Staff Member (Sticky Auto-Assignment)
+                        </label>
+                        <select
+                          value={drawerDetail.preferredStaffId || ""}
+                          onChange={(e) => {
+                            const sid = e.target.value;
+                            const st = (data?.staffList || []).find((s) => s.id === sid);
+                            setDrawerDetail({
+                              ...drawerDetail,
+                              preferredStaffId: sid || null,
+                              preferredStaffName: st?.name || "",
+                            });
+                          }}
+                          className="w-full px-3 py-2 rounded-lg border border-neutral-300 text-sm bg-white"
+                        >
+                          <option value="">No preference (use normal routing)</option>
+                          {(data?.staffList || []).map((st) => (
+                            <option key={st.id} value={st.id}>
+                              {st.name} ({st.role})
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
 

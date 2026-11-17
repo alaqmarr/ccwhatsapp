@@ -5,7 +5,9 @@ import {
   fetchAllEcosystemWebsiteEnquiries,
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
+  listActiveNonClientStaff,
   normalizeWhatsAppPhone,
+  resolveStaffMemberByQuery,
   upsertSyncedContact,
 } from "@cc/database";
 import { hasPermission } from "@cc/rbac";
@@ -123,6 +125,14 @@ export async function GET(req: Request) {
         optOutReason: String(row.opt_out_reason || ""),
         assignedOwnerId: row.assigned_owner_id ? String(row.assigned_owner_id) : null,
         assignedOwnerName: String(row.assigned_owner_name || ""),
+        preferredStaffId: row.preferred_staff_id
+          ? String(row.preferred_staff_id)
+          : row.assigned_owner_id
+          ? String(row.assigned_owner_id)
+          : null,
+        preferredStaffName: String(
+          row.preferred_staff_name || row.assigned_owner_name || ""
+        ),
         lifetimeValueInr: Number(row.lifetime_value_inr ?? 0),
         totalOrdersCount: Number(row.total_orders_count ?? 0),
         notes: String(row.notes || ""),
@@ -313,6 +323,14 @@ export async function GET(req: Request) {
       optInMarketing,
       optOutReason: String(r.opt_out_reason || ""),
       assignedOwnerName: String(r.assigned_owner_name || convInfo?.assignedTo || ""),
+      preferredStaffId: r.preferred_staff_id
+        ? String(r.preferred_staff_id)
+        : r.assigned_owner_id
+        ? String(r.assigned_owner_id)
+        : null,
+      preferredStaffName: String(
+        r.preferred_staff_name || r.assigned_owner_name || ""
+      ),
       lifetimeValueInr,
       totalOrdersCount,
       totalMessagesCount,
@@ -424,6 +442,9 @@ export async function GET(req: Request) {
       importedByName: String(l.imported_by_name),
       createdAt: String(l.created_at),
     })),
+    staffList: (await listActiveNonClientStaff()).filter(
+      (s) => s.role !== "DEV" || user.role === "DEV"
+    ),
     contacts: filtered,
   });
 }
@@ -462,6 +483,24 @@ export async function POST(req: Request) {
       ? body.groups.map(String)
       : undefined;
 
+    let resolvedPrefId =
+      body.preferredStaffId !== undefined ? String(body.preferredStaffId).trim() : undefined;
+    let resolvedPrefName =
+      body.preferredStaffName !== undefined
+        ? String(body.preferredStaffName).trim()
+        : undefined;
+    if ((resolvedPrefId || resolvedPrefName) && (!resolvedPrefId || !resolvedPrefName)) {
+      const roster = await listActiveNonClientStaff();
+      const matched = resolveStaffMemberByQuery(
+        resolvedPrefId || resolvedPrefName || "",
+        roster
+      );
+      if (matched) {
+        resolvedPrefId = matched.id;
+        resolvedPrefName = matched.name;
+      }
+    }
+
     const res = await upsertSyncedContact({
       phone: String(body.phone || ""),
       name: body.name !== undefined ? String(body.name) : undefined,
@@ -480,6 +519,8 @@ export async function POST(req: Request) {
       acrioSegment: body.acrioSegment !== undefined ? String(body.acrioSegment) : undefined,
       tags,
       groups,
+      preferredStaffId: resolvedPrefId,
+      preferredStaffName: resolvedPrefName,
       optInMarketing:
         body.optInMarketing !== undefined ? Boolean(body.optInMarketing) : undefined,
       optOutReason: body.optOutReason !== undefined ? String(body.optOutReason) : undefined,
@@ -569,8 +610,27 @@ export async function POST(req: Request) {
       : -1;
     const idxStage = hasHeader ? findIdx(["stage", "status", "leadstage"]) : -1;
     const idxTags = hasHeader ? findIdx(["tags", "tag", "labels"]) : -1;
+    const idxPreferredStaff = hasHeader
+      ? findIdx([
+          "preferredstaff",
+          "preferredstaffname",
+          "preferredstaffmember",
+          "preferredstaffmembername",
+          "staffpreference",
+          "assignedstaff",
+          "assignedowner",
+          "owner",
+          "salesperson",
+          "representative",
+          "accountmanager",
+          "handledby",
+          "staffname",
+          "staff",
+        ])
+      : -1;
     const idxNotes = hasHeader ? findIdx(["notes", "note", "remarks", "comment"]) : -1;
     const idxOptIn = hasHeader ? findIdx(["optin", "optinmarketing", "marketing"]) : -1;
+    const staffRoster = await listActiveNonClientStaff();
 
     const dataLines = hasHeader ? lines.slice(1) : lines;
     let importedCount = 0;
@@ -635,6 +695,14 @@ export async function POST(req: Request) {
           ? false
           : undefined;
 
+      const rawPrefStaff =
+        hasHeader && idxPreferredStaff >= 0 && cols[idxPreferredStaff]
+          ? cols[idxPreferredStaff].trim()
+          : "";
+      const matchedPrefStaff = rawPrefStaff
+        ? resolveStaffMemberByQuery(rawPrefStaff, staffRoster)
+        : null;
+
       const upRes = await upsertSyncedContact({
         phone: normPhone,
         name: rawName || undefined,
@@ -664,6 +732,10 @@ export async function POST(req: Request) {
           hasHeader && idxStage >= 0 && cols[idxStage]
             ? cols[idxStage].toUpperCase().replace(/\s+/g, "_")
             : undefined,
+        preferredStaffId: matchedPrefStaff ? matchedPrefStaff.id : undefined,
+        preferredStaffName: matchedPrefStaff
+          ? matchedPrefStaff.name
+          : rawPrefStaff || undefined,
         notes: hasHeader && idxNotes >= 0 && cols[idxNotes] ? cols[idxNotes] : undefined,
         optInMarketing: optInVal,
         tags: mergedTags,

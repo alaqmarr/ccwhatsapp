@@ -2,10 +2,13 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { listAllStaffAccounts } from "@cc/auth";
 import {
+  addConversationCollaborators,
   ensureDatabasesBootstrapped,
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
   listOrderTrackings,
+  parseConversationCollaborators,
+  removeConversationCollaborator,
   upsertOrderTracking,
   upsertSyncedContact,
   type ShipmentStatus,
@@ -13,6 +16,7 @@ import {
 import {
   formatWhatsAppOutboundText,
   getCachedEcosystemCatalog,
+  runAcrioConversationSummary,
   sendStaffAssignmentEmailNotification,
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
@@ -219,6 +223,7 @@ export async function GET(
       resolutionSummary: cRow.resolution_summary ? String(cRow.resolution_summary) : null,
       resolvedByName: cRow.resolved_by_name ? String(cRow.resolved_by_name) : null,
       windowExpiresAt: cRow.window_expires_at ? String(cRow.window_expires_at) : null,
+      collaborators: parseConversationCollaborators(cRow.collaborators_json),
     },
     messages,
     assignments,
@@ -237,6 +242,20 @@ export async function GET(
           lifetimeValueInr: Number(customerRow.lifetime_value_inr ?? 0),
           totalOrdersCount: Number(customerRow.total_orders_count ?? 0),
           notes: String(customerRow.notes || ""),
+          preferredStaffId: customerRow.preferred_staff_id
+            ? String(customerRow.preferred_staff_id)
+            : null,
+          preferredStaffName: customerRow.preferred_staff_name
+            ? String(customerRow.preferred_staff_name)
+            : null,
+          tags: (() => {
+            try {
+              const p = JSON.parse(String(customerRow.tags_json || "[]"));
+              return Array.isArray(p) ? p.map(String).filter(Boolean) : [];
+            } catch {
+              return [];
+            }
+          })(),
         }
       : null,
     orders,
@@ -742,8 +761,10 @@ export async function POST(
     return NextResponse.json({ ok: true, noteId, replyTo: replyMeta, mentioned, askedAcrio });
   }
 
-  // 2b. Human Staff Takes Over Chat from ACRIO (defaults to Sales Team)
-  if (action === "take_over_from_acrio") {
+  // 2b. Human Staff Takes Over Chat (from ACRIO OR from another teammate)
+  if (action === "take_over_from_acrio" || action === "take_over_chat") {
+    const prevStaffId = cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : "ACRIO";
+    const prevStaffName = cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : "ACRIO";
     const tailMsgRes = await conv.execute({
       sql: `SELECT direction FROM messages
             WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
@@ -758,8 +779,8 @@ export async function POST(
             SET status = 'ASSIGNED',
                 assigned_staff_id = ?,
                 assigned_staff_name = ?,
-                assigned_team_id = 'team_sales',
-                assigned_team_name = 'Sales Team',
+                assigned_team_id = COALESCE(assigned_team_id, 'team_sales'),
+                assigned_team_name = COALESCE(NULLIF(assigned_team_name, 'System (ACRIO)'), 'Sales Team'),
                 escalation_level = 'P0',
                 waiting_since = CASE WHEN ? = 1 THEN COALESCE(waiting_since, ?) ELSE NULL END
             WHERE id = ?`,
@@ -770,29 +791,118 @@ export async function POST(
       conversationId: id,
       customerPhone,
       customerName: String(cRow.customer_name || ""),
-      fromStaffId: cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : "ACRIO",
-      fromStaffName: cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : "ACRIO",
+      fromStaffId: prevStaffId,
+      fromStaffName: prevStaffName,
       fromTeamName: cRow.assigned_team_name
         ? String(cRow.assigned_team_name)
         : "System (ACRIO)",
       toStaffId: user.id,
       toStaffName: user.name,
-      toTeamId: "team_sales",
-      toTeamName: "Sales Team",
+      toTeamId: cRow.assigned_team_id ? String(cRow.assigned_team_id) : "team_sales",
+      toTeamName:
+        cRow.assigned_team_name && String(cRow.assigned_team_name) !== "System (ACRIO)"
+          ? String(cRow.assigned_team_name)
+          : "Sales Team",
       escalationLevel: "P0",
       assignmentSource: "STAFF_TAKEOVER",
       assignedByName: user.name,
-      reason: "Staff took over chat from System (ACRIO)",
+      reason:
+        prevStaffId === "ACRIO"
+          ? `${user.name} took over chat from System (ACRIO)`
+          : `${user.name} took over chat from ${prevStaffName}`,
       assignedAt: nowIso,
     });
 
     socketHub.emit("conversation:assigned", {
       conversationId: id,
       staffName: user.name,
-      teamName: "Sales Team",
+      teamName:
+        cRow.assigned_team_name && String(cRow.assigned_team_name) !== "System (ACRIO)"
+          ? String(cRow.assigned_team_name)
+          : "Sales Team",
       escalationLevel: "P0",
     });
     return NextResponse.json({ ok: true });
+  }
+
+  // 2b-ii. Manage Dual-Assignment Collaborators
+  if (action === "add_collaborator") {
+    const staffId = String(body.staffId || "").trim();
+    const staffName = String(body.staffName || "").trim();
+    if (!staffId || staffId === "ACRIO") {
+      return NextResponse.json({ ok: false, error: "Select a valid staff member." }, { status: 400 });
+    }
+    let resolvedName = staffName;
+    if (!resolvedName) {
+      const auth = getRawLibSqlClient("core_auth");
+      const u = await auth.execute({ sql: `SELECT name FROM users WHERE id = ? LIMIT 1`, args: [staffId] });
+      resolvedName = u.rows[0]?.name ? String(u.rows[0].name) : staffId;
+    }
+    const collaborators = await addConversationCollaborators({
+      conversationId: id,
+      members: [{ staffId, staffName: resolvedName }],
+      addedBy: user.name,
+    });
+    socketHub.emit("conversation:assigned", { conversationId: id, collaborators });
+    return NextResponse.json({ ok: true, collaborators });
+  }
+
+  if (action === "remove_collaborator") {
+    const staffId = String(body.staffId || "").trim();
+    const collaborators = await removeConversationCollaborator(id, staffId);
+    socketHub.emit("conversation:updated", { conversationId: id, collaborators });
+    return NextResponse.json({ ok: true, collaborators });
+  }
+
+  // 2b-iii. Generate Quick Chat Summary & Share as ACRIO Internal Note
+  if (action === "generate_summary") {
+    const msgRes = await conv.execute({
+      sql: `SELECT direction, sender_name, message_type, body, created_at
+            FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 60`,
+      args: [id],
+    });
+    const chatMessages = msgRes.rows.map((m) => ({
+      direction: String(m.direction),
+      senderName: String(m.sender_name || ""),
+      body: String(m.body || ""),
+      isNote: String(m.message_type) === "INTERNAL_NOTE",
+      createdAt: String(m.created_at || ""),
+    }));
+
+    const sumRes = await runAcrioConversationSummary({
+      customerName: String(cRow.customer_name || customerPhone),
+      customerPhone,
+      requestedByName: user.name,
+      chatMessages,
+    });
+
+    const summaryNoteId = `msg_note_sum_${crypto.randomUUID().slice(0, 8)}`;
+    const noteBody = `*Quick Chat Summary* (requested by @${user.name})\n\n${sumRes.summaryText}`;
+    await conv.execute({
+      sql: `INSERT INTO messages (
+        id, conversation_id, direction, sender_type, sender_name, message_type,
+        billing_category, body, metadata_json, delivery_status, created_at
+      ) VALUES (?, ?, 'INTERNAL', 'ACRIO', 'ACRIO', 'INTERNAL_NOTE', 'INTERNAL', ?, ?, 'SAVED', ?)`,
+      args: [
+        summaryNoteId,
+        id,
+        noteBody,
+        JSON.stringify({
+          acrioReply: true,
+          acrioSummary: true,
+          requestedByStaffId: user.id,
+          requestedByStaffName: user.name,
+          model: sumRes.model,
+        }),
+        nowIso,
+      ],
+    });
+    socketHub.emit("note:new", {
+      conversationId: id,
+      senderName: "ACRIO",
+      noteText: noteBody,
+    });
+    return NextResponse.json({ ok: true, noteId: summaryNoteId, summaryText: noteBody });
   }
 
   // 2c. Agent Assigns Chat to System (ACRIO)
@@ -1071,35 +1181,84 @@ export async function POST(
   }
 
   if (action === "update_customer_profile") {
+    let prefStaffId =
+      body.preferredStaffId !== undefined
+        ? body.preferredStaffId
+          ? String(body.preferredStaffId).trim()
+          : null
+        : undefined;
+    let prefStaffName =
+      body.preferredStaffName !== undefined
+        ? String(body.preferredStaffName || "").trim()
+        : undefined;
+
+    if (prefStaffId && !prefStaffName) {
+      const auth = getRawLibSqlClient("core_auth");
+      const u = await auth
+        .execute({ sql: `SELECT name FROM users WHERE id = ? LIMIT 1`, args: [prefStaffId] })
+        .catch(() => ({ rows: [] as any[] }));
+      prefStaffName = u.rows[0]?.name ? String(u.rows[0].name) : "";
+    }
+    if (prefStaffId === "") {
+      prefStaffId = null;
+      prefStaffName = "";
+    }
+
+    const tagsArr: string[] | undefined = Array.isArray(body.tags)
+      ? body.tags.map(String).map((t: string) => t.trim()).filter(Boolean)
+      : undefined;
+
     await crm.execute({
       sql: `UPDATE customers
-            SET company_name = COALESCE(?, company_name),
+            SET name = COALESCE(NULLIF(?, ''), name),
+                email = COALESCE(?, email),
+                company_name = COALESCE(?, company_name),
                 organization_type = COALESCE(?, organization_type),
                 city = COALESCE(?, city),
+                gst_number = COALESCE(?, gst_number),
                 acrio_segment = COALESCE(?, acrio_segment),
                 notes = COALESCE(?, notes),
+                preferred_staff_id = CASE WHEN ? = 1 THEN ? ELSE preferred_staff_id END,
+                preferred_staff_name = CASE WHEN ? = 1 THEN ? ELSE preferred_staff_name END,
+                tags_json = CASE WHEN ? = 1 THEN ? ELSE tags_json END,
                 last_interaction_at = ?
             WHERE phone = ?`,
       args: [
+        body.name !== undefined ? String(body.name || "").trim() : null,
+        body.email !== undefined ? (body.email ? String(body.email).trim() : null) : null,
         body.companyName ?? null,
         body.organizationType ?? null,
         body.city ?? null,
+        body.gstNumber !== undefined ? String(body.gstNumber || "").trim().toUpperCase() : null,
         body.acrioSegment ?? null,
         body.notes ?? null,
+        prefStaffId !== undefined ? 1 : 0,
+        prefStaffId ?? null,
+        prefStaffId !== undefined || prefStaffName !== undefined ? 1 : 0,
+        prefStaffName ?? "",
+        tagsArr !== undefined ? 1 : 0,
+        tagsArr !== undefined ? JSON.stringify(tagsArr) : "[]",
         nowIso,
         customerPhone,
       ],
     });
     await upsertSyncedContact({
       phone: customerPhone,
+      name: body.name !== undefined ? String(body.name || "").trim() : undefined,
+      email: body.email !== undefined ? String(body.email || "").trim() : undefined,
       companyName: body.companyName !== undefined ? String(body.companyName || "") : undefined,
       organizationType:
         body.organizationType !== undefined ? String(body.organizationType || "") : undefined,
       city: body.city !== undefined ? String(body.city || "") : undefined,
+      gstNumber: body.gstNumber !== undefined ? String(body.gstNumber || "") : undefined,
       acrioSegment: body.acrioSegment !== undefined ? String(body.acrioSegment || "") : undefined,
       notes: body.notes !== undefined ? String(body.notes || "") : undefined,
+      preferredStaffId: prefStaffId,
+      preferredStaffName: prefStaffName,
+      tags: tagsArr,
       lastContactedAt: nowIso,
     }).catch(() => {});
+    socketHub.emit("conversation:updated", { conversationId: id });
     return NextResponse.json({ ok: true });
   }
 

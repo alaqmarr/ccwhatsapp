@@ -690,17 +690,39 @@ export function stripWhatsAppFormatting(text: string): string {
     .trim();
 }
 
+function normalizeInlinePhoneCandidate(raw: string): string | null {
+  const trimmed = raw.trim();
+  // Reject currency, dimensions, dates, or order/SKU tokens
+  if (/[₹$€£/]/.test(trimmed)) return null;
+  const digits = trimmed.replace(/\D/g, "");
+  if (trimmed.startsWith("+")) {
+    if (digits.length >= 10 && digits.length <= 15) return `+${digits}`;
+    return null;
+  }
+  if (digits.length === 11 && digits.startsWith("0") && /^[6-9]/.test(digits.slice(1))) {
+    return `+91${digits.slice(1)}`;
+  }
+  if (digits.length === 12 && digits.startsWith("91") && /^[6-9]/.test(digits.slice(2))) {
+    return `+${digits}`;
+  }
+  if (digits.length === 10 && /^[6-9]\d{9}$/.test(digits)) {
+    return `+91${digits}`;
+  }
+  return null;
+}
+
 function renderWhatsAppInline(
   input: string,
   keyPrefix: string,
-  depth = 0
+  depth = 0,
+  onPhoneClick?: (phone: string, rawDisplay: string) => void
 ): React.ReactNode[] {
   if (!input) return [];
   if (depth > 2) return [input];
 
   const nodes: React.ReactNode[] = [];
   const tokenRegex =
-    /(`[^`\n]+`)|(https?:\/\/[^\s<]+)|(\*\*[^*\n]+\*\*)|((?<![a-zA-Z0-9])\*[^\s*\n](?:[^*\n]*[^\s*\n])?\*(?![a-zA-Z0-9]))|((?<![a-zA-Z0-9])_[^\s_\n](?:[^_\n]*[^\s_\n])?_(?![a-zA-Z0-9]))|((?<![a-zA-Z0-9])~[^\s~\n](?:[^~\n]*[^\s~\n])?~(?![a-zA-Z0-9]))/g;
+    /(`[^`\n]+`)|(https?:\/\/[^\s<]+)|(\*\*[^*\n]+\*\*)|((?<![a-zA-Z0-9])\*[^\s*\n](?:[^*\n]*[^\s*\n])?\*(?![a-zA-Z0-9]))|((?<![a-zA-Z0-9])_[^\s_\n](?:[^_\n]*[^\s_\n])?_(?![a-zA-Z0-9]))|((?<![a-zA-Z0-9])~[^\s~\n](?:[^~\n]*[^\s~\n])?~(?![a-zA-Z0-9]))|((?<![a-zA-Z0-9₹$#/.+-])(?:\+\d{1,3}[\s.-]?(?:\(?\d{2,5}\)?[\s.-]?){2,4}\d{2,5}|(?:0|91[\s.-]?)?[6-9]\d{4}[\s.-]?\d{5}|(?:0|91[\s.-]?)?[6-9]\d{2}[\s.-]?\d{3}[\s.-]?\d{4})(?![a-zA-Z0-9]))/g;
 
   let lastIdx = 0;
   let match: RegExpExecArray | null;
@@ -761,7 +783,7 @@ function renderWhatsAppInline(
       const inner = raw.slice(2, -2);
       nodes.push(
         <strong key={k} className="font-semibold text-gray-950">
-          {renderWhatsAppInline(inner, k, depth + 1)}
+          {renderWhatsAppInline(inner, k, depth + 1, onPhoneClick)}
         </strong>
       );
       lastIdx = start + raw.length;
@@ -770,7 +792,7 @@ function renderWhatsAppInline(
       const inner = raw.slice(1, -1);
       nodes.push(
         <strong key={k} className="font-semibold text-gray-950">
-          {renderWhatsAppInline(inner, k, depth + 1)}
+          {renderWhatsAppInline(inner, k, depth + 1, onPhoneClick)}
         </strong>
       );
       lastIdx = start + raw.length;
@@ -779,7 +801,7 @@ function renderWhatsAppInline(
       const inner = raw.slice(1, -1);
       nodes.push(
         <em key={k} className="italic">
-          {renderWhatsAppInline(inner, k, depth + 1)}
+          {renderWhatsAppInline(inner, k, depth + 1, onPhoneClick)}
         </em>
       );
       lastIdx = start + raw.length;
@@ -788,9 +810,30 @@ function renderWhatsAppInline(
       const inner = raw.slice(1, -1);
       nodes.push(
         <del key={k} className="line-through opacity-80">
-          {renderWhatsAppInline(inner, k, depth + 1)}
+          {renderWhatsAppInline(inner, k, depth + 1, onPhoneClick)}
         </del>
       );
+      lastIdx = start + raw.length;
+    } else if (match[7]) {
+      const normalizedPhone = onPhoneClick ? normalizeInlinePhoneCandidate(raw) : null;
+      if (normalizedPhone && onPhoneClick) {
+        nodes.push(
+          <button
+            key={k}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPhoneClick(normalizedPhone, raw.trim());
+            }}
+            title={`Open or start WhatsApp chat with ${normalizedPhone}`}
+            className="inline text-[#008069] hover:text-[#006452] underline decoration-[#00a884]/60 underline-offset-2 font-medium cursor-pointer"
+          >
+            {raw}
+          </button>
+        );
+      } else {
+        nodes.push(raw);
+      }
       lastIdx = start + raw.length;
     } else {
       nodes.push(raw);
@@ -808,9 +851,11 @@ function renderWhatsAppInline(
 export function WhatsAppFormattedText({
   text,
   className = "",
+  onPhoneClick,
 }: {
   text: string;
   className?: string;
+  onPhoneClick?: (phone: string, rawDisplay: string) => void;
 }) {
   if (!text) return null;
 
@@ -859,7 +904,7 @@ export function WhatsAppFormattedText({
                     key={`q_${segIdx}_${lineIdx}`}
                     className="my-0.5 pl-2.5 border-l-2 border-emerald-600/50 text-gray-700"
                   >
-                    {renderWhatsAppInline(quoteText, `q_${segIdx}_${lineIdx}`)}
+                    {renderWhatsAppInline(quoteText, `q_${segIdx}_${lineIdx}`, 0, onPhoneClick)}
                   </div>
                 );
               }
@@ -878,7 +923,9 @@ export function WhatsAppFormattedText({
                     <span className="min-w-0 flex-1">
                       {renderWhatsAppInline(
                         bulletMatch[1],
-                        `ul_${segIdx}_${lineIdx}`
+                        `ul_${segIdx}_${lineIdx}`,
+                        0,
+                        onPhoneClick
                       )}
                     </span>
                   </div>
@@ -899,7 +946,9 @@ export function WhatsAppFormattedText({
                     <span className="min-w-0 flex-1">
                       {renderWhatsAppInline(
                         numMatch[2],
-                        `ol_${segIdx}_${lineIdx}`
+                        `ol_${segIdx}_${lineIdx}`,
+                        0,
+                        onPhoneClick
                       )}
                     </span>
                   </div>
@@ -908,7 +957,7 @@ export function WhatsAppFormattedText({
 
               return (
                 <React.Fragment key={`ln_${segIdx}_${lineIdx}`}>
-                  {renderWhatsAppInline(line, `ln_${segIdx}_${lineIdx}`)}
+                  {renderWhatsAppInline(line, `ln_${segIdx}_${lineIdx}`, 0, onPhoneClick)}
                   {!isLastLine && lines[lineIdx + 1]?.trim() !== "" && "\n"}
                 </React.Fragment>
               );

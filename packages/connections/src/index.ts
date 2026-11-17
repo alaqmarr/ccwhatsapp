@@ -14,6 +14,7 @@ import {
   loadLiveDatabaseOperationalContext,
   ensureDatabasesBootstrapped,
   extractBudgetConstraintsFromQuery,
+  findMatchingAiTrainingGuidance,
   getEcosystemBudgetFallbackInfo,
   getRawLibSqlClient,
   loadAllClassicConceptsProducts,
@@ -2779,6 +2780,14 @@ export interface AcrioConversationState {
     shortUrl: string | null;
     itemType?: "PRODUCT" | "MACHINE" | "CONSUMABLE";
   }[];
+  /** Chronological history of distinct products/topics discussed earlier in this chat (prevents A->B->C leaks while keeping comparison context). */
+  productHistory?: {
+    label: string;
+    slug?: string | null;
+    family?: string | null;
+    turnNumber: number;
+  }[];
+  switchedThisTurn?: boolean;
   turnCount: number;
   updatedAt: string;
 }
@@ -2805,6 +2814,8 @@ export function createEmptyAcrioConversationState(): AcrioConversationState {
     customerProfile: "EVERYDAY_BUYER",
     languageMode: "ENGLISH",
     lastRecommendedProducts: [],
+    productHistory: [],
+    switchedThisTurn: false,
     turnCount: 0,
     updatedAt: new Date().toISOString(),
   };
@@ -3904,16 +3915,42 @@ export function applyTurnToAcrioConversationState(
         lastMenuOptions: [...(prevState.lastMenuOptions || [])],
         askedQuestionsLog: [...(prevState.askedQuestionsLog || [])],
         lastRecommendedProducts: [...(prevState.lastRecommendedProducts || [])],
+        productHistory: [...(prevState.productHistory || [])],
       }
     : createEmptyAcrioConversationState();
 
   base.turnCount = (base.turnCount || 0) + 1;
   base.updatedAt = new Date().toISOString();
+  base.switchedThisTurn = false;
 
   const lower = String(rawText || "").toLowerCase();
   const profileInfo = detectAcrioCustomerProfile(rawText);
   base.customerProfile = profileInfo.customerProfile;
   base.languageMode = profileInfo.languageMode;
+
+  const archivePreviousFocus = () => {
+    const label =
+      (base.focusProductSlug ? base.focusProductSlug.replace(/-/g, " ") : "") ||
+      base.lastRecommendedProducts[0]?.name ||
+      base.primaryProductQuery ||
+      "";
+    if (!label) return;
+    const prevHist = base.productHistory || [];
+    const lastEntry = prevHist[prevHist.length - 1];
+    if (
+      !lastEntry ||
+      lastEntry.slug !== (base.focusProductSlug || base.lastRecommendedProducts[0]?.slug || null) ||
+      lastEntry.label.toLowerCase() !== label.toLowerCase()
+    ) {
+      prevHist.push({
+        label: label.slice(0, 80),
+        slug: base.focusProductSlug || base.lastRecommendedProducts[0]?.slug || null,
+        family: base.productFamily || null,
+        turnNumber: Math.max(1, base.turnCount - 1),
+      });
+      base.productHistory = prevHist.slice(-10);
+    }
+  };
 
   // Track "without mentioning prices" / "hide prices" preference on the current turn and its immediate MENU_SELECTION follow-up
   if (/\b(without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|don'?t\s*(?:mention|show)\s*prices?)\b/i.test(lower)) {
@@ -3934,10 +3971,13 @@ export function applyTurnToAcrioConversationState(
     base.preferCheapest = false;
   }
 
-  // Explicit topic reset clears active product/budget state
+  // Explicit topic reset clears active product/budget state while keeping archived productHistory
   if (intentInfo.intent === "TOPIC_RESET") {
+    archivePreviousFocus();
     return {
       ...createEmptyAcrioConversationState(),
+      productHistory: [...(base.productHistory || [])],
+      switchedThisTurn: true,
       turnCount: base.turnCount,
       updatedAt: base.updatedAt,
     };
@@ -3945,10 +3985,12 @@ export function applyTurnToAcrioConversationState(
 
   // Handle CATEGORY_OVERVIEW (e.g. "What all categories do you have under the podiums category?")
   if (intentInfo.intent === "CATEGORY_OVERVIEW") {
+    archivePreviousFocus();
     base.activeBrand = "CLASSIC_CONCEPTS";
     base.activeCategory = "Podiums & Stage";
     base.productFamily = "podium";
     base.primaryProductQuery = "acrylic podium categories";
+    base.focusProductSlug = null;
     base.lastMenuOptions = [
       "Essential Podiums",
       "Classic Signature Podiums",
@@ -3979,6 +4021,7 @@ export function applyTurnToAcrioConversationState(
     } else if (base.lastRecommendedProducts && base.lastRecommendedProducts[idx]) {
       const chosenProd = base.lastRecommendedProducts[idx];
       base.primaryProductQuery = chosenProd.name;
+      base.focusProductSlug = chosenProd.slug;
       return base;
     }
   }
@@ -3993,8 +4036,31 @@ export function applyTurnToAcrioConversationState(
   const turnPrefs = extractPreferencesFromTurn(rawText);
   const meta = extractMetadataFromTurn(rawText);
   const explicitCodesInTurn = extractExplicitProductOrModelCodes(rawText);
+  const isComparisonTurn =
+    intentInfo.intent === "PRODUCT_COMPARISON" ||
+    /\b(compare|comparison|vs\.?|versus|difference\s+between|both|all\s+three|earlier|previous)\b/i.test(lower);
 
-  const isTopicSwitch =
+  // Detect product switch even within the same family (e.g. CCP054 -> CCP065 -> CCP094) OR from a product to any new distinct item/noun!
+  const focusCodeNorm = (base.focusProductSlug || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const explicitSwitchedCode =
+    !isComparisonTurn &&
+    explicitCodesInTurn.length >= 1 &&
+    Boolean(base.focusProductSlug || base.primaryProductQuery) &&
+    !explicitCodesInTurn.some((c) => focusCodeNorm.includes(c.toLowerCase().replace(/[^a-z0-9]/g, "")));
+
+  const newNounMatch = lower.match(ACRIO_DOMAIN_PRODUCT_NOUN_RE);
+  const distinctNounInTurn = newNounMatch ? newNounMatch[1].toLowerCase().replace(/s$/, "") : "";
+  const prevQueryLower = `${base.primaryProductQuery || ""} ${base.focusProductSlug || ""} ${base.productFamily || ""}`.toLowerCase();
+  const switchedToUnseenNoun =
+    !isComparisonTurn &&
+    !detected.isCorrectionOnly &&
+    Boolean(distinctNounInTurn) &&
+    Boolean(base.primaryProductQuery || base.focusProductSlug) &&
+    !prevQueryLower.includes(distinctNounInTurn) &&
+    !/^(acrylic|perspex|pmma|model|option|product|custom\s*size|fabrication)$/i.test(distinctNounInTurn);
+
+  const familyChanged =
+    !isComparisonTurn &&
     !detected.isCorrectionOnly &&
     Boolean(detected.productFamily) &&
     Boolean(base.productFamily) &&
@@ -4008,7 +4074,17 @@ export function applyTurnToAcrioConversationState(
         base.productFamily === "machine")
     );
 
+  const hasExplicitSwitchPhrase =
+    !isComparisonTurn &&
+    (Boolean(detected.primaryProductQuery) || explicitCodesInTurn.length > 0 || Boolean(distinctNounInTurn)) &&
+    /\b(now\s+(?:tell|show|what\s+about|check)|what\s+about|how\s+about|instead(?:\s+of)?|switch\s+to|other\s+than\s+that|also\s+(?:show|need|check)|next\s+item|another\s+product)\b/i.test(lower);
+
+  const isTopicSwitch =
+    familyChanged || explicitSwitchedCode || switchedToUnseenNoun || hasExplicitSwitchPhrase;
+
   if (isTopicSwitch) {
+    archivePreviousFocus();
+    base.switchedThisTurn = true;
     base.activeBrand = detected.activeBrand;
     base.activeCategory = detected.activeCategory;
     base.productFamily = detected.productFamily;
@@ -4307,9 +4383,34 @@ export async function saveConversationAiState(
   }
 }
 
+export interface AcrioStaffAction {
+  type:
+    | "assign_staff"
+    | "add_collaborator"
+    | "set_priority"
+    | "set_category"
+    | "resolve_chat"
+    | "reopen_chat"
+    | "update_customer"
+    | "create_callback"
+    | "send_customer_reply";
+  staffQuery?: string;
+  priority?: "URGENT" | "HIGH" | "NORMAL";
+  category?: string;
+  summary?: string;
+  companyName?: string;
+  city?: string;
+  notes?: string;
+  preferredStaffQuery?: string;
+  callbackSlot?: string;
+  callbackTopic?: string;
+  messageText?: string;
+}
+
 /**
- * ACRIO answers a teammate who asked a question with "@ACRIO" inside an internal chat note.
- * The answer goes back into the same chat as a private note (never sent to the customer).
+ * ACRIO answers a teammate who asked a question or requested an action with "@ACRIO" inside an internal chat note.
+ * Can execute real chat & CRM actions (assign, add collaborator, update customer details, resolve, set priority, send explicit reply)
+ * while posting a clear confirmation & answer back into the private notes.
  */
 export async function runAcrioStaffQuestion(params: {
   question: string;
@@ -4317,7 +4418,16 @@ export async function runAcrioStaffQuestion(params: {
   customerName: string;
   customerPhone?: string;
   chatMessages: { direction: string; senderName?: string; body: string; isNote?: boolean }[];
-}): Promise<{ ok: boolean; answer: string; error?: string }> {
+  availableStaff?: { id: string; name: string; role: string; department?: string }[];
+  currentOwnerName?: string | null;
+  conversationStatus?: string;
+}): Promise<{
+  ok: boolean;
+  answer: string;
+  suggestedReply?: string | null;
+  actions?: AcrioStaffAction[];
+  error?: string;
+}> {
   const started = Date.now();
   const steps: AiTraceStep[] = [];
   const addStep = (label: string, detail?: string, status: AiTraceStep["status"] = "OK") =>
@@ -4332,7 +4442,13 @@ export async function runAcrioStaffQuestion(params: {
     .slice(-3)
     .map((m) => m.body)
     .join(" ");
-  const matches = searchEcosystemItems(allItems, `${question} ${lastCustomerText}`, 6);
+  const [matches, trainingGuidance] = await Promise.all([
+    Promise.resolve(searchEcosystemItems(allItems, `${question} ${lastCustomerText}`, 6)),
+    findMatchingAiTrainingGuidance({
+      queryText: `${question} ${lastCustomerText}`,
+      scope: "STAFF_COPILOT",
+    }).catch(() => ({ promptBlock: "", examples: [], rules: [] })),
+  ]);
   const deep = buildEcosystemDeepProductContextAndAnswer({
     rawQuery: question,
     matchedItems: matches,
@@ -4359,8 +4475,14 @@ export async function runAcrioStaffQuestion(params: {
     })
     .join("\n");
 
+  const staffRosterLine = (params.availableStaff || [])
+    .map((s) => `${s.name} (${s.role}${s.department ? ` - ${s.department}` : ""})`)
+    .join(", ");
+
   const { apiKey } = await resolveSharedAnthropicApiKey("admin");
   let answer = "";
+  let suggestedReply: string | null = null;
+  let actions: AcrioStaffAction[] = [];
   let usage: AiTokenUsage | null = null;
   let error: string | undefined;
 
@@ -4370,16 +4492,39 @@ export async function runAcrioStaffQuestion(params: {
       maxTokens: 2048,
       effort: "medium",
       timeoutMs: 30000,
-      system: `You are ACRIO, the assistant for the Classic Concepts and Classic Edge 53 team. A teammate (${params.staffName}) is asking you a PRIVATE question inside an internal note on a customer chat. Your answer is saved as a private team note and is NEVER sent to the customer.
+      system: `You are ACRIO, the assistant and action copilot for the Classic Concepts and Classic Edge 53 team. A teammate (${params.staffName}) is asking you a question OR asking you to perform an action inside a PRIVATE internal note on a customer chat.
 
-RULES:
-1. Answer the teammate's question directly and briefly (3 to 8 short lines). Plain everyday English. No em-dashes, no "--", no buzzwords.
-2. Use ONLY the verified catalogue, company and chat information below. Never invent prices, sizes, specs, stock or dates. If something is not in the data, say so plainly.
-3. When it helps, add a ready-to-send customer reply under a line that says "Suggested reply:". Keep it short, with prices in ₹ and ccapl.cc links from the data.
-4. Use single asterisks for *bold*. No markdown headings or tables.
-5. If the question needs a decision from a director or manager (discounts, special pricing, delivery promises), say who to ask: Director - Sales Hussain Earanpurwala, Director - Production Yusuf Zakir, or Corporate Sales Manager Shiva Kumar Chernapally.
+CAPABILITIES (STAFF COPILOT ACTIONS):
+You can both answer questions AND perform actions inside the chat by returning structured "actions" in JSON:
+- "assign_staff": transfer chat ownership to a teammate (or "ACRIO" to hand back to AI). Set "staffQuery".
+- "add_collaborator": give dual access to a teammate without removing current owner. Set "staffQuery".
+- "set_priority": set priority to "URGENT", "HIGH", or "NORMAL".
+- "set_category": set smart category ("Podiums & Stage", "Awards & Trophies", "Hotel & Banquet", "Acrylic Machines (CE53)", "Custom Fabrication", "Order & Delivery", "General Enquiry").
+- "resolve_chat": mark this chat Resolved with a short plain-English "summary".
+- "reopen_chat": reopen a resolved chat.
+- "update_customer": update "city", "companyName", "notes", or "preferredStaffQuery" on customer profile.
+- "create_callback": log a pending callback with "callbackSlot" and "callbackTopic".
+- "send_customer_reply": ONLY use this if the teammate explicitly commands you to send a WhatsApp message directly to the customer (e.g. "send this to customer", "reply to the customer saying...", "message the client now"). Otherwise put any draft inside "suggestedReply" ONLY so staff can review and click Insert!
 
-${buildCompleteEcosystemDatabaseDirectory(allItems)}`,
+ACTIVE TEAM ROSTER: ${staffRosterLine || "Sales & Support Team"}
+CURRENT CHAT OWNER: ${params.currentOwnerName || "System (ACRIO)"} | STATUS: ${params.conversationStatus || "OPEN"}
+
+WRITING RULES:
+1. Plain everyday layman English. Zero em-dashes, zero "--", zero buzzwords (no bespoke, elevate, delve, meticulous, seamless, utilize, etc.).
+2. Use ONLY verified catalogue, company, and chat information below. Never invent prices, sizes, specs, stock, or dates.
+3. Single asterisks for *bold*. Use ₹ and https://ccapl.cc/... shortlinks from verified data.
+4. Keep "answer" concise (2 to 8 short lines).
+${trainingGuidance.promptBlock ? `\n${trainingGuidance.promptBlock}\n` : ""}
+${buildCompleteEcosystemDatabaseDirectory(allItems)}
+
+Return ONLY valid JSON:
+{
+  "answer": "Clear private reply for ${params.staffName}",
+  "suggestedReply": "Optional short ready-to-send customer WhatsApp message (or empty string)",
+  "actions": [
+    { "type": "assign_staff | add_collaborator | set_priority | set_category | resolve_chat | reopen_chat | update_customer | create_callback | send_customer_reply", ...fields }
+  ]
+}`,
       messages: [
         {
           role: "user",
@@ -4389,15 +4534,30 @@ Recent chat (oldest first):
 ${transcript || "(no messages yet)"}
 
 ${deep.promptCatalogContext ? `Verified product details that may be relevant:\n${deep.promptCatalogContext}\n` : ""}${liveContext ? `Company and database context:\n${liveContext}\n` : ""}
-Teammate question:
+Teammate note / command:
 ${question}`,
         },
       ],
     });
     usage = aiCall.usage;
     if (aiCall.ok && aiCall.text) {
-      answer = formatWhatsAppOutboundText(aiCall.text).trim();
-      addStep("Claude answered the teammate", `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms`);
+      const parsed = parseClaudeJson<{
+        answer?: string;
+        suggestedReply?: string;
+        actions?: AcrioStaffAction[];
+      }>(aiCall.text);
+      if (parsed && typeof parsed.answer === "string" && parsed.answer.trim()) {
+        answer = formatWhatsAppOutboundText(parsed.answer).trim();
+        if (parsed.suggestedReply && parsed.suggestedReply.trim()) {
+          suggestedReply = formatWhatsAppOutboundText(parsed.suggestedReply).trim();
+        }
+        if (Array.isArray(parsed.actions)) {
+          actions = parsed.actions.filter((a) => a && typeof a.type === "string");
+        }
+      } else {
+        answer = formatWhatsAppOutboundText(aiCall.text).trim();
+      }
+      addStep("Claude processed staff note/command", `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms, actions=${actions.length}`);
     } else {
       error = aiCall.error || "Claude call failed";
       addStep("Claude call failed", error, "ERROR");
@@ -4416,7 +4576,7 @@ ${question}`,
   recordAndBroadcastAiLog({
     website: "WHATSAPP_HUB",
     websiteLabel: "Classic Concepts WhatsApp Hub",
-    feature: "ACRIO Staff Assistant (@ACRIO in notes)",
+    feature: "ACRIO Staff Copilot (@ACRIO Actions & Q&A)",
     actor: params.staffName,
     question,
     model: apiKey && !error ? LOCKED_CLAUDE_MODEL : "local-fallback",
@@ -4424,7 +4584,7 @@ ${question}`,
     outcomeSource: apiKey && !error ? "LIVE_AI" : "LOCAL_FALLBACK",
     responseCacheStatus: "BYPASS",
     catalogCacheStatus: "BYPASS",
-    cacheDetails: fetchedCatalog.cacheMeta?.cacheSummary || "",
+    cacheDetails: `${fetchedCatalog.cacheMeta?.cacheSummary || ""}${actions.length > 0 ? ` • actions=[${actions.map((a) => a.type).join(",")}]` : ""}`,
     productLookupTriggered: true,
     productLookupQuery: question,
     productLookupTotalScanned: allItems.length,
@@ -4436,7 +4596,85 @@ ${question}`,
     error: error || null,
   });
 
-  return { ok: !error, answer, error };
+  return { ok: !error, answer, suggestedReply, actions, error };
+}
+
+/**
+ * Generates a quick plain-English chat summary for staff to save & share via ACRIO internal notes.
+ */
+export async function runAcrioConversationSummary(params: {
+  customerName: string;
+  customerPhone: string;
+  requestedByName: string;
+  chatMessages: { direction: string; senderName?: string; body: string; isNote?: boolean; createdAt?: string }[];
+}): Promise<{ ok: boolean; summaryText: string; model: string }> {
+  const { apiKey } = await resolveSharedAnthropicApiKey("admin");
+  const visibleMsgs = params.chatMessages.slice(-40);
+  const transcript = visibleMsgs
+    .map((m) => {
+      const who = m.isNote
+        ? `[Internal Note by ${m.senderName || "Team"}]`
+        : m.direction === "INBOUND"
+        ? `[Customer ${params.customerName}]`
+        : `[${m.senderName || "Team"}]`;
+      return `${who}: ${String(m.body || "").replace(/\s+/g, " ").slice(0, 420)}`;
+    })
+    .join("\n");
+
+  if (apiKey && visibleMsgs.length > 0) {
+    const aiRes = await callClaudeHaikuMessagesDetailed({
+      apiKey,
+      maxTokens: 900,
+      effort: "low",
+      timeoutMs: 20000,
+      system: `You write quick, clear WhatsApp chat summaries for the Classic Concepts and Classic Edge 53 sales team.
+RULES:
+- Simple everyday layman English so any teammate catches up in 10 seconds.
+- Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, elevate, delve, meticulous, seamless, utilize, robust).
+- Use 4 short bullet points with single *bold* labels:
+  * *Customer need:* what they are looking for (products, codes, size, qty)
+  * *Key details shared:* city, budget, custom requirements, prices quoted, or files sent
+  * *Current status:* who answered last and where things stand
+  * *Next step:* what our team should do next`,
+      messages: [
+        {
+          role: "user",
+          content: `Customer: ${params.customerName} (${params.customerPhone})
+Conversation transcript (oldest first):
+${transcript}`,
+        },
+      ],
+    });
+    if (aiRes.ok && aiRes.text) {
+      return {
+        ok: true,
+        summaryText: formatWhatsAppOutboundText(aiRes.text).trim(),
+        model: LOCKED_CLAUDE_MODEL,
+      };
+    }
+  }
+
+  const inbound = visibleMsgs.filter((m) => m.direction === "INBOUND");
+  const lastInbound = inbound[inbound.length - 1]?.body || "No customer message yet.";
+  const lastMsg = visibleMsgs[visibleMsgs.length - 1];
+  const topics = inbound
+    .slice(-4)
+    .map((m) => String(m.body || "").replace(/\s+/g, " ").slice(0, 90))
+    .join(" | ");
+
+  const fallback = [
+    `*Chat Summary* (requested by ${params.requestedByName})`,
+    `• *Customer need:* ${topics || "General enquiry"}`,
+    `• *Latest customer message:* ${lastInbound.slice(0, 140)}`,
+    `• *Total messages:* ${visibleMsgs.length} (${inbound.length} from customer)`,
+    `• *Last activity:* ${lastMsg?.senderName || "Customer"}: ${String(lastMsg?.body || "").slice(0, 100)}`,
+  ].join("\n");
+
+  return {
+    ok: true,
+    summaryText: formatWhatsAppOutboundText(fallback),
+    model: "local-summary-fallback",
+  };
 }
 
 export async function runAcrioChatCopilot(params: {
@@ -4767,6 +5005,13 @@ export interface AcrioTurnParams {
   forcedFocusSlug?: string;
   /** Set when the customer swiped/quoted an earlier WhatsApp message. */
   replyToMessage?: AcrioReplyToMessageContext | null;
+  /** Attachment metadata if the inbound message included a PDF, image, video, audio, or file. */
+  attachment?: {
+    mediaType?: "IMAGE" | "DOCUMENT" | "VIDEO" | "AUDIO" | string;
+    filename?: string;
+    mimeType?: string;
+    caption?: string;
+  } | null;
   /** Set false to get plain text only (website widget, tests). Defaults to true. */
   enableInteractive?: boolean;
   uiSink?: AcrioUiSink;
@@ -4970,13 +5215,79 @@ async function runAcrioAutonomousTurnCore(
       ? params.persistedState
       : await loadConversationAiState(params.conversationId);
 
-  // Handle non-text webhook placeholders ([Message], [Image], [Document], [Video], [Audio]) deterministically
-  if (/^\[(?:message|image|photo|video|document|pdf|file|audio|voice\s*note|sticker)\]$/i.test(rawText)) {
-    const isMediaPlaceholder = /^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note)\]$/i.test(rawText);
+  // 0. Route PDFs, Documents, Audio, Video, or unclear Images/Attachments directly to the human team
+  const attType = String(params.attachment?.mediaType || "").toUpperCase();
+  const attName = String(params.attachment?.filename || "").trim();
+  const isMediaPlaceholder = /^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note|sticker)\b/i.test(rawText);
+  const hasExplicitProductCodeWithImage =
+    attType === "IMAGE" &&
+    !isMediaPlaceholder &&
+    (extractExplicitProductOrModelCodes(rawText).length > 0 ||
+      Boolean(params.forcedFocusSlug));
+  const shouldRouteAttachmentToTeam =
+    (Boolean(params.attachment) &&
+      (attType === "DOCUMENT" ||
+        attType === "VIDEO" ||
+        attType === "AUDIO" ||
+        (attType === "IMAGE" && !hasExplicitProductCodeWithImage))) ||
+    isMediaPlaceholder;
+
+  if (shouldRouteAttachmentToTeam) {
+    const fileLabel = attName
+      ? `*${attName}*`
+      : attType === "DOCUMENT"
+      ? "your PDF / document"
+      : attType === "VIDEO"
+      ? "your video"
+      : attType === "AUDIO"
+      ? "your voice note / audio"
+      : "your attachment";
+    const greetLine = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+    const routeReply = formatWhatsAppOutboundText(
+      `${greetLine}Thank you for sharing ${fileLabel}. I have forwarded this directly to our team so a specialist can review it and reply to you right away.`
+    );
+    const phState = reconstructAcrioConversationState({
+      persistedState: storedState,
+      recentMessages: history,
+      currentInboundText: rawText,
+    });
+    await saveConversationAiState(params.conversationId, phState);
+    const handoffReason = `Customer shared ${attName || attType || "an attachment"} (${rawText.slice(0, 100)}) which needs team review.`;
+    addStep("Routed attachment directly to team", handoffReason);
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: rawText,
+      model: "rule-attachment-team-handoff",
+      outcomeSource: "HUMAN_HANDOFF",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: "BYPASS",
+      cacheDetails: `Attachment (${attType || "FILE"}) routed directly to human team`,
+      productLookupTriggered: false,
+      productLookupQuery: "",
+      productLookupBudget: null,
+      productLookupTotalScanned: 0,
+      productsLookedUp: [],
+      steps,
+      response: routeReply,
+      durationMs: Date.now() - started,
+    });
+    return {
+      needsHumanHandoff: true,
+      handoffReason,
+      customerReply: routeReply,
+      smartCategory: phState.activeCategory || "Custom Fabrication",
+      priority: "HIGH",
+      conversationState: phState,
+    };
+  }
+
+  // Handle non-text "[Message]" fallback deterministically
+  if (/^\[message\]$/i.test(rawText)) {
     const greetLine = alreadyGreeted ? "" : `Hi ${firstName}, welcome to *Classic Concepts*!\n\n`;
-    const placeholderReply = isMediaPlaceholder
-      ? `${greetLine}I received your attachment. Please share a brief note on what you need (such as matching a ready model, custom fabrication dimensions, or quantity), and I will help you right away.`
-      : `${greetLine}What are you looking to explore today?\n1. *Acrylic Podiums & Pulpits* for stages, auditoriums, or classrooms\n2. *Acrylic Furniture, Chairs & Tables* for interiors or events\n3. *Signages, Trophies & Custom Boxes*\n4. *Classic Edge 53 Machines* for acrylic bending and polishing\n\nReply with *1*, *2*, *3*, *4*, or a model code to get started!`;
+    const placeholderReply = `${greetLine}What are you looking to explore today?\n1. *Acrylic Podiums & Pulpits* for stages, auditoriums, or classrooms\n2. *Acrylic Furniture, Chairs & Tables* for interiors or events\n3. *Signages, Trophies & Custom Boxes*\n4. *Classic Edge 53 Machines* for acrylic bending and polishing\n\nReply with *1*, *2*, *3*, *4*, or a model code to get started!`;
     const formattedPlaceholder = formatWhatsAppOutboundText(placeholderReply);
     const phState = reconstructAcrioConversationState({
       persistedState: storedState,
@@ -5273,12 +5584,19 @@ async function runAcrioAutonomousTurnCore(
 
   const fetchedCatalog = await getCachedEcosystemCatalog();
   allItems = fetchedCatalog.allItems;
-  const liveOperationalContext = await loadLiveDatabaseOperationalContext({
-    customerPhone: params.customerPhone,
-    customerName: params.customerName,
-    rawQuery: rawText,
-    forStaffCopilot: false,
-  });
+  const [liveOperationalContext, trainingGuidance] = await Promise.all([
+    loadLiveDatabaseOperationalContext({
+      customerPhone: params.customerPhone,
+      customerName: params.customerName,
+      rawQuery: rawText,
+      forStaffCopilot: false,
+    }),
+    findMatchingAiTrainingGuidance({
+      queryText: rawText,
+      scope: "CUSTOMER_CHAT",
+      activeProductSlug: convState.focusProductSlug,
+    }).catch(() => ({ rules: [], examples: [], promptBlock: "" })),
+  ]);
 
   // Build shortlink map for multi-item project planner
   const shortLinkMap: Record<string, string> = {};
@@ -5358,8 +5676,14 @@ async function runAcrioAutonomousTurnCore(
     }
 
     let focusItem = quotedFocusItem || findItemBySlug(convState.focusProductSlug);
-    if (!focusItem && !isMultiProductReference(rawText)) {
-      // Derive from earlier customer turns (e.g. "tell me about ccp065") when no state was persisted.
+    if (
+      !focusItem &&
+      !convState.switchedThisTurn &&
+      !hasExplicitCodeOrDimInTurn &&
+      !isMultiProductReference(rawText) &&
+      !ACRIO_DOMAIN_PRODUCT_NOUN_RE.test(lower)
+    ) {
+      // Derive from earlier customer turns ONLY when this turn did NOT introduce a new product or SKU!
       const priorInbound = history.filter((m) => m.direction === "INBOUND").map((m) => m.body);
       for (let i = priorInbound.length - 1; i >= 0 && !focusItem; i--) {
         const codes = extractExplicitProductOrModelCodes(priorInbound[i]);
@@ -6112,7 +6436,11 @@ Welcome the customer briefly and ask what they are looking to display, build, or
           : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}.${nearestHint} Explain honestly and helpfully without inventing prices, and share the closest starting option or custom fabrication option.`;
       }
 
-      const stateSummaryLine = `Active Conversation Memory: product="${convState.primaryProductQuery || "unspecified"}", family="${convState.productFamily || "open"}", category="${smartCategory}", budget="${hidePricesActive ? "HIDE_PRICES_ACTIVE" : budgetLabel || "open"}", preferCheapest=${Boolean(convState.preferCheapest)}, customerProfile="${customerProfileInfo.customerProfile}", languageMode="${customerProfileInfo.languageMode}"`;
+      const stateSummaryLine = `Active Conversation Memory: product="${convState.primaryProductQuery || "unspecified"}", family="${convState.productFamily || "open"}", category="${smartCategory}", budget="${hidePricesActive ? "HIDE_PRICES_ACTIVE" : budgetLabel || "open"}", preferCheapest=${Boolean(convState.preferCheapest)}, switchedProductThisTurn=${Boolean(convState.switchedThisTurn)}, customerProfile="${customerProfileInfo.customerProfile}", languageMode="${customerProfileInfo.languageMode}"`;
+      const productHistoryLine =
+        (convState.productHistory || []).length > 0
+          ? `Previously Discussed Products In Earlier Turns (for comparison/history ONLY. Do NOT mix their prices, sizes, or specs into the CURRENT active product unless asked to compare!): ${(convState.productHistory || []).map((h) => h.label).join(" -> ")}\n`
+          : "";
 
       const completeDatabaseDirectory = buildCompleteEcosystemDatabaseDirectory(allItems);
       const safePromptCustomerName =
@@ -6127,7 +6455,7 @@ Customer Name: ${safePromptCustomerName}
 Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Start directly with the helpful answer.)" : `NO (First reply: greet "${firstName}" warmly once in 1 short line.)`}
 Customer Persona & Language Instruction: ${customerProfileInfo.instructionNote}
 ${quotedMessagePromptLine}${antiRepeatRule ? `${antiRepeatRule}\n` : ""}${stateSummaryLine}
-${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Verified Company Summary, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
+${productHistoryLine}${trainingGuidance.promptBlock ? `\n[AI Training Studio Rules & Q&A Guidance]:\n${trainingGuidance.promptBlock}\n` : ""}${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Verified Company Summary, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
 
 Customer's latest WhatsApp message:
 ${rawText}`;
@@ -6153,7 +6481,7 @@ CORE CONVERSATION, ACCURACY, GIST FORMATTING & BUSINESS RULES:
    - ALWAYS check both the Matched Products section AND the Complete Verified Ecosystem Catalog Directory below before ever claiming a product or category does not exist!
    -Cheapest vs Costliest Podiums: Our most affordable ready podium is *Acrylic Podium CCP057S* (₹7,150, Top 18" x 14", Height 40"-42") followed by *Acrylic Podium CCP054* (₹14,999, Top 20" x 15"). Our most premium flagship podiums are *Acrylic & Wood Podium CCP111* (₹55,000, Top 27" x 18", 15mm clear acrylic + wood) and *Acrylic Podium CCP094* (₹52,800).
    - If the customer asks for a "cheaper alternative" or "smaller top to save more", recommend compact lower-priced models (like *CCP057S* ₹7,150, *CCP054* ₹14,999, *CCP058* ₹18,150, *CCP057* ₹19,800) instead of repeating expensive models!
-   - If the customer asks about "furniture and interiors" or "they sit / Acrylic chair", show our *Acrylic Chair* (₹15,950), *Acrylic Bar Stool* (₹9,350), *Acrylic Console Table* (₹12,100), and *Acrylic Nesting Tables* (₹8,800) — NEVER show podiums when they ask for furniture or chairs!
+   - If the customer asks about "furniture and interiors" or "they sit / Acrylic chair", show our *Acrylic Chair* (₹15,950), *Acrylic Bar Stool* (₹9,350), *Acrylic Console Table* (₹12,100), and *Acrylic Nesting Tables* (₹8,800). NEVER show podiums when they ask for furniture or chairs!
 2. SCANNABLE GIST FORMATTING (NEVER DUMP RAW DATABASE WALLS):
    - NEVER repeat "Hi" or "Hello" if Already Greeted Earlier is YES.
    - Never start every message with the robotic phrase "Here are the matching options from our range:". Vary your opening naturally based on what the user asked!

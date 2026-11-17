@@ -13,7 +13,9 @@ import {
   CornerUpLeft,
   Download,
   ExternalLink,
+  FileAudio,
   FileText,
+  Image as ImageIcon,
   Info,
   Link2,
   Lock,
@@ -26,11 +28,15 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Settings2,
+  ShieldCheck,
   Sparkles,
   StickyNote,
   Truck,
   UserCheck,
+  UserPlus,
   Users,
+  Video,
   X,
   Zap,
 } from "lucide-react";
@@ -67,6 +73,11 @@ import {
   type StagedComposerAttachment,
 } from "@/components/MediaAttachmentTools";
 import {
+  NewChatTemplateModal,
+  type NewChatModalMode,
+} from "@/components/NewChatTemplateModal";
+import { QuickRepliesModal } from "@/components/QuickRepliesModal";
+import {
   TemplateSendDialog,
   type TemplateSendPayload,
 } from "@/components/TemplateSendDialog";
@@ -76,6 +87,7 @@ import type {
   ConversationDetailBundle,
   ConversationSummary,
   InitialInboxPayload,
+  QuickReplyItem,
   QuotedMessageRef,
   StaffOption,
   TeamOption,
@@ -297,11 +309,21 @@ export function InboxClient({
   const [teams, setTeams] = useState<TeamOption[]>(initialData.teams);
   const [staffList] = useState<StaffOption[]>(initialData.staffList);
   const [templates] = useState<ApprovedTemplateOption[]>(initialData.templates);
+  const [customQuickReplies, setCustomQuickReplies] = useState<QuickReplyItem[]>(
+    initialData.quickReplies || []
+  );
+  const [showQuickRepliesModal, setShowQuickRepliesModal] = useState<boolean>(false);
+
+  const isAdminOrSuperadmin =
+    initialData.currentUserRole === "DEV" ||
+    initialData.currentUserRole === "SUPERADMIN" ||
+    initialData.currentUserRole === "ADMIN";
 
   const [quickFilter, setQuickFilter] = useState<
-    "ALL" | "WAITING" | "ACRIO" | "UNREAD" | "MINE" | "RESOLVED"
-  >("ALL");
+    "MINE" | "ACTIVE" | "WAITING" | "ACRIO" | "UNREAD" | "ALL" | "RESOLVED"
+  >("MINE");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
+  const [staffFilter, setStaffFilter] = useState<string>("ALL");
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   const [syncingThread, setSyncingThread] = useState<boolean>(false);
@@ -348,7 +370,7 @@ export function InboxClient({
 
   // Right CRM panel tab
   const [rightTab, setRightTab] = useState<
-    "PROFILE" | "ORDERS" | "NOTES" | "HISTORY"
+    "PROFILE" | "ORDERS" | "NOTES" | "MEDIA" | "HISTORY"
   >("PROFILE");
 
   // Resolve modal
@@ -361,18 +383,18 @@ export function InboxClient({
   const [assignStaffId, setAssignStaffId] = useState<string>("");
   const [assignTier, setAssignTier] = useState<"P0" | "P1" | "P2">("P0");
 
-  // New conversation / Simulator modal
+  // New conversation / Template / Simulator modal
   const [showNewChatModal, setShowNewChatModal] = useState<boolean>(false);
-  const [simPhone, setSimPhone] = useState<string>("+91 98480 55112");
-  const [simName, setSimName] = useState<string>("Vikram Mehta");
-  const [simOrg, setSimOrg] = useState<string>("Hotel/Hospitality");
-  const [simText, setSimText] = useState<string>(
-    "Hi, we need 6 clear acrylic banquet podiums and 1 YN-JW1200 diamond polishing machine quote."
-  );
-  const [simDirection, setSimDirection] = useState<"INBOUND" | "OUTBOUND">(
-    "INBOUND"
-  );
-  const [simButtonPayload, setSimButtonPayload] = useState<string>("");
+  const [newChatInitialMode, setNewChatInitialMode] =
+    useState<NewChatModalMode>("TEMPLATE");
+  const [simPhone, setSimPhone] = useState<string>("");
+  const [simName, setSimName] = useState<string>("");
+
+  // Non-owner private note toggle & ACRIO summary/takeover busy states
+  const [showNoteForNonOwner, setShowNoteForNonOwner] = useState<boolean>(false);
+  const [summarizingChat, setSummarizingChat] = useState<boolean>(false);
+  const [takingOver, setTakingOver] = useState<boolean>(false);
+  const [collabToAdd, setCollabToAdd] = useState<string>("");
 
   // Add order inline state
   const [newOrderItems, setNewOrderItems] = useState<string>("");
@@ -380,6 +402,15 @@ export function InboxClient({
   const [newOrderAmount, setNewOrderAmount] = useState<string>("");
 
   // Editable customer profile fields
+  const [editName, setEditName] = useState<string>(
+    initialData.initialDetail?.customer?.name || ""
+  );
+  const [editEmail, setEditEmail] = useState<string>(
+    initialData.initialDetail?.customer?.email || ""
+  );
+  const [editGstNumber, setEditGstNumber] = useState<string>(
+    initialData.initialDetail?.customer?.gstNumber || ""
+  );
   const [editCompany, setEditCompany] = useState<string>(
     initialData.initialDetail?.customer?.companyName || ""
   );
@@ -389,6 +420,16 @@ export function InboxClient({
   const [editCity, setEditCity] = useState<string>(
     initialData.initialDetail?.customer?.city || ""
   );
+  const [editSegment, setEditSegment] = useState<string>(
+    initialData.initialDetail?.customer?.acrioSegment || "New WhatsApp Lead"
+  );
+  const [editPreferredStaffId, setEditPreferredStaffId] = useState<string>(
+    initialData.initialDetail?.customer?.preferredStaffId || ""
+  );
+  const [editTags, setEditTags] = useState<string[]>(
+    initialData.initialDetail?.customer?.tags || []
+  );
+  const [newTagInput, setNewTagInput] = useState<string>("");
   const [editNotes, setEditNotes] = useState<string>(
     initialData.initialDetail?.customer?.notes || ""
   );
@@ -632,10 +673,18 @@ export function InboxClient({
   }, []);
 
   const syncProfileFields = useCallback((bundle: ConversationDetailBundle) => {
+    setEditName(bundle.customer?.name || bundle.conversation.customerName || "");
+    setEditEmail(bundle.customer?.email || "");
+    setEditGstNumber(bundle.customer?.gstNumber || "");
     setEditCompany(bundle.customer?.companyName || "");
     setEditOrgType(bundle.customer?.organizationType || "Business");
     setEditCity(bundle.customer?.city || "");
+    setEditSegment(bundle.customer?.acrioSegment || "New WhatsApp Lead");
+    setEditPreferredStaffId(bundle.customer?.preferredStaffId || "");
+    setEditTags(bundle.customer?.tags || []);
+    setNewTagInput("");
     setEditNotes(bundle.customer?.notes || "");
+    setShowNoteForNonOwner(false);
     setResolveSummary(
       bundle.acrio?.resolutionDraft ||
         `Resolved enquiry with ${bundle.conversation.customerName}.`
@@ -867,20 +916,38 @@ export function InboxClient({
 
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
-      if (quickFilter === "WAITING") {
+      const isMine =
+        t.assignedStaffId === initialData.currentUserId ||
+        Boolean(
+          t.collaborators?.some(
+            (c) => c.staffId === initialData.currentUserId
+          )
+        );
+
+      if (quickFilter === "MINE") {
+        if (!isMine) return false;
+      } else if (quickFilter === "ACTIVE") {
+        if (t.status === "RESOLVED") return false;
+      } else if (quickFilter === "WAITING") {
         if (t.status === "RESOLVED" || !t.waitingSince) return false;
       } else if (quickFilter === "ACRIO") {
-        if (t.status === "RESOLVED" || t.assignedStaffId !== "ACRIO") return false;
+        if (t.status === "RESOLVED" || t.assignedStaffId !== "ACRIO")
+          return false;
       } else if (quickFilter === "UNREAD") {
         if (t.unreadCount <= 0) return false;
-      } else if (quickFilter === "MINE") {
-        if (t.assignedStaffId !== initialData.currentUserId) return false;
       } else if (quickFilter === "RESOLVED") {
         if (t.status !== "RESOLVED") return false;
       }
 
       if (teamFilter !== "ALL" && t.assignedTeamId !== teamFilter) {
         return false;
+      }
+
+      if (staffFilter !== "ALL") {
+        const matchesStaff =
+          t.assignedStaffId === staffFilter ||
+          Boolean(t.collaborators?.some((c) => c.staffId === staffFilter));
+        if (!matchesStaff) return false;
       }
 
       if (searchQuery.trim()) {
@@ -890,7 +957,14 @@ export function InboxClient({
       }
       return true;
     });
-  }, [threads, quickFilter, teamFilter, searchQuery, initialData.currentUserId]);
+  }, [
+    threads,
+    quickFilter,
+    teamFilter,
+    staffFilter,
+    searchQuery,
+    initialData.currentUserId,
+  ]);
 
   const messages = detail?.messages || [];
   const assignments = detail?.assignments || [];
@@ -899,7 +973,34 @@ export function InboxClient({
     [messages]
   );
 
+  const sharedMediaItems = useMemo(
+    () =>
+      messages
+        .map((m) => ({ msg: m, media: extractMessageMedia(m) }))
+        .filter(
+          (
+            item
+          ): item is { msg: ChatMessage; media: NormalizedMessageMedia } =>
+            Boolean(item.media)
+        ),
+    [messages]
+  );
+
   const isAcrioHandling = activeConv?.assignedStaffId === "ACRIO";
+  const activeCollaborators = useMemo(
+    () => activeConv?.collaborators || [],
+    [activeConv?.collaborators]
+  );
+  const isOwnerOfActiveChat = Boolean(
+    activeConv && activeConv.assignedStaffId === initialData.currentUserId
+  );
+  const isCollaboratorOfActiveChat = Boolean(
+    activeConv &&
+      activeCollaborators.some((c) => c.staffId === initialData.currentUserId)
+  );
+  const isAssignedToCurrentUser = Boolean(
+    activeConv && (isOwnerOfActiveChat || isCollaboratorOfActiveChat)
+  );
 
   const windowStatus = formatWindowCountdown(
     activeConv?.windowExpiresAt || null,
@@ -1459,20 +1560,137 @@ export function InboxClient({
   async function handleSaveCustomerProfile(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedId) return;
-    await fetch(`/api/conversations/${selectedId}`, {
+    const prefStaff = staffList.find((s) => s.id === editPreferredStaffId);
+    const res = await fetch(`/api/conversations/${selectedId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "update_customer_profile",
+        name: editName.trim(),
+        email: editEmail.trim(),
+        gstNumber: editGstNumber.trim(),
         companyName: editCompany,
         organizationType: editOrgType,
         city: editCity,
+        acrioSegment: editSegment,
+        preferredStaffId: editPreferredStaffId || "",
+        preferredStaffName: prefStaff?.name || "",
+        tags: editTags,
         notes: editNotes,
       }),
     });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out.ok) {
+      showToast(out.error || "Could not save customer details.");
+      return;
+    }
     showToast("Customer details saved.");
-    await fetchAndCacheDetail(selectedId, false);
+    await Promise.all([
+      fetchAndCacheDetail(selectedId, false),
+      refreshThreadsSilently(false),
+    ]);
   }
+
+  async function handleTakeOverChat() {
+    if (!selectedId || takingOver) return;
+    setTakingOver(true);
+    try {
+      const res = await fetch(`/api/conversations/${selectedId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "take_over_chat" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        showToast(data.error || "Could not take over this chat.");
+        return;
+      }
+      showToast("You took over this chat and can now reply directly.");
+      setShowNoteForNonOwner(false);
+      await Promise.all([
+        fetchAndCacheDetail(selectedId, false),
+        refreshThreadsSilently(false),
+      ]);
+    } finally {
+      setTakingOver(false);
+    }
+  }
+
+  async function handleGenerateSummary() {
+    if (!selectedId || summarizingChat) return;
+    setSummarizingChat(true);
+    try {
+      const res = await fetch(`/api/conversations/${selectedId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "generate_summary" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        showToast(data.error || "Could not generate chat summary.");
+        return;
+      }
+      showToast("ACRIO generated a private summary note.");
+      await fetchAndCacheDetail(selectedId, false);
+    } finally {
+      setSummarizingChat(false);
+    }
+  }
+
+  async function handleAddCollaborator(staffId: string) {
+    if (!selectedId || !staffId) return;
+    const chosen = staffList.find((s) => s.id === staffId);
+    const res = await fetch(`/api/conversations/${selectedId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "add_collaborator",
+        staffId,
+        staffName: chosen?.name || "",
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      showToast(data.error || "Could not add teammate access.");
+      return;
+    }
+    setCollabToAdd("");
+    showToast(`Added ${chosen?.name || "teammate"} to this chat.`);
+    await Promise.all([
+      fetchAndCacheDetail(selectedId, false),
+      refreshThreadsSilently(false),
+    ]);
+  }
+
+  async function handleRemoveCollaborator(staffId: string) {
+    if (!selectedId || !staffId) return;
+    const res = await fetch(`/api/conversations/${selectedId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "remove_collaborator",
+        staffId,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      showToast("Removed teammate access.");
+      await Promise.all([
+        fetchAndCacheDetail(selectedId, false),
+        refreshThreadsSilently(false),
+      ]);
+    }
+  }
+
+  const handleOpenNewChatWithPhone = useCallback(
+    (phone: string) => {
+      setSimPhone(phone);
+      setSimName("");
+      setNewChatInitialMode("TEMPLATE");
+      setShowNewChatModal(true);
+    },
+    []
+  );
 
   async function handleAddOrder(e: React.FormEvent) {
     e.preventDefault();
@@ -1562,55 +1780,59 @@ export function InboxClient({
     }
   }
 
-  async function handleSimulateOrNewChat(e: React.FormEvent) {
-    e.preventDefault();
-    const res = await fetch("/api/conversations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        customerPhone: simPhone,
-        customerName: simName,
-        organizationType: simOrg,
-        messageText: simText,
-        direction: simDirection,
-        buttonPayload:
-          simDirection === "INBOUND" && simButtonPayload.trim()
-            ? simButtonPayload.trim()
-            : undefined,
-        buttonText:
-          simDirection === "INBOUND" && simButtonPayload.trim()
-            ? simText.trim()
-            : undefined,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (data.ok && data.conversationId) {
-      setShowNewChatModal(false);
-      setSimButtonPayload("");
-      setSelectedId(data.conversationId);
-      selectedIdRef.current = data.conversationId;
-      setMobilePane("CHAT");
-      await Promise.all([
-        refreshThreadsSilently(),
-        fetchAndCacheDetail(data.conversationId, true),
-      ]);
-      showToast(
-        simDirection === "INBOUND"
-          ? "Customer message received and processed."
-          : "New WhatsApp chat started."
-      );
+  type CombinedQuickReply = {
+    id?: string;
+    cmd: string;
+    title: string;
+    body: string;
+    isCustom?: boolean;
+    staffName?: string;
+  };
+
+  const allQuickReplies = useMemo<CombinedQuickReply[]>(() => {
+    const merged: CombinedQuickReply[] = [];
+    const seenCmds = new Set<string>();
+    const orderedCustom = [...customQuickReplies].sort(
+      (a, b) => Number(b.isMine) - Number(a.isMine)
+    );
+    for (const item of orderedCustom) {
+      const key = item.cmd.trim().toLowerCase();
+      if (!seenCmds.has(key)) {
+        seenCmds.add(key);
+        merged.push({
+          id: item.id,
+          cmd: item.cmd,
+          title: item.title,
+          body: item.body,
+          isCustom: true,
+          staffName: item.isMine ? "You" : item.staffName,
+        });
+      }
     }
-  }
+    for (const builtIn of CANNED_QUICK_REPLIES) {
+      const key = builtIn.cmd.toLowerCase();
+      if (!seenCmds.has(key)) {
+        seenCmds.add(key);
+        merged.push({
+          cmd: builtIn.cmd,
+          title: builtIn.title,
+          body: builtIn.body,
+          isCustom: false,
+        });
+      }
+    }
+    return merged;
+  }, [customQuickReplies]);
 
   const matchingQuickReplies = useMemo(() => {
     if (composerMode !== "REPLY" || !replyText.startsWith("/")) return [];
     const q = replyText.trim().toLowerCase();
-    return CANNED_QUICK_REPLIES.filter(
+    return allQuickReplies.filter(
       (item) =>
-        item.cmd.startsWith(q) ||
+        item.cmd.toLowerCase().startsWith(q) ||
         item.title.toLowerCase().includes(q.slice(1))
     );
-  }, [composerMode, replyText]);
+  }, [composerMode, replyText, allQuickReplies]);
 
   function appendToComposer(snippet: string) {
     if (composerMode === "NOTE") setComposerMode("REPLY");
@@ -1682,7 +1904,12 @@ export function InboxClient({
             </Link>
             <button
               type="button"
-              onClick={() => setShowNewChatModal(true)}
+              onClick={() => {
+                setSimPhone("");
+                setSimName("");
+                setNewChatInitialMode("TEMPLATE");
+                setShowNewChatModal(true);
+              }}
               className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-medium cursor-pointer"
             >
               <WhatsAppLogoIcon size={13} />
@@ -1693,7 +1920,7 @@ export function InboxClient({
 
         {/* Search + Filter Pills */}
         <div className="px-3 py-2 bg-white border-b border-[#e9edef] space-y-2 shrink-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <div className="relative flex-1">
               <Search className="w-3.5 h-3.5 text-[#54656f] absolute left-3 top-2.5" />
               <input
@@ -1705,12 +1932,35 @@ export function InboxClient({
               />
             </div>
 
+            {isAdminOrSuperadmin && (
+              <select
+                value={staffFilter}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setStaffFilter(val);
+                  if (val !== "ALL" && quickFilter === "MINE") {
+                    setQuickFilter("ACTIVE");
+                  }
+                }}
+                title="Filter active chats by assigned staff or collaborator"
+                className="px-2 py-1.5 rounded-lg bg-[#e7fce3] text-[11px] font-semibold text-[#008069] border border-[#b7ebaf] max-w-[115px] truncate focus:outline-none"
+              >
+                <option value="ALL">All Staff</option>
+                <option value="ACRIO">ACRIO</option>
+                {staffList.map((st) => (
+                  <option key={st.id} value={st.id}>
+                    {st.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
             {teams.length > 0 && (
               <select
                 value={teamFilter}
                 onChange={(e) => setTeamFilter(e.target.value)}
                 title="Filter by Team"
-                className="px-2 py-1.5 rounded-lg bg-[#f0f2f5] text-[11px] font-medium text-[#3b4a54] border-0 max-w-[115px] truncate focus:outline-none"
+                className="px-2 py-1.5 rounded-lg bg-[#f0f2f5] text-[11px] font-medium text-[#3b4a54] border-0 max-w-[100px] truncate focus:outline-none"
               >
                 <option value="ALL">All Teams</option>
                 {teams.map((tm) => (
@@ -1726,7 +1976,8 @@ export function InboxClient({
           <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
             {(
               [
-                { key: "ALL", label: "All" },
+                { key: "MINE", label: "Mine" },
+                { key: "ACTIVE", label: "Active" },
                 {
                   key: "WAITING",
                   label:
@@ -1742,7 +1993,7 @@ export function InboxClient({
                       : "System",
                 },
                 { key: "UNREAD", label: "Unread" },
-                { key: "MINE", label: "Mine" },
+                { key: "ALL", label: "All" },
                 { key: "RESOLVED", label: "Resolved" },
               ] as const
             ).map((pill) => {
@@ -1947,6 +2198,17 @@ export function InboxClient({
                             </span>
                           )}
 
+                          {t.collaborators && t.collaborators.length > 0 && (
+                            <span
+                              title={t.collaborators
+                                .map((c) => c.staffName)
+                                .join(", ")}
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200 font-medium"
+                            >
+                              +{t.collaborators.length}
+                            </span>
+                          )}
+
                           {waitObj && (
                             <span
                               suppressHydrationWarning
@@ -2125,15 +2387,41 @@ export function InboxClient({
 
               {/* Right Header Actions: Compact Primary Actions + More Menu + Drawer Toggle */}
               <div className="flex items-center gap-1.5 relative">
+                {activeCollaborators.length > 0 && (
+                  <span
+                    title={`Co-handlers: ${activeCollaborators
+                      .map((c) => c.staffName)
+                      .join(", ")}`}
+                    className="hidden xl:inline-flex items-center gap-1 px-2 py-1 rounded-md bg-violet-50 border border-violet-200 text-violet-800 text-[11px] font-medium"
+                  >
+                    <Users className="w-3 h-3" />
+                    <span>+{activeCollaborators.length} shared</span>
+                  </span>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateSummary()}
+                  disabled={summarizingChat}
+                  title="Generate a private ACRIO chat summary note"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-violet-50 border border-violet-200 hover:bg-violet-100 text-violet-900 text-xs font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-violet-700" />
+                  <span className="hidden md:inline">
+                    {summarizingChat ? "Summarizing..." : "Summary"}
+                  </span>
+                </button>
+
                 {activeConv.status !== "RESOLVED" && isAcrioHandling ? (
                   <>
                     <button
                       type="button"
-                      onClick={handleTakeOverFromAcrio}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold cursor-pointer shadow-2xs"
+                      onClick={() => void handleTakeOverChat()}
+                      disabled={takingOver}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold cursor-pointer shadow-2xs disabled:opacity-50"
                     >
                       <UserCheck className="w-3.5 h-3.5" />
-                      <span>Take Over</span>
+                      <span>{takingOver ? "Taking over..." : "Take Over"}</span>
                     </button>
                     <button
                       type="button"
@@ -2535,7 +2823,67 @@ export function InboxClient({
                         <WhatsAppFormattedText
                           text={emphasizeMentions(m.body, staffList)}
                           className="text-[13px] leading-relaxed"
+                          onPhoneClick={handleOpenNewChatWithPhone}
                         />
+                        {isAcrioNote &&
+                          m.metadata &&
+                          Array.isArray(m.metadata.actionsExecuted) &&
+                          m.metadata.actionsExecuted.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-violet-200/70 flex flex-wrap gap-1.5">
+                              {(m.metadata.actionsExecuted as Record<string, unknown>[]).map(
+                                (act, idx) => (
+                                  <span
+                                    key={`${m.id}_act_${idx}`}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-200 text-[10.5px] font-semibold"
+                                  >
+                                    <Check className="w-3 h-3" />
+                                    <span>
+                                      {String(act.detail || act.type || "Action done")}
+                                    </span>
+                                  </span>
+                                )
+                              )}
+                            </div>
+                          )}
+                        {isAcrioNote &&
+                          m.metadata &&
+                          typeof m.metadata.suggestedReply === "string" &&
+                          m.metadata.suggestedReply.trim() && (
+                            <div className="mt-2 pt-2 border-t border-violet-200/70 flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-[11px] font-medium text-violet-900">
+                                Suggested reply ready:
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void navigator.clipboard?.writeText(
+                                      String(m.metadata?.suggestedReply || "")
+                                    );
+                                    showToast("Suggested reply copied.");
+                                  }}
+                                  className="px-2 py-1 rounded bg-white border border-violet-200 text-violet-900 text-[11px] font-medium cursor-pointer"
+                                >
+                                  Copy
+                                </button>
+                                {isAssignedToCurrentUser && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setComposerMode("REPLY");
+                                      setReplyText(
+                                        String(m.metadata?.suggestedReply || "")
+                                      );
+                                      composerInputRef.current?.focus();
+                                    }}
+                                    className="px-2.5 py-1 rounded bg-violet-700 hover:bg-violet-800 text-white text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    Use Reply
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
                       </div>
                     </div>
                   );
@@ -2684,6 +3032,7 @@ export function InboxClient({
                       <WhatsAppFormattedText
                         text={m.body}
                         className="text-[14px] leading-[1.52] tracking-[-0.006em]"
+                        onPhoneClick={handleOpenNewChatWithPhone}
                       />
 
                       {ctaButton && (
@@ -3153,7 +3502,106 @@ export function InboxClient({
               </div>
             )}
 
-            {/* WhatsApp Bottom Composer: Chat Reply vs Template vs Internal Note */}
+            {/* WhatsApp Bottom Composer: Gated by Assignment/Collaboration (#5) */}
+            {!isAssignedToCurrentUser ? (
+              <div className="px-4 py-3 border-t border-[#d1d7db] bg-[#f8fafc] space-y-2.5 shrink-0">
+                <div className="rounded-xl border border-amber-200 bg-white px-4 py-3 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center shrink-0 mt-0.5">
+                      <ShieldCheck className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-neutral-900">
+                        {isAcrioHandling
+                          ? "ACRIO is currently handling this chat"
+                          : `Currently handled by ${
+                              activeConv?.assignedStaffName || "another teammate"
+                            }${
+                              activeConv?.assignedTeamName
+                                ? ` (${activeConv.assignedTeamName})`
+                                : ""
+                            }`}
+                      </div>
+                      <p className="text-[11.5px] text-neutral-600 mt-0.5">
+                        Only the assigned handler or tagged co-handlers can send WhatsApp messages to this customer. Take over the chat to reply directly.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowNoteForNonOwner((prev) => !prev);
+                        setComposerMode("NOTE");
+                      }}
+                      className="px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-medium cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Lock className="w-3 h-3" />
+                      <span>
+                        {showNoteForNonOwner ? "Hide Note" : "Add Internal Note"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={takingOver}
+                      onClick={() => void handleTakeOverChat()}
+                      className="px-3.5 py-1.5 rounded-lg bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+                    >
+                      <UserCheck className="w-3.5 h-3.5" />
+                      <span>
+                        {takingOver
+                          ? "Taking over..."
+                          : isAcrioHandling
+                          ? "Take Over Chat"
+                          : `Take Over from ${
+                              activeConv?.assignedStaffName?.split(" ")[0] ||
+                              "Teammate"
+                            }`}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {showNoteForNonOwner && (
+                  <form
+                    onSubmit={(e) => {
+                      if (composerMode !== "NOTE") setComposerMode("NOTE");
+                      return handleComposerSubmit(e);
+                    }}
+                    className="flex items-end gap-2 bg-[#fef9e7] border border-amber-200 rounded-lg p-2.5"
+                  >
+                    <MentionTextarea
+                      textareaRef={composerInputRef}
+                      rows={2}
+                      enabled
+                      people={staffList.map((s) => ({
+                        id: s.id,
+                        name: s.name,
+                        role: s.role,
+                      }))}
+                      value={replyText}
+                      onChange={(v) => setReplyText(v)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void handleComposerSubmit(e);
+                        }
+                      }}
+                      placeholder="Private note only for teammates (customer never sees this)..."
+                      className="w-full rounded-md px-3 py-1.5 text-xs bg-white border border-amber-300 focus:outline-none focus:border-amber-500 resize-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={sending || !replyText.trim()}
+                      className="h-9 px-3.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0"
+                    >
+                      <Lock className="w-3 h-3" />
+                      <span>Save Note</span>
+                    </button>
+                  </form>
+                )}
+              </div>
+            ) : (
             <form
               onSubmit={handleComposerSubmit}
               className={`px-4 py-2.5 border-t border-[#d1d7db] space-y-2 shrink-0 ${
@@ -3300,18 +3748,28 @@ export function InboxClient({
                   </button>
 
                   {composerMode === "REPLY" && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setReplyText((prev) => (prev.startsWith("/") ? prev : "/"));
-                        composerInputRef.current?.focus();
-                      }}
-                      title="Open quick canned replies (/)"
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-[#d1d7db] bg-white hover:bg-neutral-50 text-[#54656f] hover:text-[#111b21] text-xs font-medium cursor-pointer"
-                    >
-                      <Zap className="w-3 h-3 text-[#00a884]" />
-                      <span className="hidden sm:inline">Quick Reply (/)</span>
-                    </button>
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReplyText((prev) => (prev.startsWith("/") ? prev : "/"));
+                          composerInputRef.current?.focus();
+                        }}
+                        title="Open quick canned replies (/)"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-[#d1d7db] bg-white hover:bg-neutral-50 text-[#54656f] hover:text-[#111b21] text-xs font-medium cursor-pointer"
+                      >
+                        <Zap className="w-3 h-3 text-[#00a884]" />
+                        <span className="hidden sm:inline">Quick Reply (/)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowQuickRepliesModal(true)}
+                        title="Create or edit your personal /slash quick replies"
+                        className="p-1.5 rounded-md border border-[#d1d7db] bg-white hover:bg-neutral-50 text-[#54656f] hover:text-[#111b21] cursor-pointer"
+                      >
+                        <Settings2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -3386,27 +3844,51 @@ export function InboxClient({
               )}
 
               {matchingQuickReplies.length > 0 && (
-                <div className="rounded-lg bg-white border border-[#d1d7db] shadow-md p-1.5 space-y-1 max-h-44 overflow-y-auto">
-                  <div className="px-2 py-0.5 text-[10.5px] font-semibold text-[#54656f] flex items-center gap-1">
-                    <Zap className="w-3 h-3 text-[#00a884]" />
-                    <span>Quick Replies (click to insert)</span>
+                <div className="rounded-lg bg-white border border-[#d1d7db] shadow-md p-1.5 space-y-1 max-h-48 overflow-y-auto">
+                  <div className="px-2 py-0.5 text-[10.5px] font-semibold text-[#54656f] flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1">
+                      <Zap className="w-3 h-3 text-[#00a884]" />
+                      <span>Quick Replies (click to insert)</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowQuickRepliesModal(true)}
+                      className="text-[10.5px] font-semibold text-[#008069] hover:underline cursor-pointer"
+                    >
+                      + Manage Mine
+                    </button>
                   </div>
                   {matchingQuickReplies.map((qr) => (
                     <button
-                      key={qr.cmd}
+                      key={`${qr.id || qr.cmd}`}
                       type="button"
                       onClick={() => {
                         setReplyText(qr.body);
                         composerInputRef.current?.focus();
+                        if (qr.id) {
+                          void fetch("/api/quick-replies", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              action: "increment_usage",
+                              id: qr.id,
+                            }),
+                          }).catch(() => {});
+                        }
                       }}
                       className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#f0f2f5] flex items-start justify-between gap-3 cursor-pointer"
                     >
                       <div className="min-w-0">
-                        <div className="text-xs font-semibold text-[#111b21]">
-                          <span className="font-mono text-[#008069] mr-1.5">
+                        <div className="text-xs font-semibold text-[#111b21] flex items-center gap-1.5">
+                          <span className="font-mono text-[#008069]">
                             {qr.cmd}
                           </span>
-                          {qr.title}
+                          <span>{qr.title}</span>
+                          {qr.isCustom && qr.staffName && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 font-medium">
+                              {qr.staffName}
+                            </span>
+                          )}
                         </div>
                         <p className="text-[11px] text-[#54656f] truncate">
                           {qr.body}
@@ -3497,6 +3979,7 @@ export function InboxClient({
               </div>
               )}
             </form>
+            )}
 
             <TemplateSendDialog
               open={templateDialogOpen && composerMode === "TEMPLATE"}
@@ -3552,27 +4035,83 @@ export function InboxClient({
         </div>
         {/* Pinned Customer Context Card at Top of Right Drawer */}
         {activeConv && (
-          <div className="px-3.5 py-2.5 bg-slate-50 border-b border-[#e9edef] space-y-1.5 text-xs shrink-0">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-semibold text-slate-900 truncate">
-                {detail?.customer?.companyName ||
-                  detail?.customer?.organizationType ||
-                  "Direct Customer"}
-              </span>
-              <span className="text-[11px] text-slate-500 shrink-0">
-                {detail?.customer?.city || "City not set"}
+          <div className="px-3.5 py-2.5 bg-slate-50 border-b border-[#e9edef] space-y-2 text-xs shrink-0">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-bold text-slate-900 truncate">
+                  {detail?.customer?.name || activeConv.customerName}
+                </div>
+                <div className="text-[11px] font-mono text-slate-500 flex items-center gap-1.5">
+                  <span>{activeConv.customerPhone}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(activeConv.customerPhone);
+                      showToast("Phone copied.");
+                    }}
+                    title="Copy number"
+                    className="p-0.5 rounded hover:bg-slate-200 text-slate-500 cursor-pointer"
+                  >
+                    <Copy className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              </div>
+              <span className="px-2 py-0.5 rounded-full bg-white border border-slate-200 text-[10.5px] font-semibold text-slate-700 shrink-0">
+                {detail?.customer?.city || "No city"}
               </span>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
+
+            <div className="flex flex-wrap items-center gap-1 text-[10.5px] text-slate-600">
+              <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 font-semibold">
+                {detail?.customer?.acrioSegment || "WhatsApp Lead"}
+              </span>
               <span className="px-1.5 py-0.5 rounded bg-white border border-neutral-200 font-medium">
                 {detail?.orders?.length
-                  ? `${detail.orders.length} order${detail.orders.length > 1 ? "s" : ""} • #${detail.orders[0].orderNumber}`
+                  ? `${detail.orders.length} order${detail.orders.length > 1 ? "s" : ""} • ₹${(
+                      detail?.customer?.lifetimeValueInr || 0
+                    ).toLocaleString("en-IN")}`
                   : "0 orders"}
               </span>
-              <span className="px-1.5 py-0.5 rounded bg-white border border-neutral-200 font-medium">
-                {internalNotes.length} {internalNotes.length === 1 ? "note" : "notes"}
-              </span>
-              {detail?.acrio?.suggestedReplies?.[0] && (
+              {detail?.customer?.preferredStaffName && (
+                <span className="px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-800 font-medium">
+                  Prefers: {detail.customer.preferredStaffName}
+                </span>
+              )}
+            </div>
+
+            {/* Fast One-Click Actions */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+              <button
+                type="button"
+                disabled={summarizingChat}
+                onClick={() => void handleGenerateSummary()}
+                className="px-2 py-1 rounded bg-violet-50 hover:bg-violet-100 text-violet-900 border border-violet-200 text-[10.5px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>{summarizingChat ? "..." : "Summary"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightTab("ORDERS")}
+                className="px-2 py-1 rounded bg-white hover:bg-slate-100 text-slate-800 border border-neutral-200 text-[10.5px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+              >
+                <Plus className="w-3 h-3 text-[#008069]" />
+                <span>Order</span>
+              </button>
+              {isAssignedToCurrentUser && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setComposerMode("TEMPLATE");
+                    setTemplateDialogOpen(true);
+                  }}
+                  className="px-2 py-1 rounded bg-white hover:bg-slate-100 text-slate-800 border border-neutral-200 text-[10.5px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <FileText className="w-3 h-3 text-[#008069]" />
+                  <span>Template</span>
+                </button>
+              )}
+              {detail?.acrio?.suggestedReplies?.[0] && isAssignedToCurrentUser && (
                 <button
                   type="button"
                   onClick={() => {
@@ -3581,30 +4120,31 @@ export function InboxClient({
                     composerInputRef.current?.focus();
                   }}
                   title="Insert ACRIO's suggested reply into the composer"
-                  className="px-2 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 font-semibold inline-flex items-center gap-1 cursor-pointer"
+                  className="px-2 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-[10.5px] font-semibold inline-flex items-center gap-1 cursor-pointer"
                 >
                   <Sparkles className="w-3 h-3" />
-                  <span>Use AI Draft</span>
+                  <span>AI Draft</span>
                 </button>
               )}
             </div>
           </div>
         )}
 
-        <div className="grid grid-cols-4 border-b border-[#e9edef] text-[11px] font-semibold shrink-0 bg-[#f0f2f5]">
+        <div className="grid grid-cols-5 border-b border-[#e9edef] text-[10.5px] font-semibold shrink-0 bg-[#f0f2f5]">
             {(
               [
                 { key: "PROFILE", label: "Details" },
                 { key: "ORDERS", label: `Orders (${detail?.orders.length || 0})` },
                 { key: "NOTES", label: `Notes (${internalNotes.length})` },
-                { key: "HISTORY", label: `History (${assignments.length})` },
+                { key: "MEDIA", label: `Media (${sharedMediaItems.length})` },
+                { key: "HISTORY", label: "Logs" },
               ] as const
             ).map((tb) => (
               <button
                 key={tb.key}
                 type="button"
                 onClick={() => setRightTab(tb.key)}
-                className={`py-3 text-center border-b-2 cursor-pointer transition-colors ${
+                className={`py-2.5 text-center border-b-2 cursor-pointer transition-colors truncate px-1 ${
                   rightTab === tb.key
                     ? "border-[#00a884] text-[#008069] bg-white"
                     : "border-transparent text-[#54656f] hover:text-[#111b21]"
@@ -3615,7 +4155,7 @@ export function InboxClient({
             ))}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="flex-1 overflow-y-auto p-3.5 space-y-3.5">
             {!detail?.customer && !activeConv ? (
               selectedId && syncingThread ? (
                 <RightDrawerSkeleton />
@@ -3633,91 +4173,319 @@ export function InboxClient({
                 </p>
               )
             ) : rightTab === "PROFILE" ? (
-              <form onSubmit={handleSaveCustomerProfile} className="space-y-3.5">
-                <div className="p-3 rounded-lg bg-[#f8f9fa] border border-[#e9edef] space-y-1">
-                  <div className="text-[11px] text-[#667781]">Customer Group</div>
-                  <div className="text-xs font-semibold text-[#111b21]">
-                    {detail?.customer?.acrioSegment || "WhatsApp Lead"}
+              <div className="space-y-4">
+                {/* Dual-Assignment Co-Handlers */}
+                {activeConv && (
+                  <div className="p-2.5 rounded-lg bg-violet-50/70 border border-violet-200 space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-violet-950">
+                      <span className="inline-flex items-center gap-1">
+                        <UserPlus className="w-3.5 h-3.5 text-violet-700" />
+                        <span>Shared Access (Co-handlers)</span>
+                      </span>
+                      <span className="text-[10px] font-normal text-violet-700">
+                        Owner: {activeConv.assignedStaffName || "ACRIO"}
+                      </span>
+                    </div>
+                    {activeCollaborators.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {activeCollaborators.map((c) => (
+                          <span
+                            key={c.staffId}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-violet-200 text-[11px] font-medium text-violet-900"
+                          >
+                            <span>{c.staffName}</span>
+                            <button
+                              type="button"
+                              onClick={() => void handleRemoveCollaborator(c.staffId)}
+                              title="Remove co-handler access"
+                              className="text-violet-500 hover:text-red-600 cursor-pointer"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        value={collabToAdd}
+                        onChange={(e) => setCollabToAdd(e.target.value)}
+                        className="flex-1 rounded border border-violet-200 bg-white px-2 py-1 text-[11px]"
+                      >
+                        <option value="">Tag teammate for access...</option>
+                        {staffList
+                          .filter(
+                            (s) =>
+                              s.id !== activeConv.assignedStaffId &&
+                              !activeCollaborators.some((c) => c.staffId === s.id)
+                          )
+                          .map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name} ({s.role})
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={!collabToAdd}
+                        onClick={() => void handleAddCollaborator(collabToAdd)}
+                        className="px-2.5 py-1 rounded bg-violet-700 hover:bg-violet-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-40"
+                      >
+                        Add
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between text-xs text-[#54656f] pt-1">
-                    <span>Total Spent:</span>
-                    <strong className="text-[#111b21]">
-                      ₹
-                      {(detail?.customer?.lifetimeValueInr || 0).toLocaleString(
-                        "en-IN"
-                      )}
-                    </strong>
-                  </div>
-                </div>
+                )}
 
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Company / Institution
-                  </label>
-                  <input
-                    type="text"
-                    value={editCompany}
-                    onChange={(e) => setEditCompany(e.target.value)}
-                    placeholder="Taj Deccan / St. Ann's College"
-                    className="w-full rounded-md border border-neutral-300 px-3 py-1.5 text-xs"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-xs font-medium text-neutral-700 mb-1">
-                      Business Type
-                    </label>
-                    <select
-                      value={editOrgType}
-                      onChange={(e) => setEditOrgType(e.target.value)}
-                      className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs bg-white"
-                    >
-                      <option value="Hotel/Hospitality">Hotel / Banquet</option>
-                      <option value="School/College">School / College</option>
-                      <option value="Corporate">Corporate Office</option>
-                      <option value="Signage Fabricator">
-                        Fabricator / CNC Buyer
-                      </option>
-                      <option value="Retail/Showroom">Retail / Showroom</option>
-                      <option value="Event Agency">Event Agency</option>
-                      <option value="Business">Other Business</option>
-                    </select>
+                <form onSubmit={handleSaveCustomerProfile} className="space-y-3">
+                  <div className="grid grid-cols-1 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                        Contact Name
+                      </label>
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        placeholder="Customer full name"
+                        className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                        Email
+                      </label>
+                      <input
+                        type="email"
+                        value={editEmail}
+                        onChange={(e) => setEditEmail(e.target.value)}
+                        placeholder="buyer@company.com"
+                        className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-neutral-700 mb-1">
-                      City
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                        Company / Org
+                      </label>
+                      <input
+                        type="text"
+                        value={editCompany}
+                        onChange={(e) => setEditCompany(e.target.value)}
+                        placeholder="Taj Deccan / St. Ann's"
+                        className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                        City
+                      </label>
+                      <input
+                        type="text"
+                        value={editCity}
+                        onChange={(e) => setEditCity(e.target.value)}
+                        placeholder="Hyderabad"
+                        className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                        Business Type
+                      </label>
+                      <select
+                        value={editOrgType}
+                        onChange={(e) => setEditOrgType(e.target.value)}
+                        className="w-full rounded-md border border-neutral-300 px-2 py-1.5 text-xs bg-white"
+                      >
+                        <option value="Hotel/Hospitality">Hotel / Banquet</option>
+                        <option value="School/College">School / College</option>
+                        <option value="Corporate">Corporate Office</option>
+                        <option value="Signage Fabricator">Fabricator / CNC</option>
+                        <option value="Retail/Showroom">Retail / Showroom</option>
+                        <option value="Event Agency">Event Agency</option>
+                        <option value="Business">Other Business</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                        GST Number
+                      </label>
+                      <input
+                        type="text"
+                        value={editGstNumber}
+                        onChange={(e) => setEditGstNumber(e.target.value.toUpperCase())}
+                        placeholder="36AAACC1234F1Z5"
+                        className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs font-mono uppercase"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                        Lead Stage
+                      </label>
+                      <select
+                        value={editSegment}
+                        onChange={(e) => setEditSegment(e.target.value)}
+                        className="w-full rounded-md border border-neutral-300 px-2 py-1.5 text-xs bg-white"
+                      >
+                        <option value="New WhatsApp Lead">New Lead</option>
+                        <option value="Quoted / Interested">Quoted / Interested</option>
+                        <option value="Hot Prospect">Hot Prospect</option>
+                        <option value="Repeat Buyer">Repeat Buyer</option>
+                        <option value="Distributor / Dealer">Distributor / Dealer</option>
+                        <option value="Institutional Buyer">Institutional Buyer</option>
+                        <option value="Won / Customer">Won / Customer</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                        Preferred Staff
+                      </label>
+                      <select
+                        value={editPreferredStaffId}
+                        onChange={(e) => setEditPreferredStaffId(e.target.value)}
+                        className="w-full rounded-md border border-neutral-300 px-2 py-1.5 text-xs bg-white"
+                      >
+                        <option value="">No preference</option>
+                        {staffList.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Quick Tags */}
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-medium text-neutral-700">
+                      Customer Tags
                     </label>
-                    <input
-                      type="text"
-                      value={editCity}
-                      onChange={(e) => setEditCity(e.target.value)}
-                      placeholder="Hyderabad"
+                    <div className="flex flex-wrap gap-1">
+                      {[
+                        "VIP",
+                        "Bulk Buyer",
+                        "Podiums",
+                        "Machines",
+                        "Custom Acrylic",
+                        "GST Invoice",
+                        "Follow Up",
+                      ].map((preset) => {
+                        const on = editTags.includes(preset);
+                        return (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() =>
+                              setEditTags((prev) =>
+                                prev.includes(preset)
+                                  ? prev.filter((x) => x !== preset)
+                                  : [...prev, preset]
+                              )
+                            }
+                            className={`px-2 py-0.5 rounded-full text-[10.5px] font-medium border cursor-pointer ${
+                              on
+                                ? "bg-[#e7fce3] border-[#00a884] text-[#008069]"
+                                : "bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50"
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        );
+                      })}
+                      {editTags
+                        .filter(
+                          (t) =>
+                            ![
+                              "VIP",
+                              "Bulk Buyer",
+                              "Podiums",
+                              "Machines",
+                              "Custom Acrylic",
+                              "GST Invoice",
+                              "Follow Up",
+                            ].includes(t)
+                        )
+                        .map((custom) => (
+                          <span
+                            key={custom}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-300 text-[10.5px] text-slate-800"
+                          >
+                            <span>{custom}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditTags((p) => p.filter((x) => x !== custom))
+                              }
+                              className="cursor-pointer hover:text-red-600"
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </span>
+                        ))}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={newTagInput}
+                        onChange={(e) => setNewTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            const t = newTagInput.trim();
+                            if (t && !editTags.includes(t)) {
+                              setEditTags((p) => [...p, t]);
+                            }
+                            setNewTagInput("");
+                          }
+                        }}
+                        placeholder="Add custom tag + Enter"
+                        className="flex-1 rounded border border-neutral-300 px-2 py-1 text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const t = newTagInput.trim();
+                          if (t && !editTags.includes(t)) {
+                            setEditTags((p) => [...p, t]);
+                          }
+                          setNewTagInput("");
+                        }}
+                        className="px-2 py-1 rounded border border-neutral-300 bg-neutral-50 text-[11px] font-medium cursor-pointer"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-700 mb-0.5">
+                      Permanent Customer Notes
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={editNotes}
+                      onChange={(e) => setEditNotes(e.target.value)}
+                      placeholder="Preferred thickness, delivery site, machine models owned..."
                       className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs"
                     />
                   </div>
-                </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Permanent Customer Summary
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={editNotes}
-                    onChange={(e) => setEditNotes(e.target.value)}
-                    placeholder="Preferred thickness, GST details, machine models owned..."
-                    className="w-full rounded-md border border-neutral-300 px-3 py-2 text-xs"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2 rounded-md bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-medium cursor-pointer"
-                >
-                  Save Customer Details
-                </button>
-              </form>
+                  <button
+                    type="submit"
+                    className="w-full py-2 rounded-md bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    Save Customer Details
+                  </button>
+                </form>
+              </div>
             ) : rightTab === "ORDERS" ? (
               <div className="space-y-4">
                 <form
@@ -3836,6 +4604,21 @@ export function InboxClient({
               </div>
             ) : rightTab === "NOTES" ? (
               <div className="space-y-3.5">
+                <div className="p-2.5 rounded-lg bg-violet-50 border border-violet-200 flex items-center justify-between gap-2">
+                  <div className="text-[11px] text-violet-950 font-medium">
+                    Need a recap? Let ACRIO post a private summary note.
+                  </div>
+                  <button
+                    type="button"
+                    disabled={summarizingChat}
+                    onClick={() => void handleGenerateSummary()}
+                    className="shrink-0 px-2.5 py-1 rounded bg-violet-700 hover:bg-violet-800 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    <span>{summarizingChat ? "Working..." : "Generate Summary"}</span>
+                  </button>
+                </div>
+
                 <form
                   onSubmit={handleQuickNoteSave}
                   className="p-3 rounded-lg bg-[#fef9e7] border border-amber-200 space-y-2"
@@ -3881,7 +4664,57 @@ export function InboxClient({
                         <WhatsAppFormattedText
                           text={emphasizeMentions(n.body, staffList)}
                           className="text-xs text-amber-950"
+                          onPhoneClick={handleOpenNewChatWithPhone}
                         />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : rightTab === "MEDIA" ? (
+              <div className="space-y-3">
+                <h4 className="text-xs font-semibold text-neutral-800">
+                  Shared Files & Media ({sharedMediaItems.length})
+                </h4>
+                {sharedMediaItems.length === 0 ? (
+                  <p className="text-xs text-neutral-500 py-4 text-center">
+                    No images, PDFs, videos, or audio files shared in this chat yet.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {[...sharedMediaItems].reverse().map(({ msg, media }) => (
+                      <div
+                        key={`med_${msg.id}`}
+                        className="p-2.5 rounded-lg border border-neutral-200 bg-neutral-50 flex items-center justify-between gap-2.5"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-8 h-8 rounded bg-white border border-neutral-200 flex items-center justify-center shrink-0 text-[#008069]">
+                            {media.mediaType === "IMAGE" ? (
+                              <ImageIcon className="w-4 h-4" />
+                            ) : media.mediaType === "VIDEO" ? (
+                              <Video className="w-4 h-4" />
+                            ) : media.mediaType === "AUDIO" ? (
+                              <FileAudio className="w-4 h-4" />
+                            ) : (
+                              <FileText className="w-4 h-4" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-medium text-neutral-900 truncate">
+                              {media.fileName || media.mediaType}
+                            </div>
+                            <div className="text-[10.5px] text-neutral-500">
+                              {msg.senderName} • {formatDateShortIst(msg.createdAt)}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewMedia(media)}
+                          className="px-2.5 py-1 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-[11px] font-semibold text-neutral-800 cursor-pointer shrink-0"
+                        >
+                          Open
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -4207,131 +5040,44 @@ export function InboxClient({
       )}
 
       {/* ===================================================================== */}
-      {/* MODAL 3: START NEW CHAT OR TEST INCOMING MESSAGE (ACRIO AUTO-HANDLED) */}
+      {/* MODAL 3: START NEW CHAT WITH TEMPLATE / FREE CHAT / SIMULATE INBOUND  */}
       {/* ===================================================================== */}
-      {showNewChatModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <form
-            onSubmit={handleSimulateOrNewChat}
-            className="w-full max-w-md bg-white rounded-lg border border-neutral-200 p-5 space-y-4 shadow-xl"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
-                <span className="w-6 h-6 rounded-full bg-[#25d366] text-white inline-flex items-center justify-center">
-                  <WhatsAppLogoIcon size={13} />
-                </span>
-                <span>Start Chat or Test Incoming Enquiry</span>
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowNewChatModal(false)}
-                className="text-neutral-400 hover:text-neutral-700 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      <NewChatTemplateModal
+        open={showNewChatModal}
+        onClose={() => setShowNewChatModal(false)}
+        templates={templates}
+        threads={threads}
+        initialPhone={simPhone}
+        initialName={simName}
+        initialMode={newChatInitialMode}
+        onOpenExistingChat={(convId) => {
+          handleSelectConversation(convId);
+        }}
+        onCompleted={async (convId, msg) => {
+          setSelectedId(convId);
+          selectedIdRef.current = convId;
+          setMobilePane("CHAT");
+          await Promise.all([
+            refreshThreadsSilently(),
+            fetchAndCacheDetail(convId, true),
+          ]);
+          showToast(msg);
+        }}
+      />
 
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => setSimDirection("INBOUND")}
-                className={`py-2 rounded-md border font-medium cursor-pointer ${
-                  simDirection === "INBOUND"
-                    ? "bg-neutral-900 text-white border-neutral-900"
-                    : "bg-white text-neutral-700 border-neutral-300"
-                }`}
-              >
-                Incoming (ACRIO First)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSimDirection("OUTBOUND")}
-                className={`py-2 rounded-md border font-medium cursor-pointer ${
-                  simDirection === "OUTBOUND"
-                    ? "bg-[#00a884] text-white border-[#00a884]"
-                    : "bg-white text-neutral-700 border-neutral-300"
-                }`}
-              >
-                Start Outbound Chat
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-neutral-700 mb-1">
-                  Customer Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={simName}
-                  onChange={(e) => setSimName(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-1.5 text-xs"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-neutral-700 mb-1">
-                  WhatsApp Number
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={simPhone}
-                  onChange={(e) => setSimPhone(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-mono"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">
-                Message Text
-              </label>
-              <textarea
-                rows={3}
-                required
-                value={simText}
-                onChange={(e) => setSimText(e.target.value)}
-                className="w-full rounded-md border border-neutral-300 p-2.5 text-xs"
-              />
-              {simDirection === "INBOUND" && (
-                <div className="mt-2.5 space-y-1.5">
-                  <label className="block text-[11px] font-medium text-neutral-700">
-                    Optional: Simulate Template Quick-Reply Button Payload
-                  </label>
-                  <input
-                    type="text"
-                    value={simButtonPayload}
-                    onChange={(e) => setSimButtonPayload(e.target.value)}
-                    placeholder="e.g. TALK_TO_SALES or TRACK_MY_ORDER (leave blank for normal text)"
-                    className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs font-mono"
-                  />
-                  <p className="text-[11px] text-neutral-500">
-                    Tests the 5-stage pipeline: Opt-Out, Template Button Flow, Order ID Lookup, Auto-Reply Rules, then ACRIO AI.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowNewChatModal(false)}
-                className="px-3.5 py-2 rounded-md border border-neutral-300 text-xs font-medium text-neutral-700 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-medium cursor-pointer"
-              >
-                <WhatsAppLogoIcon size={13} />
-                <span>Send</span>
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+      {/* ===================================================================== */}
+      {/* MODAL 4: PERSONAL & SHARED QUICK REPLIES MANAGER                      */}
+      {/* ===================================================================== */}
+      <QuickRepliesModal
+        open={showQuickRepliesModal}
+        onClose={() => setShowQuickRepliesModal(false)}
+        customReplies={customQuickReplies}
+        builtInReplies={CANNED_QUICK_REPLIES}
+        onSaved={(next) => {
+          setCustomQuickReplies(next);
+          showToast("Quick replies updated.");
+        }}
+      />
     </div>
   );
 }

@@ -264,6 +264,8 @@ export interface UpsertSyncedContactInput {
   optOutReason?: string;
   assignedOwnerId?: string | null;
   assignedOwnerName?: string;
+  preferredStaffId?: string | null;
+  preferredStaffName?: string;
   lifetimeValueInr?: number;
   totalOrdersCount?: number;
   notes?: string;
@@ -374,16 +376,29 @@ export async function upsertSyncedContact(
       : finalOptIn === 1
       ? ""
       : String(ex?.opt_out_reason || "");
+  const finalPreferredStaffId =
+    input.preferredStaffId !== undefined
+      ? input.preferredStaffId || null
+      : ex?.preferred_staff_id
+      ? String(ex.preferred_staff_id)
+      : input.assignedOwnerId !== undefined
+      ? input.assignedOwnerId || null
+      : null;
+  const finalPreferredStaffName =
+    input.preferredStaffName !== undefined
+      ? input.preferredStaffName.trim()
+      : String(ex?.preferred_staff_name || "") ||
+        (input.assignedOwnerName !== undefined ? input.assignedOwnerName.trim() : "");
   const finalOwnerId =
     input.assignedOwnerId !== undefined
       ? input.assignedOwnerId
       : ex?.assigned_owner_id
       ? String(ex.assigned_owner_id)
-      : null;
+      : finalPreferredStaffId;
   const finalOwnerName =
     input.assignedOwnerName !== undefined
       ? input.assignedOwnerName.trim()
-      : String(ex?.assigned_owner_name || "");
+      : String(ex?.assigned_owner_name || "") || finalPreferredStaffName;
   const finalLtv =
     input.lifetimeValueInr !== undefined
       ? Number(input.lifetimeValueInr)
@@ -403,9 +418,10 @@ export async function upsertSyncedContact(
       id, phone, whatsapp_name, name, email, company_name, designation,
       organization_type, city, state, country, gst_number, source, stage,
       acrio_segment, tags_json, groups_json, opt_in_marketing, opt_out_reason,
-      assigned_owner_id, assigned_owner_name, lifetime_value_inr, total_orders_count,
+      assigned_owner_id, assigned_owner_name, preferred_staff_id, preferred_staff_name,
+      lifetime_value_inr, total_orders_count,
       notes, last_contacted_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(phone) DO UPDATE SET
       whatsapp_name = excluded.whatsapp_name,
       name = excluded.name,
@@ -426,6 +442,8 @@ export async function upsertSyncedContact(
       opt_out_reason = excluded.opt_out_reason,
       assigned_owner_id = excluded.assigned_owner_id,
       assigned_owner_name = excluded.assigned_owner_name,
+      preferred_staff_id = excluded.preferred_staff_id,
+      preferred_staff_name = excluded.preferred_staff_name,
       lifetime_value_inr = excluded.lifetime_value_inr,
       total_orders_count = excluded.total_orders_count,
       notes = excluded.notes,
@@ -453,6 +471,8 @@ export async function upsertSyncedContact(
       finalOptOutReason,
       finalOwnerId,
       finalOwnerName,
+      finalPreferredStaffId,
+      finalPreferredStaffName,
       finalLtv,
       finalOrders,
       finalNotes,
@@ -472,9 +492,10 @@ export async function upsertSyncedContact(
   await crmClient.execute({
     sql: `INSERT INTO customers (
       id, phone, name, email, company_name, organization_type, city, gst_number,
-      acrio_segment, tags_json, lifetime_value_inr, total_orders_count,
+      acrio_segment, tags_json, preferred_staff_id, preferred_staff_name,
+      lifetime_value_inr, total_orders_count,
       opt_in_marketing, notes, last_interaction_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(phone) DO UPDATE SET
       name = excluded.name,
       email = excluded.email,
@@ -484,6 +505,8 @@ export async function upsertSyncedContact(
       gst_number = excluded.gst_number,
       acrio_segment = excluded.acrio_segment,
       tags_json = excluded.tags_json,
+      preferred_staff_id = excluded.preferred_staff_id,
+      preferred_staff_name = excluded.preferred_staff_name,
       lifetime_value_inr = excluded.lifetime_value_inr,
       total_orders_count = excluded.total_orders_count,
       opt_in_marketing = excluded.opt_in_marketing,
@@ -500,6 +523,8 @@ export async function upsertSyncedContact(
       finalGst || null,
       finalSegment,
       JSON.stringify(finalTags),
+      finalPreferredStaffId,
+      finalPreferredStaffName,
       finalLtv,
       finalOrders,
       finalOptIn,
@@ -6400,4 +6425,1137 @@ export async function loadLiveDatabaseOperationalContext(params: {
   }
 
   return sections.join("\n\n");
+}
+
+// ============================================================================
+// 1. DUAL ASSIGNMENT / COLLABORATORS HELPERS
+// ============================================================================
+
+export interface ConversationCollaborator {
+  staffId: string;
+  staffName: string;
+  addedBy?: string;
+  addedAt?: string;
+}
+
+export function parseConversationCollaborators(raw: unknown): ConversationCollaborator[] {
+  if (!raw) return [];
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    const out: ConversationCollaborator[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const sid = String((item as any).staffId || "").trim();
+      const sname = String((item as any).staffName || "").trim();
+      if (!sid || sid === "ACRIO" || seen.has(sid)) continue;
+      seen.add(sid);
+      out.push({
+        staffId: sid,
+        staffName: sname || sid,
+        addedBy: (item as any).addedBy ? String((item as any).addedBy) : undefined,
+        addedAt: (item as any).addedAt ? String((item as any).addedAt) : undefined,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export async function addConversationCollaborators(params: {
+  conversationId: string;
+  members: { staffId: string; staffName: string }[];
+  addedBy?: string;
+}): Promise<ConversationCollaborator[]> {
+  const conv = getRawLibSqlClient("conversations");
+  await conv
+    .execute(`ALTER TABLE conversations ADD COLUMN collaborators_json TEXT NOT NULL DEFAULT '[]'`)
+    .catch(() => {});
+  const res = await conv.execute({
+    sql: `SELECT assigned_staff_id, collaborators_json FROM conversations WHERE id = ? LIMIT 1`,
+    args: [params.conversationId],
+  });
+  const row = res.rows[0] as Record<string, unknown> | undefined;
+  if (!row) return [];
+  const ownerId = row.assigned_staff_id ? String(row.assigned_staff_id) : "";
+  const existing = parseConversationCollaborators(row.collaborators_json);
+  const byId = new Map(existing.map((c) => [c.staffId, c]));
+  const nowIso = new Date().toISOString();
+  let changed = false;
+
+  for (const m of params.members) {
+    const sid = String(m.staffId || "").trim();
+    if (!sid || sid === "ACRIO" || sid === ownerId || byId.has(sid)) continue;
+    byId.set(sid, {
+      staffId: sid,
+      staffName: String(m.staffName || sid).trim(),
+      addedBy: params.addedBy || "Team Mention",
+      addedAt: nowIso,
+    });
+    changed = true;
+  }
+
+  const next = Array.from(byId.values());
+  if (changed) {
+    await conv.execute({
+      sql: `UPDATE conversations SET collaborators_json = ? WHERE id = ?`,
+      args: [JSON.stringify(next), params.conversationId],
+    });
+  }
+  return next;
+}
+
+export async function removeConversationCollaborator(
+  conversationId: string,
+  staffId: string
+): Promise<ConversationCollaborator[]> {
+  const conv = getRawLibSqlClient("conversations");
+  const res = await conv.execute({
+    sql: `SELECT collaborators_json FROM conversations WHERE id = ? LIMIT 1`,
+    args: [conversationId],
+  });
+  const row = res.rows[0] as Record<string, unknown> | undefined;
+  if (!row) return [];
+  const existing = parseConversationCollaborators(row.collaborators_json);
+  const next = existing.filter((c) => c.staffId !== staffId);
+  await conv.execute({
+    sql: `UPDATE conversations SET collaborators_json = ? WHERE id = ?`,
+    args: [JSON.stringify(next), conversationId],
+  });
+  return next;
+}
+
+// ============================================================================
+// 2. STAFF RESOLUTION, PREFERRED STAFF & PAST HANDLER MATCHING
+// ============================================================================
+
+export interface ActiveStaffRecord {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  department: string;
+}
+
+export async function listActiveNonClientStaff(): Promise<ActiveStaffRecord[]> {
+  const auth = getRawLibSqlClient("core_auth");
+  const res = await auth.execute(
+    `SELECT id, name, email, role, department
+     FROM users
+     WHERE status = 'ACTIVE' AND role != 'CLIENT'
+     ORDER BY name ASC`
+  );
+  return res.rows.map((r) => ({
+    id: String(r.id),
+    name: String(r.name || "").trim(),
+    email: String(r.email || "").trim(),
+    role: String(r.role || "STAFF"),
+    department: String(r.department || "Sales & Support"),
+  }));
+}
+
+export function resolveStaffMemberByQuery(
+  query: string,
+  staffList: ActiveStaffRecord[]
+): ActiveStaffRecord | null {
+  const clean = String(query || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "");
+  if (!clean || clean.length < 2) return null;
+
+  // 1. Exact ID / email / full name match
+  const exact = staffList.find(
+    (s) =>
+      s.id.toLowerCase() === clean ||
+      s.email.toLowerCase() === clean ||
+      s.name.toLowerCase() === clean
+  );
+  if (exact) return exact;
+
+  // 2. Email local-part match
+  const byEmailLocal = staffList.find(
+    (s) => s.email.split("@")[0]?.toLowerCase() === clean
+  );
+  if (byEmailLocal) return byEmailLocal;
+
+  // 3. Unique first-name match
+  const firstCounts = new Map<string, number>();
+  for (const s of staffList) {
+    const first = s.name.toLowerCase().split(/\s+/)[0] || "";
+    if (first.length >= 3) firstCounts.set(first, (firstCounts.get(first) || 0) + 1);
+  }
+  const firstMatch = staffList.find((s) => {
+    const first = s.name.toLowerCase().split(/\s+/)[0] || "";
+    return first === clean && (firstCounts.get(first) || 0) === 1;
+  });
+  if (firstMatch) return firstMatch;
+
+  // 4. Unambiguous substring match across name parts
+  const subMatches = staffList.filter((s) => {
+    const tokens = s.name.toLowerCase().split(/\s+/);
+    return tokens.some((t) => t.length >= 3 && (t === clean || (clean.length >= 4 && t.includes(clean))));
+  });
+  if (subMatches.length === 1) return subMatches[0];
+
+  return null;
+}
+
+const REQUESTED_PERSON_RE =
+  /\b(?:talk\s+to|speak\s+(?:to|with)|connect(?:\s+me)?\s+(?:to|with)|ask|assign(?:\s+to)?|transfer(?:\s+to)?|call\s+from|message\s+from|looking\s+for|is\s+|from|with)\s+([A-Za-z][A-Za-z.\s]{1,30})/i;
+
+export function detectRequestedStaffInInboundMessage(
+  inboundText: string,
+  staffList: ActiveStaffRecord[]
+): ActiveStaffRecord | null {
+  const text = String(inboundText || "").trim();
+  if (!text) return null;
+  const lower = text.toLowerCase();
+
+  // Only trigger if the message seems to ask for or address a person, or directly names an exact full name
+  const hasPersonIntent =
+    /\b(talk\s*to|speak\s*(?:to|with)|connect|transfer|assign|prefer|handler|mam|ma'am|sir|ji|bhai|please\s*forward|ask\s*for|regarding\s*call|spoke\s*(?:to|with)|talked\s*(?:to|with)|chatting\s*with|dealing\s*with|available|there)\b/i.test(
+      lower
+    ) || text.split(/\s+/).length <= 5;
+
+  if (!hasPersonIntent) return null;
+
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sortedByLen = [...staffList].sort((a, b) => b.name.length - a.name.length);
+
+  // Full name match anywhere when person intent exists
+  for (const s of sortedByLen) {
+    if (s.name.length >= 4 && new RegExp(`\\b${esc(s.name)}\\b`, "i").test(lower)) {
+      return s;
+    }
+  }
+
+  // Unique first name (len >= 4) or distinctive token alongside explicit request phrase
+  const reqMatch = text.match(REQUESTED_PERSON_RE);
+  const candidatePhrase = reqMatch?.[1] || text;
+
+  const tokenCounts = new Map<string, number>();
+  for (const s of staffList) {
+    for (const part of s.name.toLowerCase().split(/\s+/)) {
+      if (part.length >= 4 && !/^(kumar|singh|sharma|gupta|patel|khan|classic|concepts)$/i.test(part)) {
+        tokenCounts.set(part, (tokenCounts.get(part) || 0) + 1);
+      }
+    }
+  }
+
+  for (const s of sortedByLen) {
+    if (s.role === "DEV") continue; // never match generic words against dev names accidentally unless full name
+    for (const part of s.name.toLowerCase().split(/\s+/)) {
+      if (part.length < 4) continue;
+      if ((tokenCounts.get(part) || 0) !== 1) continue;
+      if (new RegExp(`\\b${esc(part)}\\b`, "i").test(candidatePhrase.toLowerCase())) {
+        return s;
+      }
+    }
+  }
+
+  return null;
+}
+
+export async function resolveRequestedOrPreferredStaffForInbound(params: {
+  customerPhone: string;
+  inboundText?: string;
+  conversationId?: string;
+}): Promise<{
+  staffId: string;
+  staffName: string;
+  matchType: "REQUESTED_BY_CUSTOMER" | "PREFERRED_STAFF" | "PAST_HANDLER";
+  reason: string;
+} | null> {
+  const staffList = await listActiveNonClientStaff();
+  if (staffList.length === 0) return null;
+  const activeById = new Map(staffList.map((s) => [s.id, s]));
+
+  // 1. Customer explicitly asks for a specific staff member
+  if (params.inboundText) {
+    const requested = detectRequestedStaffInInboundMessage(params.inboundText, staffList);
+    if (requested) {
+      return {
+        staffId: requested.id,
+        staffName: requested.name,
+        matchType: "REQUESTED_BY_CUSTOMER",
+        reason: `Customer specifically asked for ${requested.name}`,
+      };
+    }
+  }
+
+  // 2. Explicit Preferred Staff set on Contacts DB or Customers CRM
+  const contacts = getRawLibSqlClient("contacts");
+  const crm = getRawLibSqlClient("crm_orders");
+  const conv = getRawLibSqlClient("conversations");
+
+  const [cntRes, crmRes] = await Promise.all([
+    contacts
+      .execute({
+        sql: `SELECT preferred_staff_id, preferred_staff_name, assigned_owner_id, assigned_owner_name
+              FROM contacts WHERE phone = ? LIMIT 1`,
+        args: [params.customerPhone],
+      })
+      .catch(() => ({ rows: [] as any[] })),
+    crm
+      .execute({
+        sql: `SELECT preferred_staff_id, preferred_staff_name FROM customers WHERE phone = ? LIMIT 1`,
+        args: [params.customerPhone],
+      })
+      .catch(() => ({ rows: [] as any[] })),
+  ]);
+
+  const cntRow = cntRes.rows[0] as Record<string, unknown> | undefined;
+  const crmRow = crmRes.rows[0] as Record<string, unknown> | undefined;
+
+  const prefId = String(
+    crmRow?.preferred_staff_id || cntRow?.preferred_staff_id || cntRow?.assigned_owner_id || ""
+  ).trim();
+  const prefName = String(
+    crmRow?.preferred_staff_name || cntRow?.preferred_staff_name || cntRow?.assigned_owner_name || ""
+  ).trim();
+
+  if (prefId && prefId !== "ACRIO" && activeById.has(prefId)) {
+    const st = activeById.get(prefId)!;
+    return {
+      staffId: st.id,
+      staffName: st.name,
+      matchType: "PREFERRED_STAFF",
+      reason: `Customer has preferred staff member set (${st.name})`,
+    };
+  }
+  if (prefName && prefName !== "ACRIO" && !/system/i.test(prefName)) {
+    const resolvedByName = resolveStaffMemberByQuery(prefName, staffList);
+    if (resolvedByName) {
+      return {
+        staffId: resolvedByName.id,
+        staffName: resolvedByName.name,
+        matchType: "PREFERRED_STAFF",
+        reason: `Customer has preferred staff member (${resolvedByName.name})`,
+      };
+    }
+  }
+
+  // 3. Previously dealt with customer (past resolved conversation owner, past assignment, or customer relations)
+  const [pastConvRes, pastAssignRes, pastRelRes] = await Promise.all([
+    conv
+      .execute({
+        sql: `SELECT assigned_staff_id, assigned_staff_name, resolved_by_id, resolved_by_name
+              FROM conversations
+              WHERE customer_phone = ?
+                AND (
+                  (resolved_by_id IS NOT NULL AND resolved_by_id != '' AND resolved_by_id != 'ACRIO')
+                  OR (assigned_staff_id IS NOT NULL AND assigned_staff_id != '' AND assigned_staff_id != 'ACRIO')
+                )
+              ORDER BY last_message_at DESC LIMIT 3`,
+        args: [params.customerPhone],
+      })
+      .catch(() => ({ rows: [] as any[] })),
+    conv
+      .execute({
+        sql: `SELECT to_staff_id, to_staff_name
+              FROM conversation_assignments
+              WHERE customer_phone = ?
+                AND to_staff_id IS NOT NULL
+                AND to_staff_id != ''
+                AND to_staff_id != 'ACRIO'
+              ORDER BY assigned_at DESC LIMIT 6`,
+        args: [params.customerPhone],
+      })
+      .catch(() => ({ rows: [] as any[] })),
+    crm
+      .execute({
+        sql: `SELECT handled_by FROM customer_relations WHERE customer_phone = ? ORDER BY occurred_at DESC LIMIT 3`,
+        args: [params.customerPhone],
+      })
+      .catch(() => ({ rows: [] as any[] })),
+  ]);
+
+  const tryPick = (id?: string | null, name?: string | null) => {
+    const cleanId = String(id || "").trim();
+    if (cleanId && cleanId !== "ACRIO" && activeById.has(cleanId)) {
+      const st = activeById.get(cleanId)!;
+      if (st.role !== "DEV") return st;
+    }
+    const cleanName = String(name || "").trim();
+    if (cleanName && cleanName !== "ACRIO") {
+      const st = resolveStaffMemberByQuery(cleanName, staffList);
+      if (st && st.role !== "DEV") return st;
+    }
+    return null;
+  };
+
+  for (const r of pastConvRes.rows) {
+    const hit =
+      tryPick(r.resolved_by_id ? String(r.resolved_by_id) : null, r.resolved_by_name ? String(r.resolved_by_name) : null) ||
+      tryPick(r.assigned_staff_id ? String(r.assigned_staff_id) : null, r.assigned_staff_name ? String(r.assigned_staff_name) : null);
+    if (hit) {
+      return {
+        staffId: hit.id,
+        staffName: hit.name,
+        matchType: "PAST_HANDLER",
+        reason: `${hit.name} previously handled this customer`,
+      };
+    }
+  }
+
+  for (const r of pastAssignRes.rows) {
+    const hit = tryPick(
+      r.to_staff_id ? String(r.to_staff_id) : null,
+      r.to_staff_name ? String(r.to_staff_name) : null
+    );
+    if (hit) {
+      return {
+        staffId: hit.id,
+        staffName: hit.name,
+        matchType: "PAST_HANDLER",
+        reason: `${hit.name} previously handled this customer`,
+      };
+    }
+  }
+
+  for (const r of pastRelRes.rows) {
+    const hit = tryPick(null, r.handled_by ? String(r.handled_by) : null);
+    if (hit) {
+      return {
+        staffId: hit.id,
+        staffName: hit.name,
+        matchType: "PAST_HANDLER",
+        reason: `${hit.name} previously handled this customer`,
+      };
+    }
+  }
+
+  return null;
+}
+
+// ============================================================================
+// 3. AI TRAINING STUDIO (Q&A EXAMPLES & GUARDRAIL RULES)
+// ============================================================================
+
+export interface AiTrainingExampleRecord {
+  id: string;
+  title: string;
+  category: string;
+  customerQuestion: string;
+  idealAnswer: string;
+  doNotSay: string;
+  productSlug: string;
+  priority: "HIGH" | "NORMAL";
+  isEnabled: boolean;
+  usageCount: number;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiTrainingRuleRecord {
+  id: string;
+  title: string;
+  ruleText: string;
+  scope: "BOTH" | "CUSTOMER_CHAT" | "STAFF_COPILOT";
+  isEnabled: boolean;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+async function ensureAiTrainingTables(): Promise<void> {
+  const conv = getRawLibSqlClient("conversations");
+  await conv.batch(
+    [
+      `CREATE TABLE IF NOT EXISTS ai_training_examples (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'Product Knowledge',
+        customer_question TEXT NOT NULL,
+        ideal_answer TEXT NOT NULL,
+        do_not_say TEXT DEFAULT '',
+        product_slug TEXT DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'NORMAL',
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        created_by_name TEXT NOT NULL DEFAULT 'Team',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS ai_training_rules (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        rule_text TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'BOTH',
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        created_by_name TEXT NOT NULL DEFAULT 'Team',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+    ],
+    "write"
+  );
+}
+
+export async function listAiTrainingData(): Promise<{
+  examples: AiTrainingExampleRecord[];
+  rules: AiTrainingRuleRecord[];
+}> {
+  await ensureAiTrainingTables();
+  const conv = getRawLibSqlClient("conversations");
+  const [exRes, ruleRes] = await Promise.all([
+    conv.execute(
+      `SELECT * FROM ai_training_examples ORDER BY CASE WHEN priority = 'HIGH' THEN 0 ELSE 1 END, updated_at DESC`
+    ),
+    conv.execute(`SELECT * FROM ai_training_rules ORDER BY updated_at DESC`),
+  ]);
+
+  return {
+    examples: exRes.rows.map((r) => ({
+      id: String(r.id),
+      title: String(r.title || ""),
+      category: String(r.category || "Product Knowledge"),
+      customerQuestion: String(r.customer_question || ""),
+      idealAnswer: String(r.ideal_answer || ""),
+      doNotSay: String(r.do_not_say || ""),
+      productSlug: String(r.product_slug || ""),
+      priority: String(r.priority) === "HIGH" ? "HIGH" : "NORMAL",
+      isEnabled: Number(r.is_enabled ?? 1) === 1,
+      usageCount: Number(r.usage_count ?? 0),
+      createdByName: String(r.created_by_name || "Team"),
+      createdAt: String(r.created_at || ""),
+      updatedAt: String(r.updated_at || ""),
+    })),
+    rules: ruleRes.rows.map((r) => ({
+      id: String(r.id),
+      title: String(r.title || ""),
+      ruleText: String(r.rule_text || ""),
+      scope:
+        String(r.scope) === "CUSTOMER_CHAT" || String(r.scope) === "STAFF_COPILOT"
+          ? (String(r.scope) as "CUSTOMER_CHAT" | "STAFF_COPILOT")
+          : "BOTH",
+      isEnabled: Number(r.is_enabled ?? 1) === 1,
+      createdByName: String(r.created_by_name || "Team"),
+      createdAt: String(r.created_at || ""),
+      updatedAt: String(r.updated_at || ""),
+    })),
+  };
+}
+
+export async function upsertAiTrainingExample(params: {
+  id?: string;
+  title: string;
+  category?: string;
+  customerQuestion: string;
+  idealAnswer: string;
+  doNotSay?: string;
+  productSlug?: string;
+  priority?: "HIGH" | "NORMAL";
+  isEnabled?: boolean;
+  createdByName?: string;
+}): Promise<AiTrainingExampleRecord> {
+  await ensureAiTrainingTables();
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+  const id = params.id?.trim() || `ait_${Math.random().toString(36).slice(2, 10)}`;
+  const existing = params.id
+    ? await conv.execute({ sql: `SELECT created_at, usage_count FROM ai_training_examples WHERE id = ?`, args: [id] })
+    : { rows: [] as any[] };
+  const createdAt = existing.rows[0]?.created_at ? String(existing.rows[0].created_at) : nowIso;
+  const usageCount = Number(existing.rows[0]?.usage_count ?? 0);
+
+  await conv.execute({
+    sql: `INSERT INTO ai_training_examples (
+      id, title, category, customer_question, ideal_answer, do_not_say, product_slug,
+      priority, is_enabled, usage_count, created_by_name, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      category = excluded.category,
+      customer_question = excluded.customer_question,
+      ideal_answer = excluded.ideal_answer,
+      do_not_say = excluded.do_not_say,
+      product_slug = excluded.product_slug,
+      priority = excluded.priority,
+      is_enabled = excluded.is_enabled,
+      updated_at = excluded.updated_at`,
+    args: [
+      id,
+      params.title.trim(),
+      (params.category || "Product Knowledge").trim(),
+      params.customerQuestion.trim(),
+      params.idealAnswer.trim(),
+      (params.doNotSay || "").trim(),
+      (params.productSlug || "").trim(),
+      params.priority === "HIGH" ? "HIGH" : "NORMAL",
+      params.isEnabled === false ? 0 : 1,
+      usageCount,
+      (params.createdByName || "Team").trim(),
+      createdAt,
+      nowIso,
+    ],
+  });
+
+  const { examples } = await listAiTrainingData();
+  return examples.find((e) => e.id === id)!;
+}
+
+export async function deleteAiTrainingExample(id: string): Promise<void> {
+  await ensureAiTrainingTables();
+  const conv = getRawLibSqlClient("conversations");
+  await conv.execute({ sql: `DELETE FROM ai_training_examples WHERE id = ?`, args: [id] });
+}
+
+export async function upsertAiTrainingRule(params: {
+  id?: string;
+  title: string;
+  ruleText: string;
+  scope?: "BOTH" | "CUSTOMER_CHAT" | "STAFF_COPILOT";
+  isEnabled?: boolean;
+  createdByName?: string;
+}): Promise<AiTrainingRuleRecord> {
+  await ensureAiTrainingTables();
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+  const id = params.id?.trim() || `air_${Math.random().toString(36).slice(2, 10)}`;
+  const existing = params.id
+    ? await conv.execute({ sql: `SELECT created_at FROM ai_training_rules WHERE id = ?`, args: [id] })
+    : { rows: [] as any[] };
+  const createdAt = existing.rows[0]?.created_at ? String(existing.rows[0].created_at) : nowIso;
+
+  await conv.execute({
+    sql: `INSERT INTO ai_training_rules (
+      id, title, rule_text, scope, is_enabled, created_by_name, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      rule_text = excluded.rule_text,
+      scope = excluded.scope,
+      is_enabled = excluded.is_enabled,
+      updated_at = excluded.updated_at`,
+    args: [
+      id,
+      params.title.trim(),
+      params.ruleText.trim(),
+      params.scope || "BOTH",
+      params.isEnabled === false ? 0 : 1,
+      (params.createdByName || "Team").trim(),
+      createdAt,
+      nowIso,
+    ],
+  });
+
+  const { rules } = await listAiTrainingData();
+  return rules.find((r) => r.id === id)!;
+}
+
+export async function deleteAiTrainingRule(id: string): Promise<void> {
+  await ensureAiTrainingTables();
+  const conv = getRawLibSqlClient("conversations");
+  await conv.execute({ sql: `DELETE FROM ai_training_rules WHERE id = ?`, args: [id] });
+}
+
+export async function findMatchingAiTrainingGuidance(params: {
+  queryText: string;
+  scope?: "CUSTOMER_CHAT" | "STAFF_COPILOT";
+  activeProductSlug?: string | null;
+}): Promise<{
+  rules: AiTrainingRuleRecord[];
+  examples: AiTrainingExampleRecord[];
+  promptBlock: string;
+}> {
+  const { examples, rules } = await listAiTrainingData().catch(() => ({
+    examples: [] as AiTrainingExampleRecord[],
+    rules: [] as AiTrainingRuleRecord[],
+  }));
+
+  const targetScope = params.scope || "CUSTOMER_CHAT";
+  const activeRules = rules.filter(
+    (r) => r.isEnabled && (r.scope === "BOTH" || r.scope === targetScope)
+  );
+
+  const tokens = String(params.queryText || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3);
+  const queryLower = String(params.queryText || "").toLowerCase();
+
+  const scoredExamples = examples
+    .filter((ex) => ex.isEnabled)
+    .map((ex) => {
+      let score = ex.priority === "HIGH" ? 2 : 0;
+      if (
+        params.activeProductSlug &&
+        ex.productSlug &&
+        ex.productSlug.toLowerCase() === params.activeProductSlug.toLowerCase()
+      ) {
+        score += 10;
+      }
+      const hay = `${ex.title} ${ex.category} ${ex.customerQuestion}`.toLowerCase();
+      for (const tok of tokens) {
+        if (hay.includes(tok)) score += 3;
+      }
+      if (ex.customerQuestion.toLowerCase().includes(queryLower) && queryLower.length >= 4) {
+        score += 8;
+      }
+      return { ex, score };
+    })
+    .filter((x) => x.score >= 3 || x.ex.priority === "HIGH")
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6)
+    .map((x) => x.ex);
+
+  if (activeRules.length === 0 && scoredExamples.length === 0) {
+    return { rules: [], examples: [], promptBlock: "" };
+  }
+
+  const lines: string[] = [];
+  if (activeRules.length > 0) {
+    lines.push("TEAM-TRAINED BEHAVIORAL RULES (MUST FOLLOW STRICTLY):");
+    for (const r of activeRules.slice(0, 12)) {
+      lines.push(`• ${r.title}: ${r.ruleText}`);
+    }
+  }
+  if (scoredExamples.length > 0) {
+    lines.push("TEAM-TRAINED Q&A EXAMPLES (USE AS OFFICIAL REFERENCE ANSWERS):");
+    for (const ex of scoredExamples) {
+      lines.push(
+        `• Q (${ex.title}): "${ex.customerQuestion}"\n  Ideal Answer: ${ex.idealAnswer}${ex.doNotSay ? `\n  DO NOT SAY: ${ex.doNotSay}` : ""}`
+      );
+    }
+  }
+
+  return {
+    rules: activeRules,
+    examples: scoredExamples,
+    promptBlock: lines.join("\n"),
+  };
+}
+
+// ============================================================================
+// 4. CALL & EXTERNAL QUERY DISPATCH QUEUE (REPLACING WHATSAPP GROUP TRIAGE)
+// ============================================================================
+
+export type CallQueueAssignmentMode =
+  | "AUTO_PERFORMANCE"
+  | "AUTO_RANDOM"
+  | "PREFERRED_OR_PAST"
+  | "OPEN_POOL"
+  | "MANUAL";
+
+export interface CallDispatchRecord {
+  id: string;
+  customerPhone: string;
+  customerName: string;
+  source: string;
+  productTopic: string;
+  notes: string;
+  recordingUrl: string;
+  recordingFileName: string;
+  recordingMimeType: string;
+  attachmentUrl: string;
+  attachmentName: string;
+  assignmentMode: CallQueueAssignmentMode;
+  assignmentReason: string;
+  assignedStaffId: string | null;
+  assignedStaffName: string;
+  status: "PENDING" | "IN_PROGRESS" | "RESOLVED";
+  priority: "URGENT" | "HIGH" | "NORMAL";
+  conversationId: string | null;
+  resolutionNotes: string;
+  submittedById: string | null;
+  submittedByName: string;
+  pickedUpAt: string | null;
+  resolvedAt: string | null;
+  resolvedByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RankedStaffCandidate {
+  staffId: string;
+  staffName: string;
+  role: string;
+  resolved30d: number;
+  avgFirstResponseSec: number | null;
+  openLoad: number;
+  performanceScore: number;
+}
+
+async function ensureCallDispatchTable(): Promise<void> {
+  const conv = getRawLibSqlClient("conversations");
+  await conv.execute(`CREATE TABLE IF NOT EXISTS call_dispatch_queue (
+    id TEXT PRIMARY KEY,
+    customer_phone TEXT NOT NULL DEFAULT '',
+    customer_name TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'Direct Call',
+    product_topic TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    recording_url TEXT DEFAULT '',
+    recording_file_name TEXT DEFAULT '',
+    recording_mime_type TEXT DEFAULT '',
+    attachment_url TEXT DEFAULT '',
+    attachment_name TEXT DEFAULT '',
+    assignment_mode TEXT NOT NULL DEFAULT 'AUTO_PERFORMANCE',
+    assignment_reason TEXT DEFAULT '',
+    assigned_staff_id TEXT,
+    assigned_staff_name TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    priority TEXT NOT NULL DEFAULT 'NORMAL',
+    conversation_id TEXT,
+    resolution_notes TEXT DEFAULT '',
+    submitted_by_id TEXT,
+    submitted_by_name TEXT NOT NULL DEFAULT 'Desk',
+    picked_up_at TEXT,
+    resolved_at TEXT,
+    resolved_by_name TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+}
+
+export async function computePerformanceRankedStaff(): Promise<RankedStaffCandidate[]> {
+  const staffList = (await listActiveNonClientStaff()).filter((s) => s.role !== "DEV");
+  if (staffList.length === 0) return [];
+  const conv = getRawLibSqlClient("conversations");
+  const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString();
+
+  const [resolvedRes, respRes, loadRes, queueLoadRes] = await Promise.all([
+    conv
+      .execute({
+        sql: `SELECT resolved_by_id, resolved_by_name, COUNT(*) AS cnt
+              FROM conversations WHERE status = 'RESOLVED' AND resolved_at >= ?
+              GROUP BY resolved_by_id, resolved_by_name`,
+        args: [cutoff30],
+      })
+      .catch(() => ({ rows: [] as any[] })),
+    conv
+      .execute({
+        sql: `SELECT to_staff_id, AVG(first_response_seconds) AS avg_sec
+              FROM conversation_assignments
+              WHERE assigned_at >= ? AND first_response_seconds IS NOT NULL AND to_staff_id != 'ACRIO'
+              GROUP BY to_staff_id`,
+        args: [cutoff30],
+      })
+      .catch(() => ({ rows: [] as any[] })),
+    conv
+      .execute(
+        `SELECT assigned_staff_id, COUNT(*) AS cnt
+         FROM conversations
+         WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL AND assigned_staff_id != 'ACRIO'
+         GROUP BY assigned_staff_id`
+      )
+      .catch(() => ({ rows: [] as any[] })),
+    conv
+      .execute(
+        `SELECT assigned_staff_id, COUNT(*) AS cnt
+         FROM call_dispatch_queue
+         WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL
+         GROUP BY assigned_staff_id`
+      )
+      .catch(() => ({ rows: [] as any[] })),
+  ]);
+
+  const resolvedMap = new Map<string, number>();
+  for (const r of resolvedRes.rows) {
+    const sid = r.resolved_by_id ? String(r.resolved_by_id) : "";
+    if (sid) resolvedMap.set(sid, (resolvedMap.get(sid) || 0) + Number(r.cnt || 0));
+  }
+  const avgSecMap = new Map<string, number>();
+  for (const r of respRes.rows) {
+    const sid = String(r.to_staff_id || "");
+    if (sid && r.avg_sec != null) avgSecMap.set(sid, Math.round(Number(r.avg_sec)));
+  }
+  const openMap = new Map<string, number>();
+  for (const r of [...loadRes.rows, ...queueLoadRes.rows]) {
+    const sid = String(r.assigned_staff_id || "");
+    if (sid) openMap.set(sid, (openMap.get(sid) || 0) + Number(r.cnt || 0));
+  }
+
+  return staffList
+    .map((s) => {
+      const resolved30d = resolvedMap.get(s.id) || 0;
+      const avgSec = avgSecMap.has(s.id) ? avgSecMap.get(s.id)! : null;
+      const openLoad = openMap.get(s.id) || 0;
+      // Performance formula: rewards 30d resolutions + fast response speed, subtracts current backlog
+      const speedBonus = avgSec === null ? 15 : Math.max(0, 40 - Math.round(avgSec / 45));
+      const performanceScore = Math.max(
+        1,
+        Math.round(50 + resolved30d * 4 + speedBonus - openLoad * 6)
+      );
+      return {
+        staffId: s.id,
+        staffName: s.name,
+        role: s.role,
+        resolved30d,
+        avgFirstResponseSec: avgSec,
+        openLoad,
+        performanceScore,
+      };
+    })
+    .sort((a, b) => b.performanceScore - a.performanceScore || a.openLoad - b.openLoad);
+}
+
+function mapCallDispatchRow(r: Record<string, unknown>): CallDispatchRecord {
+  const modeRaw = String(r.assignment_mode || "AUTO_PERFORMANCE");
+  const mode: CallQueueAssignmentMode = (
+    ["AUTO_PERFORMANCE", "AUTO_RANDOM", "PREFERRED_OR_PAST", "OPEN_POOL", "MANUAL"].includes(
+      modeRaw
+    )
+      ? modeRaw
+      : "AUTO_PERFORMANCE"
+  ) as CallQueueAssignmentMode;
+
+  return {
+    id: String(r.id),
+    customerPhone: String(r.customer_phone || ""),
+    customerName: String(r.customer_name || ""),
+    source: String(r.source || "Direct Call"),
+    productTopic: String(r.product_topic || ""),
+    notes: String(r.notes || ""),
+    recordingUrl: String(r.recording_url || ""),
+    recordingFileName: String(r.recording_file_name || ""),
+    recordingMimeType: String(r.recording_mime_type || ""),
+    attachmentUrl: String(r.attachment_url || ""),
+    attachmentName: String(r.attachment_name || ""),
+    assignmentMode: mode,
+    assignmentReason: String(r.assignment_reason || ""),
+    assignedStaffId: r.assigned_staff_id ? String(r.assigned_staff_id) : null,
+    assignedStaffName: String(r.assigned_staff_name || ""),
+    status:
+      String(r.status) === "IN_PROGRESS" || String(r.status) === "RESOLVED"
+        ? (String(r.status) as "IN_PROGRESS" | "RESOLVED")
+        : "PENDING",
+    priority:
+      String(r.priority) === "URGENT" || String(r.priority) === "HIGH"
+        ? (String(r.priority) as "URGENT" | "HIGH")
+        : "NORMAL",
+    conversationId: r.conversation_id ? String(r.conversation_id) : null,
+    resolutionNotes: String(r.resolution_notes || ""),
+    submittedById: r.submitted_by_id ? String(r.submitted_by_id) : null,
+    submittedByName: String(r.submitted_by_name || "Desk"),
+    pickedUpAt: r.picked_up_at ? String(r.picked_up_at) : null,
+    resolvedAt: r.resolved_at ? String(r.resolved_at) : null,
+    resolvedByName: String(r.resolved_by_name || ""),
+    createdAt: String(r.created_at || ""),
+    updatedAt: String(r.updated_at || ""),
+  };
+}
+
+export async function listCallDispatchQueue(limit = 150): Promise<CallDispatchRecord[]> {
+  await ensureCallDispatchTable();
+  const conv = getRawLibSqlClient("conversations");
+  const res = await conv.execute({
+    sql: `SELECT * FROM call_dispatch_queue
+          ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'IN_PROGRESS' THEN 1 ELSE 2 END, created_at DESC
+          LIMIT ?`,
+    args: [limit],
+  });
+  return res.rows.map((r) => mapCallDispatchRow(r as Record<string, unknown>));
+}
+
+export async function createCallDispatchItem(params: {
+  customerPhone: string;
+  customerName?: string;
+  source?: string;
+  productTopic?: string;
+  notes?: string;
+  recordingUrl?: string;
+  recordingFileName?: string;
+  recordingMimeType?: string;
+  attachmentUrl?: string;
+  attachmentName?: string;
+  assignmentMode?: CallQueueAssignmentMode;
+  manualStaffId?: string;
+  priority?: "URGENT" | "HIGH" | "NORMAL";
+  submittedById: string;
+  submittedByName: string;
+}): Promise<CallDispatchRecord> {
+  await ensureCallDispatchTable();
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+  const normPhone = normalizeWhatsAppPhone(params.customerPhone) || params.customerPhone.trim();
+  const mode: CallQueueAssignmentMode = params.assignmentMode || "AUTO_PERFORMANCE";
+  const ranked = await computePerformanceRankedStaff();
+
+  let assignedStaffId: string | null = null;
+  let assignedStaffName = "";
+  let assignmentReason = "";
+
+  // Check preferred/past handler first unless explicitly OPEN_POOL or MANUAL
+  const pref =
+    normPhone && mode !== "OPEN_POOL" && mode !== "MANUAL"
+      ? await resolveRequestedOrPreferredStaffForInbound({
+          customerPhone: normPhone,
+          inboundText: `${params.productTopic || ""} ${params.notes || ""}`,
+        }).catch(() => null)
+      : null;
+
+  if (mode === "MANUAL" && params.manualStaffId) {
+    const staffList = await listActiveNonClientStaff();
+    const hit = staffList.find((s) => s.id === params.manualStaffId);
+    if (hit) {
+      assignedStaffId = hit.id;
+      assignedStaffName = hit.name;
+      assignmentReason = `Manually assigned by ${params.submittedByName}`;
+    }
+  } else if (pref && (mode === "PREFERRED_OR_PAST" || mode === "AUTO_PERFORMANCE" || mode === "AUTO_RANDOM")) {
+    assignedStaffId = pref.staffId;
+    assignedStaffName = pref.staffName;
+    assignmentReason = `${pref.reason} (${pref.matchType.replace(/_/g, " ")})`;
+  } else if (mode === "AUTO_RANDOM" && ranked.length > 0) {
+    const pick = ranked[Math.floor(Math.random() * ranked.length)];
+    assignedStaffId = pick.staffId;
+    assignedStaffName = pick.staffName;
+    assignmentReason = `Randomly distributed among ${ranked.length} active team members`;
+  } else if (mode === "AUTO_PERFORMANCE" && ranked.length > 0) {
+    const pick = ranked[0];
+    assignedStaffId = pick.staffId;
+    assignedStaffName = pick.staffName;
+    assignmentReason = `Auto-assigned by performance (score ${pick.performanceScore}, ${pick.resolved30d} resolved, ${pick.openLoad} open)`;
+  } else {
+    assignmentReason = "Added to open team pickup pool";
+  }
+
+  // Link to existing conversation if present
+  const existingConv = normPhone
+    ? await conv
+        .execute({
+          sql: `SELECT id FROM conversations WHERE customer_phone = ? LIMIT 1`,
+          args: [normPhone],
+        })
+        .catch(() => ({ rows: [] as any[] }))
+    : { rows: [] as any[] };
+  const conversationId = existingConv.rows[0]?.id ? String(existingConv.rows[0].id) : null;
+
+  const id = `cq_${Math.random().toString(36).slice(2, 10)}`;
+  await conv.execute({
+    sql: `INSERT INTO call_dispatch_queue (
+      id, customer_phone, customer_name, source, product_topic, notes,
+      recording_url, recording_file_name, recording_mime_type, attachment_url, attachment_name,
+      assignment_mode, assignment_reason, assigned_staff_id, assigned_staff_name,
+      status, priority, conversation_id, submitted_by_id, submitted_by_name, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?)`,
+    args: [
+      id,
+      normPhone,
+      (params.customerName || normPhone || "Caller").trim(),
+      (params.source || "Direct Call").trim(),
+      (params.productTopic || "").trim(),
+      (params.notes || "").trim(),
+      (params.recordingUrl || "").trim(),
+      (params.recordingFileName || "").trim(),
+      (params.recordingMimeType || "").trim(),
+      (params.attachmentUrl || "").trim(),
+      (params.attachmentName || "").trim(),
+      mode,
+      assignmentReason,
+      assignedStaffId,
+      assignedStaffName,
+      params.priority || "NORMAL",
+      conversationId,
+      params.submittedById,
+      params.submittedByName,
+      nowIso,
+      nowIso,
+    ],
+  });
+
+  const rows = await conv.execute({
+    sql: `SELECT * FROM call_dispatch_queue WHERE id = ? LIMIT 1`,
+    args: [id],
+  });
+  return mapCallDispatchRow(rows.rows[0] as Record<string, unknown>);
+}
+
+export async function updateCallDispatchItem(params: {
+  id: string;
+  action: "pick_up" | "reassign" | "resolve" | "reopen" | "link_conversation";
+  actorId: string;
+  actorName: string;
+  targetStaffId?: string;
+  targetStaffName?: string;
+  resolutionNotes?: string;
+  conversationId?: string;
+}): Promise<CallDispatchRecord | null> {
+  await ensureCallDispatchTable();
+  const conv = getRawLibSqlClient("conversations");
+  const existing = await conv.execute({
+    sql: `SELECT * FROM call_dispatch_queue WHERE id = ? LIMIT 1`,
+    args: [params.id],
+  });
+  if (!existing.rows[0]) return null;
+
+  const nowIso = new Date().toISOString();
+
+  if (params.action === "pick_up") {
+    await conv.execute({
+      sql: `UPDATE call_dispatch_queue
+            SET assigned_staff_id = ?,
+                assigned_staff_name = ?,
+                status = 'IN_PROGRESS',
+                picked_up_at = COALESCE(picked_up_at, ?),
+                updated_at = ?
+            WHERE id = ?`,
+      args: [params.actorId, params.actorName, nowIso, nowIso, params.id],
+    });
+  } else if (params.action === "reassign" && params.targetStaffId) {
+    await conv.execute({
+      sql: `UPDATE call_dispatch_queue
+            SET assigned_staff_id = ?,
+                assigned_staff_name = ?,
+                assignment_reason = ?,
+                status = CASE WHEN status = 'RESOLVED' THEN 'PENDING' ELSE status END,
+                updated_at = ?
+            WHERE id = ?`,
+      args: [
+        params.targetStaffId,
+        params.targetStaffName || params.targetStaffId,
+        `Reassigned by ${params.actorName}`,
+        nowIso,
+        params.id,
+      ],
+    });
+  } else if (params.action === "resolve") {
+    await conv.execute({
+      sql: `UPDATE call_dispatch_queue
+            SET status = 'RESOLVED',
+                resolution_notes = ?,
+                resolved_by_name = ?,
+                resolved_at = ?,
+                updated_at = ?
+            WHERE id = ?`,
+      args: [
+        (params.resolutionNotes || "Handled and resolved.").trim(),
+        params.actorName,
+        nowIso,
+        nowIso,
+        params.id,
+      ],
+    });
+  } else if (params.action === "reopen") {
+    await conv.execute({
+      sql: `UPDATE call_dispatch_queue
+            SET status = 'PENDING',
+                resolved_at = NULL,
+                updated_at = ?
+            WHERE id = ?`,
+      args: [nowIso, params.id],
+    });
+  } else if (params.action === "link_conversation" && params.conversationId) {
+    await conv.execute({
+      sql: `UPDATE call_dispatch_queue
+            SET conversation_id = ?,
+                status = CASE WHEN status = 'PENDING' THEN 'IN_PROGRESS' ELSE status END,
+                picked_up_at = COALESCE(picked_up_at, ?),
+                updated_at = ?
+            WHERE id = ?`,
+      args: [params.conversationId, nowIso, nowIso, params.id],
+    });
+  }
+
+  const next = await conv.execute({
+    sql: `SELECT * FROM call_dispatch_queue WHERE id = ? LIMIT 1`,
+    args: [params.id],
+  });
+  return next.rows[0] ? mapCallDispatchRow(next.rows[0] as Record<string, unknown>) : null;
 }
