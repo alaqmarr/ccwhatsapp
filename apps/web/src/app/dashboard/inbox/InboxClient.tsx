@@ -549,6 +549,7 @@ export function InboxClient({
   // chat and tab where you typed it, so a half-written message can never end up in the wrong place.
   // ------------------------------------------------------------------------
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [acrioActionBusyId, setAcrioActionBusyId] = useState<string | null>(null);
   const [stagedAttachment, setStagedAttachment] =
     useState<StagedComposerAttachment | null>(null);
   const [showAttachmentPicker, setShowAttachmentPicker] = useState(false);
@@ -721,9 +722,12 @@ export function InboxClient({
     }
   }, []);
 
+  const detailFetchSeqRef = useRef<number>(0);
+
   // Silent detail fetch: renders cached copy at 0ms if switching, or element skeletons + retry if uncached!
   const fetchAndCacheDetail = useCallback(
     async (convId: string, updateProfileInputs = false) => {
+      const fetchSeq = ++detailFetchSeqRef.current;
       const cached = detailCacheRef.current.get(convId);
       if (cached && selectedIdRef.current === convId) {
         setDetail(cached);
@@ -757,7 +761,10 @@ export function InboxClient({
           if (Array.isArray(data.teams) && data.teams.length > 0) {
             setTeams((prev) => (prev.length > 0 ? prev : data.teams));
           }
-          if (selectedIdRef.current === convId) {
+          if (
+            selectedIdRef.current === convId &&
+            fetchSeq >= detailFetchSeqRef.current
+          ) {
             setDetail(nextBundle);
             setDetailError("");
             if (updateProfileInputs || !cached) {
@@ -1157,7 +1164,9 @@ export function InboxClient({
 
   async function handleComposerSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const hasStagedAtt = composerMode === "REPLY" && Boolean(stagedAttachment);
+    const hasStagedAtt =
+      (composerMode === "REPLY" || composerMode === "NOTE") &&
+      Boolean(stagedAttachment);
     if (!selectedId || (!replyText.trim() && !hasStagedAtt) || !detail) return;
 
     // Templates are never typed freehand; they go through the picker so values are checked first.
@@ -1178,7 +1187,10 @@ export function InboxClient({
       return;
     }
 
-    const activeAtt = composerMode === "REPLY" ? stagedAttachment : null;
+    const activeAtt =
+      composerMode === "REPLY" || composerMode === "NOTE"
+        ? stagedAttachment
+        : null;
     const rawCaptionText = replyText.trim();
     const textToSend =
       rawCaptionText ||
@@ -1343,6 +1355,7 @@ export function InboxClient({
           body: JSON.stringify({
             action: "add_internal_note",
             noteText: textToSend,
+            attachment: activeAtt || undefined,
             replyToMessageId: activeReplyRef?.messageId || undefined,
             replyTo: activeReplyRef || undefined,
           }),
@@ -1421,17 +1434,104 @@ export function InboxClient({
   }
 
   async function handleTakeOverFromAcrio() {
-    if (!selectedId) return;
-    await fetch(`/api/conversations/${selectedId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "take_over_from_acrio" }),
-    });
-    showToast("You took over this chat under Sales Team.");
-    await Promise.all([
-      fetchAndCacheDetail(selectedId, false),
-      refreshThreadsSilently(),
-    ]);
+    await handleTakeOverChat();
+  }
+
+  async function handleConfirmAcrioAction(
+    noteMessageId: string,
+    decision: "CONFIRM" | "CANCEL"
+  ) {
+    if (!selectedId || acrioActionBusyId) return;
+    setAcrioActionBusyId(noteMessageId);
+    try {
+      const res = await fetch(`/api/conversations/${selectedId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "confirm_acrio_note_action",
+          noteMessageId,
+          decision,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        showToast(data.error || "Could not complete ACRIO action.");
+        return;
+      }
+      showToast(
+        decision === "CANCEL"
+          ? "ACRIO action cancelled."
+          : "Confirmed and shared with customer on WhatsApp."
+      );
+      await Promise.all([
+        fetchAndCacheDetail(selectedId, false),
+        refreshThreadsSilently(false),
+      ]);
+    } catch {
+      showToast("Network error while confirming ACRIO action.");
+    } finally {
+      setAcrioActionBusyId(null);
+    }
+  }
+
+  async function handleUploadCompanyDocForNote(
+    noteMessageId: string,
+    missingDoc: { slug?: string; title?: string; keywords?: string },
+    file: File
+  ) {
+    if (!selectedId || acrioActionBusyId) return;
+    setAcrioActionBusyId(noteMessageId);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const upRes = await fetch("/api/media/upload", {
+        method: "POST",
+        body: form,
+      });
+      const upData = await upRes.json().catch(() => ({}));
+      if (!upRes.ok || !upData.ok || !upData.attachment) {
+        showToast(upData.error || "File upload failed.");
+        return;
+      }
+      const att = upData.attachment as {
+        mediaId?: string;
+        waMediaId?: string;
+        mediaType?: string;
+        url: string;
+        fileName?: string;
+        mimeType?: string;
+      };
+      const attachRes = await fetch(`/api/conversations/${selectedId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "attach_company_doc_to_acrio_note",
+          noteMessageId,
+          slug: missingDoc.slug || "company-document",
+          title: missingDoc.title || "Company Document",
+          keywords: missingDoc.keywords || "",
+          mediaId: att.mediaId,
+          waMediaId: att.waMediaId,
+          mediaUrl: att.url,
+          mediaType: att.mediaType || "DOCUMENT",
+          fileName: att.fileName || file.name,
+          mimeType: att.mimeType || file.type,
+        }),
+      });
+      const attachData = await attachRes.json().catch(() => ({}));
+      if (!attachRes.ok || !attachData.ok) {
+        showToast(attachData.error || "Could not save document for sharing.");
+        return;
+      }
+      showToast(
+        `${missingDoc.title || "Document"} saved! Click Confirm & Share with Client to send.`
+      );
+      await fetchAndCacheDetail(selectedId, false);
+    } catch {
+      showToast("Network error while uploading document.");
+    } finally {
+      setAcrioActionBusyId(null);
+    }
   }
 
   async function handleReturnToAcrio() {
@@ -1592,10 +1692,11 @@ export function InboxClient({
   }
 
   async function handleTakeOverChat() {
-    if (!selectedId || takingOver) return;
+    const targetId = selectedId;
+    if (!targetId || takingOver) return;
     setTakingOver(true);
     try {
-      const res = await fetch(`/api/conversations/${selectedId}`, {
+      const res = await fetch(`/api/conversations/${targetId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "take_over_chat" }),
@@ -1605,12 +1706,79 @@ export function InboxClient({
         showToast(data.error || "Could not take over this chat.");
         return;
       }
+
+      const takeoverSeq = ++detailFetchSeqRef.current;
+      const cached = detailCacheRef.current.get(targetId);
+      const baseBundle =
+        detail?.conversation.id === targetId ? detail : cached || null;
+      const nextStaffId = String(
+        data.conversation?.assignedStaffId || initialData.currentUserId
+      );
+      const nextStaffName = String(
+        data.conversation?.assignedStaffName || initialData.currentUserName
+      );
+      const fallbackTeamName =
+        baseBundle?.conversation.assignedTeamName &&
+        !baseBundle.conversation.assignedTeamName.startsWith("System (ACRIO)") &&
+        baseBundle.conversation.assignedTeamName !== "ACRIO Assistant" &&
+        baseBundle.conversation.assignedTeamName !== "Internal Team Desk"
+          ? baseBundle.conversation.assignedTeamName
+          : "Sales Team";
+      const nextTeamId =
+        data.conversation?.assignedTeamId ??
+        (baseBundle?.conversation.assignedTeamId || "team_sales");
+      const nextTeamName =
+        data.conversation?.assignedTeamName ?? fallbackTeamName;
+
+      if (baseBundle) {
+        const nextBundle: ConversationDetailBundle = {
+          ...baseBundle,
+          conversation: {
+            ...baseBundle.conversation,
+            ...(data.conversation && typeof data.conversation === "object"
+              ? data.conversation
+              : {}),
+            assignedStaffId: nextStaffId,
+            assignedStaffName: nextStaffName,
+            assignedTeamId: nextTeamId,
+            assignedTeamName: nextTeamName,
+          },
+        };
+        detailCacheRef.current.set(targetId, nextBundle);
+        if (
+          selectedIdRef.current === targetId &&
+          takeoverSeq >= detailFetchSeqRef.current
+        ) {
+          setDetail(nextBundle);
+        }
+      }
+
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.id === targetId
+            ? {
+                ...t,
+                assignedStaffId: nextStaffId,
+                assignedStaffName: nextStaffName,
+                assignedTeamId: nextTeamId,
+                assignedTeamName: nextTeamName,
+              }
+            : t
+        )
+      );
+
       showToast("You took over this chat and can now reply directly.");
       setShowNoteForNonOwner(false);
       await Promise.all([
-        fetchAndCacheDetail(selectedId, false),
+        fetchAndCacheDetail(targetId, false),
         refreshThreadsSilently(false),
       ]);
+    } catch (err) {
+      showToast(
+        err instanceof Error
+          ? err.message
+          : "Network error while taking over chat."
+      );
     } finally {
       setTakingOver(false);
     }
@@ -2825,12 +2993,163 @@ export function InboxClient({
                           className="text-[13px] leading-relaxed"
                           onPhoneClick={handleOpenNewChatWithPhone}
                         />
+                        {(() => {
+                          const noteMedia = extractMessageMedia(m);
+                          if (!noteMedia) return null;
+                          return (
+                            <div className="mt-2">
+                              <MessageMediaRenderer
+                                media={noteMedia}
+                                onOpenPreview={(med) => setPreviewMedia(med)}
+                              />
+                            </div>
+                          );
+                        })()}
+                        {isAcrioNote &&
+                          m.metadata &&
+                          typeof m.metadata.pendingAction === "object" &&
+                          m.metadata.pendingAction !== null &&
+                          (() => {
+                            const pa = m.metadata.pendingAction as {
+                              id?: string;
+                              status?: string;
+                              title?: string;
+                              messageText?: string;
+                              decidedByStaffName?: string;
+                              error?: string;
+                              attachment?: {
+                                fileName?: string;
+                                mediaType?: string;
+                              } | null;
+                            };
+                            const isBusy = acrioActionBusyId === m.id;
+                            if (pa.status === "CONFIRMED") {
+                              return (
+                                <div className="mt-2 pt-2 border-t border-violet-200/70 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800">
+                                  <Check className="w-3.5 h-3.5 text-emerald-700" />
+                                  <span>
+                                    Confirmed & shared with client
+                                    {pa.decidedByStaffName ? ` by ${pa.decidedByStaffName}` : ""}
+                                  </span>
+                                </div>
+                              );
+                            }
+                            if (pa.status === "CANCELLED") {
+                              return (
+                                <div className="mt-2 pt-2 border-t border-violet-200/70 flex items-center gap-1.5 text-[11px] font-medium text-neutral-600">
+                                  <X className="w-3.5 h-3.5" />
+                                  <span>
+                                    Action cancelled
+                                    {pa.decidedByStaffName ? ` by ${pa.decidedByStaffName}` : ""}
+                                  </span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div className="mt-2.5 rounded-md bg-white border border-violet-200 p-2.5 space-y-2">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-[11px] font-semibold text-violet-950">
+                                    {pa.title || "Confirm client action"}
+                                  </span>
+                                  {pa.attachment?.fileName && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-100 text-violet-900 text-[10.5px] font-medium">
+                                      <FileText className="w-3 h-3" />
+                                      <span>{pa.attachment.fileName}</span>
+                                    </span>
+                                  )}
+                                </div>
+                                {pa.messageText && (
+                                  <p className="text-[12px] text-[#3b4a54] bg-[#f8fafc] border border-neutral-200 rounded px-2 py-1.5">
+                                    {pa.messageText}
+                                  </p>
+                                )}
+                                {pa.status === "FAILED" && pa.error && (
+                                  <p className="text-[11px] text-rose-700">
+                                    Previous send failed: {pa.error}
+                                  </p>
+                                )}
+                                <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() =>
+                                      void handleConfirmAcrioAction(m.id, "CONFIRM")
+                                    }
+                                    className="px-3 py-1.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>
+                                      {isBusy
+                                        ? "Sharing with client..."
+                                        : "Confirm & Share with Client"}
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() =>
+                                      void handleConfirmAcrioAction(m.id, "CANCEL")
+                                    }
+                                    className="px-2.5 py-1.5 rounded bg-white hover:bg-neutral-100 border border-neutral-300 text-neutral-700 text-[11px] font-medium cursor-pointer disabled:opacity-50"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        {isAcrioNote &&
+                          m.metadata &&
+                          typeof m.metadata.missingCompanyDoc === "object" &&
+                          m.metadata.missingCompanyDoc !== null &&
+                          (m.metadata.missingCompanyDoc as { status?: string }).status ===
+                            "NEEDS_UPLOAD" &&
+                          (() => {
+                            const md = m.metadata.missingCompanyDoc as {
+                              slug?: string;
+                              title?: string;
+                              keywords?: string;
+                            };
+                            const isBusy = acrioActionBusyId === m.id;
+                            return (
+                              <div className="mt-2.5 rounded-md bg-white border border-violet-200 p-2.5 flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-[11px] text-violet-950 font-medium">
+                                  Upload once to save permanently & confirm sharing:
+                                </span>
+                                <label
+                                  className={`px-3 py-1.5 rounded bg-violet-700 hover:bg-violet-800 text-white text-[11.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer ${
+                                    isBusy ? "opacity-50 pointer-events-none" : ""
+                                  }`}
+                                >
+                                  <Paperclip className="w-3.5 h-3.5" />
+                                  <span>
+                                    {isBusy
+                                      ? "Uploading..."
+                                      : `Upload ${md.title || "Document"}`}
+                                  </span>
+                                  <input
+                                    type="file"
+                                    accept=".pdf,image/*"
+                                    className="hidden"
+                                    disabled={isBusy}
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      e.target.value = "";
+                                      if (f) {
+                                        void handleUploadCompanyDocForNote(m.id, md, f);
+                                      }
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                            );
+                          })()}
                         {isAcrioNote &&
                           m.metadata &&
                           Array.isArray(m.metadata.actionsExecuted) &&
                           m.metadata.actionsExecuted.length > 0 && (
                             <div className="mt-2 pt-2 border-t border-violet-200/70 flex flex-wrap gap-1.5">
-                              {(m.metadata.actionsExecuted as Record<string, unknown>[]).map(
+                              {(m.metadata.actionsExecuted as (Record<string, unknown> | string)[]).map(
                                 (act, idx) => (
                                   <span
                                     key={`${m.id}_act_${idx}`}
@@ -2838,7 +3157,9 @@ export function InboxClient({
                                   >
                                     <Check className="w-3 h-3" />
                                     <span>
-                                      {String(act.detail || act.type || "Action done")}
+                                      {typeof act === "string"
+                                        ? act
+                                        : String(act.detail || act.type || "Action done")}
                                     </span>
                                   </span>
                                 )
@@ -2847,6 +3168,8 @@ export function InboxClient({
                           )}
                         {isAcrioNote &&
                           m.metadata &&
+                          !m.metadata.pendingAction &&
+                          !m.metadata.missingCompanyDoc &&
                           typeof m.metadata.suggestedReply === "string" &&
                           m.metadata.suggestedReply.trim() && (
                             <div className="mt-2 pt-2 border-t border-violet-200/70 flex flex-wrap items-center justify-between gap-2">
@@ -3836,12 +4159,13 @@ export function InboxClient({
                 </div>
               )}
 
-              {stagedAttachment && composerMode === "REPLY" && (
-                <StagedAttachmentBar
-                  attachment={stagedAttachment}
-                  onClear={() => setStagedAttachment(null)}
-                />
-              )}
+              {stagedAttachment &&
+                (composerMode === "REPLY" || composerMode === "NOTE") && (
+                  <StagedAttachmentBar
+                    attachment={stagedAttachment}
+                    onClear={() => setStagedAttachment(null)}
+                  />
+                )}
 
               {matchingQuickReplies.length > 0 && (
                 <div className="rounded-lg bg-white border border-[#d1d7db] shadow-md p-1.5 space-y-1 max-h-48 overflow-y-auto">
@@ -3956,7 +4280,10 @@ export function InboxClient({
                   disabled={
                     sending ||
                     (!replyText.trim() &&
-                      !(composerMode === "REPLY" && stagedAttachment))
+                      !(
+                        (composerMode === "REPLY" || composerMode === "NOTE") &&
+                        stagedAttachment
+                      ))
                   }
                   className={`h-10 px-4 rounded-lg text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0 ${
                     composerMode === "NOTE"

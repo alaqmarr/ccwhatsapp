@@ -6,6 +6,7 @@ import {
   listActiveNonClientStaff,
   resolveStaffMemberByQuery,
   upsertSyncedContact,
+  type CompanyDocumentRecord,
 } from "@cc/database";
 import {
   runAcrioStaffQuestion,
@@ -178,6 +179,378 @@ async function alertStaffOutsideApp(params: {
 
 const STAFF_NOTE_QUEUE = "acrio:staff_note_answer" as const;
 
+export interface NoteAttachmentPayload {
+  mediaId?: string;
+  waMediaId?: string;
+  mediaType: "DOCUMENT" | "IMAGE" | "VIDEO" | "AUDIO";
+  url: string;
+  fileName?: string;
+  mimeType?: string;
+}
+
+export interface PendingAcrioNoteAction {
+  id: string;
+  status: "PENDING_CONFIRMATION" | "CONFIRMED" | "CANCELLED" | "FAILED";
+  type: "send_customer_reply";
+  title: string;
+  messageText: string;
+  companyDocId?: string;
+  companyDocTitle?: string;
+  docNumber?: string;
+  attachment?: NoteAttachmentPayload | null;
+  requestedByStaffId: string;
+  requestedByStaffName: string;
+  createdAt: string;
+  decidedByStaffName?: string;
+  decidedAt?: string;
+  sentMessageId?: string;
+  error?: string;
+}
+
+export interface MissingCompanyDocPrompt {
+  status: "NEEDS_UPLOAD" | "RESOLVED";
+  slug: string;
+  title: string;
+  keywords: string;
+  defaultMessageText: string;
+  uploadedDocId?: string;
+}
+
+export async function executeAcrioPendingNoteAction(params: {
+  conversationId: string;
+  noteMessageId: string;
+  actorStaffId: string;
+  actorStaffName: string;
+  decision: "CONFIRM" | "CANCEL";
+  inReplyToNoteId?: string;
+}): Promise<{
+  ok: boolean;
+  actionStatus?: PendingAcrioNoteAction["status"];
+  messageId?: string;
+  error?: string;
+}> {
+  await ensureDatabasesBootstrapped();
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+
+  const [noteRes, convRes] = await Promise.all([
+    conv.execute({
+      sql: `SELECT id, body, metadata_json FROM messages WHERE id = ? AND conversation_id = ? LIMIT 1`,
+      args: [params.noteMessageId, params.conversationId],
+    }),
+    conv.execute({
+      sql: `SELECT customer_phone, customer_name, assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name
+            FROM conversations WHERE id = ? LIMIT 1`,
+      args: [params.conversationId],
+    }),
+  ]);
+
+  const noteRow = noteRes.rows[0] as Record<string, unknown> | undefined;
+  const cRow = convRes.rows[0] as Record<string, unknown> | undefined;
+  if (!noteRow || !cRow) {
+    return { ok: false, error: "Pending action note or conversation was not found." };
+  }
+
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = JSON.parse(String(noteRow.metadata_json || "{}"));
+  } catch {
+    meta = {};
+  }
+
+  const pending = meta.pendingAction as PendingAcrioNoteAction | undefined;
+  if (!pending || pending.status !== "PENDING_CONFIRMATION") {
+    return {
+      ok: false,
+      error: "This ACRIO action has already been confirmed or cancelled.",
+    };
+  }
+
+  const customerPhone = String(cRow.customer_phone || "");
+  const customerName = String(cRow.customer_name || customerPhone || "Customer");
+
+  if (params.decision === "CANCEL") {
+    pending.status = "CANCELLED";
+    pending.decidedByStaffName = params.actorStaffName;
+    pending.decidedAt = nowIso;
+    meta.pendingAction = pending;
+
+    await conv.execute({
+      sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+      args: [JSON.stringify(meta), params.noteMessageId],
+    });
+
+    const cancelNoteId = `msg_note_acrio_${crypto.randomUUID().slice(0, 8)}`;
+    const cancelBody = `@${params.actorStaffName} Cancelled *${pending.title}*. Nothing was sent to *${customerName}*.`;
+    await conv.execute({
+      sql: `INSERT INTO messages (
+        id, conversation_id, direction, sender_type, sender_name, message_type,
+        billing_category, body, metadata_json, delivery_status, created_at
+      ) VALUES (?, ?, 'INTERNAL', 'ACRIO', 'ACRIO', 'INTERNAL_NOTE', 'INTERNAL', ?, ?, 'SAVED', ?)`,
+      args: [
+        cancelNoteId,
+        params.conversationId,
+        cancelBody,
+        JSON.stringify({
+          acrioReply: true,
+          inReplyToNoteId: params.inReplyToNoteId || params.noteMessageId,
+          resolvedPendingActionId: pending.id,
+        }),
+        nowIso,
+      ],
+    });
+    socketHub.emit("note:new", {
+      conversationId: params.conversationId,
+      senderName: "ACRIO",
+      noteText: cancelBody,
+    });
+    socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+    return { ok: true, actionStatus: "CANCELLED" };
+  }
+
+  const att = pending.attachment || null;
+  const text =
+    String(pending.messageText || "").trim() ||
+    (att?.fileName ? `Please find attached *${att.fileName}* for your reference.` : "");
+
+  if (!text && !att) {
+    return { ok: false, error: "Nothing to send in this pending action." };
+  }
+
+  const sendRes = await sendWhatsAppCloudMessage({
+    toPhone: customerPhone,
+    bodyText: text,
+    media: att
+      ? {
+          type: att.mediaType,
+          url: att.url,
+          waMediaId: att.waMediaId,
+          caption: text,
+          fileName: att.fileName,
+          mimeType: att.mimeType,
+        }
+      : undefined,
+    simulateAsyncDelivery: true,
+  });
+
+  const outMetaObj: Record<string, unknown> = {
+    sentViaAcrioAction: pending.id,
+    confirmedBy: params.actorStaffName,
+  };
+  if (att) {
+    outMetaObj.mediaType = att.mediaType;
+    outMetaObj.mediaUrl = att.url;
+    if (att.mediaType === "IMAGE") outMetaObj.imageUrl = att.url;
+    if (att.mediaId) outMetaObj.mediaId = att.mediaId;
+    if (att.waMediaId) outMetaObj.waMediaId = att.waMediaId;
+    if (att.fileName) {
+      outMetaObj.fileName = att.fileName;
+      outMetaObj.filename = att.fileName;
+    }
+    if (att.mimeType) outMetaObj.mimeType = att.mimeType;
+    outMetaObj.media = {
+      mediaId: att.mediaId || att.waMediaId || null,
+      mimeType: att.mimeType || null,
+      filename: att.fileName || null,
+      caption: text || null,
+      downloadUrl: att.url,
+    };
+  }
+
+  const outMsgId = `msg_acrio_act_${crypto.randomUUID().slice(0, 8)}`;
+  const previewText = att?.fileName
+    ? `[${att.mediaType}] ${att.fileName}${text ? `: ${text}` : ""}`.slice(0, 140)
+    : text.slice(0, 140);
+
+  await conv.execute({
+    sql: `INSERT INTO messages (
+      id, conversation_id, direction, sender_type, sender_staff_id, sender_name,
+      message_type, billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+    ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, ?, 'FREE_CHAT', ?, ?, ?, ?, ?)`,
+    args: [
+      outMsgId,
+      params.conversationId,
+      params.actorStaffId,
+      `${params.actorStaffName} via ACRIO`,
+      att ? att.mediaType : "TEXT",
+      text,
+      JSON.stringify(outMetaObj),
+      sendRes.waMessageId,
+      sendRes.deliveryStatus,
+      nowIso,
+    ],
+  });
+
+  const shouldAutoAssign =
+    !cRow.assigned_staff_id || String(cRow.assigned_staff_id) === "ACRIO";
+  await conv.execute({
+    sql: `UPDATE conversations
+          SET status = CASE WHEN ? = 1 THEN 'ASSIGNED' ELSE status END,
+              assigned_staff_id = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_id END,
+              assigned_staff_name = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_name END,
+              assigned_team_id = CASE WHEN ? = 1 THEN COALESCE(assigned_team_id, 'team_sales') ELSE assigned_team_id END,
+              assigned_team_name = CASE
+                WHEN ? = 1 AND (assigned_team_id IS NULL OR assigned_team_name = 'System (ACRIO)') THEN 'Sales Team'
+                ELSE assigned_team_name
+              END,
+              waiting_since = NULL,
+              last_message_preview = ?,
+              last_message_at = ?
+          WHERE id = ?`,
+    args: [
+      shouldAutoAssign ? 1 : 0,
+      shouldAutoAssign ? 1 : 0,
+      params.actorStaffId,
+      shouldAutoAssign ? 1 : 0,
+      params.actorStaffName,
+      shouldAutoAssign ? 1 : 0,
+      shouldAutoAssign ? 1 : 0,
+      previewText,
+      nowIso,
+      params.conversationId,
+    ],
+  });
+
+  pending.status = sendRes.ok ? "CONFIRMED" : "FAILED";
+  pending.decidedByStaffName = params.actorStaffName;
+  pending.decidedAt = nowIso;
+  pending.sentMessageId = outMsgId;
+  if (!sendRes.ok && sendRes.error) pending.error = sendRes.error;
+  meta.pendingAction = pending;
+  meta.actionsExecuted = [
+    ...(Array.isArray(meta.actionsExecuted) ? meta.actionsExecuted : []),
+    att?.fileName ? `Shared ${att.fileName} with customer` : "Sent reply to customer",
+  ];
+  await conv.execute({
+    sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+    args: [JSON.stringify(meta), params.noteMessageId],
+  });
+
+  const doneNoteId = `msg_note_acrio_${crypto.randomUUID().slice(0, 8)}`;
+  const doneBody = sendRes.ok
+    ? `@${params.actorStaffName} Confirmed and shared ${att?.fileName ? `*${att.fileName}*` : "the reply"} directly with *${customerName}* on WhatsApp.`
+    : `@${params.actorStaffName} Tried to share ${att?.fileName ? `*${att.fileName}*` : "the reply"} with *${customerName}*, but WhatsApp delivery reported: ${sendRes.error || "failed"}.`;
+
+  await conv.execute({
+    sql: `INSERT INTO messages (
+      id, conversation_id, direction, sender_type, sender_name, message_type,
+      billing_category, body, metadata_json, delivery_status, created_at
+    ) VALUES (?, ?, 'INTERNAL', 'ACRIO', 'ACRIO', 'INTERNAL_NOTE', 'INTERNAL', ?, ?, 'SAVED', ?)`,
+    args: [
+      doneNoteId,
+      params.conversationId,
+      doneBody,
+      JSON.stringify({
+        acrioReply: true,
+        inReplyToNoteId: params.inReplyToNoteId || params.noteMessageId,
+        resolvedPendingActionId: pending.id,
+        actionsExecuted: sendRes.ok
+          ? [att?.fileName ? `Shared ${att.fileName} with client` : "Sent client reply"]
+          : [],
+      }),
+      nowIso,
+    ],
+  });
+
+  socketHub.emit("message:new", {
+    conversationId: params.conversationId,
+    senderName: `${params.actorStaffName} via ACRIO`,
+    text,
+  });
+  socketHub.emit("note:new", {
+    conversationId: params.conversationId,
+    senderName: "ACRIO",
+    noteText: doneBody,
+  });
+
+  return {
+    ok: sendRes.ok,
+    actionStatus: pending.status,
+    messageId: outMsgId,
+    error: sendRes.error,
+  };
+}
+
+export async function promoteMissingDocNoteToPendingAction(params: {
+  conversationId: string;
+  noteMessageId: string;
+  doc: CompanyDocumentRecord;
+  actorStaffId: string;
+  actorStaffName: string;
+}): Promise<{ ok: boolean; pendingAction?: PendingAcrioNoteAction; error?: string }> {
+  await ensureDatabasesBootstrapped();
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+
+  const [noteRes, convRes] = await Promise.all([
+    conv.execute({
+      sql: `SELECT id, body, metadata_json FROM messages WHERE id = ? AND conversation_id = ? LIMIT 1`,
+      args: [params.noteMessageId, params.conversationId],
+    }),
+    conv.execute({
+      sql: `SELECT customer_name FROM conversations WHERE id = ? LIMIT 1`,
+      args: [params.conversationId],
+    }),
+  ]);
+  const noteRow = noteRes.rows[0] as Record<string, unknown> | undefined;
+  if (!noteRow) return { ok: false, error: "Internal note not found." };
+  const customerName = String(convRes.rows[0]?.customer_name || "the client");
+
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = JSON.parse(String(noteRow.metadata_json || "{}"));
+  } catch {
+    meta = {};
+  }
+
+  const missing = meta.missingCompanyDoc as MissingCompanyDocPrompt | undefined;
+  const caption =
+    (missing?.defaultMessageText && missing.defaultMessageText.trim()) ||
+    `Please find attached our *${params.doc.title}*${params.doc.docNumber ? ` (${params.doc.docNumber})` : ""} for your reference. Let us know if you need anything else.`;
+
+  const pendingAction: PendingAcrioNoteAction = {
+    id: `pact_${crypto.randomUUID().slice(0, 8)}`,
+    status: "PENDING_CONFIRMATION",
+    type: "send_customer_reply",
+    title: `Share ${params.doc.title} with ${customerName}`,
+    messageText: caption,
+    companyDocId: params.doc.id,
+    companyDocTitle: params.doc.title,
+    docNumber: params.doc.docNumber || undefined,
+    attachment: {
+      mediaId: params.doc.mediaId || undefined,
+      waMediaId: params.doc.waMediaId || undefined,
+      mediaType: params.doc.mediaType,
+      url: params.doc.mediaUrl,
+      fileName: params.doc.fileName,
+      mimeType: params.doc.mimeType,
+    },
+    requestedByStaffId: params.actorStaffId,
+    requestedByStaffName: params.actorStaffName,
+    createdAt: nowIso,
+  };
+
+  if (missing) {
+    meta.missingCompanyDoc = {
+      ...missing,
+      status: "RESOLVED",
+      uploadedDocId: params.doc.id,
+    };
+  }
+  meta.pendingAction = pendingAction;
+  delete meta.suggestedReply;
+
+  const updatedBody = `@${params.actorStaffName} Saved *${params.doc.title}* (\`${params.doc.fileName}\`) to Company Documents.\n\nReady to share it with *${customerName}* on WhatsApp. Click *Confirm & Share with Client* below (or reply *@ACRIO confirm*).`;
+
+  await conv.execute({
+    sql: `UPDATE messages SET body = ?, metadata_json = ? WHERE id = ?`,
+    args: [updatedBody, JSON.stringify(meta), params.noteMessageId],
+  });
+
+  socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+  return { ok: true, pendingAction };
+}
+
 /** Runs one saved "@ACRIO" question job. Safe to run twice: the answer is only written once. */
 export async function runStaffNoteAnswerJob(payload: Record<string, unknown>): Promise<void> {
   await answerAcrioNote({
@@ -187,6 +560,7 @@ export async function runStaffNoteAnswerJob(payload: Record<string, unknown>): P
     author: payload.author as { id: string; name: string },
     customerName: String(payload.customerName || "a customer"),
     customerPhone: String(payload.customerPhone || ""),
+    noteAttachment: (payload.noteAttachment as NoteAttachmentPayload | null) || null,
   });
 }
 
@@ -227,7 +601,7 @@ export async function claimAndRunStaffNoteJobs(): Promise<number> {
   return done;
 }
 
-/** Tells the sales team about a new callback request: bell notification, email and optional WhatsApp. */
+/** Tells the assigned sales handler (or single least-loaded sales member if unassigned) about a new callback request. */
 export async function notifyCallbackRequest(params: {
   conversationId: string;
   customerName: string;
@@ -239,57 +613,133 @@ export async function notifyCallbackRequest(params: {
   try {
     await ensureDatabasesBootstrapped();
     const conv = getRawLibSqlClient("conversations");
-    const members = await conv.execute(
-      `SELECT staff_id, staff_name, staff_email FROM team_members WHERE team_id = 'team_sales'`
-    );
-    // Phone numbers live on the staff account, so look them up when we can.
     const auth = getRawLibSqlClient("core_auth");
-    for (const m of members.rows) {
-      const staffId = String(m.staff_id);
-      const phoneRes = await auth
-        .execute({ sql: `SELECT whatsapp_number FROM users WHERE id = ? AND status = 'ACTIVE' LIMIT 1`, args: [staffId] })
-        .catch(() => ({ rows: [] as Record<string, unknown>[] }));
-      const detail = `${params.customerName} (${params.customerPhone}) wants a call in the ${params.slot}.\nInterested in: ${params.topic}.`;
-      await createNotification({
-        staffId,
-        type: "CALLBACK",
-        conversationId: params.conversationId,
-        messageId: params.requestId,
-        fromName: "ACRIO",
-        customerName: params.customerName,
-        text: detail,
-      }).catch(() => {});
 
-      const staffWaPhone = phoneRes.rows[0]?.whatsapp_number
-        ? String(phoneRes.rows[0].whatsapp_number).trim()
+    // 1. If the chat is already assigned to a specific human teammate, notify ONLY them.
+    const convRes = await conv
+      .execute({
+        sql: `SELECT assigned_staff_id, assigned_staff_name FROM conversations WHERE id = ? LIMIT 1`,
+        args: [params.conversationId],
+      })
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    const currentAssignedId =
+      convRes.rows[0]?.assigned_staff_id &&
+      String(convRes.rows[0].assigned_staff_id) !== "ACRIO"
+        ? String(convRes.rows[0].assigned_staff_id)
         : "";
-      const staffNameStr = String(m.staff_name || "Team");
-      const staffEmailStr = String(m.staff_email || "").trim();
 
-      if (staffEmailStr) {
-        void sendStaffAlertEmail({
-          staffId,
-          staffEmail: staffEmailStr,
-          staffName: staffNameStr,
-          subject: `Callback request: ${params.customerName} (${params.customerPhone})`,
-          headline: "New callback request",
-          detail,
-          conversationId: params.conversationId,
-          ctaLabel: "Open the chat",
-          dispatchType: "STAFF_CALLBACK",
-        }).catch(() => {});
-      }
+    let targetStaff: {
+      id: string;
+      name: string;
+      email: string;
+      whatsappNumber: string;
+    } | null = null;
 
-      if (staffWaPhone) {
-        void sendCallbackRequestAlertTemplate({
-          toPhone: staffWaPhone,
-          staffId,
-          staffName: staffNameStr,
-          customerName: params.customerName,
-          customerPhone: params.customerPhone,
-          preferredTime: params.slot || "As soon as possible",
-        }).catch(() => {});
+    if (currentAssignedId) {
+      const uRes = await auth
+        .execute({
+          sql: `SELECT id, name, email, whatsapp_number, status FROM users WHERE id = ? LIMIT 1`,
+          args: [currentAssignedId],
+        })
+        .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+      const u = uRes.rows[0];
+      if (u && String(u.status) === "ACTIVE") {
+        targetStaff = {
+          id: String(u.id),
+          name: String(u.name || convRes.rows[0]?.assigned_staff_name || "Team Member"),
+          email: String(u.email || ""),
+          whatsappNumber: String(u.whatsapp_number || ""),
+        };
       }
+    }
+
+    // 2. Otherwise pick ONLY ONE least-loaded available Sales Team responder (never blast the entire team).
+    if (!targetStaff) {
+      const [members, loadRes, devRes] = await Promise.all([
+        conv.execute(
+          `SELECT staff_id, staff_name, staff_email, tier
+           FROM team_members
+           WHERE team_id = 'team_sales' AND is_available = 1
+           ORDER BY tier ASC, created_at ASC`
+        ),
+        conv.execute(
+          `SELECT assigned_staff_id, COUNT(*) as open_cnt
+           FROM conversations
+           WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL AND assigned_staff_id != 'ACRIO'
+           GROUP BY assigned_staff_id`
+        ),
+        auth.execute(`SELECT id FROM users WHERE role = 'DEV'`),
+      ]);
+      const devIds = new Set(devRes.rows.map((d) => String(d.id)));
+      const loadMap = new Map<string, number>();
+      for (const lr of loadRes.rows) {
+        loadMap.set(String(lr.assigned_staff_id), Number(lr.open_cnt ?? 0));
+      }
+      const candidates = members.rows
+        .filter((m) => !devIds.has(String(m.staff_id)))
+        .sort((a, b) => {
+          const tA = String(a.tier || "P0");
+          const tB = String(b.tier || "P0");
+          if (tA !== tB) return tA.localeCompare(tB);
+          return (loadMap.get(String(a.staff_id)) ?? 0) - (loadMap.get(String(b.staff_id)) ?? 0);
+        });
+      const chosen = candidates[0] || members.rows[0];
+      if (chosen) {
+        const sid = String(chosen.staff_id);
+        const uRes = await auth
+          .execute({
+            sql: `SELECT name, email, whatsapp_number, status FROM users WHERE id = ? LIMIT 1`,
+            args: [sid],
+          })
+          .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+        const u = uRes.rows[0];
+        if (!u || String(u.status) === "ACTIVE") {
+          targetStaff = {
+            id: sid,
+            name: String(u?.name || chosen.staff_name || "Sales Team"),
+            email: String(u?.email || chosen.staff_email || ""),
+            whatsappNumber: String(u?.whatsapp_number || ""),
+          };
+        }
+      }
+    }
+
+    if (!targetStaff) return;
+
+    const detail = `${params.customerName} (${params.customerPhone}) wants a call in the ${params.slot}.\nInterested in: ${params.topic}.`;
+    await createNotification({
+      staffId: targetStaff.id,
+      type: "CALLBACK",
+      conversationId: params.conversationId,
+      messageId: params.requestId,
+      fromName: "ACRIO",
+      customerName: params.customerName,
+      text: detail,
+    }).catch(() => {});
+
+    if (targetStaff.email) {
+      void sendStaffAlertEmail({
+        staffId: targetStaff.id,
+        staffEmail: targetStaff.email,
+        staffName: targetStaff.name,
+        subject: `Callback request: ${params.customerName} (${params.customerPhone})`,
+        headline: "New callback request",
+        detail,
+        conversationId: params.conversationId,
+        ctaLabel: "Open the chat",
+        dispatchType: "STAFF_CALLBACK",
+      }).catch(() => {});
+    }
+
+    if (targetStaff.whatsappNumber) {
+      void sendCallbackRequestAlertTemplate({
+        toPhone: targetStaff.whatsappNumber,
+        staffId: targetStaff.id,
+        staffName: targetStaff.name,
+        customerName: params.customerName,
+        customerPhone: params.customerPhone,
+        preferredTime: params.slot || "As soon as possible",
+      }).catch(() => {});
     }
   } catch (err) {
     console.warn("[notify] callback notification failed:", (err as Error)?.message || err);
@@ -303,6 +753,7 @@ async function answerAcrioNote(params: {
   author: { id: string; name: string };
   customerName: string;
   customerPhone: string;
+  noteAttachment?: NoteAttachmentPayload | null;
 }): Promise<void> {
   const conv = getRawLibSqlClient("conversations");
   const crm = getRawLibSqlClient("crm_orders");
@@ -314,6 +765,45 @@ async function answerAcrioNote(params: {
     args: [params.conversationId, `%"inReplyToNoteId":"${params.noteId}"%`],
   });
   if (already.rows[0]) return;
+
+  // Check whether teammate is confirming or cancelling a pending ACRIO customer action via text reply
+  const trimmedCmd = String(params.question || "").trim();
+  const isTextConfirm =
+    /^(yes|yep|yeah|confirm|confirmed|approve|approved|go ahead|ok|okay|proceed|send|send it|share|share it|do it)\b[.!]?$/i.test(
+      trimmedCmd
+    );
+  const isTextCancel =
+    /^(cancel|no|nope|stop|dont send|don't send|abort)\b[.!]?$/i.test(
+      trimmedCmd
+    );
+  if (isTextConfirm || isTextCancel) {
+    const pendingNotes = await conv.execute({
+      sql: `SELECT id, metadata_json FROM messages
+            WHERE conversation_id = ? AND sender_name = 'ACRIO' AND message_type = 'INTERNAL_NOTE'
+            ORDER BY created_at DESC LIMIT 12`,
+      args: [params.conversationId],
+    });
+    for (const r of pendingNotes.rows) {
+      let parsedMeta: Record<string, unknown> = {};
+      try {
+        parsedMeta = JSON.parse(String(r.metadata_json || "{}"));
+      } catch {
+        parsedMeta = {};
+      }
+      const p = parsedMeta.pendingAction as PendingAcrioNoteAction | undefined;
+      if (p && p.status === "PENDING_CONFIRMATION") {
+        await executeAcrioPendingNoteAction({
+          conversationId: params.conversationId,
+          noteMessageId: String(r.id),
+          actorStaffId: params.author.id,
+          actorStaffName: params.author.name,
+          decision: isTextCancel ? "CANCEL" : "CONFIRM",
+          inReplyToNoteId: params.noteId,
+        });
+        return;
+      }
+    }
+  }
 
   const [msgRes, convRes, availableStaff] = await Promise.all([
     conv.execute({
@@ -351,10 +841,13 @@ async function answerAcrioNote(params: {
     })),
     currentOwnerName: cRow?.assigned_staff_name ? String(cRow.assigned_staff_name) : null,
     conversationStatus: cRow?.status ? String(cRow.status) : "OPEN",
+    noteAttachment: params.noteAttachment || null,
   });
 
   const executedSummaries: string[] = [];
   const nowActionIso = new Date().toISOString();
+  let pendingAction: PendingAcrioNoteAction | null = null;
+  let missingCompanyDoc: MissingCompanyDocPrompt | null = null;
 
   for (const act of result.actions || []) {
     try {
@@ -479,35 +972,59 @@ async function answerAcrioNote(params: {
         });
         executedSummaries.push(`Created callback request (${act.callbackSlot || "Morning"})`);
         socketHub.emit("callback:new", { conversationId: params.conversationId });
-      } else if (act.type === "send_customer_reply" && act.messageText && params.customerPhone) {
-        const sendRes = await sendWhatsAppCloudMessage({
-          toPhone: params.customerPhone,
-          bodyText: act.messageText,
-          simulateAsyncDelivery: true,
-        });
-        const outId = `msg_acrio_act_${crypto.randomUUID().slice(0, 8)}`;
-        await conv.execute({
-          sql: `INSERT INTO messages (
-            id, conversation_id, direction, sender_type, sender_staff_id, sender_name,
-            message_type, billing_category, body, wa_message_id, delivery_status, created_at
-          ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, 'TEXT', 'FREE_CHAT', ?, ?, ?, ?)`,
-          args: [
-            outId,
-            params.conversationId,
-            params.author.id,
-            `${params.author.name} via ACRIO`,
-            act.messageText,
-            sendRes.waMessageId,
-            sendRes.deliveryStatus,
-            nowActionIso,
-          ],
-        });
-        await conv.execute({
-          sql: `UPDATE conversations SET waiting_since = NULL, last_message_preview = ?, last_message_at = ? WHERE id = ?`,
-          args: [act.messageText.slice(0, 140), nowActionIso, params.conversationId],
-        });
-        executedSummaries.push("Sent WhatsApp message to customer");
-        socketHub.emit("message:new", { conversationId: params.conversationId, senderName: params.author.name, text: act.messageText });
+      } else if (act.type === "send_customer_reply" && (act.messageText || act.mediaUrl) && params.customerPhone) {
+        const attachmentPayload: NoteAttachmentPayload | null = act.mediaUrl
+          ? {
+              mediaId: act.mediaId || undefined,
+              waMediaId: act.waMediaId || undefined,
+              mediaType: (["DOCUMENT", "IMAGE", "VIDEO", "AUDIO"].includes(
+                String(act.mediaType || "").toUpperCase()
+              )
+                ? String(act.mediaType).toUpperCase()
+                : "DOCUMENT") as NoteAttachmentPayload["mediaType"],
+              url: act.mediaUrl,
+              fileName: act.fileName || act.companyDocTitle || "Document.pdf",
+              mimeType: act.mimeType || "application/pdf",
+            }
+          : null;
+        const msgText =
+          String(act.messageText || "").trim() ||
+          (attachmentPayload?.fileName
+            ? `Please find attached *${attachmentPayload.fileName}* for your reference.`
+            : "");
+        pendingAction = {
+          id: `pact_${crypto.randomUUID().slice(0, 8)}`,
+          status: "PENDING_CONFIRMATION",
+          type: "send_customer_reply",
+          title: act.companyDocTitle
+            ? `Share ${act.companyDocTitle} with ${params.customerName}`
+            : attachmentPayload?.fileName
+            ? `Share ${attachmentPayload.fileName} with ${params.customerName}`
+            : `Send WhatsApp reply to ${params.customerName}`,
+          messageText: msgText,
+          companyDocId: act.companyDocId || undefined,
+          companyDocTitle: act.companyDocTitle || undefined,
+          docNumber: act.docNumber || undefined,
+          attachment: attachmentPayload,
+          requestedByStaffId: params.author.id,
+          requestedByStaffName: params.author.name,
+          createdAt: nowActionIso,
+        };
+      } else if (act.type === "request_company_document_upload") {
+        const docTitle = String(act.requestedDocTitle || "Company Document").trim();
+        const docSlug = String(
+          act.requestedDocSlug ||
+            docTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+        ).trim();
+        missingCompanyDoc = {
+          status: "NEEDS_UPLOAD",
+          slug: docSlug || "company-document",
+          title: docTitle,
+          keywords: `${docSlug.replace(/-/g, ", ")}, ${docTitle.toLowerCase()}`,
+          defaultMessageText:
+            String(act.messageText || "").trim() ||
+            `Please find attached our *${docTitle}* for your reference. Let us know if you need anything else.`,
+        };
       }
     } catch (err) {
       console.warn("[acrio-staff-action] failed:", act.type, (err as Error)?.message || err);
@@ -520,10 +1037,16 @@ async function answerAcrioNote(params: {
     executedSummaries.length > 0
       ? `\n\n*Actions done:* ${executedSummaries.join(" | ")}`
       : "";
-  const suggestedFooter =
-    result.suggestedReply && !executedSummaries.some((s) => s.includes("Sent WhatsApp"))
-      ? `\n\n*Suggested reply:*\n${result.suggestedReply}`
-      : "";
+  const effectiveSuggestedReply =
+    !pendingAction &&
+    !missingCompanyDoc &&
+    result.suggestedReply &&
+    !executedSummaries.some((s) => s.includes("Sent WhatsApp"))
+      ? result.suggestedReply
+      : null;
+  const suggestedFooter = effectiveSuggestedReply
+    ? `\n\n*Suggested reply:*\n${effectiveSuggestedReply}`
+    : "";
   const body = `@${params.author.name} ${result.answer}${actionFooter}${suggestedFooter}`;
   await conv.execute({
     sql: `INSERT INTO messages (
@@ -540,7 +1063,9 @@ async function answerAcrioNote(params: {
         forStaffId: params.author.id,
         forStaffName: params.author.name,
         actionsExecuted: executedSummaries,
-        suggestedReply: result.suggestedReply || null,
+        suggestedReply: effectiveSuggestedReply,
+        ...(pendingAction ? { pendingAction } : {}),
+        ...(missingCompanyDoc ? { missingCompanyDoc } : {}),
       }),
       nowIso,
     ],
@@ -587,6 +1112,7 @@ export async function processStaffNote(params: {
   noteText: string;
   author: { id: string; name: string };
   staff: MentionableStaff[];
+  noteAttachment?: NoteAttachmentPayload | null;
 }): Promise<{
   mentioned: { id: string; name: string }[];
   askedAcrio: boolean;
@@ -676,6 +1202,7 @@ export async function processStaffNote(params: {
       author: params.author,
       customerName,
       customerPhone,
+      noteAttachment: params.noteAttachment || null,
     });
     void claimAndRunStaffNoteJobs();
   }

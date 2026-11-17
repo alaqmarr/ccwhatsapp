@@ -15,8 +15,11 @@ import {
   ensureDatabasesBootstrapped,
   extractBudgetConstraintsFromQuery,
   findMatchingAiTrainingGuidance,
+  findMatchingCompanyDocuments,
   getEcosystemBudgetFallbackInfo,
   getRawLibSqlClient,
+  getVerifiedLiveBrandAndTeamInfo,
+  listCompanyDocuments,
   loadAllClassicConceptsProducts,
   loadAllClassicEdgeItems,
   normalizeWhatsAppPhone,
@@ -25,6 +28,7 @@ import {
   resolveClassicEdgeInternalUrl,
   resolveEcosystemBridgeKey,
   resolveEnvMetaWhatsAppConfig,
+  resolveInternalStaffCallerByPhone,
   resolveMainWebsiteDbPath,
   resolvePublicShortLinkOrigin,
   resolvePublicTrackingOrigin,
@@ -33,6 +37,7 @@ import {
   searchEcosystemItems,
   snapshotAllDatabasesToFolder,
   type AiLogWebsite,
+  type InternalStaffCallerProfile,
   type AiLookedUpProduct,
   type AiTokenUsage,
   type AiTraceLogEntry,
@@ -805,6 +810,159 @@ export async function uploadMediaToMetaCloud(params: {
   }
 }
 
+async function recordOutboundTemplateInChat(params: {
+  toPhone: string;
+  templateName: string;
+  bodyText: string;
+  waMessageId: string;
+  deliveryStatus: string;
+  billingCategory?: "MARKETING" | "UTILITY" | "AUTHENTICATION";
+  senderName?: string;
+}): Promise<void> {
+  const normalizedPhone = normalizeWhatsAppPhone(params.toPhone);
+  if (!normalizedPhone) return;
+
+  await ensureDatabasesBootstrapped();
+  const conv = getRawLibSqlClient("conversations");
+  const crm = getRawLibSqlClient("crm_orders");
+  const mkt = getRawLibSqlClient("marketing");
+  const nowIso = new Date().toISOString();
+
+  if (params.waMessageId) {
+    const dup = await conv
+      .execute({
+        sql: `SELECT id FROM messages WHERE wa_message_id = ? LIMIT 1`,
+        args: [params.waMessageId],
+      })
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    if (dup.rows[0]) return;
+  }
+
+  let billingCat: "MARKETING" | "UTILITY" | "AUTHENTICATION" =
+    params.billingCategory ||
+    (params.templateName === "cc_quote_request_alert" ||
+    params.templateName === "cc_order_tracking_dispatch"
+      ? "UTILITY"
+      : "MARKETING");
+
+  if (!params.billingCategory) {
+    const tplCatRes = await mkt
+      .execute({
+        sql: `SELECT category FROM templates WHERE name = ? LIMIT 1`,
+        args: [params.templateName],
+      })
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    const rawCat = String(tplCatRes.rows[0]?.category || "").toUpperCase();
+    if (rawCat === "UTILITY" || rawCat === "AUTHENTICATION" || rawCat === "MARKETING") {
+      billingCat = rawCat;
+    }
+  }
+
+  const existingConv = await conv.execute({
+    sql: `SELECT id, customer_name FROM conversations WHERE customer_phone = ? LIMIT 1`,
+    args: [normalizedPhone],
+  });
+
+  let convId = existingConv.rows[0]?.id ? String(existingConv.rows[0].id) : "";
+  if (!convId) {
+    const staffCaller = await resolveInternalStaffCallerByPhone(normalizedPhone).catch(
+      () => null
+    );
+    convId = `conv_${crypto.randomUUID().slice(0, 8)}`;
+
+    if (staffCaller) {
+      await conv.execute({
+        sql: `INSERT INTO conversations (
+          id, customer_phone, customer_name, customer_id, status, priority,
+          smart_category, assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name,
+          escalation_level, waiting_since, unread_count, last_message_preview, last_message_at, created_at
+        ) VALUES (?, ?, ?, NULL, 'OPEN', 'NORMAL', 'Internal Team', 'ACRIO', 'ACRIO', NULL, 'Internal Team Desk', 'P0', NULL, 0, ?, ?, ?)`,
+        args: [
+          convId,
+          normalizedPhone,
+          `${staffCaller.name} (Team)`,
+          String(params.bodyText || params.templateName).slice(0, 140),
+          nowIso,
+          nowIso,
+        ],
+      });
+    } else {
+      const custRes = await crm.execute({
+        sql: `SELECT id, name FROM customers WHERE phone = ? LIMIT 1`,
+        args: [normalizedPhone],
+      });
+      let custId = custRes.rows[0]?.id ? String(custRes.rows[0].id) : "";
+      let custName = custRes.rows[0]?.name ? String(custRes.rows[0].name) : normalizedPhone;
+      if (!custId) {
+        custId = `cust_${crypto.randomUUID().slice(0, 8)}`;
+        await crm
+          .execute({
+            sql: `INSERT INTO customers (id, phone, name, acrio_segment, last_interaction_at, created_at)
+                  VALUES (?, ?, ?, 'WhatsApp Template Outreach', ?, ?)`,
+            args: [custId, normalizedPhone, custName, nowIso, nowIso],
+          })
+          .catch(() => {});
+      }
+      await conv.execute({
+        sql: `INSERT INTO conversations (
+          id, customer_phone, customer_name, customer_id, status, priority,
+          smart_category, assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name,
+          escalation_level, waiting_since, unread_count, last_message_preview, last_message_at, created_at
+        ) VALUES (?, ?, ?, ?, 'OPEN', 'NORMAL', 'General Enquiry', 'ACRIO', 'ACRIO', NULL, 'System (ACRIO)', 'P0', NULL, 0, ?, ?, ?)`,
+        args: [
+          convId,
+          normalizedPhone,
+          custName,
+          custId,
+          String(params.bodyText || params.templateName).slice(0, 140),
+          nowIso,
+          nowIso,
+        ],
+      });
+    }
+  }
+
+  const msgId = `msg_tpl_${crypto.randomUUID().slice(0, 10)}`;
+  const senderLabel = params.senderName || `ACRIO • ${params.templateName}`;
+  await conv.execute({
+    sql: `INSERT INTO messages (
+      id, conversation_id, wa_message_id, direction, sender_type, sender_name,
+      message_type, billing_category, body, template_name, delivery_status, created_at
+    ) VALUES (?, ?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEMPLATE', ?, ?, ?, ?, ?)`,
+    args: [
+      msgId,
+      convId,
+      params.waMessageId || null,
+      senderLabel,
+      billingCat,
+      params.bodyText || params.templateName,
+      params.templateName,
+      params.deliveryStatus || "SENT",
+      nowIso,
+    ],
+  });
+
+  await conv.execute({
+    sql: `UPDATE conversations
+          SET last_message_preview = ?,
+              last_message_at = ?
+          WHERE id = ?`,
+    args: [
+      String(params.bodyText || params.templateName)
+        .replace(/\s*\n+\s*/g, " ")
+        .slice(0, 140),
+      nowIso,
+      convId,
+    ],
+  });
+
+  socketHub.emit("message:new", {
+    conversationId: convId,
+    senderName: senderLabel,
+    text: params.bodyText,
+  });
+}
+
 export async function sendWhatsAppCloudMessage(params: {
   toPhone: string;
   bodyText: string;
@@ -825,6 +983,9 @@ export async function sendWhatsAppCloudMessage(params: {
   };
   simulateAsyncDelivery?: boolean;
   forceSandbox?: boolean;
+  skipAutoChatRecord?: boolean;
+  recordSenderName?: string;
+  recordBillingCategory?: "MARKETING" | "UTILITY" | "AUTHENTICATION";
 }): Promise<OutboundWhatsAppSendResult> {
   const cfg = await loadMetaWhatsAppSetupConfig();
 
@@ -1089,6 +1250,17 @@ export async function sendWhatsAppCloudMessage(params: {
       const waId =
         String(data?.messages?.[0]?.id || "") ||
         `wamid.live_${crypto.randomUUID().slice(0, 12)}`;
+      if (params.templateName && !params.skipAutoChatRecord) {
+        await recordOutboundTemplateInChat({
+          toPhone: normalizedPhone || params.toPhone,
+          templateName: params.templateName,
+          bodyText: formattedBody,
+          waMessageId: waId,
+          deliveryStatus: "SENT",
+          billingCategory: params.recordBillingCategory,
+          senderName: params.recordSenderName,
+        }).catch(() => {});
+      }
       return {
         ok: true,
         waMessageId: waId,
@@ -1108,11 +1280,23 @@ export async function sendWhatsAppCloudMessage(params: {
 
   // Sandbox Simulator Mode: generates authentic wamid; interactive chat replies start as SENT and transition to DELIVERED
   const simulatedId = `wamid.sim_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const simDeliveryStatus = params.simulateAsyncDelivery ? "SENT" : "DELIVERED";
+  if (params.templateName && !params.skipAutoChatRecord) {
+    await recordOutboundTemplateInChat({
+      toPhone: normalizedPhone || params.toPhone,
+      templateName: params.templateName,
+      bodyText: formattedBody,
+      waMessageId: simulatedId,
+      deliveryStatus: simDeliveryStatus,
+      billingCategory: params.recordBillingCategory,
+      senderName: params.recordSenderName,
+    }).catch(() => {});
+  }
   return {
     ok: true,
     waMessageId: simulatedId,
     mode: "SANDBOX_SIMULATOR",
-    deliveryStatus: params.simulateAsyncDelivery ? "SENT" : "DELIVERED",
+    deliveryStatus: simDeliveryStatus,
   };
 }
 
@@ -4393,7 +4577,8 @@ export interface AcrioStaffAction {
     | "reopen_chat"
     | "update_customer"
     | "create_callback"
-    | "send_customer_reply";
+    | "send_customer_reply"
+    | "request_company_document_upload";
   staffQuery?: string;
   priority?: "URGENT" | "HIGH" | "NORMAL";
   category?: string;
@@ -4405,12 +4590,23 @@ export interface AcrioStaffAction {
   callbackSlot?: string;
   callbackTopic?: string;
   messageText?: string;
+  companyDocId?: string;
+  companyDocTitle?: string;
+  requestedDocSlug?: string;
+  requestedDocTitle?: string;
+  docNumber?: string;
+  mediaUrl?: string;
+  mediaType?: "DOCUMENT" | "IMAGE" | "VIDEO" | "AUDIO";
+  mediaId?: string;
+  waMediaId?: string;
+  fileName?: string;
+  mimeType?: string;
+  confirmed?: boolean;
 }
 
 /**
  * ACRIO answers a teammate who asked a question or requested an action with "@ACRIO" inside an internal chat note.
- * Can execute real chat & CRM actions (assign, add collaborator, update customer details, resolve, set priority, send explicit reply)
- * while posting a clear confirmation & answer back into the private notes.
+ * Can execute internal CRM actions or queue customer-facing shares/replies for confirmation in internal notes.
  */
 export async function runAcrioStaffQuestion(params: {
   question: string;
@@ -4421,6 +4617,14 @@ export async function runAcrioStaffQuestion(params: {
   availableStaff?: { id: string; name: string; role: string; department?: string }[];
   currentOwnerName?: string | null;
   conversationStatus?: string;
+  noteAttachment?: {
+    mediaId?: string;
+    waMediaId?: string;
+    mediaType?: string;
+    url: string;
+    fileName?: string;
+    mimeType?: string;
+  } | null;
 }): Promise<{
   ok: boolean;
   answer: string;
@@ -4442,19 +4646,21 @@ export async function runAcrioStaffQuestion(params: {
     .slice(-3)
     .map((m) => m.body)
     .join(" ");
-  const [matches, trainingGuidance] = await Promise.all([
+  const [matches, trainingGuidance, allCompanyDocs, matchedCompanyDocs] = await Promise.all([
     Promise.resolve(searchEcosystemItems(allItems, `${question} ${lastCustomerText}`, 6)),
     findMatchingAiTrainingGuidance({
       queryText: `${question} ${lastCustomerText}`,
       scope: "STAFF_COPILOT",
     }).catch(() => ({ promptBlock: "", examples: [], rules: [] })),
+    listCompanyDocuments({ enabledOnly: true }).catch(() => []),
+    findMatchingCompanyDocuments(question).catch(() => []),
   ]);
   const deep = buildEcosystemDeepProductContextAndAnswer({
     rawQuery: question,
     matchedItems: matches,
     formatItemLink: (it) => it.shortUrl || it.url,
   });
-  addStep("Looked up catalog for the question", `matched=${matches.length} of ${allItems.length}`);
+  addStep("Looked up catalog and company docs", `matched=${matches.length}, docs=${allCompanyDocs.length}`);
 
   const liveContext = await loadLiveDatabaseOperationalContext({
     customerPhone: params.customerPhone,
@@ -4462,6 +4668,14 @@ export async function runAcrioStaffQuestion(params: {
     rawQuery: question,
     forStaffCopilot: true,
   }).catch(() => "");
+
+  const companyDocsContextLines = allCompanyDocs.map(
+    (d) =>
+      `- id="${d.id}" slug="${d.slug}" title="${d.title}"${d.docNumber ? ` number="${d.docNumber}"` : ""} mediaType="${d.mediaType}" fileName="${d.fileName}" url="${d.mediaUrl}"${d.waMediaId ? ` waMediaId="${d.waMediaId}"` : ""}${d.mediaId ? ` mediaId="${d.mediaId}"` : ""} mimeType="${d.mimeType}" keywords="${d.keywords}"`
+  );
+  const noteAttachmentLine = params.noteAttachment
+    ? `[FILE ATTACHED BY ${params.staffName} IN THIS NOTE]: mediaType="${params.noteAttachment.mediaType || "DOCUMENT"}" fileName="${params.noteAttachment.fileName || "attachment"}" url="${params.noteAttachment.url}"${params.noteAttachment.mediaId ? ` mediaId="${params.noteAttachment.mediaId}"` : ""}${params.noteAttachment.waMediaId ? ` waMediaId="${params.noteAttachment.waMediaId}"` : ""} mimeType="${params.noteAttachment.mimeType || "application/pdf"}"`
+    : "";
 
   const transcript = params.chatMessages
     .slice(-30)
@@ -4495,7 +4709,7 @@ export async function runAcrioStaffQuestion(params: {
       system: `You are ACRIO, the assistant and action copilot for the Classic Concepts and Classic Edge 53 team. A teammate (${params.staffName}) is asking you a question OR asking you to perform an action inside a PRIVATE internal note on a customer chat.
 
 CAPABILITIES (STAFF COPILOT ACTIONS):
-You can both answer questions AND perform actions inside the chat by returning structured "actions" in JSON:
+You can both answer questions AND perform actions by returning structured "actions" in JSON:
 - "assign_staff": transfer chat ownership to a teammate (or "ACRIO" to hand back to AI). Set "staffQuery".
 - "add_collaborator": give dual access to a teammate without removing current owner. Set "staffQuery".
 - "set_priority": set priority to "URGENT", "HIGH", or "NORMAL".
@@ -4504,25 +4718,30 @@ You can both answer questions AND perform actions inside the chat by returning s
 - "reopen_chat": reopen a resolved chat.
 - "update_customer": update "city", "companyName", "notes", or "preferredStaffQuery" on customer profile.
 - "create_callback": log a pending callback with "callbackSlot" and "callbackTopic".
-- "send_customer_reply": ONLY use this if the teammate explicitly commands you to send a WhatsApp message directly to the customer (e.g. "send this to customer", "reply to the customer saying...", "message the client now"). Otherwise put any draft inside "suggestedReply" ONLY so staff can review and click Insert!
+- "send_customer_reply": Use this WHENEVER the teammate asks you to share/send a file, GST/ISO/company document, catalogue, price, or message directly with the customer/client (e.g. "share gst certificate with the client", "send the brochure to customer", "reply to the client saying...").
+  Fields: "messageText" (clear WhatsApp message/caption for client), plus optional attachment fields when sharing a file ("companyDocId", "companyDocTitle", "docNumber", "mediaUrl", "mediaType", "mediaId", "waMediaId", "fileName", "mimeType") taken ONLY from [VERIFIED COMPANY DOCUMENTS LIBRARY] or [FILE ATTACHED BY TEAMMATE IN THIS NOTE] or verified catalog PDFs.
+  IMPORTANT CONFIRMATION WORKFLOW: The system will confirm this action in the internal notes first before sending it to the client! So set "confirmed": false, leave "suggestedReply": "" EMPTY, and in "answer" clearly ask the teammate to confirm sharing it with the client (or click Confirm & Share with Client below).
+- "request_company_document_upload": Use this WHENEVER the teammate asks you to share a company document (like GST Certificate, MSME Certificate, ISO Certificate, PAN Card, Bank Details) that does NOT exist in [VERIFIED COMPANY DOCUMENTS LIBRARY] and is NOT attached in this note!
+  Fields: "requestedDocSlug" (e.g. "gst-certificate"), "requestedDocTitle" (e.g. "GST Certificate"), "messageText" (the WhatsApp caption that should go with it once uploaded, e.g. "Please find attached our GST Certificate for your reference.").
+  CRITICAL RULE: When returning "send_customer_reply" OR "request_company_document_upload", ALWAYS leave "suggestedReply": "" EMPTY! NEVER suggest a holding text reply when the teammate asked you to perform a share/send action!
 
 ACTIVE TEAM ROSTER: ${staffRosterLine || "Sales & Support Team"}
 CURRENT CHAT OWNER: ${params.currentOwnerName || "System (ACRIO)"} | STATUS: ${params.conversationStatus || "OPEN"}
 
 WRITING RULES:
 1. Plain everyday layman English. Zero em-dashes, zero "--", zero buzzwords (no bespoke, elevate, delve, meticulous, seamless, utilize, etc.).
-2. Use ONLY verified catalogue, company, and chat information below. Never invent prices, sizes, specs, stock, or dates.
+2. Use ONLY verified catalogue, company documents, and chat information below. Never invent prices, GSTIN numbers, files, sizes, specs, stock, or dates.
 3. Single asterisks for *bold*. Use ₹ and https://ccapl.cc/... shortlinks from verified data.
-4. Keep "answer" concise (2 to 8 short lines).
+4. Keep "answer" concise (2 to 6 short lines).
 ${trainingGuidance.promptBlock ? `\n${trainingGuidance.promptBlock}\n` : ""}
 ${buildCompleteEcosystemDatabaseDirectory(allItems)}
 
 Return ONLY valid JSON:
 {
   "answer": "Clear private reply for ${params.staffName}",
-  "suggestedReply": "Optional short ready-to-send customer WhatsApp message (or empty string)",
+  "suggestedReply": "",
   "actions": [
-    { "type": "assign_staff | add_collaborator | set_priority | set_category | resolve_chat | reopen_chat | update_customer | create_callback | send_customer_reply", ...fields }
+    { "type": "assign_staff | add_collaborator | set_priority | set_category | resolve_chat | reopen_chat | update_customer | create_callback | send_customer_reply | request_company_document_upload", ...fields }
   ]
 }`,
       messages: [
@@ -4530,6 +4749,9 @@ Return ONLY valid JSON:
           role: "user",
           content: `Customer: ${params.customerName}${params.customerPhone ? ` (${params.customerPhone})` : ""}
 
+[VERIFIED COMPANY DOCUMENTS LIBRARY]:
+${companyDocsContextLines.length > 0 ? companyDocsContextLines.join("\n") : "(No company documents uploaded yet)"}
+${noteAttachmentLine ? `\n${noteAttachmentLine}\n` : ""}
 Recent chat (oldest first):
 ${transcript || "(no messages yet)"}
 
@@ -4548,11 +4770,16 @@ ${question}`,
       }>(aiCall.text);
       if (parsed && typeof parsed.answer === "string" && parsed.answer.trim()) {
         answer = formatWhatsAppOutboundText(parsed.answer).trim();
-        if (parsed.suggestedReply && parsed.suggestedReply.trim()) {
-          suggestedReply = formatWhatsAppOutboundText(parsed.suggestedReply).trim();
-        }
         if (Array.isArray(parsed.actions)) {
           actions = parsed.actions.filter((a) => a && typeof a.type === "string");
+        }
+        const hasClientAction = actions.some(
+          (a) =>
+            a.type === "send_customer_reply" ||
+            a.type === "request_company_document_upload"
+        );
+        if (!hasClientAction && parsed.suggestedReply && parsed.suggestedReply.trim()) {
+          suggestedReply = formatWhatsAppOutboundText(parsed.suggestedReply).trim();
         }
       } else {
         answer = formatWhatsAppOutboundText(aiCall.text).trim();
@@ -4565,6 +4792,84 @@ ${question}`,
   } else {
     error = "No Anthropic admin API key is configured.";
     addStep("No admin API key", error, "WARN");
+  }
+
+  // Deterministic safeguard & fallback for sharing verified company docs / attached files with clients
+  const asksToShareWithClient =
+    /\b(share|send|forward|give|attach)\b/i.test(question) &&
+    /\b(client|customer|them|buyer|gst|certificate|brochure|catalogue|catalog|msme|iso|cheque|bank|file|doc|pdf)\b/i.test(
+      question
+    );
+
+  if (asksToShareWithClient && actions.length === 0) {
+    if (params.noteAttachment) {
+      const fileLabel = params.noteAttachment.fileName || "Attachment";
+      actions = [
+        {
+          type: "send_customer_reply",
+          mediaUrl: params.noteAttachment.url,
+          mediaType:
+            (["IMAGE", "VIDEO", "DOCUMENT", "AUDIO"].includes(
+              String(params.noteAttachment.mediaType || "").toUpperCase()
+            )
+              ? String(params.noteAttachment.mediaType).toUpperCase()
+              : "DOCUMENT") as "DOCUMENT" | "IMAGE" | "VIDEO" | "AUDIO",
+          mediaId: params.noteAttachment.mediaId,
+          waMediaId: params.noteAttachment.waMediaId,
+          fileName: fileLabel,
+          mimeType: params.noteAttachment.mimeType,
+          messageText: `Please find attached *${fileLabel}* for your reference. Let us know if you need anything else.`,
+          confirmed: false,
+        },
+      ];
+      suggestedReply = null;
+      answer = `Ready to share *${fileLabel}* directly with *${params.customerName}* on WhatsApp. Please confirm below to send it now.`;
+      error = undefined;
+    } else if (matchedCompanyDocs[0]) {
+      const doc = matchedCompanyDocs[0];
+      actions = [
+        {
+          type: "send_customer_reply",
+          companyDocId: doc.id,
+          companyDocTitle: doc.title,
+          docNumber: doc.docNumber || undefined,
+          mediaUrl: doc.mediaUrl,
+          mediaType: doc.mediaType,
+          mediaId: doc.mediaId || undefined,
+          waMediaId: doc.waMediaId || undefined,
+          fileName: doc.fileName || `${doc.slug}.pdf`,
+          mimeType: doc.mimeType,
+          messageText: `Please find attached our *${doc.title}*${doc.docNumber ? ` (${doc.docNumber})` : ""} for your reference. Please let us know if you need anything else.`,
+          confirmed: false,
+        },
+      ];
+      suggestedReply = null;
+      answer = `Found our verified *${doc.title}* (\`${doc.fileName || doc.slug}\`). Please confirm below before I share it with *${params.customerName}* on WhatsApp.`;
+      error = undefined;
+    } else if (/\b(gst|gstin|tax\s*cert|iso|msme|udyam|pan|cheque|bank|certificate)\b/i.test(question)) {
+      const isGst = /\bgst/i.test(question);
+      const isIso = /\biso/i.test(question);
+      const isMsme = /\bmsme|\budyam/i.test(question);
+      const docTitle = isGst
+        ? "GST Certificate"
+        : isIso
+        ? "ISO Certificate"
+        : isMsme
+        ? "MSME Certificate"
+        : "Company Certificate";
+      const docSlug = docTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      actions = [
+        {
+          type: "request_company_document_upload",
+          requestedDocSlug: docSlug,
+          requestedDocTitle: docTitle,
+          messageText: `Please find attached our *${docTitle}* for your reference. Let us know if you need anything else.`,
+        },
+      ];
+      suggestedReply = null;
+      answer = `No verified *${docTitle}* file is saved in Company Documents yet. Upload it below once to save it to our company records and confirm sharing it with *${params.customerName}*.`;
+      error = undefined;
+    }
   }
 
   if (!answer) {
@@ -4674,6 +4979,107 @@ ${transcript}`,
     ok: true,
     summaryText: formatWhatsAppOutboundText(fallback),
     model: "local-summary-fallback",
+  };
+}
+
+/**
+ * Personalized WhatsApp assistant specifically for internal Classic Concepts team members
+ * messaging our business WhatsApp number from their registered staff phone number.
+ */
+export async function runAcrioStaffWhatsAppAssistant(params: {
+  staff: InternalStaffCallerProfile;
+  inboundText: string;
+  recentMessages: { direction: string; body: string }[];
+}): Promise<{ replyText: string; model: string }> {
+  const { apiKey } = await resolveSharedAnthropicApiKey("admin");
+  const cleanText = String(params.inboundText || "").trim();
+  const hubBase = resolveWhatsAppWebAppOrigin();
+
+  const [catalog, liveContext, trainingGuidance] = await Promise.all([
+    getCachedEcosystemCatalog().catch(() => ({ allItems: [] as MainWebsiteProduct[] })),
+    loadLiveDatabaseOperationalContext({
+      rawQuery: cleanText,
+      forStaffCopilot: true,
+    }).catch(() => ""),
+    findMatchingAiTrainingGuidance({
+      queryText: cleanText,
+      scope: "STAFF_COPILOT",
+    }).catch(() => ({ rules: [], examples: [], promptBlock: "" })),
+  ]);
+
+  const items = catalog.allItems || [];
+  const matches = cleanText ? searchEcosystemItems(items, cleanText, 6) : [];
+  const deepSpec =
+    matches.length > 0
+      ? buildEcosystemDeepProductContextAndAnswer({
+          rawQuery: cleanText,
+          matchedItems: matches,
+          formatItemLink: (it) => it.shortUrl || it.url,
+        })
+      : null;
+
+  const productContext = matches.length
+    ? matches
+        .map(
+          (p) =>
+            `• ${cleanDisplayProductName(p.name)} (${p.brandLabel}${
+              p.sku ? `, SKU ${p.sku}` : ""
+            }) | ₹${p.basePrice ?? "Custom Quote"} | ${p.shortUrl || p.url}`
+        )
+        .join("\n")
+    : "";
+
+  const history = params.recentMessages.slice(-10).map((m) => ({
+    role: (m.direction === "OUTBOUND" ? "assistant" : "user") as
+      | "user"
+      | "assistant",
+    content: String(m.body || "").slice(0, 600),
+  }));
+
+  if (apiKey) {
+    try {
+      const aiRes = await callClaudeHaikuMessagesDetailed({
+        apiKey,
+        maxTokens: 1200,
+        effort: "medium",
+        timeoutMs: 18000,
+        system: `You are ACRIO speaking privately on WhatsApp with an INTERNAL team member at Classic Concepts & Classic Edge 53.
+Team member speaking: ${params.staff.name} (${params.staff.position} | Role: ${params.staff.role} | Dept: ${params.staff.department}).
+
+TONE & PERSONALIZATION RULES:
+- Greet and address ${params.staff.firstName} warmly like an internal colleague and personal assistant (NOT as an external customer!).
+- Never pitch consumer sales prompts like "Would you like us to call you back?" or "Thank you for enquiring with Classic Concepts".
+- Give exact MRP prices, product codes/SKUs, specs, and shortlinks concisely for staff quoting.
+- Also remind them when relevant that they can text quick commands here: "my chats", "callbacks", "stats", or "check <customer phone>", or open the Hub: ${hubBase}/dashboard/inbox.
+- Plain everyday layman English, single asterisks *bold* for WhatsApp, zero em-dashes, zero "--", zero AI buzzwords.
+
+${trainingGuidance.promptBlock ? `[AI Training Guidance]:\n${trainingGuidance.promptBlock}\n\n` : ""}${productContext ? `[Matching Catalog Products]:\n${productContext}\n\n` : ""}${deepSpec?.promptCatalogContext ? `[Deep Product Specs]:\n${deepSpec.promptCatalogContext}\n\n` : ""}${liveContext ? `[Live Company, Team & CRM Context]:\n${liveContext}\n` : ""}`,
+        messages: [
+          ...history.slice(0, -1),
+          { role: "user", content: cleanText },
+        ],
+      });
+      if (aiRes.ok && aiRes.text?.trim()) {
+        return {
+          replyText: formatWhatsAppOutboundText(aiRes.text.trim()),
+          model: "claude-haiku-5-5-staff-wa",
+        };
+      }
+    } catch {
+      // fall back cleanly below
+    }
+  }
+
+  const lines = [
+    `Hey *${params.staff.firstName}* (${params.staff.position})! Here with your internal assistant view:`,
+    productContext
+      ? `\n*Matching Catalog Items:*\n${productContext}`
+      : `\nYou can ask me about any podium/machine specs & prices, or text:\n• *my chats* to see your open assigned leads\n• *callbacks* to view pending customer callbacks\n• *check <phone>* to look up a customer\n• *stats* for today's live summary`,
+    `\nHub Inbox: ${hubBase}/dashboard/inbox`,
+  ];
+  return {
+    replyText: formatWhatsAppOutboundText(lines.join("\n")),
+    model: "staff-wa-fallback",
   };
 }
 
@@ -5584,13 +5990,14 @@ async function runAcrioAutonomousTurnCore(
 
   const fetchedCatalog = await getCachedEcosystemCatalog();
   allItems = fetchedCatalog.allItems;
-  const [liveOperationalContext, trainingGuidance] = await Promise.all([
+  const [liveOperationalContext, liveBrandInfo, trainingGuidance] = await Promise.all([
     loadLiveDatabaseOperationalContext({
       customerPhone: params.customerPhone,
       customerName: params.customerName,
       rawQuery: rawText,
       forStaffCopilot: false,
     }),
+    getVerifiedLiveBrandAndTeamInfo().catch(() => null),
     findMatchingAiTrainingGuidance({
       queryText: rawText,
       scope: "CUSTOMER_CHAT",
@@ -6390,14 +6797,14 @@ Answer directly in 2-3 short lines: you are *ACRIO*, the WhatsApp product & fabr
 CRITICAL: Do NOT list or repeat specific products or links from earlier turns in this reply!`;
         } else if (intentInfo.intent === "COMPANY_INFO") {
           catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about our company, factory location, contact details, or what we do).
-Answer directly using ONLY the verified live company details: *Classic Concepts* manufactures ready and custom cast-acrylic products (stage podiums/pulpits, acrylic furniture & chairs, office signages, trophies, hotel/retail stands, custom boxes) and *Classic Edge 53* supplies industrial acrylic fabrication machines (diamond edge polishers, bending heaters, cutters) from our 16,000+ sq. ft. facility at 1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015 (Phones: +91 79016 50662, +91 79016 50663 | Official WhatsApp: +91 73372 20568 | Emails: sales@classicconcepts.in, info@classicconcepts.in) with pan-India delivery and GST billing.`;
+Answer directly using ONLY the verified public company details from classicconcepts.in above (${liveBrandInfo?.headOfficeLine || "Classic Concepts Acrylic Private Limited, Secunderabad, Telangana"}).`;
         } else if (intentInfo.intent === "TOPIC_RESET") {
           catalogContext = `Turn Intent: TOPIC_RESET (The customer wants to ask a different query or start a new topic).
 Acknowledge warmly in 1-2 short lines and invite them to share their new question or requirement.
 CRITICAL: Do NOT carry over, repeat, or pitch any products from earlier messages in the conversation!`;
         } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
           catalogContext = `Turn Intent: HUMAN_HANDOFF_INFO (The customer is asking an informational question about who you will connect them to).
-Explain clearly that when they want human assistance, you can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (led by Director - Sales Hussain Earanpurwala, Director - Production Yusuf Zakir, Corporate Sales Manager Shiva Kumar Chernapally, and our Sales & Relationship Managers), and ask if they would like to be connected now or keep exploring.
+Explain clearly that when they want human assistance, you can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (referencing the verified official team members listed from classicconcepts.in above), and ask if they would like to be connected now or keep exploring.
 CRITICAL: Set "needsHumanHandoff": false because they are only asking *whom* you connect to!`;
         } else if (intentInfo.intent === "OFF_TOPIC") {
           catalogContext = `Turn Intent: OFF_TOPIC.
@@ -6491,9 +6898,10 @@ CORE CONVERSATION, ACCURACY, GIST FORMATTING & BUSINESS RULES:
    - Use single asterisks *like this* for WhatsApp bold (NEVER **double asterisks**, NEVER [markdown](links), NEVER ### headings).
 3. MULTI-ITEM PROJECT TOTALLING & BUDGET SOLVING:
    - When a customer asks for multiple items with quantities and a budget (e.g. "3 Acrylic podiums, 10 signages for office name plates and 10 chairs within 1 lac rupees"), ALWAYS show the exact unit price × quantity = line total for each item, the grand total, and 2 smart combinations (Option 1: Within-budget combination; Option 2: Full-quantity package with bulk discount check from our Sales Team).
-4. COMPANY DETAILS, DIRECTORS & LEADERSHIP CONTACTS (STRICT LIVE DATABASE VERIFICATION):
-   - ONLY share company contact details or leadership names when the customer explicitly asks for company info, address, phone, email, or leadership/team contacts. NEVER append unrequested contact directories to normal product replies!
-   - When asked about company details, leadership/directors, marketing, or sales contacts, use ONLY the verified live database records from the Live Database Operational Context (Head Office: 1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015 | Phones: +91 79016 50662, +91 79016 50663 | Official WhatsApp: +91 73372 20568 | Emails: sales@classicconcepts.in, info@classicconcepts.in | Directors: Yusuf Zakir - Director Production +91 9959362437, Hussain Earanpurwala - Director Sales +91 9849050752 hussain@classicconcepts.in | Corporate Sales Manager: Shiva Kumar Chernapally +91 7337222878 | Sales & Relationship Managers: Lalitha Barma +91 7337222875, Susheela Kunchala +91 7337222879, Shilpa Parikh +91 8977765662, M Chandi Priyanka +91 733 722 2169 | Corporate Sales: Lakshmi Nossam +91 8977641665 | Client Relationship: Syed Murtuza +91 8977765661 | E-Commerce & Digital Growth: B Suraj Goud +91 8977765660, Harendar Kumar +91 8977765664).
+4. COMPANY DETAILS, DIRECTORS & LEADERSHIP CONTACTS (STRICT CLASSICCONCEPTS.IN PUBLIC DIRECTORY RULE):
+   - ONLY share company contact details or team names when the customer explicitly asks for company info, address, phone, email, or staff/team contacts. NEVER append unrequested contact directories to normal product replies!
+   - When a customer asks about company details, leadership/directors, marketing, or sales staff contacts, use ONLY the verified public professional details from classicconcepts.in provided under [Live Database Operational Context -> VERIFIED LIVE COMPANY & TEAM CONTACTS] above!
+   - PRIVATE PLATFORM SAFETY RULE: NEVER share any private/internal WhatsApp Hub (ccwhatsapp) user account numbers, personal logins, internal roles, or unverified contacts with customers. Only share professional details listed on classicconcepts.in.
    - NEVER use any unverified or placeholder names or addresses.
    - PRIVACY RULE: NEVER share any other customer's phone number, email, enquiry, or order details.
    - IMAGE SHARING CAPABILITY: Our system automatically attaches and sends product and variant photos from our Cloudflare R2 storage whenever a customer asks for images/photos. NEVER say "I cannot send images directly here".
@@ -6725,7 +7133,19 @@ Return ONLY valid JSON:
     fallbackReply = `${greetOnce}${podiumSubCategoriesText}`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "LEADERSHIP_CONTACT_INFO") {
-    fallbackReply = `${greetOnce}Here are the verified leadership and sales contact details for *Classic Concepts* & *Classic Edge 53*:\n\n• *Director - Production:* Yusuf Zakir (+91 99593 62437)\n• *Director - Sales:* Hussain Earanpurwala (+91 98490 50752, hussain@classicconcepts.in)\n• *Corporate Sales Manager:* Shiva Kumar Chernapally (+91 73372 22878, info@classicconcepts.in)\n• *Sales & Relationship Managers:* Lalitha Barma (+91 73372 22875), Susheela Kunchala (+91 73372 22879), Shilpa Parikh (+91 89777 65662), M Chandi Priyanka (+91 73372 22169)\n• *E-Commerce & Digital Sales:* B Suraj Goud (+91 89777 65660, marketing@classicconcepts.in)\n• *Head Office & Factory (Secunderabad, Telangana):* +91 79016 50662 / +91 79016 50663 | WhatsApp: +91 73372 20568 | sales@classicconcepts.in`;
+    const publicTeamLines = liveBrandInfo?.leadershipLines?.length
+      ? liveBrandInfo.leadershipLines.join("\n")
+      : "";
+    const officePhoneLine = liveBrandInfo?.officePhones?.length
+      ? liveBrandInfo.officePhones.join(" / ")
+      : "+91 79016 50662 / +91 79016 50663";
+    const officeEmailLine = liveBrandInfo?.officeEmails?.length
+      ? liveBrandInfo.officeEmails.join(", ")
+      : "sales@classicconcepts.in";
+    const officeWa = liveBrandInfo?.officeWhatsapp || "+91 73372 20568";
+    fallbackReply = `${greetOnce}Here are our verified professional team and office contact details from *classicconcepts.in*:\n\n${
+      publicTeamLines ? `${publicTeamLines}\n\n` : ""
+    }• *Head Office & Factory (${liveBrandInfo?.address || "Secunderabad, Telangana"}):* ${officePhoneLine} | Official WhatsApp: ${officeWa} | ${officeEmailLine}`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "CHAT_HISTORY_META") {
     const prevUserTopics = history
@@ -6746,13 +7166,21 @@ Return ONLY valid JSON:
     fallbackReply = `${greetOnce}I am *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, furniture, signages, awards, stands, and boxes) and *Classic Edge 53* (industrial acrylic bending, diamond edge polishing, and cutting machines).\n\nTell me what you want to display, build, or fabricate and I will share matching options and prices right away.`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "COMPANY_INFO") {
-    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, furniture, signages, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our 16,000+ sq. ft. facility at 1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015 (Phones: +91 79016 50662, +91 79016 50663 | WhatsApp: +91 73372 20568 | sales@classicconcepts.in).\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
+    const officePhoneLine = liveBrandInfo?.officePhones?.length
+      ? liveBrandInfo.officePhones.join(", ")
+      : "+91 79016 50662, +91 79016 50663";
+    const officeEmailLine = liveBrandInfo?.officeEmails?.[0] || "sales@classicconcepts.in";
+    const officeWa = liveBrandInfo?.officeWhatsapp || "+91 73372 20568";
+    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, furniture, signages, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our facility at ${
+      liveBrandInfo?.address ||
+      "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015"
+    } (Phones: ${officePhoneLine} | WhatsApp: ${officeWa} | ${officeEmailLine}).\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "TOPIC_RESET") {
     fallbackReply = `${greetOnce}Sure, let's start fresh! Tell me what you are looking for or what question you have, and I will help you right away.`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
-    fallbackReply = `${greetOnce}When you ask to speak with someone, I can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (led by Director - Sales Hussain Earanpurwala, Director - Production Yusuf Zakir, and Corporate Sales Manager Shiva Kumar Chernapally) so a specialist can help you with custom quotes, bulk pricing, or order dispatch.\n\nWould you like me to connect our *Sales Team* now, or would you like to check a product first?`;
+    fallbackReply = `${greetOnce}When you ask to speak with someone, I can connect you with our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* so a specialist can help you with custom quotes, bulk pricing, or order dispatch.\n\nWould you like me to connect our *Sales Team* now, or would you like to check a product first?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "OFF_TOPIC") {
     fallbackReply = `${greetOnce}I only help with *Classic Concepts* acrylic products (podiums, furniture, signages, awards, stands, custom boxes) and *Classic Edge 53* acrylic fabrication machines.\n\nLet me know if you need options or pricing for any acrylic product or machine!`;
@@ -8855,6 +9283,7 @@ export async function sendWebsiteEnquiryReceivedTemplate(params: {
     bodyText: renderedBody,
     templateName: "cc_website_enquiry_received",
     languageCode: "en",
+    skipAutoChatRecord: true,
     templateComponents: [
       {
         type: "body",
@@ -8894,11 +9323,28 @@ export async function sendQuoteRequestAlertTemplate(params: {
   const prodVar = cleanMetaTemplateParam(params.productName, 140);
   const qtyVar = cleanMetaTemplateParam(params.quantity || "As requested", 80);
 
+  const renderedBody = [
+    "New Quote Request Received",
+    "",
+    `Hello ${staffVar},`,
+    "",
+    `A new *quote request* just came in from ${custVar}.`,
+    "",
+    `• Product: ${prodVar}`,
+    `• Quantity: ${qtyVar}`,
+    "",
+    "Please reply within *1 working hour* to keep the lead warm.",
+    "",
+    "Catalog: https://ccapl.cc/eSzcdT",
+  ].join("\n");
+
   const res = await sendWhatsAppCloudMessage({
     toPhone,
-    bodyText: `New Quote Request Received: ${custVar} - Product: ${prodVar} (Qty: ${qtyVar})`,
+    bodyText: renderedBody,
     templateName: "cc_quote_request_alert",
     languageCode: "en",
+    recordBillingCategory: "UTILITY",
+    recordSenderName: "ACRIO • Quote Alert",
     templateComponents: [
       {
         type: "body",
@@ -8928,11 +9374,30 @@ export async function sendStaffClientAssignmentTemplate(params: {
   const clientVar = cleanMetaTemplateParam(params.customerName || params.customerPhone, 100);
   const phoneVar = cleanMetaTemplateParam(params.customerPhone || "Not provided", 40);
 
+  const renderedBody = [
+    "New Client Assigned to You",
+    "",
+    `Hello ${staffVar},`,
+    "",
+    "A new client has been assigned to you in Classic Concepts.",
+    "",
+    `*Client Name:* ${clientVar}`,
+    `*Client Phone:* ${phoneVar}`,
+    "",
+    "• Review the client profile before reaching out",
+    "• Reply within 1 working hours for the best response",
+    "• Update the lead status once you have spoken to them",
+    "",
+    "Reply below to confirm or get help.",
+  ].join("\n");
+
   const res = await sendWhatsAppCloudMessage({
     toPhone,
-    bodyText: `New Client Assigned to You: ${clientVar} (${phoneVar})`,
+    bodyText: renderedBody,
     templateName: "cc_staff_client_assignment",
     languageCode: "en",
+    recordBillingCategory: "MARKETING",
+    recordSenderName: "ACRIO • Assignment Alert",
     templateComponents: [
       {
         type: "body",
@@ -8964,11 +9429,27 @@ export async function sendCallbackRequestAlertTemplate(params: {
   const phoneVar = cleanMetaTemplateParam(params.customerPhone || "Not provided", 40);
   const slotVar = cleanMetaTemplateParam(params.preferredTime || "As soon as possible", 100);
 
+  const renderedBody = [
+    "New Callback Request Received",
+    "",
+    `Hello ${staffVar},`,
+    "",
+    "A client has requested a *callback*.",
+    "",
+    `• Client: ${clientVar}`,
+    `• Phone: ${phoneVar}`,
+    `• Preferred time: ${slotVar}`,
+    "",
+    "Please reach out within the next *30 minutes* so the client feels looked after. Log the outcome in the CRM once the call is done.",
+  ].join("\n");
+
   const res = await sendWhatsAppCloudMessage({
     toPhone,
-    bodyText: `New Callback Request Received: ${clientVar} (${phoneVar}) - Preferred time: ${slotVar}`,
+    bodyText: renderedBody,
     templateName: "cc_callback_request_alert",
     languageCode: "en",
+    recordBillingCategory: "MARKETING",
+    recordSenderName: "ACRIO • Callback Alert",
     templateComponents: [
       {
         type: "body",

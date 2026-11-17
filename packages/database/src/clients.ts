@@ -6085,15 +6085,40 @@ export function buildCompleteEcosystemDatabaseDirectory(
 const IS_TEST_OR_DEV_CONTACT_RE =
   /\b(sakina\s*manzil|tirumalgherry|alaqmarak0810|rapidshiftlabs|ananya\s*deshmukh|rohan\s*kulkarni|priya\s*menon|karthik\s*nair|arjun\s*deshmukh|98480\s*\d{5}|93467\s*63253|96184\s*43558)\b/i;
 
+export interface ClassicConceptsTeamMemberInfo {
+  name: string;
+  position: string;
+  phone: string;
+  whatsapp: string;
+  email: string;
+}
+
 let cachedLiveBrandTeamInfo: {
   fetchedAt: number;
   headOfficeLine: string;
   leadershipLines: string[];
+  teamMembers: ClassicConceptsTeamMemberInfo[];
+  officePhones: string[];
+  officeEmails: string[];
+  officeWhatsapp: string;
+  address: string;
+  businessHours: string;
 } | null = null;
 
-async function getVerifiedLiveBrandAndTeamInfo(): Promise<{
+/**
+ * Fetches official professional team and contact details strictly from classicconcepts.in
+ * (live `/api/brand-info` first, falling back to `classicconcepts` SQLite only if unreachable).
+ * NEVER pulls private internal `ccwhatsapp` hub accounts (`core_auth.users`) into customer replies.
+ */
+export async function getVerifiedLiveBrandAndTeamInfo(): Promise<{
   headOfficeLine: string;
   leadershipLines: string[];
+  teamMembers: ClassicConceptsTeamMemberInfo[];
+  officePhones: string[];
+  officeEmails: string[];
+  officeWhatsapp: string;
+  address: string;
+  businessHours: string;
 }> {
   if (
     cachedLiveBrandTeamInfo &&
@@ -6111,104 +6136,140 @@ async function getVerifiedLiveBrandAndTeamInfo(): Promise<{
   let email2 = "info@classicconcepts.in";
   let businessHours = "Monday - Saturday: 10:00 AM to 7:00 PM (Sunday: Closed)";
   const leadershipLines: string[] = [];
+  const teamMembers: ClassicConceptsTeamMemberInfo[] = [];
   const seenNames = new Set<string>();
 
-  // 1. Check Classic Concepts SQLite DB (SiteSetting & TeamMember)
-  const ccClient = getMainCatalogClient();
-  if (ccClient) {
-    const [ccSettings, ccTeam] = await Promise.all([
-      ccClient.execute(`SELECT * FROM SiteSetting LIMIT 1`).catch(() => ({ rows: [] as any[] })),
-      ccClient.execute(`SELECT * FROM TeamMember ORDER BY sortOrder ASC`).catch(() => ({ rows: [] as any[] })),
-    ]);
-
-    if (ccSettings.rows.length > 0) {
-      const s = ccSettings.rows[0];
-      if (s.address && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.address))) {
-        address = String(s.address).replace(/\r?\n/g, ", ").trim();
-      }
-      if (s.phone1 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.phone1))) {
-        phone1 = String(s.phone1).trim();
-      }
-      if (s.phone2 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.phone2))) {
-        phone2 = String(s.phone2).trim();
-      }
-      if (s.email && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.email))) {
-        email1 = String(s.email).trim();
-      }
-      if (s.email2 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.email2))) {
-        email2 = String(s.email2).trim();
-      }
-      if (s.businessHours) {
-        businessHours = String(s.businessHours).replace(/\r?\n/g, " ").trim();
-      }
+  const pushTeamMember = (raw: {
+    name?: unknown;
+    position?: unknown;
+    role?: unknown;
+    phone?: unknown;
+    whatsapp?: unknown;
+    email?: unknown;
+  }) => {
+    const name = String(raw.name || "").trim();
+    if (!name || seenNames.has(name.toLowerCase()) || IS_TEST_OR_DEV_CONTACT_RE.test(name)) {
+      return;
     }
+    seenNames.add(name.toLowerCase());
+    const pos = String(raw.position || raw.role || "Team Member").trim();
+    const phone =
+      raw.phone && !IS_TEST_OR_DEV_CONTACT_RE.test(String(raw.phone))
+        ? String(raw.phone).replace(/\s{2,}/g, " ").trim()
+        : "";
+    const whatsapp =
+      raw.whatsapp && !IS_TEST_OR_DEV_CONTACT_RE.test(String(raw.whatsapp))
+        ? String(raw.whatsapp).replace(/\s{2,}/g, " ").trim()
+        : phone;
+    const email =
+      raw.email && !IS_TEST_OR_DEV_CONTACT_RE.test(String(raw.email))
+        ? String(raw.email).trim()
+        : "";
+    teamMembers.push({
+      name,
+      position: pos,
+      phone,
+      whatsapp,
+      email,
+    });
+    leadershipLines.push(
+      `• ${name} (${pos})${phone ? ` | Phone: ${phone}` : ""}${email ? ` | Email: ${email}` : ""}`
+    );
+  };
 
-    for (const m of ccTeam.rows) {
-      if (m.isActive === 0 || m.isActive === false) continue;
-      const name = String(m.name || "").trim();
-      if (!name || IS_TEST_OR_DEV_CONTACT_RE.test(name)) continue;
-      seenNames.add(name.toLowerCase());
-      const pos = String(m.position || m.role || "Team Member").trim();
-      const phone =
-        m.phone && !IS_TEST_OR_DEV_CONTACT_RE.test(String(m.phone))
-          ? String(m.phone).trim()
-          : "";
-      const email =
-        m.email && !IS_TEST_OR_DEV_CONTACT_RE.test(String(m.email))
-          ? String(m.email).trim()
-          : "";
-      leadershipLines.push(
-        `• ${name} (${pos})${phone ? ` | Phone: ${phone}` : ""}${email ? ` | Email: ${email}` : ""}`
-      );
-    }
-  }
-
-  // 2. If local DB had no TeamMember rows, verify against live Classic Concepts brand-info API
-  if (leadershipLines.length === 0) {
-    const urls = [
-      `${resolveClassicConceptsInternalUrl()}/api/brand-info`,
+  // 1. Live `classicconcepts.in` public brand & professional team directory FIRST
+  const brandUrls = Array.from(
+    new Set([
       "https://classicconcepts.in/api/brand-info",
-    ];
-    for (const url of urls) {
-      try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
-        if (!res.ok) continue;
-        const data: any = await res.json().catch(() => null);
-        if (data?.contact?.address && !IS_TEST_OR_DEV_CONTACT_RE.test(String(data.contact.address))) {
-          address = String(data.contact.address).replace(/\r?\n/g, ", ").trim();
+      `${resolveClassicConceptsInternalUrl()}/api/brand-info`,
+    ])
+  );
+  for (const url of brandUrls) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) continue;
+      const data: any = await res.json().catch(() => null);
+      if (!data?.success) continue;
+      if (data?.contact?.address && !IS_TEST_OR_DEV_CONTACT_RE.test(String(data.contact.address))) {
+        address = String(data.contact.address).replace(/\r?\n/g, ", ").trim();
+      }
+      if (data?.contact?.primaryPhone && !IS_TEST_OR_DEV_CONTACT_RE.test(String(data.contact.primaryPhone))) {
+        phone1 = String(data.contact.primaryPhone).replace(/\s{2,}/g, " ").trim();
+      }
+      if (data?.contact?.secondaryPhone && !IS_TEST_OR_DEV_CONTACT_RE.test(String(data.contact.secondaryPhone))) {
+        phone2 = String(data.contact.secondaryPhone).replace(/\s{2,}/g, " ").trim();
+      }
+      if (data?.contact?.whatsappNumber && !IS_TEST_OR_DEV_CONTACT_RE.test(String(data.contact.whatsappNumber))) {
+        whatsappNumber = String(data.contact.whatsappNumber).replace(/\s{2,}/g, " ").trim();
+      }
+      if (data?.contact?.primaryEmail && !IS_TEST_OR_DEV_CONTACT_RE.test(String(data.contact.primaryEmail))) {
+        email1 = String(data.contact.primaryEmail).trim();
+      }
+      if (data?.contact?.secondaryEmail && !IS_TEST_OR_DEV_CONTACT_RE.test(String(data.contact.secondaryEmail))) {
+        email2 = String(data.contact.secondaryEmail).trim();
+      }
+      if (data?.contact?.businessHours) {
+        businessHours = String(data.contact.businessHours).replace(/\r?\n/g, " ").replace(/\s{2,}/g, " ").trim();
+      }
+      if (Array.isArray(data?.team)) {
+        for (const m of data.team) pushTeamMember(m);
+      }
+      if (leadershipLines.length > 0) break;
+    } catch {
+      // Fall through to next URL / local classicconcepts DB
+    }
+  }
+
+  // 2. Fallback to Classic Concepts SQLite DB only if live HTTP fetch returned no team members
+  if (leadershipLines.length === 0) {
+    const ccClient = getMainCatalogClient();
+    if (ccClient) {
+      const [ccSettings, ccTeam] = await Promise.all([
+        ccClient.execute(`SELECT * FROM SiteSetting LIMIT 1`).catch(() => ({ rows: [] as any[] })),
+        ccClient.execute(`SELECT * FROM TeamMember ORDER BY sortOrder ASC`).catch(() => ({ rows: [] as any[] })),
+      ]);
+
+      if (ccSettings.rows.length > 0) {
+        const s = ccSettings.rows[0];
+        if (s.address && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.address))) {
+          address = String(s.address).replace(/\r?\n/g, ", ").trim();
         }
-        if (Array.isArray(data?.team)) {
-          for (const m of data.team) {
-            const name = String(m.name || "").trim();
-            if (!name || seenNames.has(name.toLowerCase()) || IS_TEST_OR_DEV_CONTACT_RE.test(name)) continue;
-            seenNames.add(name.toLowerCase());
-            const pos = String(m.position || "Team Member").trim();
-            const phone =
-              m.phone && !IS_TEST_OR_DEV_CONTACT_RE.test(String(m.phone))
-                ? String(m.phone).trim()
-                : "";
-            const email =
-              m.email && !IS_TEST_OR_DEV_CONTACT_RE.test(String(m.email))
-                ? String(m.email).trim()
-                : "";
-            leadershipLines.push(
-              `• ${name} (${pos})${phone ? ` | Phone: ${phone}` : ""}${email ? ` | Email: ${email}` : ""}`
-            );
-          }
+        if (s.phone1 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.phone1))) {
+          phone1 = String(s.phone1).replace(/\s{2,}/g, " ").trim();
         }
-        if (leadershipLines.length > 0) break;
-      } catch {
-        // Ignore network errors
+        if (s.phone2 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.phone2))) {
+          phone2 = String(s.phone2).replace(/\s{2,}/g, " ").trim();
+        }
+        if (s.email && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.email))) {
+          email1 = String(s.email).trim();
+        }
+        if (s.email2 && !IS_TEST_OR_DEV_CONTACT_RE.test(String(s.email2))) {
+          email2 = String(s.email2).trim();
+        }
+        if (s.businessHours) {
+          businessHours = String(s.businessHours).replace(/\r?\n/g, " ").trim();
+        }
+      }
+
+      for (const m of ccTeam.rows) {
+        if (m.isActive === 0 || m.isActive === false) continue;
+        pushTeamMember(m as any);
       }
     }
   }
 
-  const headOfficeLine = `• Official Company & Head Office (Verified Live Database): Classic Concepts Acrylic Private Limited (https://classicconcepts.in) & Classic Edge 53 (https://classicedge53.com) | Factory & Head Office: ${address} | Phones: ${phone1}${phone2 ? `, ${phone2}` : ""} | Official WhatsApp Business API: ${whatsappNumber} | Emails: ${email1}${email2 ? `, ${email2}` : ""} | Business Hours: ${businessHours}`;
+  const headOfficeLine = `• Official Company & Head Office (classicconcepts.in Live Directory): Classic Concepts Acrylic Private Limited (https://classicconcepts.in) & Classic Edge 53 (https://classicedge53.com) | Factory & Head Office: ${address} | Phones: ${phone1}${phone2 ? `, ${phone2}` : ""} | Official WhatsApp Business API: ${whatsappNumber} | Emails: ${email1}${email2 ? `, ${email2}` : ""} | Business Hours: ${businessHours}`;
 
   cachedLiveBrandTeamInfo = {
     fetchedAt: Date.now(),
     headOfficeLine,
     leadershipLines,
+    teamMembers,
+    officePhones: [phone1, phone2].filter(Boolean),
+    officeEmails: [email1, email2].filter(Boolean),
+    officeWhatsapp: whatsappNumber,
+    address,
+    businessHours,
   };
   return cachedLiveBrandTeamInfo;
 }
@@ -7054,6 +7115,225 @@ export async function deleteAiTrainingRule(id: string): Promise<void> {
   await conv.execute({ sql: `DELETE FROM ai_training_rules WHERE id = ?`, args: [id] });
 }
 
+export interface CompanyDocumentRecord {
+  id: string;
+  slug: string;
+  title: string;
+  category: "COMPLIANCE" | "CATALOGUE" | "BANKING" | "COMPANY_PROFILE";
+  docNumber: string;
+  description: string;
+  mediaId: string;
+  waMediaId: string;
+  mediaUrl: string;
+  mediaType: "DOCUMENT" | "IMAGE" | "VIDEO" | "AUDIO";
+  fileName: string;
+  mimeType: string;
+  keywords: string;
+  isEnabled: boolean;
+  uploadedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+let companyDocsReady = false;
+export async function ensureCompanyDocumentsTable(): Promise<void> {
+  if (companyDocsReady) return;
+  const conv = getRawLibSqlClient("conversations");
+  await conv.execute(`CREATE TABLE IF NOT EXISTS company_documents (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'COMPLIANCE',
+    doc_number TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    media_id TEXT NOT NULL DEFAULT '',
+    wa_media_id TEXT NOT NULL DEFAULT '',
+    media_url TEXT NOT NULL,
+    media_type TEXT NOT NULL DEFAULT 'DOCUMENT',
+    file_name TEXT NOT NULL DEFAULT '',
+    mime_type TEXT NOT NULL DEFAULT 'application/pdf',
+    keywords TEXT NOT NULL DEFAULT '',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    uploaded_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+  companyDocsReady = true;
+}
+
+function mapCompanyDocRow(r: Record<string, unknown>): CompanyDocumentRecord {
+  const mt = String(r.media_type || "DOCUMENT").toUpperCase();
+  const mediaType = (["DOCUMENT", "IMAGE", "VIDEO", "AUDIO"].includes(mt) ? mt : "DOCUMENT") as CompanyDocumentRecord["mediaType"];
+  const cat = String(r.category || "COMPLIANCE").toUpperCase();
+  const category = (["COMPLIANCE", "CATALOGUE", "BANKING", "COMPANY_PROFILE"].includes(cat) ? cat : "COMPLIANCE") as CompanyDocumentRecord["category"];
+  return {
+    id: String(r.id),
+    slug: String(r.slug),
+    title: String(r.title || ""),
+    category,
+    docNumber: String(r.doc_number || ""),
+    description: String(r.description || ""),
+    mediaId: String(r.media_id || ""),
+    waMediaId: String(r.wa_media_id || ""),
+    mediaUrl: String(r.media_url || ""),
+    mediaType,
+    fileName: String(r.file_name || ""),
+    mimeType: String(r.mime_type || "application/pdf"),
+    keywords: String(r.keywords || ""),
+    isEnabled: Number(r.is_enabled ?? 1) === 1,
+    uploadedBy: String(r.uploaded_by || ""),
+    createdAt: String(r.created_at || ""),
+    updatedAt: String(r.updated_at || ""),
+  };
+}
+
+export async function listCompanyDocuments(opts?: {
+  enabledOnly?: boolean;
+}): Promise<CompanyDocumentRecord[]> {
+  await ensureCompanyDocumentsTable();
+  const conv = getRawLibSqlClient("conversations");
+  const sql = opts?.enabledOnly
+    ? `SELECT * FROM company_documents WHERE is_enabled = 1 ORDER BY updated_at DESC`
+    : `SELECT * FROM company_documents ORDER BY updated_at DESC`;
+  const res = await conv.execute(sql);
+  return res.rows.map((r) => mapCompanyDocRow(r as Record<string, unknown>));
+}
+
+export async function upsertCompanyDocument(input: {
+  id?: string;
+  slug?: string;
+  title: string;
+  category?: CompanyDocumentRecord["category"];
+  docNumber?: string;
+  description?: string;
+  mediaId?: string;
+  waMediaId?: string;
+  mediaUrl: string;
+  mediaType?: CompanyDocumentRecord["mediaType"];
+  fileName?: string;
+  mimeType?: string;
+  keywords?: string;
+  isEnabled?: boolean;
+  uploadedBy?: string;
+}): Promise<CompanyDocumentRecord> {
+  await ensureCompanyDocumentsTable();
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+  const normalizedSlug = String(
+    input.slug ||
+      input.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") ||
+      `doc-${crypto.randomUUID().slice(0, 8)}`
+  ).slice(0, 80);
+
+  const existingBySlugOrId = await conv.execute({
+    sql: `SELECT id, created_at FROM company_documents WHERE id = ? OR slug = ? LIMIT 1`,
+    args: [input.id || "", normalizedSlug],
+  });
+  const id =
+    (existingBySlugOrId.rows[0]?.id ? String(existingBySlugOrId.rows[0].id) : null) ||
+    input.id ||
+    `cdoc_${crypto.randomUUID().slice(0, 8)}`;
+  const createdAt = existingBySlugOrId.rows[0]?.created_at
+    ? String(existingBySlugOrId.rows[0].created_at)
+    : nowIso;
+
+  await conv.execute({
+    sql: `INSERT INTO company_documents (
+      id, slug, title, category, doc_number, description, media_id, wa_media_id,
+      media_url, media_type, file_name, mime_type, keywords, is_enabled, uploaded_by,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug = excluded.slug,
+      title = excluded.title,
+      category = excluded.category,
+      doc_number = excluded.doc_number,
+      description = excluded.description,
+      media_id = excluded.media_id,
+      wa_media_id = excluded.wa_media_id,
+      media_url = excluded.media_url,
+      media_type = excluded.media_type,
+      file_name = excluded.file_name,
+      mime_type = excluded.mime_type,
+      keywords = excluded.keywords,
+      is_enabled = excluded.is_enabled,
+      uploaded_by = excluded.uploaded_by,
+      updated_at = excluded.updated_at`,
+    args: [
+      id,
+      normalizedSlug,
+      input.title.trim(),
+      input.category || "COMPLIANCE",
+      (input.docNumber || "").trim(),
+      (input.description || "").trim(),
+      (input.mediaId || "").trim(),
+      (input.waMediaId || "").trim(),
+      input.mediaUrl.trim(),
+      input.mediaType || "DOCUMENT",
+      (input.fileName || "").trim() || `${normalizedSlug}.pdf`,
+      (input.mimeType || "application/pdf").trim(),
+      (input.keywords || "").trim().toLowerCase(),
+      input.isEnabled === false ? 0 : 1,
+      (input.uploadedBy || "").trim(),
+      createdAt,
+      nowIso,
+    ],
+  });
+
+  const docs = await listCompanyDocuments();
+  return docs.find((d) => d.id === id)!;
+}
+
+export async function deleteCompanyDocument(id: string): Promise<void> {
+  await ensureCompanyDocumentsTable();
+  const conv = getRawLibSqlClient("conversations");
+  await conv.execute({ sql: `DELETE FROM company_documents WHERE id = ?`, args: [id] });
+}
+
+export async function findMatchingCompanyDocuments(
+  queryText: string
+): Promise<CompanyDocumentRecord[]> {
+  const docs = await listCompanyDocuments({ enabledOnly: true }).catch(() => []);
+  const q = String(queryText || "").toLowerCase();
+  if (!q.trim()) return docs;
+
+  const aliases: [RegExp, string[]][] = [
+    [/\bgst(in)?\b|\btax\s*reg/i, ["gst", "gstin", "tax", "gst certificate"]],
+    [/\biso\b|\bquality\s*cert/i, ["iso", "certificate"]],
+    [/\bmsme\b|\budyam\b|\bssi\b/i, ["msme", "udyam"]],
+    [/\bbank\b|\bcheque\b|\bneft\b|\brtgs\b|\baccount\b/i, ["bank", "cheque", "account"]],
+    [/\bpan\b/i, ["pan", "tax"]],
+    [/\bbrochure\b|\bcatalog|\bprofile\b/i, ["brochure", "catalogue", "profile"]],
+  ];
+
+  const expandedTokens = new Set(
+    q
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 2)
+  );
+  for (const [re, extra] of aliases) {
+    if (re.test(q)) {
+      for (const t of extra) expandedTokens.add(t);
+    }
+  }
+
+  return docs
+    .map((doc) => {
+      const hay = `${doc.slug} ${doc.title} ${doc.keywords} ${doc.description} ${doc.fileName}`.toLowerCase();
+      let score = 0;
+      for (const t of expandedTokens) {
+        if (hay.includes(t)) score += t.length >= 4 ? 3 : 2;
+      }
+      return { doc, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.doc);
+}
+
 export async function findMatchingAiTrainingGuidance(params: {
   queryText: string;
   scope?: "CUSTOMER_CHAT" | "STAFF_COPILOT";
@@ -7558,4 +7838,103 @@ export async function updateCallDispatchItem(params: {
     args: [params.id],
   });
   return next.rows[0] ? mapCallDispatchRow(next.rows[0] as Record<string, unknown>) : null;
+}
+
+export interface InternalStaffCallerProfile {
+  isInternalStaff: true;
+  hubUserId: string | null;
+  name: string;
+  firstName: string;
+  role: string;
+  position: string;
+  department: string;
+  phone: string;
+  email: string | null;
+  matchedFrom: "HUB_USER" | "CC_OFFICIAL_TEAM" | "BOTH";
+}
+
+function phoneDigitsSuffix(raw: string | null | undefined): string {
+  const digits = String(raw || "").replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+/**
+ * Identifies whether an inbound WhatsApp phone number belongs to an internal staff member
+ * by matching BOTH `core_auth.users.whatsapp_number` (active non-client hub staff) AND
+ * the official team roster published on `classicconcepts.in/api/brand-info`.
+ */
+export async function resolveInternalStaffCallerByPhone(
+  rawPhone: string
+): Promise<InternalStaffCallerProfile | null> {
+  const callerSuffix = phoneDigitsSuffix(rawPhone);
+  if (callerSuffix.length < 10) return null;
+
+  const auth = getRawLibSqlClient("core_auth");
+
+  const [hubUsersRes, brandInfo] = await Promise.all([
+    auth
+      .execute(
+        `SELECT id, name, email, whatsapp_number, role, department, status
+         FROM users
+         WHERE status = 'ACTIVE' AND role != 'CLIENT'`
+      )
+      .catch(() => ({ rows: [] as Record<string, unknown>[] })),
+    getVerifiedLiveBrandAndTeamInfo().catch(() => null),
+  ]);
+
+  const hubUsers = hubUsersRes.rows;
+  const hubMatch = hubUsers.find(
+    (u) => phoneDigitsSuffix(String(u.whatsapp_number || "")) === callerSuffix
+  );
+
+  const ccMemberMatch = (brandInfo?.teamMembers || []).find(
+    (m) =>
+      phoneDigitsSuffix(m.phone) === callerSuffix ||
+      phoneDigitsSuffix(m.whatsapp) === callerSuffix
+  );
+
+  if (!hubMatch && !ccMemberMatch) return null;
+
+  // If matched via classicconcepts.in directory, try linking their active hub user ID by name/email
+  let linkedHub = hubMatch;
+  if (!linkedHub && ccMemberMatch) {
+    const cleanTargetName = ccMemberMatch.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    linkedHub = hubUsers.find((u) => {
+      const uName = String(u.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const uEmail = String(u.email || "").toLowerCase();
+      return (
+        (cleanTargetName.length >= 4 &&
+          (uName.includes(cleanTargetName) || cleanTargetName.includes(uName))) ||
+        (ccMemberMatch.email && uEmail === ccMemberMatch.email.toLowerCase())
+      );
+    });
+  }
+
+  const displayName =
+    ccMemberMatch?.name || String(linkedHub?.name || "Team Member").trim();
+  const firstName = displayName.split(/\s+/)[0] || displayName;
+
+  return {
+    isInternalStaff: true,
+    hubUserId: linkedHub?.id ? String(linkedHub.id) : null,
+    name: displayName,
+    firstName,
+    role: linkedHub?.role ? String(linkedHub.role) : "STAFF",
+    position:
+      ccMemberMatch?.position ||
+      String(linkedHub?.department || linkedHub?.role || "Team Member"),
+    department: String(
+      linkedHub?.department || ccMemberMatch?.position || "Sales & Support"
+    ),
+    phone: normalizeWhatsAppPhone(rawPhone) || rawPhone,
+    email:
+      ccMemberMatch?.email ||
+      (linkedHub?.email ? String(linkedHub.email) : null),
+    matchedFrom:
+      hubMatch && ccMemberMatch
+        ? "BOTH"
+        : hubMatch
+        ? "HUB_USER"
+        : "CC_OFFICIAL_TEAM",
+  };
 }

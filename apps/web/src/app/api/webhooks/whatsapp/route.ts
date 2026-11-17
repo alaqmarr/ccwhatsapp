@@ -437,7 +437,9 @@ export async function POST(req: Request) {
           ],
         });
 
-        await processInboundAutomations({
+        socketHub.emit("message:new", { conversationId: convId, customerName: contactName });
+
+        void processInboundAutomations({
           conversationId: convId,
           customerPhone: e164,
           inboundText: String(textBody),
@@ -455,9 +457,9 @@ export async function POST(req: Request) {
                 caption: mediaMeta.caption,
               }
             : null,
+        }).catch((err) => {
+          console.error("[whatsapp webhook] processInboundAutomations failed:", err);
         });
-
-        socketHub.emit("message:new", { conversationId: convId, customerName: contactName });
       }
 
       // 2. Monotonic Delivery & Read Receipts (never downgrades READ -> DELIVERED or DELIVERED -> SENT)

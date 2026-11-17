@@ -6,6 +6,7 @@ import {
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
   lookupCustomerOrdersAcrossEcosystem,
+  resolveInternalStaffCallerByPhone,
   resolvePublicTrackingOrigin,
   resolveRequestedOrPreferredStaffForInbound,
   type OrderTrackingRecord,
@@ -19,6 +20,7 @@ import {
   formatWhatsAppOutboundText,
   loadConversationAiState,
   runAcrioAutonomousTurn,
+  runAcrioStaffWhatsAppAssistant,
   runGuardedButtonFlowAiReply,
   sendQuoteRequestAlertTemplate,
   sendStaffAssignmentEmailNotification,
@@ -831,6 +833,105 @@ async function handleAcrioInteractiveReply(params: {
   return false;
 }
 
+const gInboundState = globalThis as unknown as {
+  __ccInboundSeqMap?: Map<string, number>;
+  __ccInboundLockMap?: Map<string, Promise<void>>;
+};
+const inboundTurnSeqMap = (gInboundState.__ccInboundSeqMap ??= new Map<string, number>());
+const conversationWorkerLockMap = (gInboundState.__ccInboundLockMap ??= new Map<string, Promise<void>>());
+
+async function withConversationWorkerLock<T>(
+  conversationId: string,
+  task: () => Promise<T>
+): Promise<T> {
+  const prev = conversationWorkerLockMap.get(conversationId) || Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = prev.catch(() => {}).then(() => next);
+  conversationWorkerLockMap.set(conversationId, chained);
+  await prev.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    release();
+    if (conversationWorkerLockMap.get(conversationId) === chained) {
+      conversationWorkerLockMap.delete(conversationId);
+    }
+  }
+}
+
+async function sleepMs(ms: number): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Loads all consecutive un-replied CUSTOMER inbound messages since the last OUTBOUND reply
+ * so rapid multi-message bursts are coalesced into one clean turn.
+ */
+async function loadPendingInboundBurst(
+  conversationId: string,
+  fallbackText: string
+): Promise<{
+  coalescedText: string;
+  latestInboundId: string | null;
+  latestInboundCreatedAt: string | null;
+  count: number;
+}> {
+  const conv = getRawLibSqlClient("conversations");
+  const lastOutRes = await conv
+    .execute({
+      sql: `SELECT created_at FROM messages
+            WHERE conversation_id = ? AND direction = 'OUTBOUND'
+            ORDER BY created_at DESC LIMIT 1`,
+      args: [conversationId],
+    })
+    .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+  const lastOutIso = lastOutRes.rows[0]?.created_at
+    ? String(lastOutRes.rows[0].created_at)
+    : "";
+
+  const pendingRes = await conv
+    .execute({
+      sql: lastOutIso
+        ? `SELECT id, body, created_at FROM messages
+           WHERE conversation_id = ? AND direction = 'INBOUND' AND sender_type = 'CUSTOMER' AND created_at > ?
+           ORDER BY created_at ASC LIMIT 12`
+        : `SELECT id, body, created_at FROM messages
+           WHERE conversation_id = ? AND direction = 'INBOUND' AND sender_type = 'CUSTOMER'
+           ORDER BY created_at ASC LIMIT 12`,
+      args: lastOutIso ? [conversationId, lastOutIso] : [conversationId],
+    })
+    .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+
+  if (pendingRes.rows.length === 0) {
+    return {
+      coalescedText: fallbackText,
+      latestInboundId: null,
+      latestInboundCreatedAt: null,
+      count: 0,
+    };
+  }
+
+  const lines: string[] = [];
+  for (const r of pendingRes.rows) {
+    const t = String(r.body || "").trim();
+    if (!t) continue;
+    if (lines[lines.length - 1] !== t) {
+      lines.push(t);
+    }
+  }
+  const latest = pendingRes.rows[pendingRes.rows.length - 1];
+  return {
+    coalescedText: lines.join("\n").trim() || fallbackText,
+    latestInboundId: latest?.id ? String(latest.id) : null,
+    latestInboundCreatedAt: latest?.created_at ? String(latest.created_at) : null,
+    count: pendingRes.rows.length,
+  };
+}
+
 export async function processInboundAutomations(params: {
   conversationId: string;
   customerPhone: string;
@@ -857,9 +958,65 @@ export async function processInboundAutomations(params: {
     processedAutomationWaIds.add(cleanWaId);
   }
 
+  const mySeq = (inboundTurnSeqMap.get(params.conversationId) || 0) + 1;
+  inboundTurnSeqMap.set(params.conversationId, mySeq);
+
+  // Brief debounce window for rapid consecutive WhatsApp bubbles so AI waits and answers all of them once
+  const debounceDisabled = process.env.ACRIO_DISABLE_DEBOUNCE === "1";
+  const configuredDebounce = Number(
+    process.env.ACRIO_INBOUND_DEBOUNCE_MS ?? (cleanWaId ? 1500 : 250)
+  );
+  if (!debounceDisabled && !params.isButtonClick && configuredDebounce > 0) {
+    await sleepMs(configuredDebounce);
+    if (inboundTurnSeqMap.get(params.conversationId) !== mySeq) {
+      return;
+    }
+  }
+
+  await withConversationWorkerLock(params.conversationId, async () => {
+    if (inboundTurnSeqMap.get(params.conversationId) !== mySeq) {
+      return;
+    }
+    await processInboundAutomationsLocked(params, mySeq);
+  });
+}
+
+async function processInboundAutomationsLocked(
+  params: {
+    conversationId: string;
+    customerPhone: string;
+    inboundText: string;
+    isNewConversation: boolean;
+    isButtonClick?: boolean;
+    buttonPayload?: string;
+    buttonText?: string;
+    replyToWaMessageId?: string;
+    waMessageId?: string;
+    attachment?: {
+      mediaType?: string;
+      filename?: string;
+      mimeType?: string;
+      caption?: string;
+    } | null;
+    onBeforeAcrioSend?: () => Promise<void> | void;
+  },
+  entrySeq: number
+): Promise<void> {
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
+  const crm = getRawLibSqlClient("crm_orders");
   const mkt = getRawLibSqlClient("marketing");
+
+  // Coalesce multi-bubble bursts (only when not a specific interactive button payload)
+  const initialBurst = !params.isButtonClick && !params.buttonPayload
+    ? await loadPendingInboundBurst(params.conversationId, params.inboundText)
+    : {
+        coalescedText: params.inboundText,
+        latestInboundId: null,
+        latestInboundCreatedAt: null,
+        count: 1,
+      };
+  let workingInboundText = initialBurst.coalescedText || params.inboundText;
 
   const convRes = await conv.execute({
     sql: `SELECT * FROM conversations WHERE id = ? LIMIT 1`,
@@ -877,8 +1034,245 @@ export async function processInboundAutomations(params: {
     currentAssignedId === "ACRIO" &&
     currentStatus !== "ASSIGNED" &&
     (!currentTeamId || currentTeamId === "System (ACRIO)");
-  const lower = params.inboundText.toLowerCase().trim();
+  const lower = workingInboundText.toLowerCase().trim();
   const nowIso = new Date().toISOString();
+
+  // --------------------------------------------------------------------------
+  // 0. Internal Staff Identification & Personalized Staff WhatsApp Desk
+  // Checks both `core_auth.users.whatsapp_number` AND `classicconcepts.in` team numbers.
+  // --------------------------------------------------------------------------
+  const internalStaff = await resolveInternalStaffCallerByPhone(params.customerPhone).catch(
+    () => null
+  );
+  if (internalStaff) {
+    // Ensure internal teammate chats are labeled cleanly & never counted as waiting customer SLAs
+    await conv
+      .execute({
+        sql: `UPDATE conversations
+              SET customer_name = CASE
+                    WHEN customer_name LIKE '+%' OR TRIM(customer_name) = '' THEN ?
+                    ELSE customer_name
+                  END,
+                  smart_category = 'Internal Team',
+                  assigned_staff_id = 'ACRIO',
+                  assigned_staff_name = 'ACRIO',
+                  assigned_team_id = NULL,
+                  assigned_team_name = 'Internal Team Desk',
+                  waiting_since = NULL,
+                  unread_count = 0
+              WHERE id = ?`,
+        args: [`${internalStaff.name} (Team)`, params.conversationId],
+      })
+      .catch(() => {});
+
+    const incomingBtnText = String(
+      params.buttonText || params.buttonPayload || workingInboundText || ""
+    ).trim();
+    const hubBase = process.env.NEXT_PUBLIC_APP_URL || "https://whatsapp.ccapl.cc";
+
+    const sendStaffReply = async (rawBody: string) => {
+      const formatted = formatWhatsAppOutboundText(rawBody);
+      const outRes = await sendWhatsAppCloudMessage({
+        toPhone: params.customerPhone,
+        bodyText: formatted,
+        simulateAsyncDelivery: true,
+      }).catch(() => ({ ok: false, waMessageId: "", deliveryStatus: "FAILED" }));
+      const outId = `msg_staffwa_${crypto.randomUUID().slice(0, 8)}`;
+      await conv
+        .execute({
+          sql: `INSERT INTO messages (
+            id, conversation_id, direction, sender_type, sender_name, message_type,
+            billing_category, body, wa_message_id, delivery_status, created_at
+          ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', 'ACRIO • Staff Desk', 'TEXT', 'ACRIO', ?, ?, ?, ?)`,
+          args: [
+            outId,
+            params.conversationId,
+            formatted,
+            outRes.waMessageId || "",
+            outRes.deliveryStatus || "SENT",
+            new Date().toISOString(),
+          ],
+        })
+        .catch(() => {});
+      await conv
+        .execute({
+          sql: `UPDATE conversations SET last_message_preview = ?, last_message_at = ?, waiting_since = NULL WHERE id = ?`,
+          args: [formatted.slice(0, 140), new Date().toISOString(), params.conversationId],
+        })
+        .catch(() => {});
+      socketHub.emit("message:new", {
+        conversationId: params.conversationId,
+        senderName: "ACRIO • Staff Desk",
+        text: formatted,
+      });
+    };
+
+    // Template quick-reply button taps
+    if (/^(Accept Assignment|View Client Details|Accept Callback|Snooze 30 Minutes)$/i.test(incomingBtnText)) {
+      const latestAssigned = internalStaff.hubUserId
+        ? await conv.execute({
+            sql: `SELECT id, customer_name, customer_phone, smart_category, last_message_preview
+                  FROM conversations
+                  WHERE assigned_staff_id = ? AND status != 'RESOLVED'
+                  ORDER BY last_message_at DESC LIMIT 1`,
+            args: [internalStaff.hubUserId],
+          })
+        : { rows: [] as Record<string, unknown>[] };
+      const targetConv = latestAssigned.rows[0];
+      let replyText = "";
+      if (/Accept Assignment/i.test(incomingBtnText)) {
+        if (targetConv) {
+          await conv.execute({
+            sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, delivery_status, created_at)
+                  VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+            args: [
+              `msg_ack_${crypto.randomUUID().slice(0, 8)}`,
+              String(targetConv.id),
+              internalStaff.name,
+              `${internalStaff.name} accepted assignment via WhatsApp.`,
+              nowIso,
+            ],
+          }).catch(() => {});
+          replyText = `Thanks ${internalStaff.firstName}! Confirmed your assignment for *${String(targetConv.customer_name || targetConv.customer_phone)}*.\n\nOpen chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`;
+        } else {
+          replyText = `Thanks ${internalStaff.firstName}! View your open queue here: ${hubBase}/dashboard/inbox`;
+        }
+      } else if (/View Client Details/i.test(incomingBtnText)) {
+        replyText = targetConv
+          ? `*Latest Assigned Client:*\n• *Name:* ${String(targetConv.customer_name || "Customer")}\n• *Phone:* ${String(targetConv.customer_phone)}\n• *Topic:* ${String(targetConv.smart_category || "General Enquiry")}\n• *Last message:* ${String(targetConv.last_message_preview || "")}\n\nOpen chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`
+          : `No open client chat is waiting for you right now, ${internalStaff.firstName}. Inbox: ${hubBase}/dashboard/inbox`;
+      } else if (/Accept Callback/i.test(incomingBtnText)) {
+        replyText = targetConv
+          ? `Callback accepted, ${internalStaff.firstName}! Call *${String(targetConv.customer_name || "")}* at ${String(targetConv.customer_phone)} and log the update here: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`
+          : `Callback accepted, ${internalStaff.firstName}! Check pending callbacks in ${hubBase}/dashboard/inbox`;
+      } else {
+        replyText = `Alert snoozed for 30 minutes, ${internalStaff.firstName}. Open queue anytime: ${hubBase}/dashboard/inbox`;
+      }
+      await sendStaffReply(replyText);
+      return;
+    }
+
+    // Fast personalized internal shortcuts: "my chats", "callbacks", "stats", or "check <phone>"
+    if (/^(?:my\s*(?:chats?|leads?|open\s*chats?|assigned|queue)|open\s*leads?)\W*$/i.test(lower)) {
+      const assignedRows = internalStaff.hubUserId
+        ? await conv.execute({
+            sql: `SELECT id, customer_name, customer_phone, smart_category, last_message_preview
+                  FROM conversations
+                  WHERE (assigned_staff_id = ? OR collaborators_json LIKE ?) AND status != 'RESOLVED'
+                  ORDER BY last_message_at DESC LIMIT 6`,
+            args: [internalStaff.hubUserId, `%"staffId":"${internalStaff.hubUserId}"%`],
+          })
+        : { rows: [] as Record<string, unknown>[] };
+      if (assignedRows.rows.length === 0) {
+        await sendStaffReply(
+          `Hey *${internalStaff.firstName}*! You have *0 open assigned chats* right now.\n\nCheck open pool or call queue: ${hubBase}/dashboard/inbox`
+        );
+      } else {
+        const items = assignedRows.rows
+          .map(
+            (r, i) =>
+              `${i + 1}. *${String(r.customer_name || r.customer_phone)}* (${String(r.customer_phone)})\n   Topic: ${String(r.smart_category || "Enquiry")} | ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(r.id))}`
+          )
+          .join("\n\n");
+        await sendStaffReply(
+          `Hey *${internalStaff.firstName}*, here are your *${assignedRows.rows.length} open chats*:\n\n${items}`
+        );
+      }
+      return;
+    }
+
+    if (/^(?:callbacks?|pending\s*callbacks?|calls?)\W*$/i.test(lower)) {
+      const cbRows = await conv
+        .execute(
+          `SELECT conversation_id, customer_name, customer_phone, preferred_slot, topic
+           FROM callback_requests WHERE status = 'PENDING' ORDER BY created_at DESC LIMIT 6`
+        )
+        .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+      if (cbRows.rows.length === 0) {
+        await sendStaffReply(
+          `Hey *${internalStaff.firstName}*, there are *no pending callbacks* right now! Call Queue: ${hubBase}/dashboard/call-queue`
+        );
+      } else {
+        const list = cbRows.rows
+          .map(
+            (r, i) =>
+              `${i + 1}. *${String(r.customer_name || r.customer_phone)}* (${String(r.customer_phone)})\n   Slot: ${String(r.preferred_slot || "ASAP")} | ${String(r.topic || "General")}\n   ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(r.conversation_id))}`
+          )
+          .join("\n\n");
+        await sendStaffReply(
+          `Hey *${internalStaff.firstName}*, here are the *pending callbacks (${cbRows.rows.length})*:\n\n${list}`
+        );
+      }
+      return;
+    }
+
+    if (/^(?:stats?|summary|today|today'?s?\s*stats?)\W*$/i.test(lower)) {
+      const [openCntRes, waitCntRes, cqCntRes] = await Promise.all([
+        conv.execute(`SELECT COUNT(*) AS c FROM conversations WHERE status != 'RESOLVED'`),
+        conv.execute(`SELECT COUNT(*) AS c FROM conversations WHERE status != 'RESOLVED' AND waiting_since IS NOT NULL`),
+        conv.execute(`SELECT COUNT(*) AS c FROM call_dispatch_queue WHERE status != 'RESOLVED'`).catch(() => ({ rows: [{ c: 0 }] })),
+      ]);
+      await sendStaffReply(
+        `*Classic Concepts Live Desk Snapshot* (for ${internalStaff.firstName}):\n\n• *Open Conversations:* ${Number(openCntRes.rows[0]?.c ?? 0)}\n• *Waiting for Staff Reply:* ${Number(waitCntRes.rows[0]?.c ?? 0)}\n• *Open Call Queue Items:* ${Number(cqCntRes.rows[0]?.c ?? 0)}\n\nOpen Dashboard: ${hubBase}/dashboard`
+      );
+      return;
+    }
+
+    const phoneLookupMatch = workingInboundText.match(/(?:check|lookup|find|status|details|who\s+is)?\s*(\+?\d[\d\s-]{8,14}\d)/i);
+    if (
+      phoneLookupMatch &&
+      /\b(check|lookup|find|status|details|client|customer|order|who)\b/i.test(lower)
+    ) {
+      const lookupDigits = phoneLookupMatch[1].replace(/\D/g, "").slice(-10);
+      if (lookupDigits.length === 10) {
+        const [cRes, custRes] = await Promise.all([
+          conv.execute({
+            sql: `SELECT id, customer_name, customer_phone, status, assigned_staff_name, smart_category, last_message_preview
+                  FROM conversations WHERE customer_phone LIKE ? ORDER BY last_message_at DESC LIMIT 1`,
+            args: [`%${lookupDigits}%`],
+          }),
+          crm.execute({
+            sql: `SELECT name, company_name, city, acrio_segment, total_orders_count, lifetime_value_inr
+                  FROM customers WHERE phone LIKE ? LIMIT 1`,
+            args: [`%${lookupDigits}%`],
+          }),
+        ]);
+        const cRowFound = cRes.rows[0];
+        const custFound = custRes.rows[0];
+        if (!cRowFound && !custFound) {
+          await sendStaffReply(
+            `Hey *${internalStaff.firstName}*, no CRM record or chat was found matching *${phoneLookupMatch[1].trim()}*.`
+          );
+        } else {
+          await sendStaffReply(
+            `*Internal CRM Lookup for ${internalStaff.firstName}:*\n• *Client:* ${String(custFound?.name || cRowFound?.customer_name || lookupDigits)}\n• *Phone:* ${String(cRowFound?.customer_phone || lookupDigits)}${custFound?.company_name ? `\n• *Company:* ${String(custFound.company_name)}` : ""}${custFound?.city ? `\n• *City:* ${String(custFound.city)}` : ""}\n• *Assigned to:* ${String(cRowFound?.assigned_staff_name || "ACRIO")}\n• *Status:* ${String(cRowFound?.status || "NEW")}\n• *Orders:* ${Number(custFound?.total_orders_count ?? 0)}${cRowFound?.id ? `\n\nOpen Chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(cRowFound.id))}` : ""}`
+          );
+        }
+        return;
+      }
+    }
+
+    // Full personalized AI Staff Assistant on WhatsApp
+    const recentStaffMsgs = await conv
+      .execute({
+        sql: `SELECT direction, body FROM messages WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND') ORDER BY created_at DESC LIMIT 10`,
+        args: [params.conversationId],
+      })
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    const staffResult = await runAcrioStaffWhatsAppAssistant({
+      staff: internalStaff,
+      inboundText: workingInboundText,
+      recentMessages: [...recentStaffMsgs.rows].reverse().map((r) => ({
+        direction: String(r.direction),
+        body: String(r.body || ""),
+      })),
+    });
+    await sendStaffReply(staffResult.replyText);
+    return;
+  }
+
+  // Update local param copy to coalesced text for customer pipeline below
+  params = { ...params, inboundText: workingInboundText };
 
   // --------------------------------------------------------------------------
   // 1. Automatic WhatsApp Opt-Out Protection
@@ -1796,75 +2190,118 @@ export async function processInboundAutomations(params: {
   }
 
   // Case B: Initial / active ACRIO assignment -> ACRIO handles the query automatically in the backend!
-  const recentRes = await conv.execute({
-    sql: `SELECT direction, sender_type, body, metadata_json, wa_message_id FROM messages
-          WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
-          ORDER BY created_at DESC LIMIT 16`,
-    args: [params.conversationId],
-  });
-  const recentMessages = [...recentRes.rows].reverse().map((m) => {
-    let parsedMeta: Record<string, any> = {};
-    if (m.metadata_json) {
-      try {
-        parsedMeta = JSON.parse(String(m.metadata_json));
-      } catch {
-        parsedMeta = {};
-      }
-    }
-    return {
-      direction: String(m.direction),
-      senderType: String(m.sender_type || ""),
-      body: String(m.body),
-      productSlug: parsedMeta.productSlug ? String(parsedMeta.productSlug) : null,
-      replyTo: parsedMeta.replyTo || null,
-    };
-  });
-  const hasAlreadyGreeted = recentMessages.some(
-    (m) => m.direction === "OUTBOUND"
-  );
+  // Anti-distraction loop: if customer sends another message WHILE Claude is thinking,
+  // discard the outdated draft, coalesce all new messages, and generate one unified reply!
+  let acrioTurn!: Awaited<ReturnType<typeof runAcrioAutonomousTurn>>;
+  let finalReplyIso = new Date().toISOString();
+  let lastSeenInboundId = initialBurst.latestInboundId;
+  let activePromptText = params.inboundText;
 
-  let replyToMessage =
-    recentMessages[recentMessages.length - 1]?.replyTo || null;
-  if (!replyToMessage && params.replyToWaMessageId) {
-    const quotedRes = await conv
-      .execute({
-        sql: `SELECT sender_name, direction, body, metadata_json FROM messages WHERE wa_message_id = ? LIMIT 1`,
-        args: [params.replyToWaMessageId],
-      })
-      .catch(() => ({ rows: [] as any[] }));
-    const qRow = quotedRes.rows[0];
-    if (qRow) {
-      let qMeta: Record<string, any> = {};
-      if (qRow.metadata_json) {
+  for (let aiAttempt = 0; aiAttempt < 3; aiAttempt++) {
+    const seqAtAiStart = inboundTurnSeqMap.get(params.conversationId);
+
+    const recentRes = await conv.execute({
+      sql: `SELECT direction, sender_type, body, metadata_json, wa_message_id FROM messages
+            WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
+            ORDER BY created_at DESC LIMIT 16`,
+      args: [params.conversationId],
+    });
+    const recentMessages = [...recentRes.rows].reverse().map((m) => {
+      let parsedMeta: Record<string, any> = {};
+      if (m.metadata_json) {
         try {
-          qMeta = JSON.parse(String(qRow.metadata_json));
+          parsedMeta = JSON.parse(String(m.metadata_json));
         } catch {
-          qMeta = {};
+          parsedMeta = {};
         }
       }
-      replyToMessage = {
-        waMessageId: params.replyToWaMessageId,
-        senderName: String(qRow.sender_name || "ACRIO"),
-        direction: String(qRow.direction || "OUTBOUND"),
-        body: String(qRow.body || ""),
-        productSlug: qMeta.productSlug ? String(qMeta.productSlug) : null,
-        productName: qMeta.productName ? String(qMeta.productName) : null,
-        variantName: qMeta.variantName ? String(qMeta.variantName) : null,
+      return {
+        direction: String(m.direction),
+        senderType: String(m.sender_type || ""),
+        body: String(m.body),
+        productSlug: parsedMeta.productSlug ? String(parsedMeta.productSlug) : null,
+        replyTo: parsedMeta.replyTo || null,
       };
-    }
-  }
+    });
+    const hasAlreadyGreeted = recentMessages.some(
+      (m) => m.direction === "OUTBOUND"
+    );
 
-  const acrioTurn = await runAcrioAutonomousTurn({
-    conversationId: params.conversationId,
-    customerName: String(convRow.customer_name || params.customerPhone),
-    customerPhone: params.customerPhone,
-    inboundText: params.inboundText,
-    recentMessages,
-    hasAlreadyGreeted,
-    forcedFocusSlug,
-    replyToMessage,
-    attachment: params.attachment || null,
-  });
+    let replyToMessage =
+      recentMessages[recentMessages.length - 1]?.replyTo || null;
+    if (!replyToMessage && params.replyToWaMessageId) {
+      const quotedRes = await conv
+        .execute({
+          sql: `SELECT sender_name, direction, body, metadata_json FROM messages WHERE wa_message_id = ? LIMIT 1`,
+          args: [params.replyToWaMessageId],
+        })
+        .catch(() => ({ rows: [] as any[] }));
+      const qRow = quotedRes.rows[0];
+      if (qRow) {
+        let qMeta: Record<string, any> = {};
+        if (qRow.metadata_json) {
+          try {
+            qMeta = JSON.parse(String(qRow.metadata_json));
+          } catch {
+            qMeta = {};
+          }
+        }
+        replyToMessage = {
+          waMessageId: params.replyToWaMessageId,
+          senderName: String(qRow.sender_name || "ACRIO"),
+          direction: String(qRow.direction || "OUTBOUND"),
+          body: String(qRow.body || ""),
+          productSlug: qMeta.productSlug ? String(qMeta.productSlug) : null,
+          productName: qMeta.productName ? String(qMeta.productName) : null,
+          variantName: qMeta.variantName ? String(qMeta.variantName) : null,
+        };
+      }
+    }
+
+    acrioTurn = await runAcrioAutonomousTurn({
+      conversationId: params.conversationId,
+      customerName: String(convRow.customer_name || params.customerPhone),
+      customerPhone: params.customerPhone,
+      inboundText: activePromptText,
+      recentMessages,
+      hasAlreadyGreeted,
+      forcedFocusSlug,
+      replyToMessage,
+      attachment: params.attachment || null,
+    });
+
+    // Freshness gate: did the customer send another message while AI was generating this reply?
+    const latestBurst = await loadPendingInboundBurst(
+      params.conversationId,
+      activePromptText
+    );
+    const seqMoved =
+      inboundTurnSeqMap.get(params.conversationId) !== seqAtAiStart ||
+      inboundTurnSeqMap.get(params.conversationId) !== entrySeq;
+    const dbMoved =
+      Boolean(latestBurst.latestInboundId) &&
+      latestBurst.latestInboundId !== lastSeenInboundId;
+
+    if ((seqMoved || dbMoved) && !params.isButtonClick) {
+      if (inboundTurnSeqMap.get(params.conversationId) !== entrySeq) {
+        // Another queued call with a newer sequence number is already waiting on the lock to answer cleanly
+        return;
+      }
+      if (aiAttempt < 2) {
+        await sleepMs(850);
+        const settledBurst = await loadPendingInboundBurst(
+          params.conversationId,
+          activePromptText
+        );
+        lastSeenInboundId = settledBurst.latestInboundId;
+        activePromptText = settledBurst.coalescedText;
+        continue;
+      }
+    }
+
+    finalReplyIso = new Date().toISOString();
+    break;
+  }
 
   if (params.onBeforeAcrioSend) {
     await params.onBeforeAcrioSend();
@@ -1891,6 +2328,7 @@ export async function processInboundAutomations(params: {
   if (!stillOwnedByAcrio) {
     return;
   }
+  void finalReplyIso;
 
   // Send ACRIO's automatic WhatsApp reply (text, or text with buttons / "View options" list, plus any product/variant images)
   const { acrioMsgId, replyIso } = await sendAcrioChatMessage({
@@ -1966,21 +2404,40 @@ export async function processInboundAutomations(params: {
         text: pingBody,
       });
 
-      // Notify available Sales P0 staff via WhatsApp `cc_quote_request_alert` template
+      // Notify ONLY the assigned salesperson (or single least-loaded P0 responder) via `cc_quote_request_alert`
       const quoteInfo = extractQuoteRequestDetails({
         text: params.inboundText,
         smartCategory: acrioTurn.smartCategory,
       });
       if (quoteInfo.isQuoteRequest) {
-        const salesMembersRes = await conv
-          .execute(
-            `SELECT staff_id, staff_name FROM team_members WHERE team_id = 'team_sales' AND is_available = 1 ORDER BY tier ASC LIMIT 2`
-          )
-          .catch(() => ({ rows: [] as Record<string, unknown>[] }));
-        for (const sm of salesMembersRes.rows) {
+        const assignedHumanId =
+          convRow.assigned_staff_id && String(convRow.assigned_staff_id) !== "ACRIO"
+            ? String(convRow.assigned_staff_id)
+            : "";
+        let targetStaffId = assignedHumanId;
+        let targetStaffName = String(convRow.assigned_staff_name || "Sales Team");
+
+        if (!targetStaffId) {
+          const salesMembersRes = await conv
+            .execute(
+              `SELECT tm.staff_id, tm.staff_name,
+                      (SELECT COUNT(*) FROM conversations c WHERE c.assigned_staff_id = tm.staff_id AND c.status != 'RESOLVED') AS open_cnt
+               FROM team_members tm
+               WHERE tm.team_id = 'team_sales' AND tm.is_available = 1
+               ORDER BY tm.tier ASC, open_cnt ASC
+               LIMIT 1`
+            )
+            .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+          if (salesMembersRes.rows[0]) {
+            targetStaffId = String(salesMembersRes.rows[0].staff_id);
+            targetStaffName = String(salesMembersRes.rows[0].staff_name || "Sales Team");
+          }
+        }
+
+        if (targetStaffId) {
           void sendQuoteRequestAlertTemplate({
-            staffId: String(sm.staff_id),
-            staffName: String(sm.staff_name || "Sales Team"),
+            staffId: targetStaffId,
+            staffName: targetStaffName,
             customerName: String(convRow.customer_name || params.customerPhone),
             customerPhone: params.customerPhone,
             productName: quoteInfo.product,
@@ -2493,7 +2950,11 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
       assignedAt: nowIso,
     });
 
-    if (nextStaffId && nextStaffId !== "ACRIO") {
+    if (
+      nextStaffId &&
+      nextStaffId !== "ACRIO" &&
+      nextStaffId !== String(row.assigned_staff_id || "")
+    ) {
       void sendStaffAssignmentEmailNotification({
         staffId: nextStaffId,
         staffName: nextStaffName,

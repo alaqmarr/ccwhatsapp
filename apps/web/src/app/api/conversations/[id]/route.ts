@@ -6,9 +6,11 @@ import {
   ensureDatabasesBootstrapped,
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
+  listCompanyDocuments,
   listOrderTrackings,
   parseConversationCollaborators,
   removeConversationCollaborator,
+  upsertCompanyDocument,
   upsertOrderTracking,
   upsertSyncedContact,
   type ShipmentStatus,
@@ -26,15 +28,18 @@ import { listCustomAdminLinks, rememberWhatsAppCache } from "@cc/storage";
 import {
   checkAndEscalateWaitingChats,
   closeActiveAssignmentOnResolve,
+  executeAcrioPendingNoteAction,
   logConversationAssignment,
   markPriorOutboundMessagesRead,
   processInboundAutomations,
   processStaffNote,
+  promoteMissingDocNoteToPendingAction,
   recordAssignedFirstResponse,
   recordDualPricingLedgerEntry,
   scheduleSandboxDeliveryReceipt,
   smartAssignConversation,
   type BillingMessageCategory,
+  type NoteAttachmentPayload,
 } from "@cc/workers";
 import { getCurrentUser } from "@/lib/session";
 
@@ -532,6 +537,7 @@ export async function POST(
       templateName,
       templateComponents,
       languageCode,
+      skipAutoChatRecord: Boolean(templateName),
       replyToWaMessageId: replyMeta?.waMessageId || undefined,
       media: attachment
         ? {
@@ -718,13 +724,55 @@ export async function POST(
 
   // 2. Private Internal Team Note (never sent to customer, ₹0.00 Free, keeps wait timer intact)
   if (action === "add_internal_note") {
-    const noteText = String(body.noteText || body.text || "").trim();
+    const rawNoteAtt =
+      body.attachment && typeof body.attachment === "object"
+        ? (body.attachment as Record<string, unknown>)
+        : null;
+    const noteAttachment: NoteAttachmentPayload | null =
+      rawNoteAtt && String(rawNoteAtt.url || "").trim()
+        ? {
+            mediaId: rawNoteAtt.mediaId ? String(rawNoteAtt.mediaId).trim() : undefined,
+            waMediaId: rawNoteAtt.waMediaId ? String(rawNoteAtt.waMediaId).trim() : undefined,
+            mediaType: (["IMAGE", "VIDEO", "DOCUMENT", "AUDIO"].includes(
+              String(rawNoteAtt.mediaType || "").toUpperCase()
+            )
+              ? String(rawNoteAtt.mediaType).toUpperCase()
+              : "DOCUMENT") as NoteAttachmentPayload["mediaType"],
+            url: String(rawNoteAtt.url).trim(),
+            fileName: rawNoteAtt.fileName ? String(rawNoteAtt.fileName).trim() : undefined,
+            mimeType: rawNoteAtt.mimeType ? String(rawNoteAtt.mimeType).trim() : undefined,
+          }
+        : null;
+
+    const noteText =
+      String(body.noteText || body.text || "").trim() ||
+      (noteAttachment?.fileName ? `Attached ${noteAttachment.fileName}` : "");
     if (!noteText) {
       return NextResponse.json({ ok: false, error: "Internal note cannot be empty." }, { status: 400 });
     }
 
     const replyMeta = await resolveQuotedReply();
-    const metadataJson = JSON.stringify(replyMeta ? { replyTo: replyMeta } : {});
+    const noteMetaObj: Record<string, unknown> = {};
+    if (replyMeta) noteMetaObj.replyTo = replyMeta;
+    if (noteAttachment) {
+      noteMetaObj.mediaType = noteAttachment.mediaType;
+      noteMetaObj.mediaUrl = noteAttachment.url;
+      if (noteAttachment.mediaType === "IMAGE") noteMetaObj.imageUrl = noteAttachment.url;
+      if (noteAttachment.mediaId) noteMetaObj.mediaId = noteAttachment.mediaId;
+      if (noteAttachment.waMediaId) noteMetaObj.waMediaId = noteAttachment.waMediaId;
+      if (noteAttachment.fileName) {
+        noteMetaObj.fileName = noteAttachment.fileName;
+        noteMetaObj.filename = noteAttachment.fileName;
+      }
+      if (noteAttachment.mimeType) noteMetaObj.mimeType = noteAttachment.mimeType;
+      noteMetaObj.media = {
+        mediaId: noteAttachment.mediaId || noteAttachment.waMediaId || null,
+        mimeType: noteAttachment.mimeType || null,
+        filename: noteAttachment.fileName || null,
+        downloadUrl: noteAttachment.url,
+      };
+    }
+    const metadataJson = JSON.stringify(noteMetaObj);
     const noteId = `msg_note_${crypto.randomUUID().slice(0, 8)}`;
     await conv.execute({
       sql: `INSERT INTO messages (
@@ -751,6 +799,7 @@ export async function POST(
           noteText,
           author: { id: user.id, name: user.name },
           staff,
+          noteAttachment,
         });
         mentioned = processed.mentioned;
         askedAcrio = processed.askedAcrio;
@@ -761,30 +810,124 @@ export async function POST(
     return NextResponse.json({ ok: true, noteId, replyTo: replyMeta, mentioned, askedAcrio });
   }
 
+  // 2a-ii. Confirm or cancel a queued ACRIO customer action inside Internal Notes
+  if (action === "confirm_acrio_note_action") {
+    const noteMessageId = String(body.noteMessageId || "").trim();
+    const decision = body.decision === "CANCEL" ? "CANCEL" : "CONFIRM";
+    if (!noteMessageId) {
+      return NextResponse.json({ ok: false, error: "noteMessageId is required." }, { status: 400 });
+    }
+    const res = await executeAcrioPendingNoteAction({
+      conversationId: id,
+      noteMessageId,
+      actorStaffId: user.id,
+      actorStaffName: user.name,
+      decision,
+    });
+    if (!res.ok) {
+      return NextResponse.json({ ok: false, error: res.error || "Action failed." }, { status: 400 });
+    }
+    const { ok: _ignoredOk, ...rest } = res;
+    return NextResponse.json({ ok: true, ...rest });
+  }
+
+  // 2a-iii. Save/link a Company Document directly from an ACRIO missing-document prompt in Internal Notes
+  if (action === "attach_company_doc_to_acrio_note") {
+    const noteMessageId = String(body.noteMessageId || "").trim();
+    if (!noteMessageId) {
+      return NextResponse.json({ ok: false, error: "noteMessageId is required." }, { status: 400 });
+    }
+    let doc = null;
+    if (body.companyDocId) {
+      const docs = await listCompanyDocuments();
+      doc = docs.find((d) => d.id === String(body.companyDocId)) || null;
+    } else if (body.mediaUrl && body.title) {
+      doc = await upsertCompanyDocument({
+        slug: body.slug ? String(body.slug) : undefined,
+        title: String(body.title),
+        category: "COMPLIANCE",
+        docNumber: body.docNumber ? String(body.docNumber) : undefined,
+        mediaId: body.mediaId ? String(body.mediaId) : undefined,
+        waMediaId: body.waMediaId ? String(body.waMediaId) : undefined,
+        mediaUrl: String(body.mediaUrl),
+        mediaType: body.mediaType ? String(body.mediaType).toUpperCase() as any : "DOCUMENT",
+        fileName: body.fileName ? String(body.fileName) : undefined,
+        mimeType: body.mimeType ? String(body.mimeType) : undefined,
+        keywords: body.keywords ? String(body.keywords) : undefined,
+        uploadedBy: user.name,
+      });
+    }
+    if (!doc) {
+      return NextResponse.json(
+        { ok: false, error: "Company document file and title are required." },
+        { status: 400 }
+      );
+    }
+    const promo = await promoteMissingDocNoteToPendingAction({
+      conversationId: id,
+      noteMessageId,
+      doc,
+      actorStaffId: user.id,
+      actorStaffName: user.name,
+    });
+    if (!promo.ok) {
+      return NextResponse.json({ ok: false, error: promo.error || "Could not prepare share." }, { status: 400 });
+    }
+    return NextResponse.json({ ok: true, document: doc, pendingAction: promo.pendingAction });
+  }
+
   // 2b. Human Staff Takes Over Chat (from ACRIO OR from another teammate)
   if (action === "take_over_from_acrio" || action === "take_over_chat") {
     const prevStaffId = cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : "ACRIO";
     const prevStaffName = cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : "ACRIO";
-    const tailMsgRes = await conv.execute({
-      sql: `SELECT direction FROM messages
-            WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
-            ORDER BY created_at DESC LIMIT 1`,
-      args: [id],
-    });
-    const isAwaitingReply =
-      tailMsgRes.rows[0] && String(tailMsgRes.rows[0].direction) === "INBOUND";
+    const rawPrevTeam = String(cRow.assigned_team_name || "").trim();
+    const resolvedTeamId =
+      cRow.assigned_team_id && String(cRow.assigned_team_id).trim()
+        ? String(cRow.assigned_team_id)
+        : "team_sales";
+    const resolvedTeamName =
+      !rawPrevTeam ||
+      rawPrevTeam.startsWith("System (ACRIO)") ||
+      rawPrevTeam === "ACRIO Assistant" ||
+      rawPrevTeam === "Internal Team Desk"
+        ? "Sales Team"
+        : rawPrevTeam;
+
+    const tailMsgRes = await conv
+      .execute({
+        sql: `SELECT direction FROM messages
+              WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
+              ORDER BY created_at DESC LIMIT 1`,
+        args: [id],
+      })
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    const isAwaitingReply = Boolean(
+      tailMsgRes.rows[0] && String(tailMsgRes.rows[0].direction) === "INBOUND"
+    );
+    const nextWaitingSince = isAwaitingReply
+      ? cRow.waiting_since
+        ? String(cRow.waiting_since)
+        : nowIso
+      : null;
 
     await conv.execute({
       sql: `UPDATE conversations
             SET status = 'ASSIGNED',
                 assigned_staff_id = ?,
                 assigned_staff_name = ?,
-                assigned_team_id = COALESCE(assigned_team_id, 'team_sales'),
-                assigned_team_name = COALESCE(NULLIF(assigned_team_name, 'System (ACRIO)'), 'Sales Team'),
+                assigned_team_id = ?,
+                assigned_team_name = ?,
                 escalation_level = 'P0',
-                waiting_since = CASE WHEN ? = 1 THEN COALESCE(waiting_since, ?) ELSE NULL END
+                waiting_since = ?
             WHERE id = ?`,
-      args: [user.id, user.name, isAwaitingReply ? 1 : 0, nowIso, id],
+      args: [
+        user.id,
+        user.name,
+        resolvedTeamId,
+        resolvedTeamName,
+        nextWaitingSince,
+        id,
+      ],
     });
 
     await logConversationAssignment({
@@ -793,16 +936,11 @@ export async function POST(
       customerName: String(cRow.customer_name || ""),
       fromStaffId: prevStaffId,
       fromStaffName: prevStaffName,
-      fromTeamName: cRow.assigned_team_name
-        ? String(cRow.assigned_team_name)
-        : "System (ACRIO)",
+      fromTeamName: rawPrevTeam || "System (ACRIO)",
       toStaffId: user.id,
       toStaffName: user.name,
-      toTeamId: cRow.assigned_team_id ? String(cRow.assigned_team_id) : "team_sales",
-      toTeamName:
-        cRow.assigned_team_name && String(cRow.assigned_team_name) !== "System (ACRIO)"
-          ? String(cRow.assigned_team_name)
-          : "Sales Team",
+      toTeamId: resolvedTeamId,
+      toTeamName: resolvedTeamName,
       escalationLevel: "P0",
       assignmentSource: "STAFF_TAKEOVER",
       assignedByName: user.name,
@@ -811,18 +949,31 @@ export async function POST(
           ? `${user.name} took over chat from System (ACRIO)`
           : `${user.name} took over chat from ${prevStaffName}`,
       assignedAt: nowIso,
+    }).catch((err) => {
+      console.warn("[takeover] assignment timeline log failed:", (err as Error)?.message || err);
     });
 
     socketHub.emit("conversation:assigned", {
       conversationId: id,
+      staffId: user.id,
       staffName: user.name,
-      teamName:
-        cRow.assigned_team_name && String(cRow.assigned_team_name) !== "System (ACRIO)"
-          ? String(cRow.assigned_team_name)
-          : "Sales Team",
+      teamName: resolvedTeamName,
       escalationLevel: "P0",
     });
-    return NextResponse.json({ ok: true });
+
+    return NextResponse.json({
+      ok: true,
+      conversation: {
+        id,
+        status: "ASSIGNED",
+        assignedStaffId: user.id,
+        assignedStaffName: user.name,
+        assignedTeamId: resolvedTeamId,
+        assignedTeamName: resolvedTeamName,
+        escalationLevel: "P0",
+        waitingSince: nextWaitingSince,
+      },
+    });
   }
 
   // 2b-ii. Manage Dual-Assignment Collaborators
@@ -1080,7 +1231,12 @@ export async function POST(
       assignedAt: nowIso,
     });
 
-    if (staffId && staffId !== "ACRIO" && staffId !== user.id) {
+    if (
+      staffId &&
+      staffId !== "ACRIO" &&
+      staffId !== user.id &&
+      staffId !== String(cRow.assigned_staff_id || "")
+    ) {
       sendStaffAssignmentEmailNotification({
         staffId,
         staffName,

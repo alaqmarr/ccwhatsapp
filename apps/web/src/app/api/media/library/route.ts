@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { cleanDisplayProductName } from "@cc/database";
+import { cleanDisplayProductName, listCompanyDocuments } from "@cc/database";
 import { getCachedEcosystemCatalog } from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
 import { getCurrentUser } from "@/lib/session";
@@ -79,6 +79,19 @@ export async function GET(req: Request) {
     if (!seenResourceUrls.has(b.url)) {
       seenResourceUrls.add(b.url);
       resources.push(b);
+    }
+  }
+
+  const companyDocs = await listCompanyDocuments({ enabledOnly: true }).catch(() => []);
+  for (const d of companyDocs) {
+    if (d.mediaUrl && !seenResourceUrls.has(d.mediaUrl)) {
+      seenResourceUrls.add(d.mediaUrl);
+      resources.unshift({
+        title: d.docNumber ? `${d.title} (${d.docNumber})` : d.title,
+        url: d.mediaUrl,
+        fileName: d.fileName || `${d.slug}.pdf`,
+        brandLabel: "Company Document",
+      });
     }
   }
 

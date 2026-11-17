@@ -548,6 +548,7 @@ export async function POST(req: Request) {
       templateName,
       templateComponents,
       languageCode,
+      skipAutoChatRecord: Boolean(templateName),
       simulateAsyncDelivery: true,
       forceSandbox: Boolean(body.forceSandbox),
     });
