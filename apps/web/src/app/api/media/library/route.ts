@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { cleanDisplayProductName, listCompanyDocuments } from "@cc/database";
+import {
+  cleanDisplayProductName,
+  fetchLiveEcosystemDocuments,
+  listCompanyDocuments,
+} from "@cc/database";
 import { getCachedEcosystemCatalog } from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
 import { getCurrentUser } from "@/lib/session";
@@ -82,7 +86,20 @@ export async function GET(req: Request) {
     }
   }
 
-  const companyDocs = await listCompanyDocuments({ enabledOnly: true }).catch(() => []);
+  const [companyDocs, ecoDocs] = await Promise.all([
+    listCompanyDocuments({ enabledOnly: true }).catch(() => []),
+    fetchLiveEcosystemDocuments().catch(() => []),
+  ]);
+  for (const ed of ecoDocs) {
+    if (ed.source === "HUB_UPLOAD" || !ed.mediaUrl || seenResourceUrls.has(ed.mediaUrl)) continue;
+    seenResourceUrls.add(ed.mediaUrl);
+    resources.unshift({
+      title: `${ed.title} (${ed.sourceLabel})`,
+      url: ed.mediaUrl,
+      fileName: ed.fileName,
+      brandLabel: ed.sourceLabel,
+    });
+  }
   for (const d of companyDocs) {
     if (d.mediaUrl && !seenResourceUrls.has(d.mediaUrl)) {
       seenResourceUrls.add(d.mediaUrl);

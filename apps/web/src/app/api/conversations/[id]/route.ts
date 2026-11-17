@@ -814,6 +814,7 @@ export async function POST(
   if (action === "confirm_acrio_note_action") {
     const noteMessageId = String(body.noteMessageId || "").trim();
     const decision = body.decision === "CANCEL" ? "CANCEL" : "CONFIRM";
+    const selectedOptionId = body.selectedOptionId ? String(body.selectedOptionId).trim() : undefined;
     if (!noteMessageId) {
       return NextResponse.json({ ok: false, error: "noteMessageId is required." }, { status: 400 });
     }
@@ -823,6 +824,7 @@ export async function POST(
       actorStaffId: user.id,
       actorStaffName: user.name,
       decision,
+      selectedOptionId,
     });
     if (!res.ok) {
       return NextResponse.json({ ok: false, error: res.error || "Action failed." }, { status: 400 });

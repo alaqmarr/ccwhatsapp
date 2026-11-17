@@ -188,6 +188,19 @@ export interface NoteAttachmentPayload {
   mimeType?: string;
 }
 
+export interface PendingAcrioCandidateOption {
+  id: string;
+  title: string;
+  sourceLabel: string;
+  mediaUrl: string;
+  mediaType: "DOCUMENT" | "IMAGE" | "VIDEO" | "AUDIO";
+  mediaId?: string;
+  waMediaId?: string;
+  fileName: string;
+  mimeType: string;
+  docNumber?: string;
+}
+
 export interface PendingAcrioNoteAction {
   id: string;
   status: "PENDING_CONFIRMATION" | "CONFIRMED" | "CANCELLED" | "FAILED";
@@ -196,8 +209,10 @@ export interface PendingAcrioNoteAction {
   messageText: string;
   companyDocId?: string;
   companyDocTitle?: string;
+  sourceLabel?: string;
   docNumber?: string;
   attachment?: NoteAttachmentPayload | null;
+  candidateOptions?: PendingAcrioCandidateOption[];
   requestedByStaffId: string;
   requestedByStaffName: string;
   createdAt: string;
@@ -216,12 +231,137 @@ export interface MissingCompanyDocPrompt {
   uploadedDocId?: string;
 }
 
+async function dispatchStaffCustomerReply(params: {
+  conversationId: string;
+  customerPhone: string;
+  actorStaffId: string;
+  actorStaffName: string;
+  messageText: string;
+  attachment?: NoteAttachmentPayload | null;
+  actionTagId?: string;
+}): Promise<{ ok: boolean; messageId: string; error?: string }> {
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+  const cRes = await conv.execute({
+    sql: `SELECT assigned_staff_id FROM conversations WHERE id = ? LIMIT 1`,
+    args: [params.conversationId],
+  });
+  const cRow = cRes.rows[0] as Record<string, unknown> | undefined;
+  const att = params.attachment || null;
+  const text =
+    String(params.messageText || "").trim() ||
+    (att?.fileName ? `Please find attached *${att.fileName}* for your reference.` : "");
+
+  const sendRes = await sendWhatsAppCloudMessage({
+    toPhone: params.customerPhone,
+    bodyText: text,
+    media: att
+      ? {
+          type: att.mediaType,
+          url: att.url,
+          waMediaId: att.waMediaId,
+          caption: text,
+          fileName: att.fileName,
+          mimeType: att.mimeType,
+        }
+      : undefined,
+    simulateAsyncDelivery: true,
+  });
+
+  const outMetaObj: Record<string, unknown> = {
+    sentViaAcrioAction: params.actionTagId || "acrio_auto",
+    confirmedBy: params.actorStaffName,
+  };
+  if (att) {
+    outMetaObj.mediaType = att.mediaType;
+    outMetaObj.mediaUrl = att.url;
+    if (att.mediaType === "IMAGE") outMetaObj.imageUrl = att.url;
+    if (att.mediaId) outMetaObj.mediaId = att.mediaId;
+    if (att.waMediaId) outMetaObj.waMediaId = att.waMediaId;
+    if (att.fileName) {
+      outMetaObj.fileName = att.fileName;
+      outMetaObj.filename = att.fileName;
+    }
+    if (att.mimeType) outMetaObj.mimeType = att.mimeType;
+    outMetaObj.media = {
+      mediaId: att.mediaId || att.waMediaId || null,
+      mimeType: att.mimeType || null,
+      filename: att.fileName || null,
+      caption: text || null,
+      downloadUrl: att.url,
+    };
+  }
+
+  const outMsgId = `msg_acrio_act_${crypto.randomUUID().slice(0, 8)}`;
+  const previewText = att?.fileName
+    ? `[${att.mediaType}] ${att.fileName}${text ? `: ${text}` : ""}`.slice(0, 140)
+    : text.slice(0, 140);
+
+  await conv.execute({
+    sql: `INSERT INTO messages (
+      id, conversation_id, direction, sender_type, sender_staff_id, sender_name,
+      message_type, billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+    ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, ?, 'FREE_CHAT', ?, ?, ?, ?, ?)`,
+    args: [
+      outMsgId,
+      params.conversationId,
+      params.actorStaffId,
+      `${params.actorStaffName} via ACRIO`,
+      att ? att.mediaType : "TEXT",
+      text,
+      JSON.stringify(outMetaObj),
+      sendRes.waMessageId,
+      sendRes.deliveryStatus,
+      nowIso,
+    ],
+  });
+
+  const shouldAutoAssign =
+    !cRow?.assigned_staff_id || String(cRow.assigned_staff_id) === "ACRIO";
+  await conv.execute({
+    sql: `UPDATE conversations
+          SET status = CASE WHEN ? = 1 THEN 'ASSIGNED' ELSE status END,
+              assigned_staff_id = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_id END,
+              assigned_staff_name = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_name END,
+              assigned_team_id = CASE WHEN ? = 1 THEN COALESCE(assigned_team_id, 'team_sales') ELSE assigned_team_id END,
+              assigned_team_name = CASE
+                WHEN ? = 1 AND (assigned_team_id IS NULL OR assigned_team_name = 'System (ACRIO)') THEN 'Sales Team'
+                ELSE assigned_team_name
+              END,
+              waiting_since = NULL,
+              last_message_preview = ?,
+              last_message_at = ?
+          WHERE id = ?`,
+    args: [
+      shouldAutoAssign ? 1 : 0,
+      shouldAutoAssign ? 1 : 0,
+      params.actorStaffId,
+      shouldAutoAssign ? 1 : 0,
+      params.actorStaffName,
+      shouldAutoAssign ? 1 : 0,
+      shouldAutoAssign ? 1 : 0,
+      previewText,
+      nowIso,
+      params.conversationId,
+    ],
+  });
+
+  socketHub.emit("message:new", {
+    conversationId: params.conversationId,
+    senderName: `${params.actorStaffName} via ACRIO`,
+    text,
+  });
+
+  return { ok: sendRes.ok, messageId: outMsgId, error: sendRes.error };
+}
+
 export async function executeAcrioPendingNoteAction(params: {
   conversationId: string;
   noteMessageId: string;
   actorStaffId: string;
   actorStaffName: string;
   decision: "CONFIRM" | "CANCEL";
+  selectedOptionId?: string;
   inReplyToNoteId?: string;
 }): Promise<{
   ok: boolean;
@@ -239,7 +379,7 @@ export async function executeAcrioPendingNoteAction(params: {
       args: [params.noteMessageId, params.conversationId],
     }),
     conv.execute({
-      sql: `SELECT customer_phone, customer_name, assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name
+      sql: `SELECT customer_phone, customer_name
             FROM conversations WHERE id = ? LIMIT 1`,
       args: [params.conversationId],
     }),
@@ -308,6 +448,28 @@ export async function executeAcrioPendingNoteAction(params: {
     return { ok: true, actionStatus: "CANCELLED" };
   }
 
+  if (params.selectedOptionId && Array.isArray(pending.candidateOptions)) {
+    const chosen = pending.candidateOptions.find(
+      (opt) => opt.id === params.selectedOptionId
+    );
+    if (chosen) {
+      pending.companyDocId = chosen.id;
+      pending.companyDocTitle = chosen.title;
+      pending.sourceLabel = chosen.sourceLabel;
+      pending.docNumber = chosen.docNumber;
+      pending.title = `Share ${chosen.title} with ${customerName}`;
+      pending.attachment = {
+        mediaId: chosen.mediaId,
+        waMediaId: chosen.waMediaId,
+        mediaType: chosen.mediaType,
+        url: chosen.mediaUrl,
+        fileName: chosen.fileName,
+        mimeType: chosen.mimeType,
+      };
+      pending.messageText = `Please find attached our *${chosen.title}*${chosen.docNumber ? ` (${chosen.docNumber})` : ""} for your reference. Please let us know if you need anything else.`;
+    }
+  }
+
   const att = pending.attachment || null;
   const text =
     String(pending.messageText || "").trim() ||
@@ -317,104 +479,20 @@ export async function executeAcrioPendingNoteAction(params: {
     return { ok: false, error: "Nothing to send in this pending action." };
   }
 
-  const sendRes = await sendWhatsAppCloudMessage({
-    toPhone: customerPhone,
-    bodyText: text,
-    media: att
-      ? {
-          type: att.mediaType,
-          url: att.url,
-          waMediaId: att.waMediaId,
-          caption: text,
-          fileName: att.fileName,
-          mimeType: att.mimeType,
-        }
-      : undefined,
-    simulateAsyncDelivery: true,
-  });
-
-  const outMetaObj: Record<string, unknown> = {
-    sentViaAcrioAction: pending.id,
-    confirmedBy: params.actorStaffName,
-  };
-  if (att) {
-    outMetaObj.mediaType = att.mediaType;
-    outMetaObj.mediaUrl = att.url;
-    if (att.mediaType === "IMAGE") outMetaObj.imageUrl = att.url;
-    if (att.mediaId) outMetaObj.mediaId = att.mediaId;
-    if (att.waMediaId) outMetaObj.waMediaId = att.waMediaId;
-    if (att.fileName) {
-      outMetaObj.fileName = att.fileName;
-      outMetaObj.filename = att.fileName;
-    }
-    if (att.mimeType) outMetaObj.mimeType = att.mimeType;
-    outMetaObj.media = {
-      mediaId: att.mediaId || att.waMediaId || null,
-      mimeType: att.mimeType || null,
-      filename: att.fileName || null,
-      caption: text || null,
-      downloadUrl: att.url,
-    };
-  }
-
-  const outMsgId = `msg_acrio_act_${crypto.randomUUID().slice(0, 8)}`;
-  const previewText = att?.fileName
-    ? `[${att.mediaType}] ${att.fileName}${text ? `: ${text}` : ""}`.slice(0, 140)
-    : text.slice(0, 140);
-
-  await conv.execute({
-    sql: `INSERT INTO messages (
-      id, conversation_id, direction, sender_type, sender_staff_id, sender_name,
-      message_type, billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
-    ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, ?, 'FREE_CHAT', ?, ?, ?, ?, ?)`,
-    args: [
-      outMsgId,
-      params.conversationId,
-      params.actorStaffId,
-      `${params.actorStaffName} via ACRIO`,
-      att ? att.mediaType : "TEXT",
-      text,
-      JSON.stringify(outMetaObj),
-      sendRes.waMessageId,
-      sendRes.deliveryStatus,
-      nowIso,
-    ],
-  });
-
-  const shouldAutoAssign =
-    !cRow.assigned_staff_id || String(cRow.assigned_staff_id) === "ACRIO";
-  await conv.execute({
-    sql: `UPDATE conversations
-          SET status = CASE WHEN ? = 1 THEN 'ASSIGNED' ELSE status END,
-              assigned_staff_id = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_id END,
-              assigned_staff_name = CASE WHEN ? = 1 THEN ? ELSE assigned_staff_name END,
-              assigned_team_id = CASE WHEN ? = 1 THEN COALESCE(assigned_team_id, 'team_sales') ELSE assigned_team_id END,
-              assigned_team_name = CASE
-                WHEN ? = 1 AND (assigned_team_id IS NULL OR assigned_team_name = 'System (ACRIO)') THEN 'Sales Team'
-                ELSE assigned_team_name
-              END,
-              waiting_since = NULL,
-              last_message_preview = ?,
-              last_message_at = ?
-          WHERE id = ?`,
-    args: [
-      shouldAutoAssign ? 1 : 0,
-      shouldAutoAssign ? 1 : 0,
-      params.actorStaffId,
-      shouldAutoAssign ? 1 : 0,
-      params.actorStaffName,
-      shouldAutoAssign ? 1 : 0,
-      shouldAutoAssign ? 1 : 0,
-      previewText,
-      nowIso,
-      params.conversationId,
-    ],
+  const sendRes = await dispatchStaffCustomerReply({
+    conversationId: params.conversationId,
+    customerPhone,
+    actorStaffId: params.actorStaffId,
+    actorStaffName: params.actorStaffName,
+    messageText: text,
+    attachment: att,
+    actionTagId: pending.id,
   });
 
   pending.status = sendRes.ok ? "CONFIRMED" : "FAILED";
   pending.decidedByStaffName = params.actorStaffName;
   pending.decidedAt = nowIso;
-  pending.sentMessageId = outMsgId;
+  pending.sentMessageId = sendRes.messageId;
   if (!sendRes.ok && sendRes.error) pending.error = sendRes.error;
   meta.pendingAction = pending;
   meta.actionsExecuted = [
@@ -452,11 +530,6 @@ export async function executeAcrioPendingNoteAction(params: {
     ],
   });
 
-  socketHub.emit("message:new", {
-    conversationId: params.conversationId,
-    senderName: `${params.actorStaffName} via ACRIO`,
-    text,
-  });
   socketHub.emit("note:new", {
     conversationId: params.conversationId,
     senderName: "ACRIO",
@@ -466,7 +539,7 @@ export async function executeAcrioPendingNoteAction(params: {
   return {
     ok: sendRes.ok,
     actionStatus: pending.status,
-    messageId: outMsgId,
+    messageId: sendRes.messageId,
     error: sendRes.error,
   };
 }
@@ -579,22 +652,30 @@ export async function requeueStaleStaffNoteJobs(): Promise<void> {
 }
 
 let staffNoteDrainRunning = false;
+let staffNoteDrainPending = false;
 /** Claims and answers waiting @ACRIO note jobs (also called by the background worker loop). */
 export async function claimAndRunStaffNoteJobs(): Promise<number> {
-  if (staffNoteDrainRunning) return 0;
+  if (staffNoteDrainRunning) {
+    staffNoteDrainPending = true;
+    return 0;
+  }
   staffNoteDrainRunning = true;
   let done = 0;
   try {
-    const jobs = await claimPendingJobs(STAFF_NOTE_QUEUE, 3);
-    for (const job of jobs) {
-      try {
-        await runStaffNoteAnswerJob(job.payload);
-        await completeJob(job.id);
-        done++;
-      } catch (err) {
-        await failJob(job, (err as Error)?.message || "ACRIO note answer failed");
+    do {
+      staffNoteDrainPending = false;
+      const jobs = await claimPendingJobs(STAFF_NOTE_QUEUE, 5);
+      for (const job of jobs) {
+        try {
+          await runStaffNoteAnswerJob(job.payload);
+          await completeJob(job.id);
+          done++;
+        } catch (err) {
+          await failJob(job, (err as Error)?.message || "ACRIO note answer failed");
+        }
       }
-    }
+      if (jobs.length > 0) staffNoteDrainPending = true;
+    } while (staffNoteDrainPending);
   } finally {
     staffNoteDrainRunning = false;
   }
@@ -766,17 +847,18 @@ async function answerAcrioNote(params: {
   });
   if (already.rows[0]) return;
 
-  // Check whether teammate is confirming or cancelling a pending ACRIO customer action via text reply
+  // Check whether teammate is confirming, choosing option #N, or cancelling a pending ACRIO customer action via text reply
   const trimmedCmd = String(params.question || "").trim();
   const isTextConfirm =
-    /^(yes|yep|yeah|confirm|confirmed|approve|approved|go ahead|ok|okay|proceed|send|send it|share|share it|do it)\b[.!]?$/i.test(
+    /^(yes|yep|yeah|confirm|confirmed|approve|approved|go ahead|ok|okay|proceed|send|send it|share|share it|do it)\b(?:\s*(?:#|option\s*)?(\d+))?[.!]?$/i.exec(
       trimmedCmd
     );
+  const numberOnlyPick = /^(?:#|option\s*)?(\d+)$/i.exec(trimmedCmd);
   const isTextCancel =
     /^(cancel|no|nope|stop|dont send|don't send|abort)\b[.!]?$/i.test(
       trimmedCmd
     );
-  if (isTextConfirm || isTextCancel) {
+  if (isTextConfirm || numberOnlyPick || isTextCancel) {
     const pendingNotes = await conv.execute({
       sql: `SELECT id, metadata_json FROM messages
             WHERE conversation_id = ? AND sender_name = 'ACRIO' AND message_type = 'INTERNAL_NOTE'
@@ -792,12 +874,19 @@ async function answerAcrioNote(params: {
       }
       const p = parsedMeta.pendingAction as PendingAcrioNoteAction | undefined;
       if (p && p.status === "PENDING_CONFIRMATION") {
+        const idxRaw = isTextConfirm?.[2] || numberOnlyPick?.[1];
+        const chosenIdx = idxRaw ? Number(idxRaw) - 1 : -1;
+        const selectedOptionId =
+          chosenIdx >= 0 && Array.isArray(p.candidateOptions) && p.candidateOptions[chosenIdx]
+            ? p.candidateOptions[chosenIdx].id
+            : undefined;
         await executeAcrioPendingNoteAction({
           conversationId: params.conversationId,
           noteMessageId: String(r.id),
           actorStaffId: params.author.id,
           actorStaffName: params.author.name,
           decision: isTextCancel ? "CANCEL" : "CONFIRM",
+          selectedOptionId,
           inReplyToNoteId: params.noteId,
         });
         return;
@@ -992,24 +1081,45 @@ async function answerAcrioNote(params: {
           (attachmentPayload?.fileName
             ? `Please find attached *${attachmentPayload.fileName}* for your reference.`
             : "");
-        pendingAction = {
-          id: `pact_${crypto.randomUUID().slice(0, 8)}`,
-          status: "PENDING_CONFIRMATION",
-          type: "send_customer_reply",
-          title: act.companyDocTitle
-            ? `Share ${act.companyDocTitle} with ${params.customerName}`
-            : attachmentPayload?.fileName
-            ? `Share ${attachmentPayload.fileName} with ${params.customerName}`
-            : `Send WhatsApp reply to ${params.customerName}`,
-          messageText: msgText,
-          companyDocId: act.companyDocId || undefined,
-          companyDocTitle: act.companyDocTitle || undefined,
-          docNumber: act.docNumber || undefined,
-          attachment: attachmentPayload,
-          requestedByStaffId: params.author.id,
-          requestedByStaffName: params.author.name,
-          createdAt: nowActionIso,
-        };
+        if (act.autoExecute && act.shareKind === "PRODUCT_DATA") {
+          const sentAuto = await dispatchStaffCustomerReply({
+            conversationId: params.conversationId,
+            customerPhone: params.customerPhone,
+            actorStaffId: params.author.id,
+            actorStaffName: params.author.name,
+            messageText: msgText,
+            attachment: attachmentPayload,
+            actionTagId: "acrio_product_auto",
+          });
+          if (sentAuto.ok) {
+            executedSummaries.push("Sent product details to customer on WhatsApp");
+          } else {
+            executedSummaries.push(`Attempted product share (${sentAuto.error || "failed"})`);
+          }
+        } else {
+          pendingAction = {
+            id: `pact_${crypto.randomUUID().slice(0, 8)}`,
+            status: "PENDING_CONFIRMATION",
+            type: "send_customer_reply",
+            title: act.companyDocTitle
+              ? `Share ${act.companyDocTitle} with ${params.customerName}`
+              : attachmentPayload?.fileName
+              ? `Share ${attachmentPayload.fileName} with ${params.customerName}`
+              : `Send WhatsApp reply to ${params.customerName}`,
+            messageText: msgText,
+            companyDocId: act.companyDocId || undefined,
+            companyDocTitle: act.companyDocTitle || undefined,
+            sourceLabel: act.sourceLabel || undefined,
+            docNumber: act.docNumber || undefined,
+            attachment: attachmentPayload,
+            ...(Array.isArray(act.candidateOptions) && act.candidateOptions.length > 0
+              ? { candidateOptions: act.candidateOptions }
+              : {}),
+            requestedByStaffId: params.author.id,
+            requestedByStaffName: params.author.name,
+            createdAt: nowActionIso,
+          };
+        }
       } else if (act.type === "request_company_document_upload") {
         const docTitle = String(act.requestedDocTitle || "Company Document").trim();
         const docSlug = String(

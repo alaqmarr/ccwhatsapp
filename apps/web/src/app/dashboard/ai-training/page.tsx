@@ -88,11 +88,24 @@ interface CompanyDoc {
   updatedAt: string;
 }
 
+interface WebsiteDoc {
+  id: string;
+  slug: string;
+  title: string;
+  source: string;
+  sourceLabel: string;
+  category: string;
+  mediaUrl: string;
+  mediaType: string;
+  fileName: string;
+}
+
 export default function AiTrainingPage() {
   const [tab, setTab] = useState<"QA" | "RULES" | "DOCS" | "SIMULATOR">("QA");
   const [examples, setExamples] = useState<TrainingExample[]>([]);
   const [rules, setRules] = useState<TrainingRule[]>([]);
   const [companyDocs, setCompanyDocs] = useState<CompanyDoc[]>([]);
+  const [websiteDocs, setWebsiteDocs] = useState<WebsiteDoc[]>([]);
   const [docTitle, setDocTitle] = useState("GST Certificate");
   const [docSlug, setDocSlug] = useState("gst-certificate");
   const [docCategory, setDocCategory] = useState<"COMPLIANCE" | "CATALOGUE" | "BANKING" | "COMPANY_PROFILE">("COMPLIANCE");
@@ -153,6 +166,7 @@ export default function AiTrainingPage() {
       const docsData = await docsRes.json().catch(() => ({}));
       if (docsRes.ok && docsData.ok) {
         setCompanyDocs(docsData.documents || []);
+        setWebsiteDocs(docsData.websiteDocuments || []);
       }
     } finally {
       setLoading(false);
@@ -1202,6 +1216,51 @@ export default function AiTrainingPage() {
                 ))}
               </div>
             )}
+
+            <div className="pt-4 border-t border-neutral-200 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-neutral-900">
+                  Live Documents Fetched from classicconcepts.in & classicedge53.com ({websiteDocs.length})
+                </h3>
+                <span className="text-[10.5px] text-neutral-500">Auto-synced live</span>
+              </div>
+              {websiteDocs.length === 0 ? (
+                <p className="text-[11px] text-neutral-500">
+                  No external website certificates or brochures loaded right now.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {websiteDocs.map((wd) => (
+                    <div
+                      key={wd.id}
+                      className="rounded-lg border border-neutral-200 bg-neutral-50/70 p-2.5 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11.5px] font-semibold text-neutral-900 truncate">
+                            {wd.title}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-violet-100 text-violet-900 text-[9.5px] font-medium shrink-0">
+                            {wd.sourceLabel}
+                          </span>
+                        </div>
+                        <p className="text-[10.5px] text-neutral-600 truncate">
+                          {wd.fileName} ({wd.mediaType})
+                        </p>
+                      </div>
+                      <a
+                        href={wd.mediaUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-2 py-1 rounded border border-neutral-300 bg-white hover:bg-neutral-50 text-[10.5px] font-medium text-neutral-800 shrink-0"
+                      >
+                        View
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

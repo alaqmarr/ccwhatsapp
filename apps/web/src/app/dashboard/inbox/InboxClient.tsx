@@ -1439,7 +1439,8 @@ export function InboxClient({
 
   async function handleConfirmAcrioAction(
     noteMessageId: string,
-    decision: "CONFIRM" | "CANCEL"
+    decision: "CONFIRM" | "CANCEL",
+    selectedOptionId?: string
   ) {
     if (!selectedId || acrioActionBusyId) return;
     setAcrioActionBusyId(noteMessageId);
@@ -1451,6 +1452,7 @@ export function InboxClient({
           action: "confirm_acrio_note_action",
           noteMessageId,
           decision,
+          ...(selectedOptionId ? { selectedOptionId } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -3028,14 +3030,27 @@ export function InboxClient({
                               status?: string;
                               title?: string;
                               messageText?: string;
+                              sourceLabel?: string;
                               decidedByStaffName?: string;
                               error?: string;
                               attachment?: {
+                                url?: string;
                                 fileName?: string;
                                 mediaType?: string;
                               } | null;
+                              candidateOptions?: Array<{
+                                id: string;
+                                title: string;
+                                sourceLabel: string;
+                                mediaUrl: string;
+                                mediaType: string;
+                                fileName: string;
+                              }>;
                             };
                             const isBusy = acrioActionBusyId === m.id;
+                            const hasChoices =
+                              Array.isArray(pa.candidateOptions) &&
+                              pa.candidateOptions.length > 1;
                             if (pa.status === "CONFIRMED") {
                               return (
                                 <div className="mt-2 pt-2 border-t border-violet-200/70 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800">
@@ -3062,41 +3077,111 @@ export function InboxClient({
                               <div className="mt-2.5 rounded-md bg-white border border-violet-200 p-2.5 space-y-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <span className="text-[11px] font-semibold text-violet-950">
-                                    {pa.title || "Confirm client action"}
+                                    {hasChoices
+                                      ? "Select which document to confirm & send to client:"
+                                      : pa.title || "Confirm client action"}
                                   </span>
-                                  {pa.attachment?.fileName && (
+                                  {!hasChoices && pa.attachment?.fileName && (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-100 text-violet-900 text-[10.5px] font-medium">
                                       <FileText className="w-3 h-3" />
-                                      <span>{pa.attachment.fileName}</span>
+                                      <span>
+                                        {pa.attachment.fileName}
+                                        {pa.sourceLabel ? ` (${pa.sourceLabel})` : ""}
+                                      </span>
                                     </span>
                                   )}
                                 </div>
-                                {pa.messageText && (
-                                  <p className="text-[12px] text-[#3b4a54] bg-[#f8fafc] border border-neutral-200 rounded px-2 py-1.5">
-                                    {pa.messageText}
-                                  </p>
+
+                                {hasChoices && pa.candidateOptions ? (
+                                  <div className="space-y-1.5">
+                                    {pa.candidateOptions.map((opt, idx) => (
+                                      <div
+                                        key={opt.id}
+                                        className="rounded border border-violet-100 bg-[#faf8ff] px-2.5 py-2 flex flex-wrap items-center justify-between gap-2"
+                                      >
+                                        <div className="min-w-0">
+                                          <div className="text-[11.5px] font-semibold text-violet-950 truncate">
+                                            {idx + 1}. {opt.title}
+                                          </div>
+                                          <div className="text-[10.5px] text-neutral-600 truncate">
+                                            Source: {opt.sourceLabel} • {opt.fileName}
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          {opt.mediaUrl && (
+                                            <a
+                                              href={opt.mediaUrl}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              className="px-2 py-1 rounded border border-neutral-300 bg-white hover:bg-neutral-50 text-[10.5px] font-medium text-neutral-700"
+                                            >
+                                              View
+                                            </a>
+                                          )}
+                                          <button
+                                            type="button"
+                                            disabled={isBusy}
+                                            onClick={() =>
+                                              void handleConfirmAcrioAction(
+                                                m.id,
+                                                "CONFIRM",
+                                                opt.id
+                                              )
+                                            }
+                                            className="px-2.5 py-1 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                          >
+                                            <Check className="w-3 h-3" />
+                                            <span>
+                                              {isBusy ? "Sending..." : "Confirm & Send"}
+                                            </span>
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <>
+                                    {pa.messageText && (
+                                      <p className="text-[12px] text-[#3b4a54] bg-[#f8fafc] border border-neutral-200 rounded px-2 py-1.5">
+                                        {pa.messageText}
+                                      </p>
+                                    )}
+                                  </>
                                 )}
+
                                 {pa.status === "FAILED" && pa.error && (
                                   <p className="text-[11px] text-rose-700">
                                     Previous send failed: {pa.error}
                                   </p>
                                 )}
                                 <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                                  <button
-                                    type="button"
-                                    disabled={isBusy}
-                                    onClick={() =>
-                                      void handleConfirmAcrioAction(m.id, "CONFIRM")
-                                    }
-                                    className="px-3 py-1.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                                  >
-                                    <Check className="w-3.5 h-3.5" />
-                                    <span>
-                                      {isBusy
-                                        ? "Sharing with client..."
-                                        : "Confirm & Share with Client"}
-                                    </span>
-                                  </button>
+                                  {!hasChoices && (
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        void handleConfirmAcrioAction(m.id, "CONFIRM")
+                                      }
+                                      className="px-3 py-1.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>
+                                        {isBusy
+                                          ? "Sharing with client..."
+                                          : "Confirm & Share with Client"}
+                                      </span>
+                                    </button>
+                                  )}
+                                  {!hasChoices && pa.attachment?.url && (
+                                    <a
+                                      href={pa.attachment.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="px-2.5 py-1.5 rounded bg-white hover:bg-neutral-50 border border-neutral-300 text-neutral-700 text-[11px] font-medium"
+                                    >
+                                      View File
+                                    </a>
+                                  )}
                                   <button
                                     type="button"
                                     disabled={isBusy}

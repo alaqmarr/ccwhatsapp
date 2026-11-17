@@ -14,8 +14,10 @@ import {
   loadLiveDatabaseOperationalContext,
   ensureDatabasesBootstrapped,
   extractBudgetConstraintsFromQuery,
+  fetchLiveEcosystemDocuments,
   findMatchingAiTrainingGuidance,
   findMatchingCompanyDocuments,
+  findMatchingEcosystemDocuments,
   getEcosystemBudgetFallbackInfo,
   getRawLibSqlClient,
   getVerifiedLiveBrandAndTeamInfo,
@@ -4611,6 +4613,21 @@ export interface AcrioStaffAction {
   fileName?: string;
   mimeType?: string;
   confirmed?: boolean;
+  shareKind?: "DOCUMENT" | "PRODUCT_DATA" | "CUSTOM_MESSAGE";
+  autoExecute?: boolean;
+  sourceLabel?: string;
+  candidateOptions?: Array<{
+    id: string;
+    title: string;
+    sourceLabel: string;
+    mediaUrl: string;
+    mediaType: "DOCUMENT" | "IMAGE" | "VIDEO" | "AUDIO";
+    mediaId?: string;
+    waMediaId?: string;
+    fileName: string;
+    mimeType: string;
+    docNumber?: string;
+  }>;
 }
 
 /**
@@ -4655,21 +4672,21 @@ export async function runAcrioStaffQuestion(params: {
     .slice(-3)
     .map((m) => m.body)
     .join(" ");
-  const [matches, trainingGuidance, allCompanyDocs, matchedCompanyDocs] = await Promise.all([
+  const [matches, trainingGuidance, allEcoDocs, matchedEcoDocs] = await Promise.all([
     Promise.resolve(searchEcosystemItems(allItems, `${question} ${lastCustomerText}`, 6)),
     findMatchingAiTrainingGuidance({
       queryText: `${question} ${lastCustomerText}`,
       scope: "STAFF_COPILOT",
     }).catch(() => ({ promptBlock: "", examples: [], rules: [] })),
-    listCompanyDocuments({ enabledOnly: true }).catch(() => []),
-    findMatchingCompanyDocuments(question).catch(() => []),
+    fetchLiveEcosystemDocuments().catch(() => []),
+    findMatchingEcosystemDocuments(question).catch(() => []),
   ]);
   const deep = buildEcosystemDeepProductContextAndAnswer({
     rawQuery: question,
     matchedItems: matches,
     formatItemLink: (it) => it.shortUrl || it.url,
   });
-  addStep("Looked up catalog and company docs", `matched=${matches.length}, docs=${allCompanyDocs.length}`);
+  addStep("Looked up catalog and ecosystem docs", `matched=${matches.length}, ecoDocs=${allEcoDocs.length}`);
 
   const liveContext = await loadLiveDatabaseOperationalContext({
     customerPhone: params.customerPhone,
@@ -4678,9 +4695,9 @@ export async function runAcrioStaffQuestion(params: {
     forStaffCopilot: true,
   }).catch(() => "");
 
-  const companyDocsContextLines = allCompanyDocs.map(
+  const companyDocsContextLines = allEcoDocs.map(
     (d) =>
-      `- id="${d.id}" slug="${d.slug}" title="${d.title}"${d.docNumber ? ` number="${d.docNumber}"` : ""} mediaType="${d.mediaType}" fileName="${d.fileName}" url="${d.mediaUrl}"${d.waMediaId ? ` waMediaId="${d.waMediaId}"` : ""}${d.mediaId ? ` mediaId="${d.mediaId}"` : ""} mimeType="${d.mimeType}" keywords="${d.keywords}"`
+      `- id="${d.id}" slug="${d.slug}" title="${d.title}" source="${d.sourceLabel}"${d.docNumber ? ` number="${d.docNumber}"` : ""} mediaType="${d.mediaType}" fileName="${d.fileName}" url="${d.mediaUrl}"${d.waMediaId ? ` waMediaId="${d.waMediaId}"` : ""}${d.mediaId ? ` mediaId="${d.mediaId}"` : ""} mimeType="${d.mimeType}" keywords="${d.keywords}"`
   );
   const noteAttachmentLine = params.noteAttachment
     ? `[FILE ATTACHED BY ${params.staffName} IN THIS NOTE]: mediaType="${params.noteAttachment.mediaType || "DOCUMENT"}" fileName="${params.noteAttachment.fileName || "attachment"}" url="${params.noteAttachment.url}"${params.noteAttachment.mediaId ? ` mediaId="${params.noteAttachment.mediaId}"` : ""}${params.noteAttachment.waMediaId ? ` waMediaId="${params.noteAttachment.waMediaId}"` : ""} mimeType="${params.noteAttachment.mimeType || "application/pdf"}"`
@@ -4727,12 +4744,19 @@ You can both answer questions AND perform actions by returning structured "actio
 - "reopen_chat": reopen a resolved chat.
 - "update_customer": update "city", "companyName", "notes", or "preferredStaffQuery" on customer profile.
 - "create_callback": log a pending callback with "callbackSlot" and "callbackTopic".
-- "send_customer_reply": Use this WHENEVER the teammate asks you to share/send a file, GST/ISO/company document, catalogue, price, or message directly with the customer/client (e.g. "share gst certificate with the client", "send the brochure to customer", "reply to the client saying...").
-  Fields: "messageText" (clear WhatsApp message/caption for client), plus optional attachment fields when sharing a file ("companyDocId", "companyDocTitle", "docNumber", "mediaUrl", "mediaType", "mediaId", "waMediaId", "fileName", "mimeType") taken ONLY from [VERIFIED COMPANY DOCUMENTS LIBRARY] or [FILE ATTACHED BY TEAMMATE IN THIS NOTE] or verified catalog PDFs.
-  IMPORTANT CONFIRMATION WORKFLOW: The system will confirm this action in the internal notes first before sending it to the client! So set "confirmed": false, leave "suggestedReply": "" EMPTY, and in "answer" clearly ask the teammate to confirm sharing it with the client (or click Confirm & Share with Client below).
-- "request_company_document_upload": Use this WHENEVER the teammate asks you to share a company document (like GST Certificate, MSME Certificate, ISO Certificate, PAN Card, Bank Details) that does NOT exist in [VERIFIED COMPANY DOCUMENTS LIBRARY] and is NOT attached in this note!
-  Fields: "requestedDocSlug" (e.g. "gst-certificate"), "requestedDocTitle" (e.g. "GST Certificate"), "messageText" (the WhatsApp caption that should go with it once uploaded, e.g. "Please find attached our GST Certificate for your reference.").
-  CRITICAL RULE: When returning "send_customer_reply" OR "request_company_document_upload", ALWAYS leave "suggestedReply": "" EMPTY! NEVER suggest a holding text reply when the teammate asked you to perform a share/send action!
+- "send_customer_reply": Use this WHENEVER the teammate asks you to share or send anything directly with the customer/client!
+  There are TWO modes based on what the teammate asked to share:
+  MODE A (Sharing a DOCUMENT, Certificate, Licence, or Catalogue PDF from [VERIFIED COMPANY DOCUMENTS LIBRARY] or [FILE ATTACHED BY TEAMMATE IN THIS NOTE]):
+    - Set "shareKind": "DOCUMENT", "autoExecute": false, "confirmed": false, leave "suggestedReply": "" EMPTY.
+    - Set "companyDocId", "companyDocTitle", "sourceLabel", "mediaUrl", "mediaType", "mediaId", "waMediaId", "fileName", "mimeType", and "messageText" (short caption for client).
+    - If multiple documents match cleanly (e.g. multiple certificates or multiple catalogues across classicconcepts.in and classicedge53.com), list them concisely in "answer" and ask the teammate to confirm which one to send.
+  MODE B (Sharing PRODUCT DATA, name, description, specs, price, or link, e.g. "please share CCP107 podium data with the client", "share details of acrylic diamond polisher with client"):
+    - Set "shareKind": "PRODUCT_DATA", "autoExecute": true, "confirmed": true, leave "suggestedReply": "" EMPTY!
+    - Compose "messageText" with complete, accurate verified product details from [Verified product details]: exact product name, SKU/model, verified ₹ price (or Price on request), key sizes/specifications/variants, and the verified https://ccapl.cc/... shortlink.
+    - Only attach "mediaUrl" / "mediaType": "IMAGE" when there is a valid product mainImage URL AND "messageText" fits cleanly as a caption under 900 chars. Otherwise omit mediaUrl so the complete product data sends reliably as text!
+    - The system will send this verified product data message to the customer AUTOMATICALLY right away and confirm inside internal notes!
+- "request_company_document_upload": Use this ONLY if the requested company document does NOT exist anywhere in [VERIFIED COMPANY DOCUMENTS LIBRARY] (which already includes live certificates from classicconcepts.in, classicedge53.com, and Hub uploads) and is NOT attached in this note!
+  CRITICAL RULE: When returning "send_customer_reply" OR "request_company_document_upload", ALWAYS leave "suggestedReply": "" EMPTY! NEVER show a "Suggested reply" text box when the teammate asked you to share a document or product data!
 
 ACTIVE TEAM ROSTER: ${staffRosterLine || "Sales & Support Team"}
 CURRENT CHAT OWNER: ${params.currentOwnerName || "System (ACRIO)"} | STATUS: ${params.conversationStatus || "OPEN"}
@@ -4803,12 +4827,51 @@ ${question}`,
     addStep("No admin API key", error, "WARN");
   }
 
-  // Deterministic safeguard & fallback for sharing verified company docs / attached files with clients
+  // Deterministic enrich & fallback for document confirmation vs automatic product-data sharing
   const asksToShareWithClient =
     /\b(share|send|forward|give|attach)\b/i.test(question) &&
-    /\b(client|customer|them|buyer|gst|certificate|brochure|catalogue|catalog|msme|iso|cheque|bank|file|doc|pdf)\b/i.test(
+    /\b(client|customer|them|buyer|gst|certificate|brochure|catalogue|catalog|msme|udyam|iso|incorporation|labour|iec|cheque|bank|file|doc|pdf|data|details|info|price|spec|quote|link|product|machine|podium|chair|table|trophy|memento)\b/i.test(
       question
     );
+  const asksSpecificallyForDocument =
+    /\b(gst|gstin|tax\s*cert|iso|msme|udyam|incorporation|coi|labour|labor|iec|importer|exporter|cheque|bank|certificate|certificates|brochure|catalogue|catalog|pdf|document|documents)\b/i.test(
+      question
+    );
+
+  // If Claude already picked a DOCUMENT share and multiple candidates match in ecosystem docs, attach candidateOptions so user can confirm which one!
+  if (asksSpecificallyForDocument && actions.length > 0 && matchedEcoDocs.length > 1) {
+    for (const act of actions) {
+      if (act.type === "send_customer_reply" && !act.autoExecute && (!act.candidateOptions || act.candidateOptions.length === 0)) {
+        act.shareKind = "DOCUMENT";
+        act.candidateOptions = matchedEcoDocs.slice(0, 6).map((d) => ({
+          id: d.id,
+          title: d.title,
+          sourceLabel: d.sourceLabel,
+          mediaUrl: d.mediaUrl,
+          mediaType: d.mediaType,
+          mediaId: d.mediaId,
+          waMediaId: d.waMediaId,
+          fileName: d.fileName,
+          mimeType: d.mimeType,
+          docNumber: d.docNumber,
+        }));
+      }
+    }
+  }
+
+  // If teammate asked to share product data ("please share <product> data with the client") and Claude put it in suggestedReply instead of auto-sending, promote to autoExecute!
+  if (asksToShareWithClient && !asksSpecificallyForDocument && !params.noteAttachment && actions.length === 0 && suggestedReply) {
+    actions = [
+      {
+        type: "send_customer_reply",
+        shareKind: "PRODUCT_DATA",
+        autoExecute: true,
+        confirmed: true,
+        messageText: suggestedReply,
+      },
+    ];
+    suggestedReply = null;
+  }
 
   if (asksToShareWithClient && actions.length === 0) {
     if (params.noteAttachment) {
@@ -4816,6 +4879,8 @@ ${question}`,
       actions = [
         {
           type: "send_customer_reply",
+          shareKind: "DOCUMENT",
+          autoExecute: false,
           mediaUrl: params.noteAttachment.url,
           mediaType:
             (["IMAGE", "VIDEO", "DOCUMENT", "AUDIO"].includes(
@@ -4834,37 +4899,102 @@ ${question}`,
       suggestedReply = null;
       answer = `Ready to share *${fileLabel}* directly with *${params.customerName}* on WhatsApp. Please confirm below to send it now.`;
       error = undefined;
-    } else if (matchedCompanyDocs[0]) {
-      const doc = matchedCompanyDocs[0];
+    } else if (asksSpecificallyForDocument && matchedEcoDocs.length > 0) {
+      const primary = matchedEcoDocs[0];
+      const hasMultiple = matchedEcoDocs.length > 1;
       actions = [
         {
           type: "send_customer_reply",
-          companyDocId: doc.id,
-          companyDocTitle: doc.title,
-          docNumber: doc.docNumber || undefined,
-          mediaUrl: doc.mediaUrl,
-          mediaType: doc.mediaType,
-          mediaId: doc.mediaId || undefined,
-          waMediaId: doc.waMediaId || undefined,
-          fileName: doc.fileName || `${doc.slug}.pdf`,
-          mimeType: doc.mimeType,
-          messageText: `Please find attached our *${doc.title}*${doc.docNumber ? ` (${doc.docNumber})` : ""} for your reference. Please let us know if you need anything else.`,
+          shareKind: "DOCUMENT",
+          autoExecute: false,
+          companyDocId: primary.id,
+          companyDocTitle: primary.title,
+          sourceLabel: primary.sourceLabel,
+          docNumber: primary.docNumber || undefined,
+          mediaUrl: primary.mediaUrl,
+          mediaType: primary.mediaType,
+          mediaId: primary.mediaId || undefined,
+          waMediaId: primary.waMediaId || undefined,
+          fileName: primary.fileName,
+          mimeType: primary.mimeType,
+          messageText: `Please find attached our *${primary.title}*${primary.docNumber ? ` (${primary.docNumber})` : ""} for your reference. Please let us know if you need anything else.`,
           confirmed: false,
+          ...(hasMultiple
+            ? {
+                candidateOptions: matchedEcoDocs.slice(0, 6).map((d) => ({
+                  id: d.id,
+                  title: d.title,
+                  sourceLabel: d.sourceLabel,
+                  mediaUrl: d.mediaUrl,
+                  mediaType: d.mediaType,
+                  mediaId: d.mediaId,
+                  waMediaId: d.waMediaId,
+                  fileName: d.fileName,
+                  mimeType: d.mimeType,
+                  docNumber: d.docNumber,
+                })),
+              }
+            : {}),
         },
       ];
       suggestedReply = null;
-      answer = `Found our verified *${doc.title}* (\`${doc.fileName || doc.slug}\`). Please confirm below before I share it with *${params.customerName}* on WhatsApp.`;
+      if (hasMultiple) {
+        const listLines = matchedEcoDocs
+          .slice(0, 6)
+          .map((d, idx) => `${idx + 1}. *${d.title}* (${d.sourceLabel} • \`${d.fileName}\`)`)
+          .join("\n");
+        answer = `Found *${matchedEcoDocs.length} matching documents* across our websites and records:\n${listLines}\n\nConfirm below which one to send to *${params.customerName}* (or reply *@ACRIO 1*, *@ACRIO 2*, etc.).`;
+      } else {
+        answer = `Found *${primary.title}* from ${primary.sourceLabel} (\`${primary.fileName}\`). Please confirm below before I share it with *${params.customerName}* on WhatsApp.`;
+      }
       error = undefined;
-    } else if (/\b(gst|gstin|tax\s*cert|iso|msme|udyam|pan|cheque|bank|certificate)\b/i.test(question)) {
+    } else if (!asksSpecificallyForDocument && (deep.deterministicDeepAnswer || matches.length > 0)) {
+      const topItem = matches[0];
+      const autoText =
+        deep.deterministicDeepAnswer ||
+        (topItem
+          ? `*${cleanDisplayProductName(topItem.name)}*${topItem.sku ? ` (${topItem.sku})` : ""}\n${
+              topItem.basePrice ? `Price: ₹${topItem.basePrice.toLocaleString("en-IN")}` : "Custom Quote Item"
+            }\n${topItem.specsSummary ? `Specs: ${topItem.specsSummary}\n` : ""}Link: ${topItem.shortUrl || topItem.url}`
+          : "");
+      if (autoText) {
+        const canAttachMainImg =
+          Boolean(topItem?.mainImage && /^https?:\/\//i.test(String(topItem.mainImage))) &&
+          autoText.length <= 900;
+        actions = [
+          {
+            type: "send_customer_reply",
+            shareKind: "PRODUCT_DATA",
+            autoExecute: true,
+            confirmed: true,
+            messageText: autoText,
+            ...(canAttachMainImg && topItem?.mainImage
+              ? {
+                  mediaUrl: String(topItem.mainImage),
+                  mediaType: "IMAGE",
+                  fileName: `${topItem.slug || "product"}.jpg`,
+                  mimeType: "image/jpeg",
+                }
+              : {}),
+          },
+        ];
+        suggestedReply = null;
+        answer = `Shared verified product details for *${cleanDisplayProductName(topItem?.name || "requested item")}* directly with *${params.customerName}* on WhatsApp.`;
+        error = undefined;
+      }
+    } else if (/\b(gst|gstin|tax\s*cert|iso|msme|udyam|pan|cheque|bank|certificate|incorporation|labour|iec)\b/i.test(question)) {
       const isGst = /\bgst/i.test(question);
       const isIso = /\biso/i.test(question);
       const isMsme = /\bmsme|\budyam/i.test(question);
+      const isBank = /\bcheque|\bbank/i.test(question);
       const docTitle = isGst
         ? "GST Certificate"
         : isIso
         ? "ISO Certificate"
         : isMsme
         ? "MSME Certificate"
+        : isBank
+        ? "Cancelled Cheque / Bank Details"
         : "Company Certificate";
       const docSlug = docTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-");
       actions = [
@@ -4876,7 +5006,7 @@ ${question}`,
         },
       ];
       suggestedReply = null;
-      answer = `No verified *${docTitle}* file is saved in Company Documents yet. Upload it below once to save it to our company records and confirm sharing it with *${params.customerName}*.`;
+      answer = `No verified *${docTitle}* file matched in Company Documents or website certificates yet. Upload it below once to save it and confirm sharing it with *${params.customerName}*.`;
       error = undefined;
     }
   }

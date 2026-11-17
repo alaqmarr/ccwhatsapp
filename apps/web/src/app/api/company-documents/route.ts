@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   deleteCompanyDocument,
   ensureDatabasesBootstrapped,
+  fetchLiveEcosystemDocuments,
   listCompanyDocuments,
   upsertCompanyDocument,
 } from "@cc/database";
@@ -18,8 +19,12 @@ export async function GET() {
   }
 
   await ensureDatabasesBootstrapped();
-  const documents = await listCompanyDocuments();
-  return NextResponse.json({ ok: true, documents });
+  const [documents, allEcosystemDocs] = await Promise.all([
+    listCompanyDocuments(),
+    fetchLiveEcosystemDocuments().catch(() => []),
+  ]);
+  const websiteDocuments = allEcosystemDocs.filter((d) => d.source !== "HUB_UPLOAD");
+  return NextResponse.json({ ok: true, documents, websiteDocuments });
 }
 
 export async function POST(req: Request) {
