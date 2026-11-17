@@ -1696,14 +1696,27 @@ export function InboxClient({
     if (!targetId || takingOver) return;
     setTakingOver(true);
     try {
+      const expectedCurrentStaffId =
+        (detail?.conversation.id === targetId
+          ? detail.conversation.assignedStaffId
+          : activeConv?.assignedStaffId) || "ACRIO";
       const res = await fetch(`/api/conversations/${targetId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "take_over_chat" }),
+        body: JSON.stringify({
+          action: "take_over_chat",
+          expectedCurrentStaffId,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         showToast(data.error || "Could not take over this chat.");
+        if (res.status === 409) {
+          await Promise.all([
+            fetchAndCacheDetail(targetId, false),
+            refreshThreadsSilently(false),
+          ]);
+        }
         return;
       }
 

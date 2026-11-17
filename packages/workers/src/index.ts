@@ -6,6 +6,7 @@ import {
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
   lookupCustomerOrdersAcrossEcosystem,
+  normalizeWhatsAppPhone,
   resolveInternalStaffCallerByPhone,
   resolvePublicTrackingOrigin,
   resolveRequestedOrPreferredStaffForInbound,
@@ -1107,33 +1108,192 @@ async function processInboundAutomationsLocked(
       });
     };
 
-    // Template quick-reply button taps
-    if (/^(Accept Assignment|View Client Details|Accept Callback|Snooze 30 Minutes)$/i.test(incomingBtnText)) {
-      const latestAssigned = internalStaff.hubUserId
-        ? await conv.execute({
-            sql: `SELECT id, customer_name, customer_phone, smart_category, last_message_preview
-                  FROM conversations
-                  WHERE assigned_staff_id = ? AND status != 'RESOLVED'
-                  ORDER BY last_message_at DESC LIMIT 1`,
-            args: [internalStaff.hubUserId],
+    // Template quick-reply button taps AND typed first-come, first-serve confirmations ("confirm", "accept", "claim")
+    const isClaimConfirmationCmd =
+      /^(Accept Assignment|Accept Callback|Accept|Claim|Confirm)$/i.test(incomingBtnText) ||
+      /^(confirm|confirmed|accept|accepted|claim|take it|i'?ll take it|pick up|mine|ok confirm|yes confirm|yes accept)\W*$/i.test(
+        incomingBtnText
+      );
+
+    if (
+      isClaimConfirmationCmd ||
+      /^(View Client Details|Snooze 30 Minutes)$/i.test(incomingBtnText)
+    ) {
+      // Find the referenced customer phone/conversation from quoted alert OR latest outbound alert template in this staff chat
+      let targetPhoneFromAlert = "";
+      let targetCustomerNameHint = "";
+      const extractPhoneFromAlertRow = (row: Record<string, unknown> | undefined) => {
+        if (!row) return;
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = JSON.parse(String(row.metadata_json || "{}"));
+        } catch {
+          parsed = {};
+        }
+        if (parsed.alertCustomerPhone) {
+          targetPhoneFromAlert = String(parsed.alertCustomerPhone);
+          targetCustomerNameHint = String(parsed.alertCustomerName || "");
+          return;
+        }
+        const bodyStr = String(row.body || "");
+        const phMatch = bodyStr.match(/(?:\+?91[\s-]?)?[6-9]\d{9}/);
+        if (phMatch) {
+          targetPhoneFromAlert = normalizeWhatsAppPhone(phMatch[0]) || phMatch[0];
+        }
+      };
+
+      if (params.replyToWaMessageId) {
+        const quotedAlertRes = await conv
+          .execute({
+            sql: `SELECT body, metadata_json FROM messages WHERE wa_message_id = ? LIMIT 1`,
+            args: [params.replyToWaMessageId],
           })
-        : { rows: [] as Record<string, unknown>[] };
-      const targetConv = latestAssigned.rows[0];
+          .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+        extractPhoneFromAlertRow(quotedAlertRes.rows[0] as Record<string, unknown> | undefined);
+      }
+
+      if (!targetPhoneFromAlert) {
+        const recentAlertsRes = await conv
+          .execute({
+            sql: `SELECT body, metadata_json FROM messages
+                  WHERE conversation_id = ? AND direction = 'OUTBOUND' AND message_type = 'TEMPLATE'
+                  ORDER BY created_at DESC LIMIT 5`,
+            args: [params.conversationId],
+          })
+          .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+        for (const r of recentAlertsRes.rows) {
+          extractPhoneFromAlertRow(r as Record<string, unknown>);
+          if (targetPhoneFromAlert) break;
+        }
+      }
+
+      let targetConv: Record<string, unknown> | undefined;
+      if (targetPhoneFromAlert) {
+        const normPhone = normalizeWhatsAppPhone(targetPhoneFromAlert) || targetPhoneFromAlert;
+        const cByPhone = await conv
+          .execute({
+            sql: `SELECT id, customer_name, customer_phone, smart_category, last_message_preview, assigned_staff_id, assigned_staff_name, status
+                  FROM conversations WHERE customer_phone = ? LIMIT 1`,
+            args: [normPhone],
+          })
+          .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+        targetConv = cByPhone.rows[0] as Record<string, unknown> | undefined;
+      }
+
+      if (!targetConv && internalStaff.hubUserId) {
+        const latestAssigned = await conv.execute({
+          sql: `SELECT id, customer_name, customer_phone, smart_category, last_message_preview, assigned_staff_id, assigned_staff_name, status
+                FROM conversations
+                WHERE assigned_staff_id = ? AND status != 'RESOLVED'
+                ORDER BY last_message_at DESC LIMIT 1`,
+          args: [internalStaff.hubUserId],
+        });
+        targetConv = latestAssigned.rows[0] as Record<string, unknown> | undefined;
+      }
+
       let replyText = "";
-      if (/Accept Assignment/i.test(incomingBtnText)) {
+      if (isClaimConfirmationCmd) {
         if (targetConv) {
-          await conv.execute({
-            sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, delivery_status, created_at)
-                  VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
-            args: [
-              `msg_ack_${crypto.randomUUID().slice(0, 8)}`,
-              String(targetConv.id),
-              internalStaff.name,
-              `${internalStaff.name} accepted assignment via WhatsApp.`,
-              nowIso,
-            ],
-          }).catch(() => {});
-          replyText = `Thanks ${internalStaff.firstName}! Confirmed your assignment for *${String(targetConv.customer_name || targetConv.customer_phone)}*.\n\nOpen chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`;
+          const targetConvId = String(targetConv.id);
+          const custLabel = String(
+            targetConv.customer_name || targetCustomerNameHint || targetConv.customer_phone
+          );
+          const custPhoneLabel = String(targetConv.customer_phone || targetPhoneFromAlert);
+          const curStaffId = targetConv.assigned_staff_id
+            ? String(targetConv.assigned_staff_id)
+            : "ACRIO";
+          const curStaffName = targetConv.assigned_staff_name
+            ? String(targetConv.assigned_staff_name)
+            : "ACRIO";
+          const claimantId = internalStaff.hubUserId || "";
+          const claimantName = internalStaff.name;
+
+          if (!claimantId) {
+            replyText = `Thanks ${internalStaff.firstName}! Your hub login account is needed to lock assignments. Open Inbox to claim: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(targetConvId)}`;
+          } else if (curStaffId && curStaffId !== "ACRIO" && curStaffId !== claimantId) {
+            replyText = `Already claimed, ${internalStaff.firstName}! *${custLabel}* (${custPhoneLabel}) has already been accepted by *${curStaffName}* (first-come, first-serve).\n\nView queue: ${hubBase}/dashboard/inbox`;
+          } else if (curStaffId === claimantId) {
+            await conv
+              .execute({
+                sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, delivery_status, created_at)
+                      VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+                args: [
+                  `msg_ack_${crypto.randomUUID().slice(0, 8)}`,
+                  targetConvId,
+                  claimantName,
+                  `${claimantName} confirmed assignment via WhatsApp.`,
+                  nowIso,
+                ],
+              })
+              .catch(() => {});
+            replyText = `Confirmed, ${internalStaff.firstName}! *${custLabel}* (${custPhoneLabel}) is assigned to you.\n\nOpen chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(targetConvId)}`;
+          } else {
+            // Atomic first-come, first-serve claim
+            const atomicClaim = await conv.execute({
+              sql: `UPDATE conversations
+                    SET status = 'ASSIGNED',
+                        assigned_staff_id = ?,
+                        assigned_staff_name = ?,
+                        assigned_team_id = COALESCE(assigned_team_id, 'team_sales'),
+                        assigned_team_name = CASE
+                          WHEN assigned_team_name IS NULL OR TRIM(assigned_team_name) = '' OR assigned_team_name LIKE 'System (ACRIO)%' OR assigned_team_name = 'ACRIO Assistant' OR assigned_team_name = 'Internal Team Desk'
+                          THEN 'Sales Team'
+                          ELSE assigned_team_name
+                        END,
+                        escalation_level = 'P0',
+                        waiting_since = NULL
+                    WHERE id = ?
+                      AND (assigned_staff_id IS NULL OR TRIM(assigned_staff_id) = '' OR assigned_staff_id = 'ACRIO')`,
+              args: [claimantId, claimantName, targetConvId],
+            });
+            if (Number(atomicClaim.rowsAffected ?? 0) === 1) {
+              await logConversationAssignment({
+                conversationId: targetConvId,
+                customerPhone: custPhoneLabel,
+                customerName: custLabel,
+                fromStaffId: "ACRIO",
+                fromStaffName: "ACRIO",
+                fromTeamName: "System (ACRIO)",
+                toStaffId: claimantId,
+                toStaffName: claimantName,
+                toTeamId: "team_sales",
+                toTeamName: "Sales Team",
+                escalationLevel: "P0",
+                assignmentSource: "WHATSAPP_FIRST_COME_CLAIM",
+                assignedByName: claimantName,
+                reason: `${claimantName} accepted first via WhatsApp confirmation`,
+                assignedAt: nowIso,
+              }).catch(() => {});
+              await conv
+                .execute({
+                  sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, delivery_status, created_at)
+                        VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+                  args: [
+                    `msg_ack_${crypto.randomUUID().slice(0, 8)}`,
+                    targetConvId,
+                    claimantName,
+                    `${claimantName} accepted and claimed this chat first via WhatsApp.`,
+                    nowIso,
+                  ],
+                })
+                .catch(() => {});
+              socketHub.emit("conversation:assigned", {
+                conversationId: targetConvId,
+                staffId: claimantId,
+                staffName: claimantName,
+                teamName: "Sales Team",
+                escalationLevel: "P0",
+              });
+              replyText = `Confirmed, ${internalStaff.firstName}! You claimed *${custLabel}* (${custPhoneLabel}) first and it is now assigned to you.\n\nOpen chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(targetConvId)}`;
+            } else {
+              const winnerRes = await conv.execute({
+                sql: `SELECT assigned_staff_name FROM conversations WHERE id = ? LIMIT 1`,
+                args: [targetConvId],
+              });
+              const winnerName = String(winnerRes.rows[0]?.assigned_staff_name || "another team member");
+              replyText = `Already claimed, ${internalStaff.firstName}! *${custLabel}* (${custPhoneLabel}) was just accepted by *${winnerName}* (first-come, first-serve).\n\nView queue: ${hubBase}/dashboard/inbox`;
+            }
+          }
         } else {
           replyText = `Thanks ${internalStaff.firstName}! View your open queue here: ${hubBase}/dashboard/inbox`;
         }
@@ -1141,10 +1301,6 @@ async function processInboundAutomationsLocked(
         replyText = targetConv
           ? `*Latest Assigned Client:*\n• *Name:* ${String(targetConv.customer_name || "Customer")}\n• *Phone:* ${String(targetConv.customer_phone)}\n• *Topic:* ${String(targetConv.smart_category || "General Enquiry")}\n• *Last message:* ${String(targetConv.last_message_preview || "")}\n\nOpen chat: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`
           : `No open client chat is waiting for you right now, ${internalStaff.firstName}. Inbox: ${hubBase}/dashboard/inbox`;
-      } else if (/Accept Callback/i.test(incomingBtnText)) {
-        replyText = targetConv
-          ? `Callback accepted, ${internalStaff.firstName}! Call *${String(targetConv.customer_name || "")}* at ${String(targetConv.customer_phone)} and log the update here: ${hubBase}/dashboard/inbox?chat=${encodeURIComponent(String(targetConv.id))}`
-          : `Callback accepted, ${internalStaff.firstName}! Check pending callbacks in ${hubBase}/dashboard/inbox`;
       } else {
         replyText = `Alert snoozed for 30 minutes, ${internalStaff.firstName}. Open queue anytime: ${hubBase}/dashboard/inbox`;
       }
@@ -2809,12 +2965,25 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
 
+  // Only escalate unattended initial leads where NO assigned human staff reply has been sent yet in the active ticket.
+  // Once a staff member initiates or replies to the client, the chat stays with them forever unless manually reassigned/taken over.
   const [waitingRes, teamsRes, membersRes, loadRes, devUsersRes] = await Promise.all([
     conv.execute(
-      `SELECT * FROM conversations
-       WHERE status != 'RESOLVED'
-         AND waiting_since IS NOT NULL
-         AND COALESCE(assigned_staff_id, '') != 'ACRIO'`
+      `SELECT c.* FROM conversations c
+       WHERE c.status != 'RESOLVED'
+         AND c.waiting_since IS NOT NULL
+         AND COALESCE(c.assigned_staff_id, '') != 'ACRIO'
+         AND NOT EXISTS (
+           SELECT 1 FROM messages m
+           WHERE m.conversation_id = c.id
+             AND m.direction = 'OUTBOUND'
+             AND m.sender_type = 'STAFF'
+             AND (
+               c.resolved_at IS NULL
+               OR TRIM(c.resolved_at) = ''
+               OR m.created_at > c.resolved_at
+             )
+         )`
     ),
     conv.execute(`SELECT * FROM teams`),
     conv.execute(`SELECT * FROM team_members WHERE is_available = 1`),
@@ -4176,7 +4345,8 @@ export type AssignmentSourceType =
   | "CALL_DISPATCH_QUEUE"
   | "REQUESTED_BY_CUSTOMER"
   | "PREFERRED_STAFF"
-  | "PAST_HANDLER";
+  | "PAST_HANDLER"
+  | "WHATSAPP_FIRST_COME_CLAIM";
 
 async function patchAssignmentEventMessageMeta(
   assignmentId: string,

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { sendStaffAssignmentEmailNotification } from "@cc/connections";
 import {
+  claimCallDispatchItem,
   computePerformanceRankedStaff,
   createCallDispatchItem,
   ensureDatabasesBootstrapped,
@@ -136,17 +137,30 @@ export async function POST(req: Request) {
 
   if (action === "pick_up") {
     const id = String(body.id || "").trim();
-    const updated = await updateCallDispatchItem({
+    const claimRes = await claimCallDispatchItem({
       id,
-      action: "pick_up",
       actorId: user.id,
       actorName: user.name,
     });
-    if (!updated) {
+    if (!claimRes.item) {
       return NextResponse.json({ ok: false, error: "Queue item not found." }, { status: 404 });
     }
-    socketHub.emit("call_queue:updated", { id: updated.id, action: "picked_up" });
-    return NextResponse.json({ ok: true, item: updated });
+    if (!claimRes.ok || claimRes.conflict) {
+      return NextResponse.json(
+        {
+          ok: false,
+          alreadyClaimed: true,
+          claimedByStaffName: claimRes.claimedByStaffName || claimRes.item.assignedStaffName,
+          error:
+            claimRes.error ||
+            `Already accepted by ${claimRes.item.assignedStaffName || "another team member"} (first-come, first-serve).`,
+          item: claimRes.item,
+        },
+        { status: 409 }
+      );
+    }
+    socketHub.emit("call_queue:updated", { id: claimRes.item.id, action: "picked_up" });
+    return NextResponse.json({ ok: true, item: claimRes.item });
   }
 
   if (action === "reassign") {
@@ -203,9 +217,29 @@ export async function POST(req: Request) {
   if (action === "open_in_inbox") {
     const id = String(body.id || "").trim();
     const items = await listCallDispatchQueue(250);
-    const item = items.find((i) => i.id === id);
+    let item = items.find((i) => i.id === id);
     if (!item) {
       return NextResponse.json({ ok: false, error: "Queue item not found." }, { status: 404 });
+    }
+    if (!item.assignedStaffId) {
+      const claimRes = await claimCallDispatchItem({
+        id,
+        actorId: user.id,
+        actorName: user.name,
+      });
+      if (!claimRes.ok || claimRes.conflict) {
+        return NextResponse.json(
+          {
+            ok: false,
+            alreadyClaimed: true,
+            error:
+              claimRes.error ||
+              `Already accepted by ${claimRes.claimedByStaffName || "another team member"} (first-come, first-serve).`,
+          },
+          { status: 409 }
+        );
+      }
+      if (claimRes.item) item = claimRes.item;
     }
     const phone = normalizeWhatsAppPhone(item.customerPhone);
     if (!phone) {

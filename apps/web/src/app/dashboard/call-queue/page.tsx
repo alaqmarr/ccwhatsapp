@@ -242,6 +242,9 @@ export default function CallQueuePage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         notify(data.error || "Action failed.");
+        if (res.status === 409) {
+          await loadQueue(true);
+        }
         return;
       }
       if (action === "open_in_inbox" && data.conversationId) {

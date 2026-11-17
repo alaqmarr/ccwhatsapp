@@ -7747,6 +7747,67 @@ export async function createCallDispatchItem(params: {
   return mapCallDispatchRow(rows.rows[0] as Record<string, unknown>);
 }
 
+export async function claimCallDispatchItem(params: {
+  id: string;
+  actorId: string;
+  actorName: string;
+}): Promise<{
+  ok: boolean;
+  conflict?: boolean;
+  claimedByStaffName?: string;
+  item: CallDispatchRecord | null;
+  error?: string;
+}> {
+  await ensureCallDispatchTable();
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+
+  const existing = await conv.execute({
+    sql: `SELECT * FROM call_dispatch_queue WHERE id = ? LIMIT 1`,
+    args: [params.id],
+  });
+  if (!existing.rows[0]) {
+    return { ok: false, item: null, error: "Queue item not found." };
+  }
+
+  const updateRes = await conv.execute({
+    sql: `UPDATE call_dispatch_queue
+          SET assigned_staff_id = ?,
+              assigned_staff_name = ?,
+              status = 'IN_PROGRESS',
+              picked_up_at = COALESCE(picked_up_at, ?),
+              updated_at = ?
+          WHERE id = ?
+            AND (
+              assigned_staff_id IS NULL
+              OR TRIM(assigned_staff_id) = ''
+              OR assigned_staff_id = ?
+            )`,
+    args: [params.actorId, params.actorName, nowIso, nowIso, params.id, params.actorId],
+  });
+
+  const latest = await conv.execute({
+    sql: `SELECT * FROM call_dispatch_queue WHERE id = ? LIMIT 1`,
+    args: [params.id],
+  });
+  const mapped = latest.rows[0]
+    ? mapCallDispatchRow(latest.rows[0] as Record<string, unknown>)
+    : null;
+
+  if (Number(updateRes.rowsAffected ?? 0) === 0 && mapped) {
+    const ownerName = mapped.assignedStaffName || "another team member";
+    return {
+      ok: false,
+      conflict: true,
+      claimedByStaffName: ownerName,
+      item: mapped,
+      error: `Already accepted by ${ownerName} (first-come, first-serve).`,
+    };
+  }
+
+  return { ok: true, item: mapped };
+}
+
 export async function updateCallDispatchItem(params: {
   id: string;
   action: "pick_up" | "reassign" | "resolve" | "reopen" | "link_conversation";

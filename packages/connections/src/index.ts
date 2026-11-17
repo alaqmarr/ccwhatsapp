@@ -818,6 +818,7 @@ async function recordOutboundTemplateInChat(params: {
   deliveryStatus: string;
   billingCategory?: "MARKETING" | "UTILITY" | "AUTHENTICATION";
   senderName?: string;
+  recordMetadata?: Record<string, unknown>;
 }): Promise<void> {
   const normalizedPhone = normalizeWhatsAppPhone(params.toPhone);
   if (!normalizedPhone) return;
@@ -924,11 +925,15 @@ async function recordOutboundTemplateInChat(params: {
 
   const msgId = `msg_tpl_${crypto.randomUUID().slice(0, 10)}`;
   const senderLabel = params.senderName || `ACRIO • ${params.templateName}`;
+  const metadataJson =
+    params.recordMetadata && Object.keys(params.recordMetadata).length > 0
+      ? JSON.stringify(params.recordMetadata)
+      : null;
   await conv.execute({
     sql: `INSERT INTO messages (
       id, conversation_id, wa_message_id, direction, sender_type, sender_name,
-      message_type, billing_category, body, template_name, delivery_status, created_at
-    ) VALUES (?, ?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEMPLATE', ?, ?, ?, ?, ?)`,
+      message_type, billing_category, body, template_name, metadata_json, delivery_status, created_at
+    ) VALUES (?, ?, ?, 'OUTBOUND', 'AUTOMATION', ?, 'TEMPLATE', ?, ?, ?, ?, ?, ?)`,
     args: [
       msgId,
       convId,
@@ -937,6 +942,7 @@ async function recordOutboundTemplateInChat(params: {
       billingCat,
       params.bodyText || params.templateName,
       params.templateName,
+      metadataJson,
       params.deliveryStatus || "SENT",
       nowIso,
     ],
@@ -986,6 +992,7 @@ export async function sendWhatsAppCloudMessage(params: {
   skipAutoChatRecord?: boolean;
   recordSenderName?: string;
   recordBillingCategory?: "MARKETING" | "UTILITY" | "AUTHENTICATION";
+  recordMetadata?: Record<string, unknown>;
 }): Promise<OutboundWhatsAppSendResult> {
   const cfg = await loadMetaWhatsAppSetupConfig();
 
@@ -1259,6 +1266,7 @@ export async function sendWhatsAppCloudMessage(params: {
           deliveryStatus: "SENT",
           billingCategory: params.recordBillingCategory,
           senderName: params.recordSenderName,
+          recordMetadata: params.recordMetadata,
         }).catch(() => {});
       }
       return {
@@ -1290,6 +1298,7 @@ export async function sendWhatsAppCloudMessage(params: {
       deliveryStatus: simDeliveryStatus,
       billingCategory: params.recordBillingCategory,
       senderName: params.recordSenderName,
+      recordMetadata: params.recordMetadata,
     }).catch(() => {});
   }
   return {
@@ -9345,6 +9354,12 @@ export async function sendQuoteRequestAlertTemplate(params: {
     languageCode: "en",
     recordBillingCategory: "UTILITY",
     recordSenderName: "ACRIO • Quote Alert",
+    recordMetadata: {
+      alertType: "QUOTE_REQUEST",
+      alertCustomerPhone: params.customerPhone || "",
+      alertCustomerName: params.customerName || "",
+      alertProductName: params.productName || "",
+    },
     templateComponents: [
       {
         type: "body",
@@ -9398,6 +9413,11 @@ export async function sendStaffClientAssignmentTemplate(params: {
     languageCode: "en",
     recordBillingCategory: "MARKETING",
     recordSenderName: "ACRIO • Assignment Alert",
+    recordMetadata: {
+      alertType: "STAFF_ASSIGNMENT",
+      alertCustomerPhone: params.customerPhone || "",
+      alertCustomerName: params.customerName || "",
+    },
     templateComponents: [
       {
         type: "body",
@@ -9450,6 +9470,11 @@ export async function sendCallbackRequestAlertTemplate(params: {
     languageCode: "en",
     recordBillingCategory: "MARKETING",
     recordSenderName: "ACRIO • Callback Alert",
+    recordMetadata: {
+      alertType: "CALLBACK_REQUEST",
+      alertCustomerPhone: params.customerPhone || "",
+      alertCustomerName: params.customerName || "",
+    },
     templateComponents: [
       {
         type: "body",

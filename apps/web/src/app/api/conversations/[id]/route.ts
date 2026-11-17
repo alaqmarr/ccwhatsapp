@@ -876,10 +876,40 @@ export async function POST(
     return NextResponse.json({ ok: true, document: doc, pendingAction: promo.pendingAction });
   }
 
-  // 2b. Human Staff Takes Over Chat (from ACRIO OR from another teammate)
-  if (action === "take_over_from_acrio" || action === "take_over_chat") {
+  // 2b. Human Staff Claims or Takes Over Chat (enforces first-come, first-serve when claiming from ACRIO/Open Pool)
+  if (
+    action === "claim_assignment" ||
+    action === "take_over_from_acrio" ||
+    action === "take_over_chat"
+  ) {
     const prevStaffId = cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : "ACRIO";
     const prevStaffName = cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : "ACRIO";
+    const expectedStaffId = body.expectedCurrentStaffId
+      ? String(body.expectedCurrentStaffId).trim()
+      : "";
+    const isFirstComeClaim =
+      action === "claim_assignment" ||
+      expectedStaffId === "ACRIO" ||
+      expectedStaffId === "";
+
+    if (
+      isFirstComeClaim &&
+      prevStaffId &&
+      prevStaffId !== "ACRIO" &&
+      prevStaffId !== user.id
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          alreadyClaimed: true,
+          claimedByStaffId: prevStaffId,
+          claimedByStaffName: prevStaffName,
+          error: `Already accepted by ${prevStaffName} (first-come, first-serve).`,
+        },
+        { status: 409 }
+      );
+    }
+
     const rawPrevTeam = String(cRow.assigned_team_name || "").trim();
     const resolvedTeamId =
       cRow.assigned_team_id && String(cRow.assigned_team_id).trim()
@@ -910,25 +940,70 @@ export async function POST(
         : nowIso
       : null;
 
-    await conv.execute({
-      sql: `UPDATE conversations
-            SET status = 'ASSIGNED',
-                assigned_staff_id = ?,
-                assigned_staff_name = ?,
-                assigned_team_id = ?,
-                assigned_team_name = ?,
-                escalation_level = 'P0',
-                waiting_since = ?
-            WHERE id = ?`,
-      args: [
-        user.id,
-        user.name,
-        resolvedTeamId,
-        resolvedTeamName,
-        nextWaitingSince,
-        id,
-      ],
-    });
+    if (isFirstComeClaim) {
+      const claimRes = await conv.execute({
+        sql: `UPDATE conversations
+              SET status = 'ASSIGNED',
+                  assigned_staff_id = ?,
+                  assigned_staff_name = ?,
+                  assigned_team_id = ?,
+                  assigned_team_name = ?,
+                  escalation_level = 'P0',
+                  waiting_since = ?
+              WHERE id = ?
+                AND (
+                  assigned_staff_id IS NULL
+                  OR TRIM(assigned_staff_id) = ''
+                  OR assigned_staff_id = 'ACRIO'
+                  OR assigned_staff_id = ?
+                )`,
+        args: [
+          user.id,
+          user.name,
+          resolvedTeamId,
+          resolvedTeamName,
+          nextWaitingSince,
+          id,
+          user.id,
+        ],
+      });
+      if (Number(claimRes.rowsAffected ?? 0) === 0) {
+        const latestRow = await conv.execute({
+          sql: `SELECT assigned_staff_id, assigned_staff_name FROM conversations WHERE id = ? LIMIT 1`,
+          args: [id],
+        });
+        const winnerName = String(latestRow.rows[0]?.assigned_staff_name || "another team member");
+        return NextResponse.json(
+          {
+            ok: false,
+            alreadyClaimed: true,
+            claimedByStaffName: winnerName,
+            error: `Already accepted by ${winnerName} (first-come, first-serve).`,
+          },
+          { status: 409 }
+        );
+      }
+    } else {
+      await conv.execute({
+        sql: `UPDATE conversations
+              SET status = 'ASSIGNED',
+                  assigned_staff_id = ?,
+                  assigned_staff_name = ?,
+                  assigned_team_id = ?,
+                  assigned_team_name = ?,
+                  escalation_level = 'P0',
+                  waiting_since = ?
+              WHERE id = ?`,
+        args: [
+          user.id,
+          user.name,
+          resolvedTeamId,
+          resolvedTeamName,
+          nextWaitingSince,
+          id,
+        ],
+      });
+    }
 
     await logConversationAssignment({
       conversationId: id,
