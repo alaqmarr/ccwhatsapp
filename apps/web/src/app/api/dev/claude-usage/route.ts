@@ -4,6 +4,7 @@ import {
   getClaudeUsageAndSpendComparison,
   saveAnthropicBillingConfigToDb,
 } from "@cc/connections";
+import { loadClaudeUsagePayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "../../../../lib/session";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +28,7 @@ export async function GET(req: Request) {
   const forceRefresh = searchParams.get("refresh") === "1";
 
   try {
-    const report = await getClaudeUsageAndSpendComparison({
+    const report = await loadClaudeUsagePayload({
       preset,
       startingAt,
       endingAt,

@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { isDevRole } from "@cc/rbac";
 import {
   clearAiTraceLogs,
-  readAiTraceLogs,
   readRawAiLogFile,
 } from "@cc/database";
+import { loadAiLogsPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -36,24 +36,15 @@ export async function GET(req: Request) {
     });
   }
 
-  const website = searchParams.get("website") || "ALL";
-  const outcome = searchParams.get("outcome") || "ALL";
-  const cache = searchParams.get("cache") || "ALL";
-  const search = searchParams.get("search") || "";
-  const limit = Number(searchParams.get("limit") || "150");
-
-  const summary = readAiTraceLogs({
-    website,
-    outcome,
-    cache,
-    search,
-    limit: Number.isFinite(limit) ? limit : 150,
+  const payload = await loadAiLogsPayload({
+    website: searchParams.get("website") || "ALL",
+    outcome: searchParams.get("outcome") || "ALL",
+    cache: searchParams.get("cache") || "ALL",
+    search: searchParams.get("search") || "",
+    limit: Number(searchParams.get("limit") || "150"),
   });
 
-  return NextResponse.json({
-    ok: true,
-    ...summary,
-  });
+  return NextResponse.json(payload);
 }
 
 export async function DELETE() {

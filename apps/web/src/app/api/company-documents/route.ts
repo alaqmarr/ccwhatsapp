@@ -2,12 +2,11 @@ import { NextResponse } from "next/server";
 import {
   deleteCompanyDocument,
   ensureDatabasesBootstrapped,
-  fetchLiveEcosystemDocuments,
-  listCompanyDocuments,
   upsertCompanyDocument,
 } from "@cc/database";
 import { hasPermission } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
+import { loadCompanyDocumentsPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -18,13 +17,8 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
-  await ensureDatabasesBootstrapped();
-  const [documents, allEcosystemDocs] = await Promise.all([
-    listCompanyDocuments(),
-    fetchLiveEcosystemDocuments().catch(() => []),
-  ]);
-  const websiteDocuments = allEcosystemDocs.filter((d) => d.source !== "HUB_UPLOAD");
-  return NextResponse.json({ ok: true, documents, websiteDocuments });
+  const payload = await loadCompanyDocumentsPayload();
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

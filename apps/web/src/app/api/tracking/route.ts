@@ -2,13 +2,11 @@ import { NextResponse } from "next/server";
 import {
   deleteOrderTracking,
   ensureDatabasesBootstrapped,
-  listOrderTrackings,
-  resolvePublicTrackingOrigin,
-  SHIPPING_PROVIDERS,
   upsertOrderTracking,
   type ShipmentStatus,
 } from "@cc/database";
 import { hasPermission } from "@cc/rbac";
+import { loadTrackingPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -19,25 +17,15 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
-  await ensureDatabasesBootstrapped();
   const url = new URL(req.url);
-  const brand = url.searchParams.get("brand") || "ALL";
-  const customerPhone = url.searchParams.get("customerPhone") || "";
-  const query = url.searchParams.get("q") || "";
-
-  const trackings = await listOrderTrackings({
-    brand,
-    customerPhone: customerPhone || undefined,
-    query: query || undefined,
+  const payload = await loadTrackingPayload({
+    brand: url.searchParams.get("brand") || "ALL",
+    customerPhone: url.searchParams.get("customerPhone") || "",
+    query: url.searchParams.get("q") || "",
     limit: 300,
   });
 
-  return NextResponse.json({
-    ok: true,
-    trackingOrigin: resolvePublicTrackingOrigin(),
-    providers: SHIPPING_PROVIDERS,
-    trackings,
-  });
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

@@ -12,6 +12,7 @@ import {
 } from "@cc/database";
 import { hasPermission } from "@cc/rbac";
 import { logConversationAssignment } from "@cc/workers";
+import { loadContactsPayload } from "@/lib/loaders/crm";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -66,7 +67,6 @@ export async function GET(req: Request) {
   const contactsDb = getRawLibSqlClient("contacts");
   const convDb = getRawLibSqlClient("conversations");
   const crmDb = getRawLibSqlClient("crm_orders");
-  const mktDb = getRawLibSqlClient("marketing");
 
   // Single Contact 360 Drawer Fetch
   if (contactId) {
@@ -172,281 +172,17 @@ export async function GET(req: Request) {
     });
   }
 
-  // Full Directory Listing + Filters + Live Chat Enrichment
-  const q = (url.searchParams.get("q") || "").trim().toLowerCase();
-  const stageFilter = (url.searchParams.get("stage") || "ALL").trim();
-  const optInFilter = (url.searchParams.get("optIn") || "ALL").trim();
-  const orgFilter = (url.searchParams.get("orgType") || "ALL").trim();
-  const sourceFilter = (url.searchParams.get("source") || "ALL").trim();
-  const groupFilter = (url.searchParams.get("groupId") || "ALL").trim();
-  const tagFilter = (url.searchParams.get("tag") || "ALL").trim();
-  const sortBy = (url.searchParams.get("sort") || "recent").trim();
-
-  const [contactsRes, groupsRes, logsRes, convRes, msgCntRes, listsRes, ordersAggRes] =
-    await Promise.all([
-      contactsDb.execute(`SELECT * FROM contacts ORDER BY updated_at DESC`),
-      contactsDb.execute(`SELECT * FROM contact_groups ORDER BY name ASC`),
-      contactsDb.execute(`SELECT * FROM contact_import_logs ORDER BY created_at DESC LIMIT 10`),
-      convDb.execute(
-        `SELECT id, customer_phone, status, unread_count, last_message_at, window_expires_at, assigned_staff_name, assigned_team_name
-         FROM conversations`
-      ),
-      convDb.execute(
-        `SELECT c.customer_phone as phone, COUNT(m.id) as cnt
-         FROM conversations c
-         LEFT JOIN messages m ON m.conversation_id = c.id AND m.direction IN ('INBOUND', 'OUTBOUND')
-         GROUP BY c.customer_phone`
-      ),
-      mktDb.execute(`SELECT id, name, members_count FROM marketing_lists ORDER BY updated_at DESC`),
-      crmDb.execute(
-        `SELECT customer_phone as phone, COUNT(*) as orders_cnt, COALESCE(SUM(total_amount_inr), 0) as total_inr
-         FROM customer_orders
-         GROUP BY customer_phone`
-      ),
-    ]);
-
-  const nowMs = Date.now();
-  const convByPhone = new Map<
-    string,
-    {
-      id: string;
-      status: string;
-      unreadCount: number;
-      lastMessageAt: string;
-      windowOpen: boolean;
-      assignedTo: string;
-    }
-  >();
-  for (const c of convRes.rows) {
-    const ph = String(c.customer_phone || "");
-    const exp = c.window_expires_at ? new Date(String(c.window_expires_at)).getTime() : 0;
-    convByPhone.set(ph, {
-      id: String(c.id),
-      status: String(c.status),
-      unreadCount: Number(c.unread_count ?? 0),
-      lastMessageAt: String(c.last_message_at),
-      windowOpen: exp > nowMs,
-      assignedTo: String(c.assigned_staff_name || c.assigned_team_name || "System"),
-    });
-  }
-
-  const msgCountByPhone = new Map<string, number>();
-  for (const m of msgCntRes.rows) {
-    msgCountByPhone.set(String(m.phone || ""), Number(m.cnt ?? 0));
-  }
-
-  const ordersByPhone = new Map<string, { count: number; ltv: number }>();
-  for (const o of ordersAggRes.rows) {
-    ordersByPhone.set(String(o.phone || ""), {
-      count: Number(o.orders_cnt ?? 0),
-      ltv: Number(o.total_inr ?? 0),
-    });
-  }
-
-  const groupMemberCounts = new Map<string, number>();
-  const tagCounts = new Map<string, number>();
-
-  let optedInCount = 0;
-  let optedOutCount = 0;
-  let customersCount = 0;
-  let repeatAndVipCount = 0;
-  let totalLifetimeValueInr = 0;
-  let withActiveChatCount = 0;
-
-  const allContacts = contactsRes.rows.map((r) => {
-    const phone = String(r.phone);
-    const tags = parseJsonArray(r.tags_json);
-    const groups = parseJsonArray(r.groups_json);
-    const convInfo = convByPhone.get(phone) || null;
-    const ordAgg = ordersByPhone.get(phone);
-
-    const totalOrdersCount = Math.max(
-      Number(r.total_orders_count ?? 0),
-      ordAgg?.count ?? 0
-    );
-    const lifetimeValueInr = Math.max(
-      Number(r.lifetime_value_inr ?? 0),
-      ordAgg?.ltv ?? 0
-    );
-    const totalMessagesCount = Math.max(
-      Number(r.total_messages_count ?? 0),
-      msgCountByPhone.get(phone) ?? 0
-    );
-    const optInMarketing = Number(r.opt_in_marketing ?? 1) === 1;
-    const stage = String(r.stage || "NEW_LEAD");
-
-    if (optInMarketing) optedInCount++;
-    else optedOutCount++;
-
-    if (totalOrdersCount > 0 || ["CUSTOMER", "REPEAT_BUYER", "VIP"].includes(stage)) {
-      customersCount++;
-    }
-    if (stage === "REPEAT_BUYER" || stage === "VIP" || totalOrdersCount >= 2) {
-      repeatAndVipCount++;
-    }
-    if (convInfo) withActiveChatCount++;
-    totalLifetimeValueInr += lifetimeValueInr;
-
-    for (const gid of groups) {
-      groupMemberCounts.set(gid, (groupMemberCounts.get(gid) || 0) + 1);
-    }
-    for (const t of tags) {
-      tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
-    }
-
-    const lastContactedAt =
-      convInfo?.lastMessageAt &&
-      (!r.last_contacted_at || convInfo.lastMessageAt > String(r.last_contacted_at))
-        ? convInfo.lastMessageAt
-        : r.last_contacted_at
-        ? String(r.last_contacted_at)
-        : String(r.updated_at);
-
-    return {
-      id: String(r.id),
-      phone,
-      whatsappName: String(r.whatsapp_name || ""),
-      name: String(r.name || phone),
-      email: String(r.email || ""),
-      companyName: String(r.company_name || ""),
-      designation: String(r.designation || ""),
-      organizationType: String(r.organization_type || "Business"),
-      city: String(r.city || ""),
-      state: String(r.state || ""),
-      country: String(r.country || "India"),
-      gstNumber: String(r.gst_number || ""),
-      source: String(r.source || "MANUAL"),
-      stage,
-      acrioSegment: String(r.acrio_segment || "Active Prospect"),
-      tags,
-      groups,
-      optInMarketing,
-      optOutReason: String(r.opt_out_reason || ""),
-      assignedOwnerName: String(r.assigned_owner_name || convInfo?.assignedTo || ""),
-      preferredStaffId: r.preferred_staff_id
-        ? String(r.preferred_staff_id)
-        : r.assigned_owner_id
-        ? String(r.assigned_owner_id)
-        : null,
-      preferredStaffName: String(
-        r.preferred_staff_name || r.assigned_owner_name || ""
-      ),
-      lifetimeValueInr,
-      totalOrdersCount,
-      totalMessagesCount,
-      notes: String(r.notes || ""),
-      lastContactedAt,
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-      conversationId: convInfo?.id || null,
-      chatStatus: convInfo?.status || null,
-      unreadCount: convInfo?.unreadCount ?? 0,
-      windowOpen: convInfo?.windowOpen ?? false,
-    };
+  const payload = await loadContactsPayload(user, {
+    q: url.searchParams.get("q") || "",
+    stage: url.searchParams.get("stage") || "ALL",
+    optIn: url.searchParams.get("optIn") || "ALL",
+    orgType: url.searchParams.get("orgType") || "ALL",
+    source: url.searchParams.get("source") || "ALL",
+    groupId: url.searchParams.get("groupId") || "ALL",
+    tag: url.searchParams.get("tag") || "ALL",
+    sort: url.searchParams.get("sort") || "recent",
   });
-
-  // Apply filters
-  let filtered = allContacts.filter((c) => {
-    if (stageFilter !== "ALL") {
-      if (stageFilter === "BUYERS_ALL") {
-        if (
-          c.totalOrdersCount === 0 &&
-          !["CUSTOMER", "REPEAT_BUYER", "VIP"].includes(c.stage)
-        ) {
-          return false;
-        }
-      } else if (c.stage !== stageFilter) {
-        return false;
-      }
-    }
-    if (optInFilter === "OPTED_IN" && !c.optInMarketing) return false;
-    if (optInFilter === "OPTED_OUT" && c.optInMarketing) return false;
-    if (orgFilter !== "ALL" && c.organizationType !== orgFilter) return false;
-    if (sourceFilter !== "ALL" && c.source !== sourceFilter) return false;
-    if (groupFilter !== "ALL" && !c.groups.includes(groupFilter)) return false;
-    if (tagFilter !== "ALL" && !c.tags.includes(tagFilter)) return false;
-
-    if (q) {
-      const hay = [
-        c.name,
-        c.whatsappName,
-        c.phone,
-        c.email,
-        c.companyName,
-        c.designation,
-        c.organizationType,
-        c.city,
-        c.state,
-        c.gstNumber,
-        c.acrioSegment,
-        c.notes,
-        ...c.tags,
-      ]
-        .join(" ")
-        .toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    return true;
-  });
-
-  // Apply sorting
-  filtered = [...filtered].sort((a, b) => {
-    if (sortBy === "name") return a.name.localeCompare(b.name);
-    if (sortBy === "ltv") return b.lifetimeValueInr - a.lifetimeValueInr;
-    if (sortBy === "orders") return b.totalOrdersCount - a.totalOrdersCount;
-    if (sortBy === "created") return b.createdAt.localeCompare(a.createdAt);
-    return (b.lastContactedAt || "").localeCompare(a.lastContactedAt || "");
-  });
-
-  return NextResponse.json({
-    ok: true,
-    permissions: {
-      canManage: hasPermission(user.role, "contacts:manage", user.status),
-      canDelete: hasPermission(user.role, "contacts:delete", user.status),
-      canManageLists: hasPermission(user.role, "marketing:manage_lists", user.status),
-    },
-    kpis: {
-      totalContacts: allContacts.length,
-      optedInCount,
-      optedOutCount,
-      optInRatePct:
-        allContacts.length > 0
-          ? Math.round((optedInCount / allContacts.length) * 100)
-          : 0,
-      customersCount,
-      repeatAndVipCount,
-      totalLifetimeValueInr,
-      withActiveChatCount,
-    },
-    groups: groupsRes.rows.map((g) => ({
-      id: String(g.id),
-      name: String(g.name),
-      description: String(g.description || ""),
-      color: String(g.color || "emerald"),
-      membersCount: groupMemberCounts.get(String(g.id)) ?? 0,
-    })),
-    allTags: Array.from(tagCounts.entries())
-      .map(([tag, count]) => ({ tag, count }))
-      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)),
-    marketingLists: listsRes.rows.map((l) => ({
-      id: String(l.id),
-      name: String(l.name),
-      membersCount: Number(l.members_count ?? 0),
-    })),
-    importLogs: logsRes.rows.map((l) => ({
-      id: String(l.id),
-      sourceLabel: String(l.source_label),
-      importedCount: Number(l.imported_count ?? 0),
-      updatedCount: Number(l.updated_count ?? 0),
-      skippedCount: Number(l.skipped_count ?? 0),
-      importedByName: String(l.imported_by_name),
-      createdAt: String(l.created_at),
-    })),
-    staffList: (await listActiveNonClientStaff()).filter(
-      (s) => s.role !== "DEV" || user.role === "DEV"
-    ),
-    contacts: filtered,
-  });
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

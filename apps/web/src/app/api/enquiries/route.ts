@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
+import { loadEnquiriesPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 import {
   dispatchSystemEmail,
@@ -7,12 +8,10 @@ import {
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
 import {
-  checkEcosystemBridgesHealth,
   ensureDatabasesBootstrapped,
   ensureEcosystemEnquiriesTable,
   getRawLibSqlClient,
   normalizeWhatsAppPhone,
-  syncAndListEcosystemEnquiries,
   syncWebsiteEnquiryStatusAcrossSites,
   upsertEcosystemEnquiry,
   upsertSyncedContact,
@@ -27,36 +26,18 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  await ensureDatabasesBootstrapped();
   const { searchParams } = new URL(req.url);
-  const brand = (searchParams.get("brand") || "ALL") as
-    | "ALL"
-    | "CLASSIC_CONCEPTS"
-    | "CLASSIC_EDGE_53";
-  const status = (searchParams.get("status") || "ALL") as "ALL" | "New" | "Replied";
-  const search = (searchParams.get("search") || "").trim();
-  const limit = Math.min(500, Math.max(1, Number(searchParams.get("limit") || 250)));
-
-  const [enquiries, allUnfiltered, bridgeHealth] = await Promise.all([
-    syncAndListEcosystemEnquiries({ brand, status, search, limit }),
-    syncAndListEcosystemEnquiries({ limit: 500 }),
-    checkEcosystemBridgesHealth().catch(() => null),
-  ]);
-
-  const stats = {
-    total: allUnfiltered.length,
-    newCount: allUnfiltered.filter((e) => e.status === "New").length,
-    repliedCount: allUnfiltered.filter((e) => e.status === "Replied").length,
-    ccCount: allUnfiltered.filter((e) => e.brand === "CLASSIC_CONCEPTS").length,
-    ce53Count: allUnfiltered.filter((e) => e.brand === "CLASSIC_EDGE_53").length,
-  };
-
-  return NextResponse.json({
-    ok: true,
-    enquiries,
-    stats,
-    bridgeHealth,
+  const payload = await loadEnquiriesPayload({
+    brand: (searchParams.get("brand") || "ALL") as
+      | "ALL"
+      | "CLASSIC_CONCEPTS"
+      | "CLASSIC_EDGE_53",
+    status: (searchParams.get("status") || "ALL") as "ALL" | "New" | "Replied",
+    search: (searchParams.get("search") || "").trim(),
+    limit: Math.min(500, Math.max(1, Number(searchParams.get("limit") || 250))),
   });
+
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

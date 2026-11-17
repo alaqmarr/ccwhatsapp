@@ -202,12 +202,21 @@ const heatStyle: Record<string, string> = {
   NEW: "bg-sky-100 text-sky-700",
 };
 
-export function DashboardClient() {
-  const [data, setData] = useState<DashboardData | null>(null);
+export function DashboardClient({
+  initialData,
+}: {
+  initialData?: DashboardData;
+}) {
+  const [data, setData] = useState<DashboardData | null>(initialData ?? null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [leadTab, setLeadTab] = useState<"MINE" | "HOT" | "WAITING" | "ALL" | "RECENT">("ALL");
-  const [didAutoSelectTab, setDidAutoSelectTab] = useState(false);
+  const [leadTab, setLeadTab] = useState<"MINE" | "HOT" | "WAITING" | "ALL" | "RECENT">(() => {
+    if (!initialData) return "ALL";
+    if (initialData.openLeads.some((l) => l.isMine)) return "MINE";
+    if (initialData.openLeads.length > 0) return "ALL";
+    return "RECENT";
+  });
+  const [didAutoSelectTab, setDidAutoSelectTab] = useState(Boolean(initialData));
   const [busyCb, setBusyCb] = useState<string | null>(null);
 
   const load = useCallback(async (silent = false) => {
@@ -226,7 +235,9 @@ export function DashboardClient() {
   }, []);
 
   useEffect(() => {
-    void load();
+    if (!initialData) {
+      void load();
+    }
     const timer = setInterval(() => void load(true), 30000);
     let debounce: ReturnType<typeof setTimeout> | null = null;
     const es = new EventSource("/api/realtime/stream");

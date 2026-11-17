@@ -2,16 +2,15 @@ import { NextResponse } from "next/server";
 import {
   createDevAccountByDev,
   deleteStaffAccount,
-  listAllStaffAccounts,
   reviewStaffAccount,
 } from "@cc/auth";
 import {
-  canAssignToDev,
   isDevRole,
   isSuperAdminCapable,
   type UserRole,
 } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
+import { loadStaffDirectoryPayload } from "@/lib/loaders/core";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -22,35 +21,8 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const accounts = await listAllStaffAccounts();
-  if (!isSuperAdminCapable(user.role)) {
-    const allowDevAssign = canAssignToDev(user.role);
-    // Active staff/managers/admins can view active teammates for chat assignment dropdowns
-    return NextResponse.json({
-      ok: true,
-      viewerRole: user.role,
-      staff: accounts
-        .filter(
-          (a) =>
-            a.status === "ACTIVE" &&
-            a.role !== "CLIENT" &&
-            (a.role !== "DEV" || allowDevAssign)
-        )
-        .map((a) => ({
-          id: a.id,
-          name: a.name,
-          email: a.email,
-          role: a.role,
-          department: a.department,
-        })),
-    });
-  }
-
-  return NextResponse.json({
-    ok: true,
-    viewerRole: user.role,
-    staff: accounts,
-  });
+  const payload = await loadStaffDirectoryPayload(user);
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

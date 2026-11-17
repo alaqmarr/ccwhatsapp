@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
 import { hasPermission } from "@cc/rbac";
 import { evaluateAutomationRulesDryRun } from "@cc/workers";
+import { loadAutomationsPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -13,50 +14,8 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
-  await ensureDatabasesBootstrapped();
-  const conv = getRawLibSqlClient("conversations");
-  const [res, teamsRes, mktRes] = await Promise.all([
-    conv.execute(
-      `SELECT * FROM automations ORDER BY COALESCE(priority_order, 10) ASC, created_at DESC`
-    ),
-    conv.execute(`SELECT id, name FROM teams ORDER BY priority_rank ASC`),
-    getRawLibSqlClient("marketing").execute(
-      `SELECT id, name, category, approval_status FROM templates WHERE approval_status = 'APPROVED' ORDER BY name ASC`
-    ),
-  ]);
-
-  return NextResponse.json({
-    ok: true,
-    teams: teamsRes.rows.map((t) => ({
-      id: String(t.id),
-      name: String(t.name),
-    })),
-    approvedTemplates: mktRes.rows.map((t) => ({
-      id: String(t.id),
-      name: String(t.name),
-      category: String(t.category),
-    })),
-    automations: res.rows.map((r) => ({
-      id: String(r.id),
-      name: String(r.name),
-      description: String(r.description),
-      triggerType: String(r.trigger_type),
-      triggerCondition: String(r.trigger_condition),
-      actionType: String(r.action_type),
-      actionPayload: (() => {
-        try {
-          return JSON.parse(String(r.action_payload_json || "{}"));
-        } catch {
-          return {};
-        }
-      })(),
-      priorityOrder: Number(r.priority_order ?? 10),
-      isEnabled: Number(r.is_enabled ?? 1) === 1,
-      runsCount: Number(r.runs_count ?? 0),
-      lastTriggeredAt: r.last_triggered_at ? String(r.last_triggered_at) : null,
-      createdAt: String(r.created_at || ""),
-    })),
-  });
+  const payload = await loadAutomationsPayload();
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

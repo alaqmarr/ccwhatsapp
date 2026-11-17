@@ -5,55 +5,16 @@ import {
   getSetupStatus,
   saveFacebookWhatsAppConfig,
 } from "@cc/auth";
-import {
-  getAcrioKeysStatus,
-  saveSharedAnthropicApiKey,
-} from "@cc/database";
+import { saveSharedAnthropicApiKey } from "@cc/database";
 import { isDevRole } from "@cc/rbac";
+import { loadSetupPayload } from "@/lib/loaders/core";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const [setup, user, aiKeys] = await Promise.all([
-    getSetupStatus(),
-    getCurrentUser(),
-    getAcrioKeysStatus(),
-  ]);
-  const isDev = isDevRole(user?.role);
-
-  const safeFacebookConfig =
-    !setup.hasDevAccount || isDev
-      ? setup.facebookConfig
-      : {
-          ...setup.facebookConfig,
-          metaAppSecret: setup.facebookConfig.metaAppSecret ? "••••••••" : "",
-          systemUserAccessToken: setup.facebookConfig.systemUserAccessToken
-            ? "••••••••"
-            : "",
-        };
-
-  const safeAiKeys =
-    !setup.hasDevAccount || isDev
-      ? aiKeys
-      : {
-          clientConnected: aiKeys.clientConnected,
-          clientMasked: "",
-          clientSource: aiKeys.clientSource,
-          adminConnected: aiKeys.adminConnected,
-          adminMasked: "",
-          adminSource: aiKeys.adminSource,
-        };
-
-  return NextResponse.json({
-    hasDevAccount: setup.hasDevAccount,
-    allFacebookStepsDone: setup.allFacebookStepsDone,
-    facebookConfig: safeFacebookConfig,
-    aiConnected: aiKeys.clientConnected || aiKeys.adminConnected,
-    aiMaskedKey: !setup.hasDevAccount || isDev ? aiKeys.clientMasked : "",
-    aiKeys: safeAiKeys,
-    currentUser: user,
-  });
+  const payload = await loadSetupPayload();
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

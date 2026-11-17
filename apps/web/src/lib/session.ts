@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
 import {
   SESSION_COOKIE_NAME,
@@ -7,18 +8,23 @@ import {
 } from "@cc/auth";
 import { ensureBackgroundWorkersRunning } from "@cc/workers";
 
-export async function getCurrentUser(): Promise<AuthenticatedUser | null> {
+export const getCachedSetupStatus = cache(async () => {
+  ensureBackgroundWorkersRunning();
+  return getSetupStatus();
+});
+
+export const getCurrentUser = cache(async (): Promise<AuthenticatedUser | null> => {
   ensureBackgroundWorkersRunning();
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   return getSessionUserByToken(token);
-}
+});
 
-export async function getAppBootContext() {
+export const getAppBootContext = cache(async () => {
   ensureBackgroundWorkersRunning();
   const [setup, user] = await Promise.all([
-    getSetupStatus(),
+    getCachedSetupStatus(),
     getCurrentUser(),
   ]);
   return { setup, user };
-}
+});

@@ -4,6 +4,7 @@ import {
   executeAcrioEcosystemAutoFix,
   runAcrioEcosystemIssuesIdentifier,
 } from "@cc/connections";
+import { loadIssuesIdentifierPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -21,14 +22,8 @@ export async function GET(req: Request) {
   const forceFresh = searchParams.get("fresh") === "1";
 
   try {
-    const report = await runAcrioEcosystemIssuesIdentifier({
-      forceFreshCatalog: forceFresh,
-      actorName: user.name,
-    });
-    return NextResponse.json({
-      ok: true,
-      report,
-    });
+    const payload = await loadIssuesIdentifierPayload(user.name, forceFresh);
+    return NextResponse.json(payload);
   } catch (err: any) {
     return NextResponse.json(
       {

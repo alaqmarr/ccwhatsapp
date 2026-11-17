@@ -19,6 +19,7 @@ import {
   updateBroadcastQueueSettings,
   type BroadcastPacingMode,
 } from "@cc/workers";
+import { loadMarketingPayload } from "@/lib/loaders/crm";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -86,98 +87,8 @@ export async function GET(req: Request) {
     });
   }
 
-  const bill = getRawLibSqlClient("billing_ops");
-  await getCachedEcosystemCatalog().catch(() => null);
-  const [tplRes, listRes, bcRes, links, pricingRes, queueSettings] =
-    await Promise.all([
-      mkt.execute(`SELECT * FROM templates ORDER BY created_at DESC`),
-      mkt.execute(`SELECT * FROM marketing_lists ORDER BY updated_at DESC`),
-      mkt.execute(`SELECT * FROM broadcasts ORDER BY created_at DESC LIMIT 50`),
-      listCustomAdminLinks(),
-      bill.execute(`SELECT * FROM pricing_config WHERE id = 'default' LIMIT 1`),
-      getBroadcastQueueSettings(),
-    ]);
-
-  const pRow = (pricingRes.rows[0] || {}) as Record<string, unknown>;
-  const clientMarketingRateInr = Number(pRow.client_marketing_rate_inr ?? 0.95);
-  const clientOtherRateInr = Number(pRow.client_other_rate_inr ?? 0.3);
-
-  return NextResponse.json({
-    ok: true,
-    canManageTemplates: hasPermission(
-      user.role,
-      "templates:manage",
-      user.status
-    ),
-    canSendBroadcasts: hasPermission(
-      user.role,
-      "marketing:send_broadcasts",
-      user.status
-    ),
-    rates: {
-      marketingRateInr: clientMarketingRateInr,
-      otherRateInr: clientOtherRateInr,
-    },
-    queueSettings,
-    templates: tplRes.rows.map((t) => ({
-      id: String(t.id),
-      name: String(t.name),
-      language: String(t.language || "en"),
-      category: String(t.category),
-      headerType: String(t.header_type || (t.header_text ? "TEXT" : "NONE")),
-      headerText: t.header_text ? String(t.header_text) : null,
-      bodyText: String(t.body_text),
-      footerText: t.footer_text ? String(t.footer_text) : null,
-      ctaLabel: t.cta_label ? String(t.cta_label) : null,
-      ctaUrl: t.cta_url ? String(t.cta_url) : null,
-      approvalStatus: String(t.approval_status),
-      sentCount: Number(t.sent_count ?? 0),
-    })),
-    lists: listRes.rows.map((l) => ({
-      id: String(l.id),
-      name: String(l.name),
-      description: String(l.description),
-      sourceType: String(l.source_type),
-      acrioPrompt: l.acrio_prompt ? String(l.acrio_prompt) : null,
-      membersCount: Number(l.members_count ?? 0),
-      memberPhones: (() => {
-        try {
-          return JSON.parse(String(l.member_phones_json || "[]"));
-        } catch {
-          return [];
-        }
-      })(),
-      createdByName: String(l.created_by_name),
-      updatedAt: String(l.updated_at),
-    })),
-    broadcasts: bcRes.rows.map((b) => ({
-      id: String(b.id),
-      name: String(b.name),
-      listName: String(b.list_name),
-      templateName: String(b.template_name),
-      billingCategory: String(b.billing_category),
-      status: String(b.status),
-      pacingMode: String(b.pacing_mode || "SAFE_STEADY"),
-      delaySeconds: Number(b.delay_seconds ?? 4),
-      batchSize: Number(b.batch_size ?? 25),
-      batchPauseSeconds: Number(b.batch_pause_seconds ?? 20),
-      totalRecipients: Number(b.total_recipients ?? 0),
-      queuedCount: Number(b.queued_count ?? 0),
-      skippedCount: Number(b.skipped_count ?? 0),
-      failedCount: Number(b.failed_count ?? 0),
-      sentCount: Number(b.sent_count ?? 0),
-      deliveredCount: Number(b.delivered_count ?? 0),
-      readCount: Number(b.read_count ?? 0),
-      pausedReason: b.paused_reason ? String(b.paused_reason) : null,
-      scheduledFor: b.scheduled_for ? String(b.scheduled_for) : null,
-      nextDispatchAt: b.next_dispatch_at ? String(b.next_dispatch_at) : null,
-      completedAt: b.completed_at ? String(b.completed_at) : null,
-      clientBilledInr: Number(b.client_billed_inr ?? 0),
-      createdByName: String(b.created_by_name),
-      createdAt: String(b.created_at),
-    })),
-    customLinks: links,
-  });
+  const payload = await loadMarketingPayload(user);
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { sendStaffAssignmentEmailNotification } from "@cc/connections";
 import {
   claimCallDispatchItem,
-  computePerformanceRankedStaff,
   createCallDispatchItem,
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
@@ -17,6 +16,7 @@ import {
 import { hasPermission } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
 import { createNotification, logConversationAssignment } from "@cc/workers";
+import { loadCallQueuePayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -27,20 +27,8 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
-  await ensureDatabasesBootstrapped();
-  const [items, rankedStaff, allStaff] = await Promise.all([
-    listCallDispatchQueue(200),
-    computePerformanceRankedStaff(),
-    listActiveNonClientStaff(),
-  ]);
-
-  return NextResponse.json({
-    ok: true,
-    currentUserId: user.id,
-    items,
-    rankedStaff,
-    staffList: allStaff.filter((s) => s.role !== "DEV" || user.role === "DEV"),
-  });
+  const payload = await loadCallQueuePayload(user);
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {

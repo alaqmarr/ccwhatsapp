@@ -1,16 +1,15 @@
 import { NextResponse } from "next/server";
-import { getCachedEcosystemCatalog, runAcrioAutonomousTurn } from "@cc/connections";
+import { runAcrioAutonomousTurn } from "@cc/connections";
 import {
   deleteAiTrainingExample,
   deleteAiTrainingRule,
   ensureDatabasesBootstrapped,
-  getRawLibSqlClient,
-  listAiTrainingData,
   upsertAiTrainingExample,
   upsertAiTrainingRule,
 } from "@cc/database";
 import { hasPermission } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
+import { loadAiTrainingPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -21,46 +20,14 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
-  await ensureDatabasesBootstrapped();
-  const [training, catalog, convRes] = await Promise.all([
-    listAiTrainingData(),
-    getCachedEcosystemCatalog().catch(() => ({ allItems: [] as any[] })),
-    getRawLibSqlClient("conversations")
-      .execute(
-        `SELECT m.id, m.conversation_id, m.body, m.created_at, c.customer_name
-         FROM messages m
-         JOIN conversations c ON c.id = m.conversation_id
-         WHERE m.direction = 'INBOUND' AND m.message_type = 'TEXT'
-         ORDER BY m.created_at DESC LIMIT 25`
-      )
-      .catch(() => ({ rows: [] as any[] })),
-  ]);
-
-  const products = catalog.allItems.slice(0, 300).map((it) => ({
-    slug: it.slug,
-    name: it.name,
-    sku: it.sku,
-    brandLabel: it.brandLabel,
-    priceInr: it.basePrice,
-  }));
-
-  const recentCustomerQuestions = convRes.rows.map((r) => ({
-    id: String(r.id),
-    conversationId: String(r.conversation_id),
-    customerName: String(r.customer_name || "Customer"),
-    question: String(r.body || "").slice(0, 220),
-    createdAt: String(r.created_at || ""),
-  }));
-
+  const payload = await loadAiTrainingPayload(user);
   return NextResponse.json({
     ok: true,
-    canEdit:
-      hasPermission(user.role, "acrio:manage_training", user.status) ||
-      hasPermission(user.role, "automations:manage", user.status),
-    examples: training.examples,
-    rules: training.rules,
-    products,
-    recentCustomerQuestions,
+    canEdit: payload.canEdit,
+    examples: payload.examples,
+    rules: payload.rules,
+    products: payload.products,
+    recentCustomerQuestions: payload.recentCustomerQuestions,
   });
 }
 

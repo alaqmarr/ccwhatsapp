@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
+import { loadDashboardPayload } from "@/lib/loaders/core";
 import { getCurrentUser } from "@/lib/session";
 import { DashboardClient } from "./DashboardClient";
 
@@ -19,5 +20,6 @@ export default async function DashboardRootPage() {
   if (!hasPermission(user.role, "inbox:view", user.status)) {
     redirect("/onboarding");
   }
-  return <DashboardClient />;
+  const initialData = await loadDashboardPayload(user);
+  return <DashboardClient initialData={initialData} />;
 }
