@@ -1,8 +1,9 @@
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
 import { getCurrentUser } from "@/lib/session";
-import { getInitialInboxPayload } from "@/lib/inbox-server-data";
-import { InboxClient } from "./InboxClient";
+import InboxLoading from "./loading";
+import { InboxDataBoundary } from "./InboxDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -20,12 +21,15 @@ export default async function InboxPage({
   }
 
   const sp = await searchParams;
-  const initialData = await getInitialInboxPayload({
-    userId: user.id,
-    userName: user.name,
-    userRole: user.role,
-    selectedConversationId: sp?.chat,
-  });
 
-  return <InboxClient initialData={initialData} />;
+  return (
+    <Suspense fallback={<InboxLoading />}>
+      <InboxDataBoundary
+        userId={user.id}
+        userName={user.name}
+        userRole={user.role}
+        selectedConversationId={sp?.chat}
+      />
+    </Suspense>
+  );
 }
