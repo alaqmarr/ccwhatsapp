@@ -83,9 +83,15 @@ export async function POST(req: Request) {
     const title = String(body.title || "").trim();
     const customerQuestion = String(body.customerQuestion || "").trim();
     const idealAnswer = String(body.idealAnswer || "").trim();
+    const guidanceType =
+      body.guidanceType === "INSTRUCTION" ? "INSTRUCTION" : "FIXED_ANSWER";
     if (!title || !customerQuestion || !idealAnswer) {
       return NextResponse.json(
-        { ok: false, error: "Title, customer question, and ideal answer are required." },
+        {
+          ok: false,
+          error:
+            "Title, trigger situation or question, and instruction or answer are required.",
+        },
         { status: 400 }
       );
     }
@@ -93,6 +99,7 @@ export async function POST(req: Request) {
       id: body.id ? String(body.id) : undefined,
       title,
       category: body.category ? String(body.category) : "Product Knowledge",
+      guidanceType,
       customerQuestion,
       idealAnswer,
       doNotSay: body.doNotSay ? String(body.doNotSay) : "",

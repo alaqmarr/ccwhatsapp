@@ -345,6 +345,7 @@ async function runBootstrapInternal(): Promise<void> {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         category TEXT NOT NULL DEFAULT 'Product Knowledge',
+        guidance_type TEXT NOT NULL DEFAULT 'FIXED_ANSWER',
         customer_question TEXT NOT NULL,
         ideal_answer TEXT NOT NULL,
         do_not_say TEXT DEFAULT '',

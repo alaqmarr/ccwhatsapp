@@ -8221,7 +8221,7 @@ Customer Name: ${safePromptCustomerName}
 Already Greeted Earlier In This Chat: ${alreadyGreeted ? "YES (DO NOT say Hi/Hello or customer's name again! Start directly with the helpful answer.)" : `NO (First reply: greet "${firstName}" warmly once in 1 short line.)`}
 Customer Persona & Language Instruction: ${customerProfileInfo.instructionNote}
 ${quotedMessagePromptLine}${antiRepeatRule ? `${antiRepeatRule}\n` : ""}${stateSummaryLine}
-${productHistoryLine}${trainingGuidance.promptBlock ? `\n[AI Training Studio Rules & Q&A Guidance]:\n${trainingGuidance.promptBlock}\n` : ""}${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Verified Company Summary, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
+${productHistoryLine}${trainingGuidance.promptBlock ? `\n[AI Training Studio Rules, Action Instructions & Q&A Guidance]:\n${trainingGuidance.promptBlock}\nIMPORTANT ACTION INSTRUCTION RULE: If a matched Situation Instruction tells you what to do (for example: hand over or assign to a staff member, ping the sales team, politely decline vendor pitches, skip product pitches, or ask specific questions), follow that action strictly using "needsHumanHandoff": true / "handoffReason" or "needsSalesTeamPing": true / "salesTeamPingNote" as needed, and write a natural customer-facing WhatsApp reply fitting that instruction (never repeat the raw instruction wording verbatim as your reply).\n` : ""}${catalogContext}${liveOperationalContext ? `\n\n[Live Database Operational Context - Verified Company Summary, Enquiries & Orders]:\n${liveOperationalContext}` : ""}
 
 Customer's latest WhatsApp message:
 ${rawText}`;
@@ -8308,8 +8308,13 @@ Return ONLY valid JSON:
             ? { customerReply: String(aiCall.text).trim() }
             : null);
         if (parsed && typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
+          const hasMatchedTrainingInstruction =
+            trainingGuidance.examples.some((ex) => ex.guidanceType === "INSTRUCTION") ||
+            trainingGuidance.rules.length > 0;
           const handoff =
             hasLegacyUnanalyzedMedia || imageNeedsTeamHandoff
+              ? true
+              : hasMatchedTrainingInstruction && Boolean(parsed.needsHumanHandoff)
               ? true
               : intentInfo.intent === "HUMAN_HANDOFF_INFO" ||
                 intentInfo.intent === "LEADERSHIP_CONTACT_INFO" ||

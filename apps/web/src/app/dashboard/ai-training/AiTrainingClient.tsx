@@ -14,7 +14,6 @@ import {
   RotateCcw,
   Send,
   ShieldAlert,
-  Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -24,6 +23,7 @@ interface TrainingExample {
   id: string;
   title: string;
   category: string;
+  guidanceType: "INSTRUCTION" | "FIXED_ANSWER";
   customerQuestion: string;
   idealAnswer: string;
   doNotSay: string;
@@ -139,10 +139,11 @@ export function AiTrainingClient({
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
 
-  // Q&A editor
+  // Q&A & Action Instruction editor
   const [editExId, setEditExId] = useState<string | null>(null);
+  const [exGuidanceType, setExGuidanceType] = useState<"INSTRUCTION" | "FIXED_ANSWER">("INSTRUCTION");
   const [exTitle, setExTitle] = useState("");
-  const [exCategory, setExCategory] = useState("Product Knowledge");
+  const [exCategory, setExCategory] = useState("Handling & Routing");
   const [exQuestion, setExQuestion] = useState("");
   const [exAnswer, setExAnswer] = useState("");
   const [exDoNotSay, setExDoNotSay] = useState("");
@@ -200,10 +201,11 @@ export function AiTrainingClient({
     }
   }, [initialData, loadData]);
 
-  function resetExampleForm() {
+  function resetExampleForm(defaultMode: "INSTRUCTION" | "FIXED_ANSWER" = "INSTRUCTION") {
     setEditExId(null);
+    setExGuidanceType(defaultMode);
     setExTitle("");
-    setExCategory("Product Knowledge");
+    setExCategory(defaultMode === "INSTRUCTION" ? "Handling & Routing" : "Product Knowledge");
     setExQuestion("");
     setExAnswer("");
     setExDoNotSay("");
@@ -213,6 +215,7 @@ export function AiTrainingClient({
 
   function startEditExample(ex: TrainingExample) {
     setEditExId(ex.id);
+    setExGuidanceType(ex.guidanceType === "INSTRUCTION" ? "INSTRUCTION" : "FIXED_ANSWER");
     setExTitle(ex.title);
     setExCategory(ex.category);
     setExQuestion(ex.customerQuestion);
@@ -235,6 +238,7 @@ export function AiTrainingClient({
           id: editExId || undefined,
           title: exTitle,
           category: exCategory,
+          guidanceType: exGuidanceType,
           customerQuestion: exQuestion,
           idealAnswer: exAnswer,
           doNotSay: exDoNotSay,
@@ -245,11 +249,19 @@ export function AiTrainingClient({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
-        notify(data.error || "Could not save Q&A training pair.");
+        notify(data.error || "Could not save training entry.");
         return;
       }
-      notify(editExId ? "Q&A example updated." : "Q&A example saved.");
-      resetExampleForm();
+      notify(
+        editExId
+          ? exGuidanceType === "INSTRUCTION"
+            ? "Action instruction updated."
+            : "Fixed answer updated."
+          : exGuidanceType === "INSTRUCTION"
+          ? "Action instruction saved."
+          : "Fixed answer saved."
+      );
+      resetExampleForm(exGuidanceType);
       await loadData();
     } finally {
       setSaving(false);
@@ -388,7 +400,7 @@ export function AiTrainingClient({
   }
 
   return (
-    <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 w-full space-y-6">
       {toast && (
         <div className="fixed bottom-4 left-3 right-3 sm:left-auto sm:right-5 sm:max-w-sm z-50 px-4 py-2.5 rounded-lg bg-neutral-900 text-white text-xs font-semibold shadow-xl text-center sm:text-left [overflow-wrap:anywhere]">
           {toast}
@@ -398,7 +410,7 @@ export function AiTrainingClient({
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-violet-100 text-violet-800 flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-neutral-100 border border-neutral-200 text-neutral-800 flex items-center justify-center">
             <Bot className="w-5 h-5" />
           </div>
           <div>
@@ -406,7 +418,7 @@ export function AiTrainingClient({
               AI Training Studio (ACRIO)
             </h1>
             <p className="text-xs text-neutral-600">
-              Teach ACRIO the exact answers to real customer questions, set strict rules, and test multi-product conversations before going live.
+              Give ACRIO instructions on what to do for specific situations, save verified fixed answers, set strict rules, and test replies before going live.
             </p>
           </div>
         </div>
@@ -433,7 +445,7 @@ export function AiTrainingClient({
           }`}
         >
           <BookOpen className="w-3.5 h-3.5" />
-          <span>Q&A Training Pairs ({examples.length})</span>
+          <span>Instructions &amp; Q&amp;A ({examples.length})</span>
         </button>
         <button
           type="button"
@@ -473,7 +485,7 @@ export function AiTrainingClient({
         </button>
       </div>
 
-      {/* TAB 1: Q&A TRAINING PAIRS */}
+      {/* TAB 1: ACTION INSTRUCTIONS & Q&A PAIRS */}
       {tab === "QA" && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2 space-y-5">
@@ -481,20 +493,77 @@ export function AiTrainingClient({
               onSubmit={saveExample}
               className="rounded-xl border border-neutral-200 bg-white p-5 space-y-4 shadow-2xs"
             >
-              <div className="flex items-center justify-between border-b border-neutral-100 pb-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-100 pb-2.5">
                 <h2 className="text-sm font-semibold text-neutral-900 flex items-center gap-1.5">
                   <Plus className="w-4 h-4 text-[#008069]" />
-                  <span>{editExId ? "Edit Training Q&A" : "Teach ACRIO a New Q&A"}</span>
+                  <span>
+                    {editExId
+                      ? exGuidanceType === "INSTRUCTION"
+                        ? "Edit Action Instruction"
+                        : "Edit Verified Fixed Answer"
+                      : "Teach ACRIO What to Do or Say"}
+                  </span>
                 </h2>
                 {editExId && (
                   <button
                     type="button"
-                    onClick={resetExampleForm}
+                    onClick={() => resetExampleForm()}
                     className="text-xs text-neutral-600 underline cursor-pointer"
                   >
                     Cancel edit
                   </button>
                 )}
+              </div>
+
+              {/* Training Mode Toggle */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-medium text-neutral-700">
+                  Training Mode
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExGuidanceType("INSTRUCTION");
+                      if (exCategory === "Product Knowledge") {
+                        setExCategory("Handling & Routing");
+                      }
+                    }}
+                    className={`text-left rounded-lg border px-3 py-2 cursor-pointer transition ${
+                      exGuidanceType === "INSTRUCTION"
+                        ? "border-[#008069] bg-emerald-50/70 text-neutral-900"
+                        : "border-neutral-200 bg-neutral-50/70 text-neutral-600 hover:bg-neutral-100"
+                    }`}
+                  >
+                    <div className="text-xs font-semibold">
+                      Instruction (What ACRIO should do)
+                    </div>
+                    <div className="text-[11px] text-neutral-600 mt-0.5">
+                      Tell ACRIO how to handle, assign, decline, or reply dynamically.
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExGuidanceType("FIXED_ANSWER");
+                      if (exCategory === "Handling & Routing") {
+                        setExCategory("Product Knowledge");
+                      }
+                    }}
+                    className={`text-left rounded-lg border px-3 py-2 cursor-pointer transition ${
+                      exGuidanceType === "FIXED_ANSWER"
+                        ? "border-neutral-900 bg-neutral-100 text-neutral-900"
+                        : "border-neutral-200 bg-neutral-50/70 text-neutral-600 hover:bg-neutral-100"
+                    }`}
+                  >
+                    <div className="text-xs font-semibold">
+                      Fixed Answer (Exact Q&amp;A reply)
+                    </div>
+                    <div className="text-[11px] text-neutral-600 mt-0.5">
+                      Use a verified standard reply when a specific question comes in.
+                    </div>
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -507,7 +576,11 @@ export function AiTrainingClient({
                     required
                     value={exTitle}
                     onChange={(e) => setExTitle(e.target.value)}
-                    placeholder="GST & Bulk Pricing Policy"
+                    placeholder={
+                      exGuidanceType === "INSTRUCTION"
+                        ? "Handle outside supplier pitch"
+                        : "GST & Bulk Pricing Policy"
+                    }
                     className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-xs"
                   />
                 </div>
@@ -520,11 +593,14 @@ export function AiTrainingClient({
                     onChange={(e) => setExCategory(e.target.value)}
                     className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-xs bg-white"
                   >
+                    <option value="Handling & Routing">Handling &amp; Routing</option>
+                    <option value="Staff Command / Assignment">Staff Command / Assignment</option>
+                    <option value="Vendor / Spam / Ignore">Vendor / Spam / Ignore</option>
                     <option value="Product Knowledge">Product Knowledge</option>
-                    <option value="Pricing & Bulk">Pricing & Bulk</option>
-                    <option value="Shipping & Crating">Shipping & Crating</option>
-                    <option value="Machine Service & Parts">Machine Service & Parts</option>
-                    <option value="Custom Work & Logo">Custom Work & Logo</option>
+                    <option value="Pricing & Bulk">Pricing &amp; Bulk</option>
+                    <option value="Shipping & Crating">Shipping &amp; Crating</option>
+                    <option value="Machine Service & Parts">Machine Service &amp; Parts</option>
+                    <option value="Custom Work & Logo">Custom Work &amp; Logo</option>
                     <option value="Mistake Fix">Fix Past AI Mistake</option>
                   </select>
                 </div>
@@ -554,7 +630,7 @@ export function AiTrainingClient({
                   onChange={(e) => setExProductSlug(e.target.value)}
                   className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-xs bg-white"
                 >
-                  <option value="">General / Applies to any matching question</option>
+                  <option value="">General / Applies to any matching message</option>
                   {products.map((p) => (
                     <option key={p.slug} value={p.slug}>
                       {p.name} {p.sku ? `(${p.sku})` : ""} - {p.brandLabel}
@@ -565,41 +641,59 @@ export function AiTrainingClient({
 
               <div>
                 <label className="block text-[11px] font-medium text-neutral-700 mb-1">
-                  Customer Question or Keywords
+                  {exGuidanceType === "INSTRUCTION"
+                    ? "When This Message or Situation Happens (Trigger / Example)"
+                    : "Customer Question or Keywords"}
                 </label>
                 <textarea
                   rows={2}
                   required
                   value={exQuestion}
                   onChange={(e) => setExQuestion(e.target.value)}
-                  placeholder="Example: Do you ship podiums to Bangalore with GST invoice and logo printing?"
+                  placeholder={
+                    exGuidanceType === "INSTRUCTION"
+                      ? "Example: Supplier offering B2B laminates, rate card, or staff writing 'Assign to Shilpa'"
+                      : "Example: Do you ship podiums to Bangalore with GST invoice and logo printing?"
+                  }
                   className="w-full rounded-lg border border-neutral-300 p-2.5 text-xs"
                 />
               </div>
 
               <div>
                 <label className="block text-[11px] font-medium text-neutral-700 mb-1">
-                  Exact Verified Answer ACRIO Should Give
+                  {exGuidanceType === "INSTRUCTION"
+                    ? "Instruction: What ACRIO Should Do"
+                    : "Exact Verified Answer ACRIO Should Give"}
                 </label>
                 <textarea
                   rows={3}
                   required
                   value={exAnswer}
                   onChange={(e) => setExAnswer(e.target.value)}
-                  placeholder="Write in plain everyday English. Give exact steps, timelines, or policies."
+                  placeholder={
+                    exGuidanceType === "INSTRUCTION"
+                      ? "Explain step by step what to do: e.g. Recognize this is a vendor sales pitch, do NOT pitch our products, politely thank them and decline, or hand over to the team."
+                      : "Write in plain everyday English. Give exact steps, timelines, or policies."
+                  }
                   className="w-full rounded-lg border border-neutral-300 p-2.5 text-xs"
                 />
               </div>
 
               <div>
                 <label className="block text-[11px] font-medium text-neutral-700 mb-1">
-                  What NOT to Say / Common Trap to Avoid (optional)
+                  {exGuidanceType === "INSTRUCTION"
+                    ? "What ACRIO Must Avoid / Never Do (optional)"
+                    : "What NOT to Say / Common Trap to Avoid (optional)"}
                 </label>
                 <input
                   type="text"
                   value={exDoNotSay}
                   onChange={(e) => setExDoNotSay(e.target.value)}
-                  placeholder="e.g. Never quote flat shipping rates for custom crates without knowing city"
+                  placeholder={
+                    exGuidanceType === "INSTRUCTION"
+                      ? "e.g. Never list podiums or machines when someone is only pitching us their own raw materials"
+                      : "e.g. Never quote flat shipping rates for custom crates without knowing city"
+                  }
                   className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-xs"
                 />
               </div>
@@ -613,20 +707,24 @@ export function AiTrainingClient({
                   {saving
                     ? "Saving..."
                     : editExId
-                    ? "Update Training Pair"
-                    : "Save Training Pair"}
+                    ? exGuidanceType === "INSTRUCTION"
+                      ? "Update Instruction"
+                      : "Update Fixed Answer"
+                    : exGuidanceType === "INSTRUCTION"
+                    ? "Save Instruction"
+                    : "Save Fixed Answer"}
                 </button>
               </div>
             </form>
 
-            {/* Saved Q&A Pairs List */}
+            {/* Saved Instructions & Q&A Pairs List */}
             <div className="space-y-3">
               <h3 className="text-xs font-bold text-neutral-800 uppercase tracking-wide">
-                Active & Saved Training Knowledge ({examples.length})
+                Active &amp; Saved Instructions and Q&amp;A ({examples.length})
               </h3>
               {examples.length === 0 ? (
                 <div className="p-8 rounded-xl border border-dashed border-neutral-300 bg-white text-center text-xs text-neutral-500">
-                  No Q&A pairs saved yet. Add one above or pick a real customer question from the right.
+                  No instructions or Q&amp;A pairs saved yet. Add one above or pick a recent message from the right.
                 </div>
               ) : (
                 examples.map((ex) => (
@@ -641,6 +739,15 @@ export function AiTrainingClient({
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-sm font-semibold text-neutral-900">
                             {ex.title}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10.5px] font-semibold ${
+                              ex.guidanceType === "INSTRUCTION"
+                                ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                                : "bg-neutral-100 text-neutral-700"
+                            }`}
+                          >
+                            {ex.guidanceType === "INSTRUCTION" ? "WHAT TO DO" : "FIXED ANSWER"}
                           </span>
                           <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-[10.5px] font-medium">
                             {ex.category}
@@ -687,11 +794,19 @@ export function AiTrainingClient({
                     </div>
 
                     <div className="text-xs bg-neutral-50 border border-neutral-100 rounded-lg p-2.5">
-                      <span className="font-semibold text-neutral-700">When asked: </span>
-                      <span className="text-neutral-800">{ex.customerQuestion}</span>
+                      <span className="font-semibold text-neutral-700">
+                        {ex.guidanceType === "INSTRUCTION" ? "When this happens: " : "When asked: "}
+                      </span>
+                      <span className="text-neutral-800 whitespace-pre-wrap [overflow-wrap:anywhere]">
+                        {ex.customerQuestion}
+                      </span>
                     </div>
                     <div className="text-xs bg-[#e7fce3]/60 border border-[#b7ebaf] rounded-lg p-2.5">
-                      <span className="font-semibold text-[#008069]">Approved answer: </span>
+                      <span className="font-semibold text-[#008069]">
+                        {ex.guidanceType === "INSTRUCTION"
+                          ? "What ACRIO must do: "
+                          : "Approved answer: "}
+                      </span>
                       <span className="text-neutral-900 whitespace-pre-wrap [overflow-wrap:anywhere]">
                         {ex.idealAnswer}
                       </span>
@@ -708,19 +823,19 @@ export function AiTrainingClient({
             </div>
           </div>
 
-          {/* Right Sidebar: Pick Real Customer Questions */}
+          {/* Right Sidebar: Turn Recent Chat Messages Into Instructions or Answers */}
           <div className="rounded-xl border border-neutral-200 bg-white p-4 space-y-3 h-fit shadow-2xs">
             <h3 className="text-xs font-bold text-neutral-900 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-violet-700" />
-              <span>Turn Recent Chat Questions Into Training</span>
+              <Bot className="w-3.5 h-3.5 text-[#008069]" />
+              <span>Turn Recent Chat Messages Into Training</span>
             </h3>
             <p className="text-[11px] text-neutral-600">
-              Click any real customer message below to pre-fill the training form with it.
+              Pick any message below to teach ACRIO what action to take or set a fixed reply.
             </p>
             <div className="space-y-2 max-h-[540px] overflow-y-auto pr-1">
               {recentQuestions.length === 0 ? (
                 <p className="text-xs text-neutral-500">
-                  No recent inbound text questions found yet.
+                  No recent inbound text messages found yet.
                 </p>
               ) : (
                 recentQuestions.map((rq) => (
@@ -728,28 +843,48 @@ export function AiTrainingClient({
                     key={rq.id}
                     className="p-2.5 rounded-lg border border-neutral-200 bg-neutral-50/80 space-y-1.5"
                   >
-                    <div className="flex items-center justify-between text-[11px] text-neutral-500">
+                    <div className="flex items-center justify-between text-[11px] text-neutral-500 gap-2">
                       <span className="font-semibold text-neutral-800 truncate">
                         {rq.customerName}
                       </span>
-                      <span>{formatDateTimeIst(rq.createdAt)}</span>
+                      <span className="shrink-0">{formatDateTimeIst(rq.createdAt)}</span>
                     </div>
-                    <p className="text-xs text-neutral-800 line-clamp-3">
+                    <p className="text-xs text-neutral-800 line-clamp-3 [overflow-wrap:anywhere]">
                       {rq.question}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditExId(null);
-                        setExTitle(`FAQ: ${rq.question.slice(0, 40)}`);
-                        setExQuestion(rq.question);
-                        setExCategory("Mistake Fix");
-                        notify("Loaded customer question into trainer.");
-                      }}
-                      className="text-[11px] font-semibold text-[#008069] hover:underline cursor-pointer"
-                    >
-                      + Train Answer for This
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditExId(null);
+                          setExGuidanceType("INSTRUCTION");
+                          setExTitle(`Handle: ${rq.question.slice(0, 38)}`);
+                          setExQuestion(rq.question);
+                          setExAnswer("");
+                          setExCategory("Handling & Routing");
+                          notify("Loaded message to write an action instruction.");
+                        }}
+                        className="text-[11px] font-semibold text-[#008069] hover:underline cursor-pointer"
+                      >
+                        + Give Instruction
+                      </button>
+                      <span className="text-neutral-300">•</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditExId(null);
+                          setExGuidanceType("FIXED_ANSWER");
+                          setExTitle(`FAQ: ${rq.question.slice(0, 40)}`);
+                          setExQuestion(rq.question);
+                          setExAnswer("");
+                          setExCategory("Mistake Fix");
+                          notify("Loaded message to set a fixed answer.");
+                        }}
+                        className="text-[11px] font-medium text-neutral-700 hover:underline cursor-pointer"
+                      >
+                        + Fixed Answer
+                      </button>
+                    </div>
                   </div>
                 ))
               )}

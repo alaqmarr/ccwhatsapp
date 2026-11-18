@@ -6904,6 +6904,7 @@ export interface AiTrainingExampleRecord {
   id: string;
   title: string;
   category: string;
+  guidanceType: "INSTRUCTION" | "FIXED_ANSWER";
   customerQuestion: string;
   idealAnswer: string;
   doNotSay: string;
@@ -6935,6 +6936,7 @@ async function ensureAiTrainingTables(): Promise<void> {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         category TEXT NOT NULL DEFAULT 'Product Knowledge',
+        guidance_type TEXT NOT NULL DEFAULT 'FIXED_ANSWER',
         customer_question TEXT NOT NULL,
         ideal_answer TEXT NOT NULL,
         do_not_say TEXT DEFAULT '',
@@ -6959,6 +6961,13 @@ async function ensureAiTrainingTables(): Promise<void> {
     ],
     "write"
   );
+  try {
+    await conv.execute(
+      `ALTER TABLE ai_training_examples ADD COLUMN guidance_type TEXT NOT NULL DEFAULT 'FIXED_ANSWER'`
+    );
+  } catch {
+    // Column already exists on migrated databases
+  }
 }
 
 export async function listAiTrainingData(): Promise<{
@@ -6979,6 +6988,10 @@ export async function listAiTrainingData(): Promise<{
       id: String(r.id),
       title: String(r.title || ""),
       category: String(r.category || "Product Knowledge"),
+      guidanceType:
+        String(r.guidance_type) === "INSTRUCTION"
+          ? "INSTRUCTION"
+          : "FIXED_ANSWER",
       customerQuestion: String(r.customer_question || ""),
       idealAnswer: String(r.ideal_answer || ""),
       doNotSay: String(r.do_not_say || ""),
@@ -7010,6 +7023,7 @@ export async function upsertAiTrainingExample(params: {
   id?: string;
   title: string;
   category?: string;
+  guidanceType?: "INSTRUCTION" | "FIXED_ANSWER";
   customerQuestion: string;
   idealAnswer: string;
   doNotSay?: string;
@@ -7027,15 +7041,17 @@ export async function upsertAiTrainingExample(params: {
     : { rows: [] as any[] };
   const createdAt = existing.rows[0]?.created_at ? String(existing.rows[0].created_at) : nowIso;
   const usageCount = Number(existing.rows[0]?.usage_count ?? 0);
+  const guidanceType = params.guidanceType === "INSTRUCTION" ? "INSTRUCTION" : "FIXED_ANSWER";
 
   await conv.execute({
     sql: `INSERT INTO ai_training_examples (
-      id, title, category, customer_question, ideal_answer, do_not_say, product_slug,
+      id, title, category, guidance_type, customer_question, ideal_answer, do_not_say, product_slug,
       priority, is_enabled, usage_count, created_by_name, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title,
       category = excluded.category,
+      guidance_type = excluded.guidance_type,
       customer_question = excluded.customer_question,
       ideal_answer = excluded.ideal_answer,
       do_not_say = excluded.do_not_say,
@@ -7047,6 +7063,7 @@ export async function upsertAiTrainingExample(params: {
       id,
       params.title.trim(),
       (params.category || "Product Knowledge").trim(),
+      guidanceType,
       params.customerQuestion.trim(),
       params.idealAnswer.trim(),
       (params.doNotSay || "").trim(),
@@ -7837,9 +7854,27 @@ export async function findMatchingAiTrainingGuidance(params: {
       lines.push(`• ${r.title}: ${r.ruleText}`);
     }
   }
-  if (scoredExamples.length > 0) {
+  const instructionExamples = scoredExamples.filter(
+    (ex) => ex.guidanceType === "INSTRUCTION"
+  );
+  const fixedExamples = scoredExamples.filter(
+    (ex) => ex.guidanceType !== "INSTRUCTION"
+  );
+
+  if (instructionExamples.length > 0) {
+    lines.push(
+      "TEAM-TRAINED SITUATION INSTRUCTIONS (WHEN THE MESSAGE OR SITUATION MATCHES, FOLLOW THESE ACTIONS AND ADAPT YOUR REPLY NATURALLY. NEVER TREAT THESE INSTRUCTIONS AS A VERBATIM SCRIPT.):"
+    );
+    for (const ex of instructionExamples) {
+      lines.push(
+        `• Situation (${ex.title} | ${ex.category}): When triggered by "${ex.customerQuestion}"\n  What ACRIO MUST DO (Action Instruction): ${ex.idealAnswer}${ex.doNotSay ? `\n  DO NOT DO OR SAY: ${ex.doNotSay}` : ""}`
+      );
+    }
+  }
+
+  if (fixedExamples.length > 0) {
     lines.push("TEAM-TRAINED Q&A EXAMPLES (USE AS OFFICIAL REFERENCE ANSWERS):");
-    for (const ex of scoredExamples) {
+    for (const ex of fixedExamples) {
       lines.push(
         `• Q (${ex.title}): "${ex.customerQuestion}"\n  Ideal Answer: ${ex.idealAnswer}${ex.doNotSay ? `\n  DO NOT SAY: ${ex.doNotSay}` : ""}`
       );
