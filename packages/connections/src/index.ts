@@ -812,6 +812,66 @@ export async function uploadMediaToMetaCloud(params: {
   }
 }
 
+/**
+ * Takes a media file that someone SENT to the business number (identified by the inbound media id), downloads it from
+ * Meta, and uploads it again under the business number so it can be forwarded to a teammate.
+ * In sandbox mode no network call is made and a simulated id is returned.
+ */
+export async function prepareInboundMediaForForward(params: {
+  mediaId: string;
+  mimeType?: string;
+  fileName?: string;
+  kind?: WhatsAppMediaAttachmentType;
+}): Promise<{ ok: boolean; waMediaId?: string; mimeType?: string; error?: string }> {
+  const mediaId = String(params.mediaId || "").trim();
+  if (!mediaId) return { ok: false, error: "No media id was saved for this attachment." };
+  const baseMime = String(params.mimeType || "").split(";")[0].trim() || "application/octet-stream";
+
+  const cfg = await loadMetaWhatsAppSetupConfig();
+  const useSandbox = process.env.WHATSAPP_FORCE_SANDBOX_FOR_TESTS === "1";
+  const live = !useSandbox && String(cfg.mode || "") === "LIVE_META_CLOUD";
+  const accessToken = String(cfg.systemUserAccessToken || "").trim();
+  if (!live || !accessToken) {
+    const sim = await uploadMediaToMetaCloud({
+      buffer: new Uint8Array(0),
+      mimeType: baseMime,
+      fileName: params.fileName || "attachment",
+      forceSandbox: true,
+    });
+    return { ok: sim.ok, waMediaId: sim.waMediaId, mimeType: baseMime, error: sim.error };
+  }
+
+  try {
+    const metaRes = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(mediaId)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    const meta: any = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok || !meta?.url) {
+      return { ok: false, error: `Could not find the attachment on WhatsApp (HTTP ${metaRes.status}). It may be older than 30 days.` };
+    }
+    const cdn = await fetch(String(meta.url), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!cdn.ok) return { ok: false, error: `Could not download the attachment (HTTP ${cdn.status}).` };
+    const buffer = new Uint8Array(await cdn.arrayBuffer());
+    const maxBytes = params.kind === "DOCUMENT" ? 100 * 1024 * 1024 : 16 * 1024 * 1024;
+    if (buffer.byteLength > maxBytes) {
+      return { ok: false, error: "The attachment is too large to forward on WhatsApp." };
+    }
+    const mime = String(meta.mime_type || baseMime).split(";")[0].trim() || baseMime;
+    const up = await uploadMediaToMetaCloud({
+      buffer,
+      mimeType: mime,
+      fileName: params.fileName || `attachment.${mime.split("/")[1] || "bin"}`,
+    });
+    return { ok: up.ok, waMediaId: up.waMediaId, mimeType: mime, error: up.error };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Attachment transfer failed." };
+  }
+}
+
 async function recordOutboundTemplateInChat(params: {
   toPhone: string;
   templateName: string;

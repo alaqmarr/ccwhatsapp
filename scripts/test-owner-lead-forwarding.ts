@@ -119,7 +119,7 @@ async function main() {
     await conv.execute({ sql: `DELETE FROM messages WHERE body LIKE ?`, args: [`%${MARKER}%`] }).catch(() => {});
     await conv.execute({ sql: `DELETE FROM conversation_assignments WHERE customer_phone IN (${ph})`, args: phones }).catch(() => {});
     await conv.execute({ sql: `DELETE FROM conversations WHERE customer_phone IN (${ph})`, args: phones }).catch(() => {});
-    await conv.execute({ sql: `DELETE FROM lead_forwards WHERE lead_text LIKE ?`, args: [`%${MARKER}%`] }).catch(() => {});
+    await conv.execute({ sql: `DELETE FROM lead_forwards WHERE lead_text LIKE ? OR media_json LIKE ?`, args: [`%${MARKER}%`, `%${MARKER}%`] }).catch(() => {});
     await conv.execute({ sql: `DELETE FROM call_dispatch_queue WHERE notes LIKE ?`, args: [`%${MARKER}%`] }).catch(() => {});
     await conv.execute({ sql: `DELETE FROM staff_notifications WHERE staff_id IN (?, ?) OR text LIKE ?`, args: [staffA.id, staffB.id, `%${MARKER}%`] }).catch(() => {});
     await conv.execute({ sql: `DELETE FROM team_members WHERE staff_id IN (?, ?)`, args: [staffA.id, staffB.id] }).catch(() => {});
@@ -167,6 +167,37 @@ async function main() {
     return waId;
   }
 
+  async function sayMedia(
+    phone: string,
+    convId: string,
+    kind: "AUDIO" | "IMAGE" | "DOCUMENT",
+    opts: { mediaId: string; mimeType: string; caption?: string }
+  ) {
+    const waId = `wamid.test_ld_${crypto.randomUUID().slice(0, 10)}`;
+    const nowIso = new Date().toISOString();
+    const body = opts.caption || (kind === "AUDIO" ? "[Voice Note]" : kind === "IMAGE" ? "[Image]" : "[Document]");
+    const media = { mediaId: opts.mediaId, media_id: opts.mediaId, mimeType: opts.mimeType, mime_type: opts.mimeType, caption: opts.caption };
+    await conv.execute({
+      sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, metadata_json, wa_message_id, delivery_status, created_at)
+            VALUES (?, ?, 'INBOUND', 'CUSTOMER', 'Test', ?, 'FREE_CHAT', ?, ?, ?, 'DELIVERED', ?)`,
+      args: [`msg_test_${crypto.randomUUID().slice(0, 8)}`, convId, kind, body, JSON.stringify({ media }), waId, nowIso],
+    });
+    await conv.execute({
+      sql: `UPDATE conversations SET window_expires_at = ?, last_message_at = ? WHERE id = ?`,
+      args: [new Date(Date.now() + 24 * 3600 * 1000).toISOString(), nowIso, convId],
+    });
+    await processInboundAutomations({
+      conversationId: convId,
+      customerPhone: phone,
+      inboundText: body,
+      isNewConversation: false,
+      waMessageId: waId,
+      attachment: { mediaType: kind, mimeType: opts.mimeType, caption: opts.caption },
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    return waId;
+  }
+
   async function lastOutbound(convId: string): Promise<string> {
     const r = await conv.execute({
       sql: `SELECT body FROM messages WHERE conversation_id = ? AND direction = 'OUTBOUND' ORDER BY created_at DESC LIMIT 1`,
@@ -183,10 +214,17 @@ async function main() {
   }
   async function leadRows() {
     const r = await conv.execute({
-      sql: `SELECT * FROM lead_forwards WHERE lead_text LIKE ? ORDER BY created_at ASC`,
-      args: [`%${MARKER}%`],
+      sql: `SELECT * FROM lead_forwards WHERE lead_text LIKE ? OR media_json LIKE ? ORDER BY created_at ASC`,
+      args: [`%${MARKER}%`, `%${MARKER}%`],
     });
     return r.rows as Record<string, unknown>[];
+  }
+  async function typedOutbound(convId: string): Promise<Array<{ type: string; body: string }>> {
+    const r = await conv.execute({
+      sql: `SELECT message_type, body FROM messages WHERE conversation_id = ? AND direction = 'OUTBOUND' ORDER BY created_at ASC`,
+      args: [convId],
+    });
+    return r.rows.map((x) => ({ type: String(x.message_type), body: String(x.body || "") }));
   }
 
   try {
@@ -356,6 +394,91 @@ async function main() {
     check("team view shows Qzalpha unlocked and lists Qzbeta too", () => {
       const unlockedPart = teamOut.split("Locked (not said hi)")[0];
       assert.ok(/Qzalpha Tester/.test(unlockedPart) && /Qzbeta Tester/.test(teamOut));
+    });
+
+    console.log("8b) Voice note + photo + text for ONE client, chat unlocked...");
+    const ownerOutBefore = (await outboundBodies(convIds.owner)).length;
+    await sayMedia(OWNER, convIds.owner, "AUDIO", { mediaId: `test_audio_${uid}`, mimeType: "audio/ogg; codecs=opus" });
+    await sayMedia(OWNER, convIds.owner, "IMAGE", { mediaId: `test_img_${uid}`, mimeType: "image/jpeg", caption: `${MARKER} reference design` });
+    await say(OWNER, convIds.owner, `${MARKER} Needs 6 acrylic awards like the photo. Details are in the voice note. 90000 77777`);
+    const ownerOut = (await outboundBodies(convIds.owner)).slice(ownerOutBefore);
+    check("a burst of voice note + photo + text gets no AI answer, only short acknowledgements", () => {
+      assert.ok(ownerOut.every((b) => /Got it, sir/.test(b)), ownerOut.join(" | ").slice(0, 300));
+    });
+    check("the two file messages produced only one 'keeping your voice notes' acknowledgement", () => {
+      assert.equal(ownerOut.filter((b) => /keeping your voice notes/.test(b)).length, 1);
+    });
+    const aBefore = (await typedOutbound(convIds.a)).length;
+    await say(OWNER, convIds.owner, "please assign to @Qzalpha");
+    leads = await leadRows();
+    const mediaLead = leads[leads.length - 1];
+    const mediaJson = JSON.parse(String(mediaLead.media_json || "[]")) as Array<{ kind: string }>;
+    check("the lead stored the voice note and the photo, in the order they were sent", () => {
+      assert.deepEqual(mediaJson.map((m) => m.kind), ["AUDIO", "IMAGE"]);
+    });
+    const aAfter = (await typedOutbound(convIds.a)).slice(aBefore);
+    check("staff got ONE message with the text and an attachment summary", () => {
+      const main = aAfter[0];
+      assert.ok(main && main.type === "TEXT" && main.body.includes("6 acrylic awards") && /1 voice note, 1 image/.test(main.body), JSON.stringify(aAfter[0]).slice(0, 300));
+    });
+    check("then the voice note, then the photo, as real attachments", () => {
+      assert.deepEqual(aAfter.slice(1, 3).map((m) => m.type), ["AUDIO", "IMAGE"]);
+    });
+    check("the photo kept its caption", () => {
+      assert.ok(aAfter[2] && aAfter[2].body.includes("reference design"));
+    });
+    const mediaConfirm = await lastOutbound(convIds.owner);
+    check("owner confirmation lists the voice note and photo", () => {
+      assert.ok(/voice note/.test(mediaConfirm) && /image/.test(mediaConfirm) && /received the full enquiry/.test(mediaConfirm), mediaConfirm.slice(0, 220));
+    });
+
+    console.log("8c) Photo with the command in its caption, staff chat locked...");
+    await conv.execute({ sql: `UPDATE conversations SET window_expires_at = ? WHERE id = ?`, args: [new Date(Date.now() - 3600 * 1000).toISOString(), convIds.b] });
+    await sayMedia(OWNER, convIds.owner, "DOCUMENT", { mediaId: `test_doc_${uid}`, mimeType: "application/pdf", caption: `${MARKER} floor plan` });
+    await sayMedia(OWNER, convIds.owner, "IMAGE", {
+      mediaId: `test_img2_${uid}`,
+      mimeType: "image/jpeg",
+      caption: `${MARKER} hotel lobby sample, call 90000 88888.\nPlease assign to @Qzbeta`,
+    });
+    leads = await leadRows();
+    const capLead = leads[leads.length - 1];
+    const capMedia = JSON.parse(String(capLead.media_json || "[]")) as Array<{ kind: string; text: string }>;
+    check("document + captioned photo were both stored with the lead", () => {
+      assert.deepEqual(capMedia.map((m) => m.kind), ["DOCUMENT", "IMAGE"]);
+      assert.ok(!/please assign/i.test(capMedia[1].text), "the command must not stay inside the caption");
+    });
+    check("attachments-only lead is held because staff B's chat is locked", () => {
+      assert.equal(String(capLead.staff_id), staffB.id);
+      assert.equal(String(capLead.delivery_status), "PENDING_WINDOW");
+    });
+    check("customer number in the caption was picked up", () => {
+      assert.equal(String(capLead.customer_phone), "+919000088888");
+    });
+    const bBefore = (await typedOutbound(convIds.b)).length;
+    await say(STAFF_B, convIds.b, "hello");
+    const bAfter = (await typedOutbound(convIds.b)).slice(bBefore);
+    check("when staff B says hello, the document and photo arrive after the text", () => {
+      const types = bAfter.map((m) => m.type);
+      const textIdx = bAfter.findIndex((m) => /Attachments:/.test(m.body));
+      assert.ok(textIdx >= 0, JSON.stringify(types));
+      assert.deepEqual(types.slice(textIdx + 1, textIdx + 3), ["DOCUMENT", "IMAGE"]);
+    });
+    leads = await leadRows();
+    check("held attachment lead is now DELIVERED", () => {
+      assert.equal(String(leads[leads.length - 1].delivery_status), "DELIVERED");
+    });
+
+    console.log("8d) Cannot-forward attachment is reported, not silently dropped...");
+    await sayMedia(OWNER, convIds.owner, "AUDIO", { mediaId: "", mimeType: "audio/ogg" });
+    await say(OWNER, convIds.owner, `${MARKER} Site visit needed, see voice note, 90000 99999`);
+    await say(OWNER, convIds.owner, "please assign to @Qzalpha");
+    const failConfirm = await lastOutbound(convIds.owner);
+    const aFail = (await typedOutbound(convIds.a)).map((m) => m.body);
+    check("staff is told which attachment could not be forwarded", () => {
+      assert.ok(aFail.some((b) => /could not forward one attachment/i.test(b) && /voice note 1/.test(b)), aFail.slice(-2).join(" | ").slice(0, 300));
+    });
+    check("owner is told too", () => {
+      assert.ok(/could not be forwarded/i.test(failConfirm) && /voice note 1/.test(failConfirm), failConfirm.slice(0, 260));
     });
 
     console.log("9) Staff cannot use owner powers; staff 'my leads' works...");

@@ -1126,7 +1126,6 @@ async function processInboundAutomationsLocked(
       flushPendingLeadForwards({
         staffPhone: params.customerPhone,
         conversationId: params.conversationId,
-        deliver: sendStaffReply,
       }).catch((err) => {
         console.warn("[owner-desk] pending lead delivery failed:", err);
         return 0;
@@ -1343,6 +1342,7 @@ async function processInboundAutomationsLocked(
         text: workingInboundText,
         currentWaMessageId: params.waMessageId,
         replyToWaMessageId: params.replyToWaMessageId,
+        hasAttachment: Boolean(params.attachment),
         hubBase,
         logAssignment: logConversationAssignment,
         reply: sendStaffReply,
