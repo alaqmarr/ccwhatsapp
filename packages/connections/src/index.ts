@@ -1073,6 +1073,12 @@ export async function sendWhatsAppCloudMessage(params: {
     caption?: string;
   };
   media?: OutboundWhatsAppMediaSpec;
+  location?: {
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+  };
   ctaButton?: {
     label: string;
     url: string;
@@ -1131,6 +1137,14 @@ export async function sendWhatsAppCloudMessage(params: {
         .slice(0, 20);
       const hasInteractiveCta =
         !params.templateName && /^https?:\/\//i.test(ctaUrl) && Boolean(ctaLabel);
+      const hasLocationPayload =
+        !params.templateName &&
+        !params.interactive &&
+        Boolean(
+          params.location &&
+            Number.isFinite(params.location.latitude) &&
+            Number.isFinite(params.location.longitude)
+        );
 
       const resolvedMediaSpec: OutboundWhatsAppMediaSpec | null = params.media
         ? params.media
@@ -1204,6 +1218,24 @@ export async function sendWhatsAppCloudMessage(params: {
             type: "interactive",
             interactive: buildMetaInteractivePayload(params.interactive, formattedBody),
           }
+        : hasLocationPayload && params.location
+        ? {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: recipientDigits,
+            ...contextField,
+            type: "location",
+            location: {
+              latitude: params.location.latitude,
+              longitude: params.location.longitude,
+              ...(params.location.name
+                ? { name: String(params.location.name).slice(0, 120) }
+                : {}),
+              ...(params.location.address
+                ? { address: String(params.location.address).slice(0, 250) }
+                : {}),
+            },
+          }
         : hasInteractiveCta
         ? {
             messaging_product: "whatsapp",
@@ -1254,6 +1286,32 @@ export async function sendWhatsAppCloudMessage(params: {
           mediaCaption && mediaUrl
             ? `${mediaCaption}\n${mediaUrl}`
             : mediaCaption || mediaUrl || formattedBody;
+        res = await fetch(
+          `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: recipientDigits,
+              ...contextField,
+              type: "text",
+              text: { preview_url: true, body: fallbackBody },
+            }),
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        data = await res.json().catch(() => ({}));
+      }
+      if (!res.ok && hasLocationPayload && params.location && res.status === 400) {
+        const mapsFallbackUrl = `https://maps.google.com/?q=${params.location.latitude},${params.location.longitude}`;
+        const fallbackBody =
+          formattedBody ||
+          `${params.location.name ? `*${params.location.name}*\n` : ""}${params.location.address ? `${params.location.address}\n` : ""}${mapsFallbackUrl}`;
         res = await fetch(
           `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
           {
@@ -2976,9 +3034,9 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 12. Company / Factory / Location / Brand info questions ("Where is your factory?", "Share location", "Map location")
+  // 12. Company / Factory / Location / Brand info questions ("Where is your factory?", "Share location", "Directions")
   if (
-    /\b(where\s+(?:are\s+you|is\s+your)\s*(?:located|based|factory|office|workshop|shop|company|plant|unit|from)?|(?:what\s+is|share|send|give)\s*(?:me\s*)?(?:your\s*)?(?:location|map\s*location|google\s*map|address|factory\s*address|office\s*address|office\s*location|factory\s*location|company\s*details)|^\s*(?:map\s*location|location|your\s*location|address|office\s*address)\s*\??$|your\s+(?:factory\s+location|office\s+location|company\s+address|working\s+hours|opening\s+hours)|what\s+(?:does|is)\s+classic\s+(?:concepts|edge(?:\s*53)?)(?:\s+do)?|difference\s+between\s+classic\s+concepts\s+and\s+classic\s+edge|tell\s+me\s+about\s+(?:your\s+company|classic\s+concepts|classic\s+edge(?:\s*53)?)|do\s+you\s+(?:ship|deliver)\s+(?:across|all\s+over|pan)\s+india|do\s+you\s+provide\s+gst(?:\s+invoice|\s+bill)?)\b/i.test(
+    /\b(where\s+(?:are\s+you|is\s+your)\s*(?:located|based|factory|office|workshop|shop|company|plant|unit|showroom|from)?|(?:what\s+is|share|send|give|need|want|drop|ping)\s*(?:me\s*|us\s*)?(?:your\s*|the\s*)?(?:location|map\s*location|google\s*map|maps\s*(?:link|url)?|directions?|pin|address|factory\s*address|office\s*address|office\s*location|factory\s*location|company\s*details)|how\s+(?:to|do\s+i)\s+(?:reach|visit|come\s+to)\s+(?:your\s+)?(?:factory|office|shop|unit|showroom)|^\s*(?:map\s*location|location|your\s*location|address|office\s*address|google\s*maps?|directions)\s*\??$|your\s+(?:factory\s+location|office\s+location|company\s+address|working\s+hours|opening\s+hours)|what\s+(?:does|is)\s+classic\s+(?:concepts|edge(?:\s*53)?)(?:\s+do)?|difference\s+between\s+classic\s+concepts\s+and\s+classic\s+edge|tell\s+me\s+about\s+(?:your\s+company|classic\s+concepts|classic\s+edge(?:\s*53)?)|do\s+you\s+(?:ship|deliver)\s+(?:across|all\s+over|pan)\s+india|do\s+you\s+provide\s+gst(?:\s+invoice|\s+bill)?)\b/i.test(
       lower
     ) &&
     !/\b(under|below|above|price\s+of|cost\s+of|buy|order\s+a|looking\s+for\s+a)\b/i.test(lower)
@@ -5837,6 +5895,14 @@ export async function runAcrioChatCopilot(params: {
   };
 }
 
+export interface AcrioLocationPin {
+  latitude: number;
+  longitude: number;
+  name: string;
+  address: string;
+  mapsUrl: string;
+}
+
 export interface AcrioAutonomousTurnResult {
   needsHumanHandoff: boolean;
   handoffReason: string;
@@ -5850,6 +5916,8 @@ export interface AcrioAutonomousTurnResult {
   interactive?: AcrioInteractive;
   /** Optional product / variant photos from Cloudflare R2 to send directly in the WhatsApp chat. */
   mediaAttachments?: AcrioMediaAttachment[];
+  /** Optional verified factory Google Maps URL & native WhatsApp location pin for address/location queries. */
+  locationPin?: AcrioLocationPin;
 }
 
 /** What the turn matched, so the wrapper can decide between plain text, a list or buttons. */
@@ -8232,8 +8300,20 @@ Review the earlier messages in this conversation and answer directly, warmly, an
 Answer directly in 2 short lines: you are *ACRIO*, the WhatsApp assistant for *Classic Concepts* (acrylic podiums, displays, custom fabrication: classicconcepts.in) and *Classic Edge 53* (acrylic machines: classicedge.in), and ask briefly how you can help.
 CRITICAL: Keep it short and natural. Do NOT list product catalogs, menus, or links from earlier turns!`;
         } else if (intentInfo.intent === "COMPANY_INFO") {
-          catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about company location, address, timings, shipping, or brand info).
-Answer directly and concisely (2 to 4 short lines) using ONLY the verified public company details from classicconcepts.in above (${liveBrandInfo?.headOfficeLine || "Classic Concepts Acrylic Private Limited, Secunderabad, Telangana"}).
+          const isLocationAsk = /\b(where|location|address|map|maps|directions?|visit|reach|office|factory|workshop|pin)\b/i.test(
+            rawText
+          );
+          const mapsUrl = liveBrandInfo?.mapsUrl || "https://maps.google.com/?q=17.4947378,78.496725";
+          catalogContext = isLocationAsk
+            ? `Turn Intent: COMPANY_INFO (Location / Directions Request).
+Reply cleanly in 3 to 4 crisp lines sharing:
+1. *Classic Concepts Acrylic Pvt. Ltd.* (also serves *Classic Edge 53*)
+2. Exact address: ${liveBrandInfo?.address || "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015"}
+3. Visiting hours & phone: ${liveBrandInfo?.businessHours || "Mon to Sat, 10:00 AM to 7:00 PM"} | ${liveBrandInfo?.officePhones?.[0] || "+91 79016 50662"}
+4. Direct Google Maps URL: ${mapsUrl}
+CRITICAL: ALWAYS include the clickable Google Maps URL (${mapsUrl}) inside "customerReply"! Never append unrequested product pitches or product links.`
+            : `Turn Intent: COMPANY_INFO (The customer is asking about company location, address, timings, shipping, or brand info).
+Answer directly and concisely (2 to 4 short lines) using ONLY the verified public company details from classicconcepts.in above (${liveBrandInfo?.headOfficeLine || "Classic Concepts Acrylic Private Limited, Secunderabad, Telangana"} | Google Maps: ${mapsUrl}).
 CRITICAL: Do NOT append unrequested product pitches or product links!`;
         } else if (intentInfo.intent === "TOPIC_RESET") {
           catalogContext = `Turn Intent: TOPIC_RESET (The customer wants to ask a different query or start a new topic).
@@ -8443,7 +8523,15 @@ Return ONLY valid JSON:
               .replace(/\s*\((?:₹|Rs\.?|INR)\s*[\d,]+(?:\s*,\s*MRP\s*₹[\d,]+)?\)/gi, "")
               .replace(/\b(?:₹|Rs\.?)\s*[\d,]+(?:\s*to\s*(?:₹|Rs\.?)\s*[\d,]+)?/gi, "available on request");
           }
-          const cleanedReply =
+          const isLocationAskTurn =
+            (intentInfo.intent === "COMPANY_INFO" ||
+              intentInfo.intent === "LEADERSHIP_CONTACT_INFO") &&
+            /\b(where|location|address|map|maps|directions?|visit|reach|office|factory|workshop|pin)\b/i.test(
+              rawText
+            );
+          const verifiedMapsUrl =
+            liveBrandInfo?.mapsUrl || "https://maps.google.com/?q=17.4947378,78.496725";
+          let cleanedReply =
             !intentInfo.requiresProductLookup && !projectPlan.isMultiItemOrTotalling
               ? rawFormatted
                   .split("\n")
@@ -8452,6 +8540,24 @@ Return ONLY valid JSON:
                   .replace(/\n{3,}/g, "\n\n")
                   .trim()
               : rawFormatted;
+          if (
+            isLocationAskTurn &&
+            !/maps\.google\.com|google\.com\/maps|maps\.app\.goo\.gl/i.test(cleanedReply)
+          ) {
+            cleanedReply = `${cleanedReply}\n\n*Google Maps Location:* ${verifiedMapsUrl}`;
+          }
+          const resolvedLocationPin: AcrioLocationPin | undefined = isLocationAskTurn
+            ? {
+                latitude: liveBrandInfo?.latitude ?? 17.4947378,
+                longitude: liveBrandInfo?.longitude ?? 78.496725,
+                name:
+                  liveBrandInfo?.placeName || "Classic Concepts Acrylic Private Limited",
+                address:
+                  liveBrandInfo?.address ||
+                  "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015",
+                mapsUrl: verifiedMapsUrl,
+              }
+            : undefined;
 
           // Sync conversation state with the exact products Claude actually listed in cleanedReply
           // so follow-up turns ("Please share images of all three", "the second one") know the exact products shown!
@@ -8566,6 +8672,7 @@ Return ONLY valid JSON:
             ...(finalMediaAttachments.length > 0
               ? { mediaAttachments: finalMediaAttachments }
               : {}),
+            ...(resolvedLocationPin ? { locationPin: resolvedLocationPin } : {}),
           };
         } else {
           lastAiError = "Claude returned text that could not be parsed as JSON.";
@@ -8641,10 +8748,14 @@ Return ONLY valid JSON:
       : "+91 79016 50662, +91 79016 50663";
     const officeEmailLine = liveBrandInfo?.officeEmails?.[0] || "sales@classicconcepts.in";
     const officeWa = liveBrandInfo?.officeWhatsapp || "+91 73372 20568";
-    fallbackReply = `${greetOnce}*Classic Concepts Acrylic Pvt. Ltd.*\n${
+    const officeAddress =
       liveBrandInfo?.address ||
-      "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015"
-    }\nPhone: ${officePhoneLine} | WhatsApp: ${officeWa} | ${officeEmailLine}`;
+      "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015";
+    const officeHours =
+      liveBrandInfo?.businessHours || "Monday to Saturday, 10:00 AM to 7:00 PM";
+    const officeMapsUrl =
+      liveBrandInfo?.mapsUrl || "https://maps.google.com/?q=17.4947378,78.496725";
+    fallbackReply = `${greetOnce}*Classic Concepts Acrylic Pvt. Ltd.*\n${officeAddress}\n*Hours:* ${officeHours}\n*Phone:* ${officePhoneLine} | *WhatsApp:* ${officeWa} | ${officeEmailLine}\n\n*Google Maps:* ${officeMapsUrl}`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "TOPIC_RESET") {
     fallbackReply = `${greetOnce}Sure, let's start fresh. What can I help you with today?`;
@@ -8799,6 +8910,25 @@ Return ONLY valid JSON:
     error: lastAiError,
   });
 
+  const fallbackIsLocationAsk =
+    (intentInfo.intent === "COMPANY_INFO" ||
+      intentInfo.intent === "LEADERSHIP_CONTACT_INFO") &&
+    /\b(where|location|address|map|maps|directions?|visit|reach|office|factory|workshop|pin)\b/i.test(
+      rawText
+    );
+  const fallbackLocationPin: AcrioLocationPin | undefined = fallbackIsLocationAsk
+    ? {
+        latitude: liveBrandInfo?.latitude ?? 17.4947378,
+        longitude: liveBrandInfo?.longitude ?? 78.496725,
+        name: liveBrandInfo?.placeName || "Classic Concepts Acrylic Private Limited",
+        address:
+          liveBrandInfo?.address ||
+          "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015",
+        mapsUrl:
+          liveBrandInfo?.mapsUrl || "https://maps.google.com/?q=17.4947378,78.496725",
+      }
+    : undefined;
+
   return {
     needsHumanHandoff: fallbackHandoff,
     handoffReason: fallbackReason,
@@ -8808,6 +8938,7 @@ Return ONLY valid JSON:
     smartCategory,
     priority,
     conversationState: convState,
+    ...(fallbackLocationPin ? { locationPin: fallbackLocationPin } : {}),
   };
 }
 

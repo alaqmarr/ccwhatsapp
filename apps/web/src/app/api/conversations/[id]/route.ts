@@ -6,6 +6,7 @@ import {
   ensureDatabasesBootstrapped,
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
+  getVerifiedLiveBrandAndTeamInfo,
   listCompanyDocuments,
   listOrderTrackings,
   parseConversationCollaborators,
@@ -86,6 +87,7 @@ export async function GET(
     customLinks,
     teamsRes,
     orderTrackings,
+    liveBrandInfo,
   ] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM (
@@ -112,6 +114,7 @@ export async function GET(
     listCustomAdminLinks(),
     conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
     listOrderTrackings({ customerPhone }).catch(() => []),
+    getVerifiedLiveBrandAndTeamInfo().catch(() => null),
   ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
@@ -270,6 +273,21 @@ export async function GET(
     websiteEnquiries,
     acrio,
     customLinks,
+    verifiedLocation: {
+      placeName:
+        liveBrandInfo?.placeName || "Classic Concepts Acrylic Private Limited",
+      address:
+        liveBrandInfo?.address ||
+        "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015",
+      businessHours:
+        liveBrandInfo?.businessHours ||
+        "Monday - Saturday: 10:00 AM to 7:00 PM (Sunday: Closed)",
+      phone: liveBrandInfo?.officePhones?.[0] || "+91 79016 50662",
+      mapsUrl:
+        liveBrandInfo?.mapsUrl || "https://maps.google.com/?q=17.4947378,78.496725",
+      latitude: liveBrandInfo?.latitude ?? 17.4947378,
+      longitude: liveBrandInfo?.longitude ?? 78.496725,
+    },
   });
 }
 
@@ -381,7 +399,30 @@ export async function POST(
           }
         : null;
 
-    if (!rawText && !attachment) {
+    const rawLoc =
+      body.locationPin && typeof body.locationPin === "object"
+        ? (body.locationPin as Record<string, unknown>)
+        : null;
+    const locationPin =
+      rawLoc &&
+      Number.isFinite(Number(rawLoc.latitude)) &&
+      Number.isFinite(Number(rawLoc.longitude))
+        ? {
+            latitude: Number(rawLoc.latitude),
+            longitude: Number(rawLoc.longitude),
+            name: String(rawLoc.name || "Classic Concepts Acrylic Private Limited").trim(),
+            address: String(
+              rawLoc.address ||
+                "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015"
+            ).trim(),
+            mapsUrl: String(
+              rawLoc.mapsUrl ||
+                `https://maps.google.com/?q=${Number(rawLoc.latitude)},${Number(rawLoc.longitude)}`
+            ).trim(),
+          }
+        : null;
+
+    if (!rawText && !attachment && !locationPin) {
       return NextResponse.json(
         { ok: false, error: "Message or attachment cannot be empty." },
         { status: 400 }
@@ -390,7 +431,9 @@ export async function POST(
 
     const text =
       rawText ||
-      (attachment?.mediaType === "DOCUMENT" && attachment.fileName
+      (locationPin
+        ? `*${locationPin.name}*\n${locationPin.address}\n\n*Google Maps:* ${locationPin.mapsUrl}`
+        : attachment?.mediaType === "DOCUMENT" && attachment.fileName
         ? `[Document] ${attachment.fileName}`
         : attachment?.mediaType === "VIDEO"
         ? `[Video] ${attachment.fileName || "Video"}`
@@ -452,6 +495,7 @@ export async function POST(
     const metaObj: Record<string, unknown> = {};
     if (replyMeta) metaObj.replyTo = replyMeta;
     if (ctaButtonMeta) metaObj.ctaButton = ctaButtonMeta;
+    if (locationPin) metaObj.locationPin = locationPin;
     if (attachment) {
       metaObj.mediaType = attachment.mediaType;
       metaObj.mediaUrl = attachment.url;
@@ -531,6 +575,51 @@ export async function POST(
       : tplRecord?.language
       ? String(tplRecord.language).trim()
       : undefined;
+
+    if (locationPin && !templateName) {
+      const pinSend = await sendWhatsAppCloudMessage({
+        toPhone: customerPhone,
+        bodyText: `${locationPin.name}\n${locationPin.address}\n${locationPin.mapsUrl}`,
+        location: {
+          latitude: locationPin.latitude,
+          longitude: locationPin.longitude,
+          name: locationPin.name,
+          address: locationPin.address,
+        },
+        simulateAsyncDelivery: true,
+        forceSandbox: Boolean(body.forceSandbox),
+      });
+      const pinMsgId = `msg_loc_${crypto.randomUUID().slice(0, 8)}`;
+      await conv.execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, direction, sender_type, sender_staff_id, sender_name, message_type,
+          billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+        ) VALUES (?, ?, 'OUTBOUND', 'STAFF', ?, ?, 'LOCATION', 'FREE_CHAT', ?, ?, ?, ?, ?)`,
+        args: [
+          pinMsgId,
+          id,
+          user.id,
+          user.name,
+          `Location: ${locationPin.name} (${locationPin.mapsUrl})`,
+          JSON.stringify({ locationPin }),
+          pinSend.waMessageId,
+          pinSend.deliveryStatus,
+          nowIso,
+        ],
+      });
+      if (pinSend.ok && pinSend.mode === "SANDBOX_SIMULATOR") {
+        scheduleSandboxDeliveryReceipt({
+          conversationId: id,
+          messageId: pinMsgId,
+          waMessageId: pinSend.waMessageId,
+        });
+      }
+      socketHub.emit("message:new", {
+        conversationId: id,
+        senderName: user.name,
+        text: `Location: ${locationPin.name}`,
+      });
+    }
 
     const sendRes = await sendWhatsAppCloudMessage({
       toPhone: customerPhone,

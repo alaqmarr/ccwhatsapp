@@ -2,6 +2,7 @@ import {
   ensureDatabasesBootstrapped,
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
+  getVerifiedLiveBrandAndTeamInfo,
   listOrderTrackings,
   parseConversationCollaborators,
   resolveSharedAnthropicApiKey,
@@ -207,6 +208,16 @@ export interface CustomLinkItem {
   clicksCount: number;
 }
 
+export interface VerifiedCompanyLocation {
+  placeName: string;
+  address: string;
+  businessHours: string;
+  phone: string;
+  mapsUrl: string;
+  latitude: number;
+  longitude: number;
+}
+
 export interface ConversationDetailBundle {
   conversation: {
     id: string;
@@ -237,6 +248,7 @@ export interface ConversationDetailBundle {
   websiteEnquiries: WebsiteEnquiry[];
   acrio: AcrioCopilot | null;
   customLinks: CustomLinkItem[];
+  verifiedLocation?: VerifiedCompanyLocation;
 }
 
 export interface QuickReplyItem {
@@ -288,7 +300,7 @@ export async function getConversationDetailServer(
   }
 
   await getCachedEcosystemCatalog().catch(() => null);
-  const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks, orderTrackings] =
+  const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks, orderTrackings, liveBrandInfo] =
     await Promise.all([
       conv.execute({
         sql: `SELECT * FROM (
@@ -314,6 +326,7 @@ export async function getConversationDetailServer(
       }),
       listCustomAdminLinks(),
       listOrderTrackings({ customerPhone }).catch(() => []),
+      getVerifiedLiveBrandAndTeamInfo().catch(() => null),
     ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
@@ -462,6 +475,21 @@ export async function getConversationDetailServer(
     websiteEnquiries,
     acrio,
     customLinks,
+    verifiedLocation: {
+      placeName:
+        liveBrandInfo?.placeName || "Classic Concepts Acrylic Private Limited",
+      address:
+        liveBrandInfo?.address ||
+        "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015",
+      businessHours:
+        liveBrandInfo?.businessHours ||
+        "Monday - Saturday: 10:00 AM to 7:00 PM (Sunday: Closed)",
+      phone: liveBrandInfo?.officePhones?.[0] || "+91 79016 50662",
+      mapsUrl:
+        liveBrandInfo?.mapsUrl || "https://maps.google.com/?q=17.4947378,78.496725",
+      latitude: liveBrandInfo?.latitude ?? 17.4947378,
+      longitude: liveBrandInfo?.longitude ?? 78.496725,
+    },
   };
 }
 

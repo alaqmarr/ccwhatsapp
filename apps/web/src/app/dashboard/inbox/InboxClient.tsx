@@ -19,6 +19,7 @@ import {
   Info,
   Link2,
   Lock,
+  MapPin,
   MoreHorizontal,
   Paperclip,
   PanelRightClose,
@@ -181,6 +182,30 @@ function extractCtaButton(m: ChatMessage): MessageCtaButton | null {
     orderId: obj.orderId ? String(obj.orderId) : null,
     providerName: obj.providerName ? String(obj.providerName) : null,
     awbNumber: obj.awbNumber ? String(obj.awbNumber) : null,
+  };
+}
+
+interface MessageLocationPin {
+  latitude: number;
+  longitude: number;
+  name: string;
+  address: string;
+  mapsUrl: string;
+}
+
+function extractLocationPin(m: ChatMessage): MessageLocationPin | null {
+  const raw = m.metadata?.locationPin;
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const lat = Number(obj.latitude);
+  const lng = Number(obj.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    latitude: lat,
+    longitude: lng,
+    name: String(obj.name || "Classic Concepts Acrylic Private Limited").trim(),
+    address: String(obj.address || "").trim(),
+    mapsUrl: String(obj.mapsUrl || `https://maps.google.com/?q=${lat},${lng}`).trim(),
   };
 }
 
@@ -586,6 +611,8 @@ export function InboxClient({
   const [stagedAttachment, setStagedAttachment] =
     useState<StagedComposerAttachment | null>(null);
   const [showAttachmentPicker, setShowAttachmentPicker] = useState(false);
+  const [showLocationPopover, setShowLocationPopover] = useState(false);
+  const [sendingLocationPin, setSendingLocationPin] = useState(false);
   const [pendingSendConfirm, setPendingSendConfirm] =
     useState<PreSendFileConfirmationTarget | null>(null);
   const [previewMedia, setPreviewMedia] =
@@ -614,6 +641,7 @@ export function InboxClient({
       setTemplateDialogOpen(false);
       setStagedAttachment(null);
       setShowAttachmentPicker(false);
+      setShowLocationPopover(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, composerMode]);
@@ -1194,6 +1222,66 @@ export function InboxClient({
       showToast("Network error while sending tracking button.");
     } finally {
       setSendingTrackBtn(false);
+    }
+  }
+
+  function resolveActiveVerifiedLocation() {
+    return (
+      detail?.verifiedLocation || {
+        placeName: "Classic Concepts Acrylic Private Limited",
+        address:
+          "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015",
+        businessHours: "Monday - Saturday: 10:00 AM to 7:00 PM (Sunday: Closed)",
+        phone: "+91 79016 50662",
+        mapsUrl: "https://maps.google.com/?q=17.4947378,78.496725",
+        latitude: 17.4947378,
+        longitude: 78.496725,
+      }
+    );
+  }
+
+  function buildVerifiedLocationMessageText() {
+    const loc = resolveActiveVerifiedLocation();
+    return `*Classic Concepts Acrylic Pvt. Ltd.*\n${loc.address}\n*Hours:* ${loc.businessHours}\n*Phone:* ${loc.phone}\n\n*Google Maps:* ${loc.mapsUrl}`;
+  }
+
+  async function handleSendVerifiedLocationNow() {
+    if (!selectedId || !detail || sendingLocationPin) return;
+    const loc = resolveActiveVerifiedLocation();
+    const locText = buildVerifiedLocationMessageText();
+    setSendingLocationPin(true);
+    try {
+      const res = await fetch(`/api/conversations/${selectedId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send_message",
+          text: locText,
+          locationPin: {
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+            name: loc.placeName,
+            address: loc.address,
+            mapsUrl: loc.mapsUrl,
+          },
+          replyToMessageId: replyingTo?.messageId || undefined,
+          replyTo: replyingTo || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        showToast(data.error || "Could not send location.");
+        return;
+      }
+      setShowLocationPopover(false);
+      setReplyingTo(null);
+      showToast("Sent factory location pin + Google Maps link to customer.");
+      await fetchAndCacheDetail(selectedId, false);
+      void refreshThreadsSilently(false);
+    } catch {
+      showToast("Network error while sending location.");
+    } finally {
+      setSendingLocationPin(false);
     }
   }
 
@@ -3088,6 +3176,7 @@ export function InboxClient({
                 const isOutbound = m.direction === "OUTBOUND";
                 const quotedReply = extractQuotedReply(m);
                 const ctaButton = extractCtaButton(m);
+                const locationPin = extractLocationPin(m);
                 const isHighlighted = highlightedMsgId === m.id;
 
                 if (isInternalNote) {
@@ -3766,11 +3855,54 @@ export function InboxClient({
                         );
                       })()}
 
-                      <WhatsAppFormattedText
-                        text={m.body}
-                        className="text-[14px] leading-[1.52] tracking-[-0.006em]"
-                        onPhoneClick={handleOpenNewChatWithPhone}
-                      />
+                      {locationPin ? (
+                        <div className="mb-1 rounded-md border border-[#00a884]/35 bg-[#f0fdf4] p-2.5 space-y-1.5">
+                          <div className="flex items-start gap-2">
+                            <span className="w-7 h-7 rounded-full bg-[#00a884] text-white flex items-center justify-center shrink-0 mt-0.5">
+                              <MapPin className="w-3.5 h-3.5" />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-bold text-[#111b21] truncate">
+                                {locationPin.name}
+                              </div>
+                              {locationPin.address && (
+                                <div className="text-[11.5px] text-[#54656f] leading-snug mt-0.5">
+                                  {locationPin.address}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 pt-1">
+                            <a
+                              href={locationPin.mapsUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md bg-white hover:bg-emerald-50 border border-[#00a884]/40 text-[#008069] text-xs font-semibold shadow-2xs transition"
+                            >
+                              <MapPin className="w-3.5 h-3.5" />
+                              <span>Open in Google Maps</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard?.writeText(locationPin.mapsUrl);
+                                showToast("Copied Google Maps link.");
+                              }}
+                              title={`Copy ${locationPin.mapsUrl}`}
+                              className="p-1.5 rounded-md bg-white hover:bg-neutral-50 border border-black/10 text-[#54656f] hover:text-[#111b21] cursor-pointer"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <WhatsAppFormattedText
+                          text={m.body}
+                          className="text-[14px] leading-[1.52] tracking-[-0.006em]"
+                          onPhoneClick={handleOpenNewChatWithPhone}
+                        />
+                      )}
 
                       {ctaButton && (
                         <div className="mt-2 pt-2 border-t border-black/10 space-y-1.5">
@@ -4140,6 +4272,71 @@ export function InboxClient({
                   </form>
                 )}
 
+                {showLocationPopover && (
+                  <div className="absolute bottom-full left-2 right-2 sm:left-4 sm:right-4 mb-1.5 z-30 rounded-lg bg-white border border-[#d1d7db] shadow-lg p-3 space-y-2.5 max-h-[68dvh] overflow-y-auto">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-7 h-7 rounded-full bg-emerald-100 text-[#008069] flex items-center justify-center shrink-0">
+                          <MapPin className="w-4 h-4" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-[#111b21]">
+                            Share Verified Factory Location &amp; Google Maps Link
+                          </div>
+                          <div className="text-[11px] text-[#54656f] truncate">
+                            {resolveActiveVerifiedLocation().placeName}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowLocationPopover(false)}
+                        className="p-1 rounded hover:bg-neutral-100 text-[#667781] cursor-pointer shrink-0"
+                        aria-label="Close location sharing"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="rounded-md bg-[#f0f2f5] border border-[#e2e8f0] p-2.5 text-[11.5px] text-[#111b21] space-y-1">
+                      <div>{resolveActiveVerifiedLocation().address}</div>
+                      <div className="text-[#54656f]">
+                        Hours: {resolveActiveVerifiedLocation().businessHours} | Phone: {resolveActiveVerifiedLocation().phone}
+                      </div>
+                      <div className="font-mono text-[11px] text-[#008069] break-all">
+                        {resolveActiveVerifiedLocation().mapsUrl}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          appendToComposer(buildVerifiedLocationMessageText());
+                          setShowLocationPopover(false);
+                          composerInputRef.current?.focus();
+                        }}
+                        className="px-3 py-1.5 rounded-md border border-[#d1d7db] bg-white hover:bg-[#f0f2f5] text-[#111b21] text-xs font-medium cursor-pointer"
+                      >
+                        Insert Address + Maps Link
+                      </button>
+                      <button
+                        type="button"
+                        disabled={sendingLocationPin}
+                        onClick={() => void handleSendVerifiedLocationNow()}
+                        className="px-3.5 py-1.5 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        <MapPin className="w-3.5 h-3.5" />
+                        <span>
+                          {sendingLocationPin
+                            ? "Sending Pin & Link..."
+                            : "Send Pin + Maps Link Now"}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {showShortLinksPicker && detail.customLinks.length > 0 && (
                   <div className="absolute bottom-full left-2 right-2 sm:left-4 sm:right-4 mb-1.5 z-30 rounded-lg bg-white border border-[#d1d7db] shadow-lg p-3 space-y-2 max-h-[68dvh] overflow-y-auto">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -4418,6 +4615,7 @@ export function InboxClient({
                         onClick={() => {
                           setShowTrackPopover(false);
                           setShowShortLinksPicker(false);
+                          setShowLocationPopover(false);
                           setShowAttachmentPicker((prev) => !prev);
                         }}
                         title="Attach & send Image, Video, PDF, CAD/Office file, or Catalog Photo/Brochure"
@@ -4442,6 +4640,7 @@ export function InboxClient({
                         onClick={() => {
                           setShowShortLinksPicker(false);
                           setShowAttachmentPicker(false);
+                          setShowLocationPopover(false);
                           if (showTrackPopover) {
                             setShowTrackPopover(false);
                           } else {
@@ -4459,12 +4658,36 @@ export function InboxClient({
                         <span>Track Order</span>
                       </button>
 
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowTrackPopover(false);
+                          setShowShortLinksPicker(false);
+                          setShowAttachmentPicker(false);
+                          setShowLocationPopover((prev) => !prev);
+                        }}
+                        title="Share verified factory address, native WhatsApp pin, and Google Maps link"
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
+                          showLocationPopover
+                            ? "bg-[#00a884] text-white border-[#00a884]"
+                            : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
+                        }`}
+                      >
+                        <MapPin
+                          className={`w-3.5 h-3.5 ${
+                            showLocationPopover ? "text-white" : "text-[#00a884]"
+                          }`}
+                        />
+                        <span>Location</span>
+                      </button>
+
                       {detail.customLinks.length > 0 && (
                         <button
                           type="button"
                           onClick={() => {
                             setShowTrackPopover(false);
                             setShowAttachmentPicker(false);
+                            setShowLocationPopover(false);
                             setShowShortLinksPicker((prev) => !prev);
                           }}
                           title="Search & insert verified product short links (ccapl.cc)"

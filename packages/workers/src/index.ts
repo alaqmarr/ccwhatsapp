@@ -28,6 +28,7 @@ import {
   sendWhatsAppCloudMessage,
   ACRIO_TEAM_ASK_TEXT,
   type AcrioInteractive,
+  type AcrioLocationPin,
   type AcrioMediaAttachment,
   type CustomerImageAttachmentInput,
   type WhatsAppTemplateButton,
@@ -494,6 +495,7 @@ async function sendAcrioChatMessage(params: {
   text: string;
   interactive?: AcrioInteractive;
   mediaAttachments?: AcrioMediaAttachment[];
+  locationPin?: AcrioLocationPin;
 }): Promise<{
   acrioMsgId: string;
   replyIso: string;
@@ -559,6 +561,46 @@ async function sendAcrioChatMessage(params: {
         conversationId: params.conversationId,
         messageId: imgMsgId,
         waMessageId: imgSendRes.waMessageId,
+      });
+    }
+  }
+
+  // Send native WhatsApp Location Pin when the customer asked for location/directions
+  if (params.locationPin) {
+    const loc = params.locationPin;
+    const locSendRes = await sendWhatsAppCloudMessage({
+      toPhone: params.customerPhone,
+      bodyText: `${loc.name}\n${loc.address}\n${loc.mapsUrl}`,
+      location: {
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        name: loc.name,
+        address: loc.address,
+      },
+      simulateAsyncDelivery: true,
+    });
+    const locMsgId = `msg_acrio_loc_${crypto.randomUUID().slice(0, 8)}`;
+    const locIso = new Date().toISOString();
+    await conv.execute({
+      sql: `INSERT INTO messages (
+        id, conversation_id, direction, sender_type, sender_name, message_type,
+        billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+      ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', 'ACRIO', 'LOCATION', 'ACRIO', ?, ?, ?, ?, ?)`,
+      args: [
+        locMsgId,
+        params.conversationId,
+        `Location: ${loc.name} (${loc.mapsUrl})`,
+        JSON.stringify({ locationPin: loc }),
+        locSendRes.waMessageId,
+        locSendRes.deliveryStatus,
+        locIso,
+      ],
+    });
+    if (locSendRes.ok && locSendRes.mode === "SANDBOX_SIMULATOR") {
+      scheduleSandboxDeliveryReceipt({
+        conversationId: params.conversationId,
+        messageId: locMsgId,
+        waMessageId: locSendRes.waMessageId,
       });
     }
   }
@@ -2806,6 +2848,7 @@ async function processInboundAutomationsLocked(
       text: acrioTurn.customerReply,
       interactive: acrioTurn.interactive,
       mediaAttachments: acrioTurn.mediaAttachments,
+      locationPin: acrioTurn.locationPin,
     });
 
     await recordAssignedFirstResponse({
