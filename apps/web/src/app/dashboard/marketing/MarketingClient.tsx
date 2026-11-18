@@ -745,7 +745,7 @@ export function MarketingClient({
   }
 
   return (
-    <div className="w-full px-6 py-5 space-y-6">
+    <div className="w-full px-3.5 sm:px-6 py-4 sm:py-5 space-y-5 sm:space-y-6">
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-200 pb-4">
         <div>
@@ -1762,18 +1762,18 @@ export function MarketingClient({
 
       {/* Recipient Queue Inspector Modal (with Element-Wise Skeleton & Retry!) */}
       {inspectBroadcast && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl border border-neutral-200 max-w-3xl w-full max-h-[85vh] flex flex-col shadow-xl">
-            <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold text-neutral-900">
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-xl border border-neutral-200 sm:max-w-3xl w-full max-h-[90dvh] flex flex-col shadow-xl overflow-hidden">
+            <div className="px-4 sm:px-5 py-3.5 sm:py-4 border-b border-neutral-200 flex flex-wrap items-center justify-between gap-2.5">
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-neutral-900 truncate">
                   Recipient Queue Status: {inspectBroadcast.name}
                 </h3>
                 <p className="text-xs text-neutral-500 mt-0.5">
                   Individual staggered delivery schedule, opt-out skips, and error reasons.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => loadBroadcastRecipients(inspectBroadcast.id)}
@@ -1812,7 +1812,7 @@ export function MarketingClient({
                 </p>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
+                  <table className="w-full text-left border-collapse text-xs min-w-[560px]">
                     <thead>
                       <tr className="border-b border-neutral-200 text-neutral-500">
                         <th className="py-2 pr-3 font-medium">Customer</th>

@@ -912,7 +912,7 @@ export function TeamsClient({
   }
 
   return (
-    <div className="w-full p-4 lg:p-6 space-y-5 bg-neutral-50 min-h-screen">
+    <div className="w-full p-3.5 sm:p-4 lg:p-6 space-y-4 sm:space-y-5 bg-neutral-50 min-h-dvh">
       {/* Command Header */}
       <div className="bg-white rounded-xl border border-neutral-200 p-4 sm:p-5 space-y-4 shadow-2xs">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -1423,8 +1423,8 @@ export function TeamsClient({
 
               {canManage && (
                 <form onSubmit={handleSaveSmtpConfig} className="space-y-3 text-xs">
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="col-span-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-2">
                       <label className="block font-medium text-neutral-700 mb-1">
                         SMTP Host
                       </label>
@@ -1549,7 +1549,7 @@ export function TeamsClient({
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
+                <table className="w-full text-left text-xs min-w-[560px]">
                   <thead>
                     <tr className="border-b border-neutral-200 text-neutral-500">
                       <th className="py-2 pr-3 font-semibold">Type</th>
@@ -1698,10 +1698,10 @@ export function TeamsClient({
 
       {/* Create New Team Modal */}
       {showNewTeamModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <form
             onSubmit={handleCreateTeam}
-            className="bg-white rounded-xl border border-neutral-200 max-w-lg w-full p-5 space-y-4 shadow-lg"
+            className="bg-white rounded-t-2xl sm:rounded-xl border border-neutral-200 sm:max-w-lg w-full max-h-[92dvh] overflow-y-auto p-4 sm:p-5 space-y-4 shadow-lg"
           >
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold text-neutral-900">

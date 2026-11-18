@@ -771,7 +771,7 @@ function renderWhatsAppInline(
           target="_blank"
           rel="noopener noreferrer"
           onClick={(e) => e.stopPropagation()}
-          className="text-[#027eb5] hover:underline break-all font-medium"
+          className="text-[#027eb5] hover:underline break-all font-medium [overflow-wrap:anywhere]"
         >
           {cleanUrl}
         </a>
@@ -868,14 +868,14 @@ export function WhatsAppFormattedText({
   const segments = normalized.split(/(```[\s\S]*?```)/g);
 
   return (
-    <div className={`whitespace-pre-wrap break-words leading-[1.48] ${className}`}>
+    <div className={`min-w-0 max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-[1.48] ${className}`}>
       {segments.map((seg, segIdx) => {
         if (seg.startsWith("```") && seg.endsWith("```") && seg.length >= 6) {
           const codeBody = seg.slice(3, -3).replace(/^\n+|\n+$/g, "");
           return (
             <pre
               key={`cb_${segIdx}`}
-              className="my-1.5 p-2 rounded-md bg-black/[0.06] font-mono text-[12px] leading-relaxed overflow-x-auto whitespace-pre-wrap"
+              className="my-1.5 p-2 rounded-md bg-black/[0.06] font-mono text-[12px] leading-relaxed max-w-full overflow-x-auto whitespace-pre-wrap break-all"
             >
               {codeBody}
             </pre>
@@ -902,7 +902,7 @@ export function WhatsAppFormattedText({
                 return (
                   <div
                     key={`q_${segIdx}_${lineIdx}`}
-                    className="my-0.5 pl-2.5 border-l-2 border-emerald-600/50 text-gray-700"
+                    className="my-0.5 pl-2.5 border-l-2 border-emerald-600/50 text-gray-700 min-w-0 [overflow-wrap:anywhere]"
                   >
                     {renderWhatsAppInline(quoteText, `q_${segIdx}_${lineIdx}`, 0, onPhoneClick)}
                   </div>
@@ -915,12 +915,12 @@ export function WhatsAppFormattedText({
                 return (
                   <div
                     key={`ul_${segIdx}_${lineIdx}`}
-                    className="flex items-start gap-1.5 my-0.5"
+                    className="flex items-start gap-1.5 my-0.5 min-w-0"
                   >
                     <span className="select-none text-current opacity-75 shrink-0 leading-[1.48]">
                       •
                     </span>
-                    <span className="min-w-0 flex-1">
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
                       {renderWhatsAppInline(
                         bulletMatch[1],
                         `ul_${segIdx}_${lineIdx}`,
@@ -938,12 +938,12 @@ export function WhatsAppFormattedText({
                 return (
                   <div
                     key={`ol_${segIdx}_${lineIdx}`}
-                    className="flex items-start gap-1.5 my-0.5"
+                    className="flex items-start gap-1.5 my-0.5 min-w-0"
                   >
                     <span className="font-semibold shrink-0 leading-[1.48]">
                       {numMatch[1]}
                     </span>
-                    <span className="min-w-0 flex-1">
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
                       {renderWhatsAppInline(
                         numMatch[2],
                         `ol_${segIdx}_${lineIdx}`,

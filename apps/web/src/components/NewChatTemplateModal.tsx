@@ -281,29 +281,29 @@ export function NewChatTemplateModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 bg-black/45 flex items-end sm:items-center justify-center p-0 sm:p-4">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-lg max-h-[90vh] bg-white rounded-xl border border-neutral-200 shadow-2xl flex flex-col overflow-hidden"
+        className="w-full sm:max-w-lg max-h-[92dvh] bg-white rounded-t-2xl sm:rounded-xl border border-neutral-200 shadow-2xl flex flex-col overflow-hidden"
       >
-        <div className="px-5 py-3.5 border-b border-neutral-200 flex items-center justify-between bg-[#f0f2f5]">
-          <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
-            <span className="w-6 h-6 rounded-full bg-[#25d366] text-white inline-flex items-center justify-center">
+        <div className="px-4 sm:px-5 py-3.5 border-b border-neutral-200 flex items-center justify-between gap-2 bg-[#f0f2f5]">
+          <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2 min-w-0">
+            <span className="w-6 h-6 rounded-full bg-[#25d366] text-white inline-flex items-center justify-center shrink-0">
               <WhatsAppLogoIcon size={13} />
             </span>
-            <span>Open New WhatsApp Chat</span>
+            <span className="truncate">Open New WhatsApp Chat</span>
           </h3>
           <button
             type="button"
             onClick={onClose}
-            className="text-neutral-400 hover:text-neutral-700 cursor-pointer"
+            className="text-neutral-400 hover:text-neutral-700 cursor-pointer shrink-0 p-1"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          <div className="grid grid-cols-3 gap-1.5 text-xs">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 text-xs">
             <button
               type="button"
               onClick={() => setMode("TEMPLATE")}

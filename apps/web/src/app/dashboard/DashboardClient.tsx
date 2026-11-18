@@ -656,7 +656,7 @@ export function DashboardClient({
           {data.canSeeTeam && (
             <Panel title="Team performance" icon={<Trophy className="w-4 h-4 text-amber-600" />}>
               <div className="overflow-x-auto">
-                <table className="w-full text-xs">
+                <table className="w-full text-xs min-w-[540px]">
                   <thead>
                     <tr className="text-left text-[10.5px] uppercase tracking-wide text-slate-500 bg-slate-50">
                       <th className="px-3.5 py-2 font-semibold">Teammate</th>

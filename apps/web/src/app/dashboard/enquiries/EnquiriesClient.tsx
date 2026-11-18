@@ -783,7 +783,7 @@ export function EnquiriesClient({
                 <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
                   Customer Enquiry Message
                 </div>
-                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
+                <div className="p-3.5 sm:p-4 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-800 whitespace-pre-wrap [overflow-wrap:anywhere] leading-relaxed">
                   {selectedEnquiry.message}
                 </div>
               </div>
@@ -808,7 +808,7 @@ export function EnquiriesClient({
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-emerald-950 whitespace-pre-wrap leading-relaxed bg-white/80 p-3 rounded-lg border border-emerald-200/60">
+                  <div className="text-xs text-emerald-950 whitespace-pre-wrap [overflow-wrap:anywhere] leading-relaxed bg-white/80 p-3 rounded-lg border border-emerald-200/60">
                     {selectedEnquiry.lastReplyText}
                   </div>
                 </div>

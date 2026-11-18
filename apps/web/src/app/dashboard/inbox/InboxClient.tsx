@@ -67,9 +67,12 @@ import {
   AttachmentPickerPopover,
   MediaPreviewLightbox,
   MessageMediaRenderer,
+  PreSendFileConfirmModal,
   StagedAttachmentBar,
+  describeAttachmentType,
   extractMessageMedia,
   type NormalizedMessageMedia,
+  type PreSendFileConfirmationTarget,
   type StagedComposerAttachment,
 } from "@/components/MediaAttachmentTools";
 import {
@@ -583,6 +586,8 @@ export function InboxClient({
   const [stagedAttachment, setStagedAttachment] =
     useState<StagedComposerAttachment | null>(null);
   const [showAttachmentPicker, setShowAttachmentPicker] = useState(false);
+  const [pendingSendConfirm, setPendingSendConfirm] =
+    useState<PreSendFileConfirmationTarget | null>(null);
   const [previewMedia, setPreviewMedia] =
     useState<NormalizedMessageMedia | null>(null);
   const draftsRef = useRef<Record<string, string>>({});
@@ -1192,36 +1197,21 @@ export function InboxClient({
     }
   }
 
-  async function handleComposerSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const hasStagedAtt =
-      (composerMode === "REPLY" || composerMode === "NOTE") &&
-      Boolean(stagedAttachment);
-    if (!selectedId || (!replyText.trim() && !hasStagedAtt) || !detail) return;
-
-    // Templates are never typed freehand; they go through the picker so values are checked first.
-    if (composerMode === "TEMPLATE") {
-      setTemplateDialogOpen(true);
-      return;
-    }
-
-    // An @teammate or @ACRIO in a customer reply is almost certainly meant for the team. Never send it to the customer.
-    if (composerMode !== "NOTE" && hasTeamMention(replyText, staffList)) {
-      const asNote = window.confirm(
-        "This message has an @mention, so it looks meant for your team. Sent as a reply, the CUSTOMER would see it on WhatsApp.\n\nPress OK to switch to a private note (then press Save Note).\nPress Cancel to go back and edit it."
-      );
-      if (asNote) {
-        moveDraftToNote(replyText);
-        showToast("Switched to Note mode. Press Save Note to post it privately.");
-      }
-      return;
-    }
-
+  async function executeComposerSend(opts?: {
+    overrideAttachment?: StagedComposerAttachment | null;
+    overrideCaption?: string;
+    modeOverride?: "REPLY" | "NOTE";
+  }) {
+    const effectiveMode = opts?.modeOverride || (composerMode === "NOTE" ? "NOTE" : "REPLY");
     const activeAtt =
-      composerMode === "REPLY" || composerMode === "NOTE"
-        ? stagedAttachment
-        : null;
-    const rawCaptionText = replyText.trim();
+      opts?.overrideAttachment !== undefined
+        ? opts.overrideAttachment
+        : stagedAttachment;
+    const rawCaptionText = (
+      opts?.overrideCaption !== undefined ? opts.overrideCaption : replyText
+    ).trim();
+    if (!selectedId || (!rawCaptionText && !activeAtt) || !detail) return;
+
     const textToSend =
       rawCaptionText ||
       (activeAtt
@@ -1236,6 +1226,7 @@ export function InboxClient({
     setReplyingTo(null);
     setStagedAttachment(null);
     setShowAttachmentPicker(false);
+    setPendingSendConfirm(null);
 
     // Optimistic UI append at 0ms: starts as SENDING (clock + "Sending") -> SENT (1 tick) -> DELIVERED (2 grey ticks) -> READ (2 blue ticks)
     const tempId = `optimistic_${Date.now()}`;
@@ -1262,7 +1253,7 @@ export function InboxClient({
           }
         : null;
     const optimisticMsg: ChatMessage =
-      composerMode === "NOTE"
+      effectiveMode === "NOTE"
         ? {
             id: tempId,
             direction: "INTERNAL",
@@ -1293,7 +1284,7 @@ export function InboxClient({
     const optimisticBundle: ConversationDetailBundle = {
       ...detail,
       conversation:
-        composerMode === "NOTE"
+        effectiveMode === "NOTE"
           ? detail.conversation
           : {
               ...detail.conversation,
@@ -1322,7 +1313,7 @@ export function InboxClient({
     setDetail(optimisticBundle);
     detailCacheRef.current.set(currentConvId, optimisticBundle);
 
-    if (composerMode !== "NOTE") {
+    if (effectiveMode !== "NOTE") {
       setThreads((prev) =>
         prev.map((t) =>
           t.id === currentConvId
@@ -1378,7 +1369,7 @@ export function InboxClient({
     };
 
     try {
-      if (composerMode === "NOTE") {
+      if (effectiveMode === "NOTE") {
         const noteRes = await fetch(`/api/conversations/${currentConvId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1422,13 +1413,67 @@ export function InboxClient({
         refreshThreadsSilently(),
       ]);
     } catch {
-      if (composerMode !== "NOTE") {
+      if (effectiveMode !== "NOTE") {
         patchOptimisticReceipt(tempId, "FAILED");
         showToast("Network error. Message marked Failed.");
       }
     } finally {
       setSending(false);
     }
+  }
+
+  async function handleComposerSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const hasStagedAtt =
+      (composerMode === "REPLY" || composerMode === "NOTE") &&
+      Boolean(stagedAttachment);
+    if (!selectedId || (!replyText.trim() && !hasStagedAtt) || !detail) return;
+
+    // Templates are never typed freehand; they go through the picker so values are checked first.
+    if (composerMode === "TEMPLATE") {
+      setTemplateDialogOpen(true);
+      return;
+    }
+
+    // An @teammate or @ACRIO in a customer reply is almost certainly meant for the team. Never send it to the customer.
+    if (composerMode !== "NOTE" && hasTeamMention(replyText, staffList)) {
+      const asNote = window.confirm(
+        "This message has an @mention, so it looks meant for your team. Sent as a reply, the CUSTOMER would see it on WhatsApp.\n\nPress OK to switch to a private note (then press Save Note).\nPress Cancel to go back and edit it."
+      );
+      if (asNote) {
+        moveDraftToNote(replyText);
+        showToast("Switched to Note mode. Press Save Note to post it privately.");
+      }
+      return;
+    }
+
+    // Always confirm filename, type, size, and recipient name before sending a document to a customer
+    if (composerMode === "REPLY" && stagedAttachment && stagedAttachment.mediaType === "DOCUMENT") {
+      setPendingSendConfirm({
+        mode: "SEND",
+        staged: stagedAttachment,
+        fileName: stagedAttachment.fileName,
+        fileTypeLabel: describeAttachmentType(
+          stagedAttachment.fileName,
+          stagedAttachment.mimeType || "application/pdf",
+          stagedAttachment.mediaType
+        ),
+        mimeType: stagedAttachment.mimeType || "application/pdf",
+        sizeBytes: stagedAttachment.sizeBytes ?? null,
+        mediaType: stagedAttachment.mediaType,
+        previewUrl: stagedAttachment.url,
+        recipientName:
+          detail.customer?.name ||
+          activeConv?.customerName ||
+          activeConv?.customerPhone ||
+          "Customer",
+        recipientPhone: activeConv?.customerPhone || "",
+        captionPreview: replyText.trim() || undefined,
+      });
+      return;
+    }
+
+    await executeComposerSend();
   }
 
   async function handleSimulateCustomerRead() {
@@ -2108,7 +2153,7 @@ export function InboxClient({
     <div className="h-[calc(100dvh-52px)] lg:h-full w-full flex overflow-hidden bg-[#f0f2f5] select-text">
       {/* Toast Notification */}
       {toast && (
-        <div className="fixed bottom-5 right-5 z-50 px-3.5 py-2 rounded-lg bg-neutral-900 text-white text-xs font-medium shadow-lg">
+        <div className="fixed bottom-20 sm:bottom-5 left-3 right-3 sm:left-auto sm:right-5 sm:max-w-sm z-50 px-3.5 py-2 rounded-lg bg-neutral-900 text-white text-xs font-medium shadow-lg text-center sm:text-left [overflow-wrap:anywhere]">
           {toast}
         </div>
       )}
@@ -2118,29 +2163,29 @@ export function InboxClient({
       {/* ===================================================================== */}
       <div
         className={`${
-          mobilePane === "LIST" ? "flex w-full" : "hidden"
+          mobilePane === "LIST" ? "flex w-full min-w-0" : "hidden"
         } lg:flex lg:w-[340px] xl:w-[375px] shrink-0 border-r border-[#d1d7db] flex-col bg-white relative`}
       >
         {/* WhatsApp Web Style Top Bar */}
-        <div className="h-[58px] px-3.5 bg-[#f0f2f5] border-b border-[#d1d7db] flex items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <ClassicConceptsMark size={28} />
+        <div className="min-h-[54px] sm:h-[58px] px-3 sm:px-3.5 py-1.5 bg-[#f0f2f5] border-b border-[#d1d7db] flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
+            <ClassicConceptsMark size={26} />
             <div className="min-w-0">
-              <h1 className="font-display text-[17px] font-bold tracking-tight text-[#111b21] truncate flex items-center gap-1.5">
-                <span>Customer Chats</span>
+              <h1 className="font-display text-[15px] sm:text-[17px] font-bold tracking-tight text-[#111b21] truncate flex items-center gap-1.5">
+                <span className="truncate">Customer Chats</span>
                 {waitingThreadsCount > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white font-sans text-[10px] font-bold uppercase tracking-[0.04em] tabular-nums">
+                  <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white font-sans text-[10px] font-bold uppercase tracking-[0.04em] tabular-nums shrink-0">
                     {waitingThreadsCount} waiting
                   </span>
                 )}
               </h1>
-              <p className="text-[11.5px] font-medium text-[#667781] truncate">
+              <p className="text-[11px] sm:text-[11.5px] font-medium text-[#667781] truncate">
                 System (ACRIO) • Handoff to Sales Team
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
             <button
               type="button"
               onClick={() => refreshThreadsSilently(true)}
@@ -2156,14 +2201,14 @@ export function InboxClient({
             <Link
               href="/dashboard/analytics"
               title="Assignment & First-Response Analytics"
-              className="p-2 rounded-full hover:bg-[#e9edef] text-[#54656f]"
+              className="hidden sm:inline-flex p-2 rounded-full hover:bg-[#e9edef] text-[#54656f]"
             >
               <BarChart3 className="w-4 h-4" />
             </Link>
             <Link
               href="/dashboard/teams"
               title="Teams & Escalation Flow"
-              className="p-2 rounded-full hover:bg-[#e9edef] text-[#54656f]"
+              className="hidden sm:inline-flex p-2 rounded-full hover:bg-[#e9edef] text-[#54656f]"
             >
               <Users className="w-4 h-4" />
             </Link>
@@ -2175,18 +2220,18 @@ export function InboxClient({
                 setNewChatInitialMode("TEMPLATE");
                 setShowNewChatModal(true);
               }}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-medium cursor-pointer"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-medium cursor-pointer whitespace-nowrap"
             >
               <WhatsAppLogoIcon size={13} />
-              <span>+ New Chat</span>
+              <span>New Chat</span>
             </button>
           </div>
         </div>
 
         {/* Search + Filter Pills */}
         <div className="px-3 py-2 bg-white border-b border-[#e9edef] space-y-2 shrink-0">
-          <div className="flex items-center gap-1.5">
-            <div className="relative flex-1">
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5">
+            <div className="relative flex-1 min-w-[150px]">
               <Search className="w-3.5 h-3.5 text-[#54656f] absolute left-3 top-2.5" />
               <input
                 type="text"
@@ -2569,28 +2614,28 @@ export function InboxClient({
         ) : (
           <>
             {/* Top WhatsApp Chat Header */}
-            <div className="min-h-[58px] px-3 sm:px-4 py-2 bg-[#f0f2f5] border-b border-[#d1d7db] flex flex-wrap items-center justify-between gap-2.5 shrink-0">
-              <div className="flex items-center gap-2.5 min-w-0">
+            <div className="min-h-[54px] px-2.5 sm:px-4 py-2 bg-[#f0f2f5] border-b border-[#d1d7db] flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
                 <button
                   type="button"
                   onClick={() => setMobilePane("LIST")}
                   aria-label="Back to chats list"
-                  className="lg:hidden p-1.5 -ml-1 rounded-md bg-white border border-[#d1d7db] text-[#111b21] hover:bg-neutral-50 cursor-pointer shrink-0"
+                  className="lg:hidden p-1.5 -ml-0.5 rounded-md bg-white border border-[#d1d7db] text-[#111b21] hover:bg-neutral-50 cursor-pointer shrink-0"
                 >
                   <ArrowLeft className="w-4 h-4" />
                 </button>
-                <div className="w-10 h-10 rounded-full bg-[#dfe5e7] text-[#3b4a54] flex items-center justify-center text-xs font-bold shrink-0 relative">
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#dfe5e7] text-[#3b4a54] flex items-center justify-center text-xs font-bold shrink-0 relative">
                   {getInitials(activeConv.customerName)}
                   <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#25d366] text-white flex items-center justify-center ring-2 ring-[#f0f2f5]">
                     <WhatsAppLogoIcon size={9} />
                   </span>
                 </div>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="font-display text-[16px] font-bold tracking-tight text-[#111b21] truncate">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+                    <h2 className="font-display text-[15px] sm:text-[16px] font-bold tracking-tight text-[#111b21] truncate max-w-full">
                       {activeConv.customerName}
                     </h2>
-                    <span className="text-xs font-mono font-medium text-[#54656f]">
+                    <span className="text-[11px] sm:text-xs font-mono font-medium text-[#54656f] truncate">
                       {activeConv.customerPhone}
                     </span>
                     {detail?.customer?.companyName && (
@@ -2651,7 +2696,7 @@ export function InboxClient({
               </div>
 
               {/* Right Header Actions: Compact Primary Actions + More Menu + Drawer Toggle */}
-              <div className="flex items-center gap-1.5 relative">
+              <div className="flex flex-wrap items-center justify-end gap-1.5 relative w-full sm:w-auto">
                 {activeCollaborators.length > 0 && (
                   <span
                     title={`Co-handlers: ${activeCollaborators
@@ -2897,7 +2942,7 @@ export function InboxClient({
             {/* WhatsApp Chat Wallpaper + Message Stream (NEVER flashes empty!) */}
             <div
               style={CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE}
-              className="flex-1 overflow-y-auto px-3.5 sm:px-5 py-4 space-y-2.5"
+              className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 sm:px-5 py-3 sm:py-4 space-y-2.5"
             >
               {/* Top WhatsApp Security/Context Pill (zero cost/free mentions for staff) */}
               <div className="flex justify-center pb-1">
@@ -2943,7 +2988,7 @@ export function InboxClient({
 
                   return (
                     <div key={m.id} className="flex justify-center my-2">
-                      <div className="w-full max-w-[84%] rounded-lg px-3.5 py-2.5 bg-white/95 border border-[#d1d7db] shadow-2xs text-[#111b21]">
+                      <div className="w-full max-w-[94%] sm:max-w-[84%] rounded-lg px-3 sm:px-3.5 py-2.5 bg-white/95 border border-[#d1d7db] shadow-2xs text-[#111b21] min-w-0 [overflow-wrap:anywhere]">
                         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
                           <div className="inline-flex flex-wrap items-center gap-1.5 font-semibold">
                             {isSystemAsg ? (
@@ -3054,16 +3099,16 @@ export function InboxClient({
                       className="flex justify-center my-2"
                     >
                       <div
-                        className={`w-full max-w-[78%] rounded-lg px-3.5 py-2.5 shadow-2xs transition-all duration-300 ${
+                        className={`w-full max-w-[94%] sm:max-w-[84%] lg:max-w-[78%] rounded-lg px-3 sm:px-3.5 py-2.5 shadow-2xs transition-all duration-300 min-w-0 [overflow-wrap:anywhere] ${
                           isAcrioNote
                             ? "bg-violet-50 border border-violet-300/70 text-violet-950"
                             : "bg-[#fef3c7] border border-[#f59e0b]/45 text-[#78350f]"
                         } ${isHighlighted ? "ring-2 ring-[#00a884]" : ""}`}
                       >
-                        <div className="flex items-center justify-between gap-3 text-[11px] font-semibold mb-1">
-                          <span className="inline-flex items-center gap-1">
-                            <Lock className={`w-3 h-3 ${isAcrioNote ? "text-violet-700" : "text-amber-700"}`} />
-                            <span>
+                        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] font-semibold mb-1 min-w-0">
+                          <span className="inline-flex items-center gap-1 min-w-0">
+                            <Lock className={`w-3 h-3 shrink-0 ${isAcrioNote ? "text-violet-700" : "text-amber-700"}`} />
+                            <span className="truncate">
                               {isAcrioNote ? "ACRIO • Private answer for your team" : `Internal Team Note • ${m.senderName}`}
                             </span>
                           </span>
@@ -3599,7 +3644,7 @@ export function InboxClient({
                     <div
                       onDoubleClick={() => startReplyToMessage(m)}
                       title="Double-click or press Reply to quote this message"
-                      className={`max-w-[74%] rounded-lg px-3 py-2 shadow-2xs relative transition-all duration-300 ${
+                      className={`max-w-[92%] sm:max-w-[82%] lg:max-w-[74%] rounded-lg px-2.5 sm:px-3 py-2 shadow-2xs relative transition-all duration-300 min-w-0 [overflow-wrap:anywhere] ${
                         isHighlighted
                           ? "ring-2 ring-[#00a884] bg-[#fff8d6] text-[#111b21]"
                           : isOutbound
@@ -3607,9 +3652,9 @@ export function InboxClient({
                           : "bg-white text-[#111b21] rounded-tl-none"
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-3 text-[11px] mb-0.5">
+                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] mb-0.5 min-w-0">
                         <span
-                          className={`font-semibold ${
+                          className={`font-semibold truncate min-w-0 ${
                             isOutbound
                               ? isAcrioBubble
                                 ? "text-indigo-800"
@@ -3619,7 +3664,7 @@ export function InboxClient({
                         >
                           {m.senderName}
                         </span>
-                        <div className="flex items-center gap-1">
+                        <div className="flex flex-wrap items-center gap-1 shrink-0">
                           {isAcrioBubble && (
                             <span className="px-1.5 py-0.2 rounded bg-white/80 text-indigo-800 text-[10px] font-medium">
                               ACRIO
@@ -3822,9 +3867,16 @@ export function InboxClient({
 
             {/* Popovers for Attach Media/File, Track Order Button & Product Short Links (triggered from the Composer Toolbar) */}
             {detail && (showAttachmentPicker || showTrackPopover || (showShortLinksPicker && detail.customLinks.length > 0)) && (
-              <div className="relative shrink-0 px-4">
+              <div className="relative shrink-0 px-2 sm:px-4">
                 <AttachmentPickerPopover
                   open={showAttachmentPicker}
+                  recipientName={
+                    detail.customer?.name ||
+                    activeConv?.customerName ||
+                    activeConv?.customerPhone ||
+                    "Customer"
+                  }
+                  recipientPhone={activeConv?.customerPhone || ""}
                   onClose={() => setShowAttachmentPicker(false)}
                   onStageAttachment={(att) => {
                     setStagedAttachment(att);
@@ -3834,12 +3886,20 @@ export function InboxClient({
                     setComposerMode("REPLY");
                     setTimeout(() => composerInputRef.current?.focus(), 20);
                   }}
+                  onSendUploadedAttachment={(att) =>
+                    executeComposerSend({
+                      overrideAttachment: att,
+                      overrideCaption:
+                        replyText.trim() || att.suggestedCaption || "",
+                      modeOverride: "REPLY",
+                    })
+                  }
                   onShowToast={showToast}
                 />
                 {showTrackPopover && (
                   <form
                     onSubmit={handleSendOrderTracking}
-                    className="absolute bottom-full left-4 right-4 mb-1.5 z-30 rounded-xl bg-white border border-[#d1d7db] shadow-2xl p-3.5 space-y-2.5 max-w-2xl"
+                    className="absolute bottom-full left-2 right-2 sm:left-4 sm:right-4 mb-1.5 z-30 rounded-xl bg-white border border-[#d1d7db] shadow-2xl p-3 sm:p-3.5 space-y-2.5 max-w-2xl max-h-[68dvh] overflow-y-auto"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-[#111b21]">
@@ -4081,7 +4141,7 @@ export function InboxClient({
                 )}
 
                 {showShortLinksPicker && detail.customLinks.length > 0 && (
-                  <div className="absolute bottom-full left-4 right-4 mb-1.5 z-30 rounded-lg bg-white border border-[#d1d7db] shadow-lg p-3 space-y-2">
+                  <div className="absolute bottom-full left-2 right-2 sm:left-4 sm:right-4 mb-1.5 z-30 rounded-lg bg-white border border-[#d1d7db] shadow-lg p-3 space-y-2 max-h-[68dvh] overflow-y-auto">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-1 text-[11px]">
                         {(
@@ -4296,7 +4356,7 @@ export function InboxClient({
             ) : (
             <form
               onSubmit={handleComposerSubmit}
-              className={`px-4 py-2.5 border-t border-[#d1d7db] space-y-2 shrink-0 ${
+              className={`px-2.5 sm:px-4 py-2 sm:py-2.5 border-t border-[#d1d7db] space-y-2 shrink-0 ${
                 composerMode === "NOTE"
                   ? "bg-[#fef9e7]"
                   : composerMode === "TEMPLATE"
@@ -4304,8 +4364,8 @@ export function InboxClient({
                   : "bg-[#f0f2f5]"
               }`}
             >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="inline-flex rounded-lg bg-white p-0.5 border border-[#d1d7db]">
+              <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
+                <div className="inline-flex max-w-full overflow-x-auto rounded-lg bg-white p-0.5 border border-[#d1d7db]">
                   <button
                     type="button"
                     onClick={() => setComposerMode("REPLY")}
@@ -4593,8 +4653,8 @@ export function InboxClient({
               )}
 
               {composerMode === "TEMPLATE" ? (
-                <div className="flex flex-wrap items-center gap-3 rounded-lg bg-white border border-[#d1d7db] px-3.5 py-3">
-                  <p className="text-xs text-[#54656f] flex-1 min-w-[220px]">
+                <div className="flex flex-wrap items-center gap-3 rounded-lg bg-white border border-[#d1d7db] px-3 sm:px-3.5 py-2.5 sm:py-3">
+                  <p className="text-xs text-[#54656f] flex-1 min-w-0 sm:min-w-[220px]">
                     Templates are sent exactly as Meta approved them, so the text cannot be edited here. Choose one, check
                     the values we fill in for {activeConv?.customerName || "the customer"}, and review it before sending.
                   </p>
@@ -4702,6 +4762,20 @@ export function InboxClient({
               media={previewMedia}
               onClose={() => setPreviewMedia(null)}
             />
+            <PreSendFileConfirmModal
+              target={pendingSendConfirm}
+              busy={sending}
+              onCancel={() => setPendingSendConfirm(null)}
+              onConfirmSend={() =>
+                void executeComposerSend({
+                  overrideAttachment:
+                    pendingSendConfirm?.staged || stagedAttachment,
+                  overrideCaption:
+                    pendingSendConfirm?.captionPreview ?? replyText.trim(),
+                  modeOverride: "REPLY",
+                })
+              }
+            />
           </>
         )}
       </div>
@@ -4711,7 +4785,7 @@ export function InboxClient({
       {/* ===================================================================== */}
       <div
         className={`${
-          mobilePane === "INFO" ? "flex w-full" : "hidden"
+          mobilePane === "INFO" ? "flex w-full min-w-0 h-full overflow-hidden" : "hidden"
         } ${
           showRightDrawer ? "lg:flex" : "lg:hidden"
         } lg:w-[330px] xl:w-[360px] shrink-0 border-l border-[#d1d7db] bg-white flex-col`}
@@ -4902,11 +4976,11 @@ export function InboxClient({
                         ))}
                       </div>
                     )}
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
                       <select
                         value={collabToAdd}
                         onChange={(e) => setCollabToAdd(e.target.value)}
-                        className="flex-1 rounded border border-violet-200 bg-white px-2 py-1 text-[11px]"
+                        className="flex-1 min-w-0 w-full rounded border border-violet-200 bg-white px-2 py-1 text-[11px]"
                       >
                         <option value="">Tag teammate for access...</option>
                         {staffList
@@ -5575,10 +5649,10 @@ export function InboxClient({
       {/* MODAL 1: ASSIGN TEAM & ESCALATION TIER (P0 -> P1 -> P2)               */}
       {/* ===================================================================== */}
       {showAssignModal && activeConv && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <form
             onSubmit={handleManualAssignSubmit}
-            className="w-full max-w-md bg-white rounded-lg border border-neutral-200 p-5 space-y-4 shadow-xl"
+            className="w-full sm:max-w-md max-h-[92dvh] overflow-y-auto bg-white rounded-t-2xl sm:rounded-lg border border-neutral-200 p-4 sm:p-5 space-y-4 shadow-xl"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-neutral-900">
@@ -5615,7 +5689,7 @@ export function InboxClient({
               </select>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-neutral-700 mb-1">
                   Escalation Level
@@ -5661,7 +5735,7 @@ export function InboxClient({
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
               <Link
                 href="/dashboard/teams"
                 className="text-xs font-medium text-[#008069] hover:underline"
@@ -5692,8 +5766,8 @@ export function InboxClient({
       {/* MODAL 2: MARK RESOLVED                                                */}
       {/* ===================================================================== */}
       {showResolveModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white rounded-lg border border-neutral-200 p-5 space-y-4 shadow-xl">
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full sm:max-w-md max-h-[92dvh] overflow-y-auto bg-white rounded-t-2xl sm:rounded-lg border border-neutral-200 p-4 sm:p-5 space-y-4 shadow-xl">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-neutral-900">
                 Mark Chat Resolved

@@ -480,7 +480,7 @@ export function DevClient({
 
   if (loading && !pricing) {
     return (
-      <div className="w-full px-6 py-5 space-y-6">
+      <div className="w-full px-3.5 sm:px-6 py-4 sm:py-5 space-y-5 sm:space-y-6">
         <div className="border-b border-neutral-200 pb-4">
           <h1 className="text-lg font-semibold text-neutral-900">
             Dev Profit, Meta Costs & Operations
@@ -494,7 +494,7 @@ export function DevClient({
 
   if (loadError && !pricing) {
     return (
-      <div className="w-full px-6 py-5 space-y-6">
+      <div className="w-full px-3.5 sm:px-6 py-4 sm:py-5 space-y-5 sm:space-y-6">
         <ElementErrorState
           title="Dev Console Restricted"
           message={loadError}
@@ -725,7 +725,7 @@ export function DevClient({
               Profit & Margin by Message Category
             </h2>
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
+              <table className="w-full text-left border-collapse text-xs min-w-[580px]">
                 <thead>
                   <tr className="border-b border-neutral-200 text-neutral-500">
                     <th className="py-2.5 pr-3 font-medium">Message Type</th>
@@ -877,7 +877,7 @@ export function DevClient({
               Recent Per-Message Profit Ledger
             </h2>
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
+              <table className="w-full text-left border-collapse text-xs min-w-[580px]">
                 <thead>
                   <tr className="border-b border-neutral-200 text-neutral-500">
                     <th className="py-2 pr-3 font-medium">Date & Time</th>
@@ -1022,7 +1022,7 @@ export function DevClient({
               Existing Dev Accounts ({devAccounts.length})
             </h2>
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
+              <table className="w-full text-left border-collapse min-w-[580px]">
                 <thead>
                   <tr className="border-b border-neutral-200 text-neutral-500">
                     <th className="py-2 pr-3 font-medium">Name & Email</th>

@@ -535,8 +535,8 @@ export function AiLogsClient({
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 flex-1 justify-end">
-            <div className="relative min-w-[220px] flex-1">
+          <div className="flex flex-wrap items-center gap-2 flex-1 justify-end w-full">
+            <div className="relative min-w-0 w-full sm:min-w-[220px] sm:flex-1">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
@@ -592,8 +592,8 @@ export function AiLogsClient({
         </div>
       ) : viewMode === "raw" ? (
         <div className="bg-slate-950 text-slate-100 rounded-xl border border-slate-800 overflow-hidden">
-          <div className="px-4 py-2.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
-            <span className="font-mono text-xs text-emerald-400">
+          <div className="px-3.5 sm:px-4 py-2.5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+            <span className="font-mono text-xs text-emerald-400 break-all min-w-0">
               {data?.filePath || "ai.logs"}
             </span>
             <button
@@ -601,13 +601,13 @@ export function AiLogsClient({
               onClick={() =>
                 handleCopyText("raw_file", fullRawFile || data?.rawTail || "")
               }
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-slate-200"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-slate-200 shrink-0"
             >
               <Copy className="w-3 h-3" />
               {copiedId === "raw_file" ? "Copied!" : "Copy Raw Log"}
             </button>
           </div>
-          <pre className="p-4 font-mono text-[11.5px] leading-relaxed overflow-x-auto max-h-[72vh] overflow-y-auto whitespace-pre-wrap">
+          <pre className="p-3 sm:p-4 font-mono text-[11.5px] leading-relaxed overflow-x-auto max-h-[72dvh] overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere]">
             {fullRawFile || data?.rawTail || "# No AI logs recorded yet."}
           </pre>
         </div>
@@ -698,7 +698,7 @@ export function AiLogsClient({
                     <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
                       Question / Input • Actor: {entry.actor || "Visitor"}
                     </div>
-                    <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs text-slate-900 whitespace-pre-wrap font-medium">
+                    <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs text-slate-900 whitespace-pre-wrap [overflow-wrap:anywhere] font-medium">
                       {entry.question || "(empty)"}
                     </div>
                   </div>
@@ -868,7 +868,7 @@ export function AiLogsClient({
                         {copiedId === entry.id ? "Copied" : "Copy"}
                       </button>
                     </div>
-                    <div className="rounded-xl bg-[#efeae2] border border-stone-300 p-3.5 text-xs text-slate-900 whitespace-pre-wrap leading-relaxed shadow-inner min-h-[160px]">
+                    <div className="rounded-xl bg-[#efeae2] border border-stone-300 p-3.5 text-xs text-slate-900 whitespace-pre-wrap [overflow-wrap:anywhere] leading-relaxed shadow-inner min-h-[160px]">
                       {entry.response || "(empty response)"}
                     </div>
                   </div>
@@ -878,7 +878,7 @@ export function AiLogsClient({
                       <div className="font-bold mb-0.5">
                         Diagnostic / Fallback Reason:
                       </div>
-                      <div className="font-mono text-[11px] whitespace-pre-wrap">
+                      <div className="font-mono text-[11px] whitespace-pre-wrap [overflow-wrap:anywhere]">
                         {entry.error}
                       </div>
                     </div>

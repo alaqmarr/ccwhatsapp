@@ -8,8 +8,8 @@ import {
 
 export default function InboxLoading() {
   return (
-    <div className="h-[calc(100dvh)] lg:h-full w-full flex overflow-hidden bg-[#f0f2f5]">
-      <div className="w-[340px] xl:w-[375px] shrink-0 border-r border-[#d1d7db] bg-white flex flex-col">
+    <div className="h-[calc(100dvh-52px)] lg:h-full w-full flex overflow-hidden bg-[#f0f2f5]">
+      <div className="w-full lg:w-[340px] xl:w-[375px] shrink-0 border-r border-[#d1d7db] bg-white flex flex-col">
         <div className="h-[58px] px-4 bg-[#f0f2f5] border-b border-[#d1d7db] flex items-center">
           <div className="h-5 w-36 rounded bg-neutral-200/80 animate-pulse" />
         </div>
@@ -17,7 +17,7 @@ export default function InboxLoading() {
       </div>
       <div
         style={CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE}
-        className="flex-1 min-w-0 flex flex-col justify-center"
+        className="hidden lg:flex flex-1 min-w-0 flex-col justify-center"
       >
         <ChatMessagesSkeleton />
       </div>

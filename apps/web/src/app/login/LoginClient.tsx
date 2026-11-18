@@ -44,20 +44,20 @@ export function LoginClient() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-neutral-50 flex flex-col">
-      <header className="w-full bg-white border-b border-neutral-200 px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-3.5">
-          <ClassicConceptsWordmark height={38} variant="light" />
-          <div className="h-6 w-px bg-neutral-200" />
-          <div className="flex items-center gap-2">
+    <div className="min-h-dvh w-full bg-neutral-50 flex flex-col">
+      <header className="w-full bg-white border-b border-neutral-200 px-3.5 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
+          <ClassicConceptsWordmark height={34} variant="light" />
+          <div className="hidden sm:block h-6 w-px bg-neutral-200" />
+          <div className="hidden sm:flex items-center gap-2 min-w-0">
             <div className="w-7 h-7 rounded-full bg-slate-900 text-white flex items-center justify-center shrink-0">
               <ShieldCheck className="w-4 h-4" />
             </div>
-            <div>
-              <div className="font-display text-sm font-bold tracking-tight text-slate-900">
+            <div className="min-w-0">
+              <div className="font-display text-sm font-bold tracking-tight text-slate-900 truncate">
                 Internal Staff & Order Portal
               </div>
-              <div className="font-mono text-[11px] text-slate-500">
+              <div className="font-mono text-[11px] text-slate-500 truncate">
                 classicconcepts.in • classicedge53.com
               </div>
             </div>
@@ -68,10 +68,10 @@ export function LoginClient() {
         </span>
       </header>
 
-      <div className="flex-1 w-full flex items-center justify-center p-6">
-        <div className="w-full max-w-md bg-white rounded-xl border border-neutral-200 p-7 space-y-5 shadow-xs">
+      <div className="flex-1 w-full flex items-center justify-center p-3.5 sm:p-6">
+        <div className="w-full max-w-md bg-white rounded-xl border border-neutral-200 p-4 sm:p-7 space-y-5 shadow-xs">
           <div>
-            <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900">
+            <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
               Staff Portal Sign In
             </h1>
             <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">

@@ -232,7 +232,7 @@ export function SetupClient({
 
   if (loading) {
     return (
-      <div className="min-h-screen w-full bg-neutral-50 p-6 space-y-6">
+      <div className="min-h-dvh w-full bg-neutral-50 p-3.5 sm:p-6 space-y-6">
         <div className="bg-white rounded-lg border border-neutral-200 p-4 flex items-center gap-3">
           <ClassicConceptsWordmark height={38} variant="light" />
         </div>
@@ -250,7 +250,7 @@ export function SetupClient({
 
   if (loadError && !state) {
     return (
-      <div className="min-h-screen w-full bg-neutral-50 p-6 space-y-6">
+      <div className="min-h-dvh w-full bg-neutral-50 p-3.5 sm:p-6 space-y-6">
         <div className="bg-white rounded-lg border border-neutral-200 p-4 flex items-center gap-3">
           <ClassicConceptsWordmark height={38} variant="light" />
         </div>
@@ -265,13 +265,13 @@ export function SetupClient({
   }
 
   return (
-    <div className="min-h-screen w-full bg-neutral-50 text-neutral-900">
+    <div className="min-h-dvh w-full bg-neutral-50 text-neutral-900">
       {/* Full-Width Top Bar */}
-      <header className="w-full bg-white border-b border-neutral-200 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <ClassicConceptsWordmark height={40} variant="light" />
-          <div className="h-7 w-px bg-neutral-200" />
-          <div className="flex items-center gap-2.5">
+      <header className="w-full bg-white border-b border-neutral-200 px-3.5 sm:px-6 py-3.5 sm:py-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
+        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3.5 min-w-0">
+          <ClassicConceptsWordmark height={36} variant="light" />
+          <div className="hidden sm:block h-7 w-px bg-neutral-200" />
+          <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-full bg-[#25d366] flex items-center justify-center text-white shrink-0">
               <WhatsAppLogoIcon size={17} />
             </div>

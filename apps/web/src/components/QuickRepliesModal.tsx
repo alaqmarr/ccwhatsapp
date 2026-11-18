@@ -107,18 +107,18 @@ export function QuickRepliesModal({
   const sharedByOthers = customReplies.filter((r) => !r.isMine && r.isShared);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4">
-      <div className="w-full max-w-2xl max-h-[88vh] bg-white rounded-xl border border-neutral-200 shadow-2xl flex flex-col overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-neutral-200 flex items-center justify-between bg-[#f0f2f5]">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-[#e7fce3] text-[#008069] flex items-center justify-center">
+    <div className="fixed inset-0 z-50 bg-black/45 flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="w-full sm:max-w-2xl max-h-[92dvh] bg-white rounded-t-2xl sm:rounded-xl border border-neutral-200 shadow-2xl flex flex-col overflow-hidden">
+        <div className="px-4 sm:px-5 py-3.5 border-b border-neutral-200 flex items-center justify-between gap-2 bg-[#f0f2f5]">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-7 h-7 rounded-full bg-[#e7fce3] text-[#008069] flex items-center justify-center shrink-0">
               <Zap className="w-4 h-4" />
             </div>
-            <div>
-              <h3 className="text-sm font-semibold text-neutral-900">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-neutral-900 truncate">
                 Your Quick Replies (/)
               </h3>
-              <p className="text-[11px] text-neutral-500">
+              <p className="text-[11px] text-neutral-500 [overflow-wrap:anywhere]">
                 Type a slash command like /price in any chat reply to insert it right away.
               </p>
             </div>
@@ -126,13 +126,13 @@ export function QuickRepliesModal({
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/70 cursor-pointer"
+            className="p-1.5 rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/70 cursor-pointer shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
           <form
             onSubmit={handleSave}
             className="rounded-lg border border-neutral-200 bg-neutral-50/70 p-4 space-y-3"
@@ -261,7 +261,7 @@ export function QuickRepliesModal({
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-neutral-600 whitespace-pre-wrap">
+                      <p className="text-xs text-neutral-600 whitespace-pre-wrap [overflow-wrap:anywhere]">
                         {item.body}
                       </p>
                     </div>

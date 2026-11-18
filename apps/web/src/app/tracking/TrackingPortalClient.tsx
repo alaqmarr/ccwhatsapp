@@ -192,9 +192,9 @@ export function TrackingPortalClient({
       </header>
 
       {/* Main Order Lookup Card */}
-      <main className="flex-1 flex items-center justify-center px-4 py-10 sm:py-14">
+      <main className="flex-1 flex items-center justify-center px-3 sm:px-4 py-6 sm:py-14">
         <div className="w-full max-w-xl space-y-5">
-          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 sm:p-8 space-y-6">
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-4 sm:p-8 space-y-5 sm:space-y-6">
             <div className="space-y-2 text-center">
               <div className="mx-auto w-12 h-12 rounded-2xl bg-[#00a884]/10 text-[#008069] flex items-center justify-center">
                 <Truck className="w-6 h-6" />
@@ -211,7 +211,7 @@ export function TrackingPortalClient({
 
             <form onSubmit={handleLookup} className="space-y-4">
               {/* Brand Selector Pills */}
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 border border-slate-200/80 text-xs font-semibold">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 border border-slate-200/80 text-xs font-semibold">
                 {(
                   [
                     { key: "AUTO", label: "All Orders" },
@@ -321,7 +321,7 @@ export function TrackingPortalClient({
                 </div>
 
                 {/* Progress Steps */}
-                <div className="grid grid-cols-4 gap-2 pt-1">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
                   {STATUS_STEPS.map((st, idx) => {
                     const done = idx <= activeStep;
                     return (
@@ -344,9 +344,9 @@ export function TrackingPortalClient({
                 </div>
 
                 {tracking.itemsSummary && (
-                  <div className="flex items-start gap-2 text-xs text-slate-700 bg-white p-3 rounded-lg border border-slate-200/80">
+                  <div className="flex items-start gap-2 text-xs text-slate-700 bg-white p-3 rounded-lg border border-slate-200/80 min-w-0">
                     <Package className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
-                    <span>{tracking.itemsSummary}</span>
+                    <span className="min-w-0 [overflow-wrap:anywhere]">{tracking.itemsSummary}</span>
                   </div>
                 )}
 

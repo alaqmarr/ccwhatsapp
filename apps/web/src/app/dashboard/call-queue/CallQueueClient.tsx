@@ -323,7 +323,7 @@ export function CallQueueClient({
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
       {toast && (
-        <div className="fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-lg bg-neutral-900 text-white text-xs font-semibold shadow-xl">
+        <div className="fixed bottom-4 left-3 right-3 sm:left-auto sm:right-5 sm:max-w-sm z-50 px-4 py-2.5 rounded-lg bg-neutral-900 text-white text-xs font-semibold shadow-xl text-center sm:text-left [overflow-wrap:anywhere]">
           {toast}
         </div>
       )}
@@ -778,7 +778,7 @@ export function CallQueueClient({
                 )}
 
                 {item.notes && (
-                  <p className="text-xs text-neutral-700 whitespace-pre-wrap bg-neutral-50 rounded-lg p-2.5 border border-neutral-100">
+                  <p className="text-xs text-neutral-700 whitespace-pre-wrap [overflow-wrap:anywhere] bg-neutral-50 rounded-lg p-2.5 border border-neutral-100">
                     {item.notes}
                   </p>
                 )}

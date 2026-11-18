@@ -102,7 +102,7 @@ export function PricingClient({
 
   if (loading && !data) {
     return (
-      <div className="w-full px-6 py-5 space-y-6">
+      <div className="w-full px-3.5 sm:px-6 py-4 sm:py-5 space-y-5 sm:space-y-6">
         <div className="border-b border-neutral-200 pb-4">
           <h1 className="text-lg font-semibold text-neutral-900">
             Cost Breakdown
@@ -121,7 +121,7 @@ export function PricingClient({
 
   if (loadError && !data) {
     return (
-      <div className="w-full px-6 py-5 space-y-6">
+      <div className="w-full px-3.5 sm:px-6 py-4 sm:py-5 space-y-5 sm:space-y-6">
         <div className="border-b border-neutral-200 pb-4">
           <h1 className="text-lg font-semibold text-neutral-900">
             Cost Breakdown
@@ -244,7 +244,7 @@ export function PricingClient({
         </h2>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+          <table className="w-full text-left border-collapse text-xs min-w-[580px]">
             <thead>
               <tr className="border-b border-neutral-200 text-neutral-500">
                 <th className="py-2.5 pr-3 font-medium">Message Type</th>
@@ -288,7 +288,7 @@ export function PricingClient({
         </h2>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+          <table className="w-full text-left border-collapse text-xs min-w-[580px]">
             <thead>
               <tr className="border-b border-neutral-200 text-neutral-500">
                 <th className="py-2 pr-3 font-medium">Date & Time</th>

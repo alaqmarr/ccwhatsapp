@@ -418,7 +418,7 @@ export function AnalyticsClient({
   }, [data]);
 
   return (
-    <div className="w-full px-6 py-5 space-y-6 bg-neutral-50 text-neutral-900">
+    <div className="w-full px-3.5 sm:px-6 py-4 sm:py-5 space-y-5 sm:space-y-6 bg-neutral-50 text-neutral-900">
       {/* Top Header & Filter Controls */}
       <div className="bg-white rounded-lg border border-neutral-200 p-4 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
@@ -981,7 +981,7 @@ export function AnalyticsClient({
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
+              <table className="w-full text-left border-collapse text-xs min-w-[600px]">
                 <thead>
                   <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold">
                     <th className="py-3 px-4">Person / Handler</th>
@@ -1108,7 +1108,7 @@ export function AnalyticsClient({
                 </p>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
+                <table className="w-full text-left border-collapse text-xs min-w-[600px]">
                   <thead>
                     <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold">
                       <th className="py-2.5 px-4">Team</th>
@@ -1464,7 +1464,7 @@ export function AnalyticsClient({
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
+              <table className="w-full text-left border-collapse text-xs min-w-[600px]">
                 <thead>
                   <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold">
                     <th className="py-3 px-4">Customer</th>

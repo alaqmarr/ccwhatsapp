@@ -148,7 +148,7 @@ export function NotificationBell({ userId }: { userId: string }) {
               <CheckCheck className="w-3.5 h-3.5" /> Mark all read
             </button>
           </div>
-          <div className="max-h-96 overflow-y-auto divide-y divide-neutral-100">
+          <div className="max-h-[70dvh] overflow-y-auto divide-y divide-neutral-100">
             {items.length === 0 ? (
               <p className="p-5 text-center text-xs text-neutral-500">
                 Nothing yet. When a teammate writes @{"{your name}"} in a chat note, or ACRIO answers your
@@ -191,7 +191,7 @@ export function NotificationBell({ userId }: { userId: string }) {
                       <span className="text-slate-400 shrink-0">{timeAgo(n.createdAt)}</span>
                     </span>
                     <span className="block text-[11px] text-slate-500 truncate">Chat with {n.customerName}</span>
-                    <span className="block text-xs text-slate-700 line-clamp-2 mt-0.5">{n.text}</span>
+                    <span className="block text-xs text-slate-700 line-clamp-2 mt-0.5 [overflow-wrap:anywhere]">{n.text}</span>
                   </span>
                   {!n.isRead && <span className="mt-1.5 w-2 h-2 rounded-full bg-rose-500 shrink-0" />}
                 </Link>

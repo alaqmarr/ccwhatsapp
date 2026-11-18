@@ -554,7 +554,7 @@ export function ClaudeUsageClient({
               </div>
             ) : (
               <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-left border-collapse text-xs">
+                <table className="w-full text-left border-collapse text-xs min-w-[560px]">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold uppercase text-slate-500">
                       <th className="py-2 px-2.5">API Key ID</th>
@@ -601,7 +601,7 @@ export function ClaudeUsageClient({
                 Daily Spend Breakdown (UTC) — {side.spendLabel}
               </h3>
               <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-56 overflow-y-auto">
-                <table className="w-full text-left border-collapse text-xs">
+                <table className="w-full text-left border-collapse text-xs min-w-[560px]">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold uppercase text-slate-500">
                       <th className="py-2 px-2.5">Date (UTC)</th>
@@ -1070,7 +1070,7 @@ export function ClaudeUsageClient({
 
               {report.sharedWorkspaceSpend.dailySpend.length > 0 && (
                 <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-56 overflow-y-auto">
-                  <table className="w-full text-left border-collapse text-xs">
+                  <table className="w-full text-left border-collapse text-xs min-w-[560px]">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold uppercase text-slate-500">
                         <th className="py-2 px-3">Date (UTC)</th>

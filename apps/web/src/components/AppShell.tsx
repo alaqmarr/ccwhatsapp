@@ -402,12 +402,12 @@ export function AppShell({
   return (
     <div className="h-dvh max-h-dvh overflow-hidden w-full flex flex-col lg:flex-row bg-neutral-50 text-slate-900">
       {/* Compact Sticky Mobile Top Bar (< lg) */}
-      <header className="lg:hidden h-13 px-3 bg-white border-b border-neutral-200 flex items-center justify-between gap-2 shrink-0 z-30">
-        <div className="flex items-center gap-2 min-w-0">
+      <header className="lg:hidden min-h-13 py-1.5 px-2.5 sm:px-3 bg-white border-b border-neutral-200 flex items-center justify-between gap-2 shrink-0 z-30">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
           <button
             type="button"
             onClick={() => setMobileNavOpen(true)}
-            className="p-2 rounded-lg text-slate-700 hover:bg-slate-100 relative"
+            className="p-2 rounded-lg text-slate-700 hover:bg-slate-100 relative shrink-0"
             aria-label="Open navigation menu"
           >
             <Menu className="w-5 h-5" />
@@ -415,7 +415,7 @@ export function AppShell({
               <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-500" />
             )}
           </button>
-          <div className="flex items-center gap-1.5 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
             <span className="w-5 h-5 rounded-full bg-[#25d366] text-white inline-flex items-center justify-center shrink-0">
               <WhatsAppLogoIcon size={12} />
             </span>
@@ -425,18 +425,20 @@ export function AppShell({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           {isActiveAccount &&
             user.role !== "CLIENT" &&
             pathname !== "/dashboard/inbox" && (
               <Link
                 href="/dashboard/inbox"
-                className="px-2.5 py-1.5 rounded-lg bg-[#00a884] text-white text-xs font-semibold"
+                className="px-2 sm:px-2.5 py-1.5 rounded-lg bg-[#00a884] text-white text-xs font-semibold whitespace-nowrap"
               >
                 Chats
               </Link>
             )}
-          <RoleBadge role={user.role} />
+          <span className="hidden xs:inline-flex sm:inline-flex">
+            <RoleBadge role={user.role} />
+          </span>
         </div>
       </header>
 
@@ -447,7 +449,7 @@ export function AppShell({
             className="fixed inset-0 bg-slate-900/45 backdrop-blur-[1px]"
             onClick={() => setMobileNavOpen(false)}
           />
-          <aside className="relative w-72 max-w-[84vw] h-full bg-white flex flex-col shadow-2xl z-10 overflow-hidden">
+          <aside className="relative w-72 max-w-[86vw] h-full bg-white flex flex-col shadow-2xl z-10 overflow-hidden overscroll-contain">
             {renderSidebarContent()}
           </aside>
         </div>
@@ -459,7 +461,7 @@ export function AppShell({
       </aside>
 
       {/* Independent Scrollable Main Workspace */}
-      <main className="flex-1 min-h-0 min-w-0 w-full overflow-y-auto flex flex-col">
+      <main className="flex-1 min-h-0 min-w-0 w-full overflow-y-auto overflow-x-hidden flex flex-col">
         {children}
       </main>
     </div>

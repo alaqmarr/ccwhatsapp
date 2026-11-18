@@ -259,7 +259,7 @@ export function OnboardingClient({
           })}
         </div>
 
-        <div className="lg:col-span-8 bg-white rounded-lg border border-neutral-200 p-6 flex flex-col justify-between space-y-6">
+        <div className="lg:col-span-8 bg-white rounded-lg border border-neutral-200 p-4 sm:p-6 flex flex-col justify-between space-y-5 sm:space-y-6 min-w-0">
           <div className="space-y-4">
             <div className="flex items-center gap-3 border-b border-neutral-200 pb-4">
               <div className="w-9 h-9 rounded-md bg-neutral-100 text-neutral-800 flex items-center justify-center shrink-0">

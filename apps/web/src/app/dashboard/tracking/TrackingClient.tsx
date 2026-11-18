@@ -249,8 +249,8 @@ export function TrackingClient({
   return (
     <div className="w-full px-4 sm:px-6 py-5 space-y-6">
       {toast && (
-        <div className="fixed bottom-5 right-5 z-50 rounded-lg bg-neutral-900 text-white px-4 py-2.5 text-xs font-medium shadow-lg flex items-center gap-2">
-          <Check className="w-4 h-4 text-[#00a884]" />
+        <div className="fixed bottom-4 left-3 right-3 sm:left-auto sm:right-5 sm:max-w-sm z-50 rounded-lg bg-neutral-900 text-white px-4 py-2.5 text-xs font-medium shadow-lg flex items-center justify-center sm:justify-start gap-2 [overflow-wrap:anywhere]">
+          <Check className="w-4 h-4 text-[#00a884] shrink-0" />
           <span>{toast}</span>
         </div>
       )}
@@ -620,7 +620,7 @@ export function TrackingClient({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-full text-left text-xs min-w-[680px]">
               <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase text-[11px]">
                 <tr>
                   <th className="px-4 py-3 font-semibold">Order ID &amp; Link</th>

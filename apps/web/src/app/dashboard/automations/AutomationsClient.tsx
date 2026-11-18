@@ -360,7 +360,7 @@ export function AutomationsClient({
   }
 
   return (
-    <div className="w-full p-4 lg:p-6 space-y-6 bg-neutral-50 min-h-screen">
+    <div className="w-full p-3.5 sm:p-4 lg:p-6 space-y-5 sm:space-y-6 bg-neutral-50 min-h-dvh">
       {/* Header */}
       <div className="bg-white rounded-xl border border-neutral-200 p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
         <div>
@@ -652,8 +652,8 @@ export function AutomationsClient({
         </div>
 
         {/* RIGHT COLUMN: CREATE / EDIT RULE BUILDER */}
-        <div className="lg:col-span-5 bg-white rounded-xl border border-neutral-200 p-5 space-y-4 shadow-2xs sticky top-4">
-          <div className="flex items-center justify-between">
+        <div className="lg:col-span-5 bg-white rounded-xl border border-neutral-200 p-4 sm:p-5 space-y-4 shadow-2xs lg:sticky lg:top-4">
+          <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-bold text-neutral-900">
               {editingRuleId ? "Edit Auto-Reply Rule" : "Create Auto-Reply Rule"}
             </h2>
@@ -670,8 +670,8 @@ export function AutomationsClient({
           </div>
 
           <form onSubmit={handleSaveRule} className="space-y-3 text-xs">
-            <div className="grid grid-cols-4 gap-2.5">
-              <div className="col-span-3">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+              <div className="sm:col-span-3">
                 <label className="block font-medium text-neutral-700 mb-1">
                   Rule Name
                 </label>

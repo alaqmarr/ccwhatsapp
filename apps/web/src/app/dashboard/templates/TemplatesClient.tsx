@@ -1059,7 +1059,7 @@ export function TemplatesClient({
   );
 
   return (
-    <div ref={editorTopRef} className="w-full px-6 py-5 space-y-6">
+    <div ref={editorTopRef} className="w-full px-3.5 sm:px-6 py-4 sm:py-5 space-y-5 sm:space-y-6">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-200 pb-4">
         <div>
@@ -2533,7 +2533,7 @@ export function TemplatesClient({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
+            <table className="w-full text-left border-collapse text-xs min-w-[680px]">
               <thead>
                 <tr className="border-b border-neutral-200 text-neutral-500">
                   <th className="py-2.5 pr-3 font-medium">Template & Preview</th>
@@ -2708,10 +2708,10 @@ export function TemplatesClient({
 
       {/* Send Test WhatsApp Modal */}
       {testModalTpl && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <form
             onSubmit={handleSendTestMessage}
-            className="w-full max-w-md bg-white rounded-lg border border-neutral-200 p-5 space-y-4 shadow-xl text-xs"
+            className="w-full sm:max-w-md max-h-[92dvh] overflow-y-auto bg-white rounded-t-2xl sm:rounded-lg border border-neutral-200 p-4 sm:p-5 space-y-4 shadow-xl text-xs"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">

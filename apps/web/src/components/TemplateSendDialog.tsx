@@ -187,7 +187,7 @@ export function TemplateSendDialog({
     <div className="rounded-xl bg-[#e7ddd4] p-3">
       <div className="max-w-[92%] rounded-lg rounded-tl-none bg-white shadow-2xs px-3 py-2 text-[13px] text-[#111b21] space-y-1.5">
         {renderedHeader && <div className="font-semibold">{renderedHeader}</div>}
-        <div className="whitespace-pre-wrap leading-relaxed">{renderedBody}</div>
+        <div className="whitespace-pre-wrap [overflow-wrap:anywhere] leading-relaxed">{renderedBody}</div>
         {tpl?.footerText && <div className="text-[11px] text-[#667781]">{tpl.footerText}</div>}
         {(tpl?.buttons?.length || tpl?.ctaUrl) ? (
           <div className="pt-1.5 border-t border-neutral-200 space-y-1">
@@ -259,7 +259,7 @@ export function TemplateSendDialog({
           {step === "PICK" && (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
-                <div className="relative flex-1 min-w-[200px]">
+                <div className="relative flex-1 min-w-0 sm:min-w-[200px]">
                   <Search className="w-4 h-4 absolute left-2.5 top-2.5 text-slate-400" />
                   <input
                     autoFocus

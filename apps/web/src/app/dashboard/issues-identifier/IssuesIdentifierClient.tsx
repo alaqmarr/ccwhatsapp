@@ -511,8 +511,8 @@ export function IssuesIdentifierClient({
         </form>
 
         {report?.acrioAnalysis && (
-          <div className="p-4 rounded-xl bg-slate-900 text-slate-100 text-xs sm:text-sm leading-relaxed whitespace-pre-wrap border border-slate-800">
-            <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800 text-[11px] text-indigo-300 font-bold uppercase tracking-wider">
+          <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900 text-slate-100 text-xs sm:text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] border border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-slate-800 text-[11px] text-indigo-300 font-bold uppercase tracking-wider">
               <span>ACRIO Ecosystem Diagnostic Report</span>
               <span>Model: {report.acrioModel || "claude-haiku-5-5"}</span>
             </div>
@@ -569,7 +569,7 @@ export function IssuesIdentifierClient({
             </select>
           </div>
 
-          <div className="relative min-w-[240px] flex-1 max-w-sm">
+          <div className="relative min-w-0 w-full sm:min-w-[240px] sm:flex-1 sm:max-w-sm">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"

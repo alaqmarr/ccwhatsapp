@@ -793,7 +793,7 @@ export function ContactsClient({
   }, [data?.groups]);
 
   return (
-    <div className="w-full px-6 py-5 space-y-5 bg-neutral-50 text-slate-900">
+    <div className="w-full px-3.5 sm:px-6 py-4 sm:py-5 space-y-4 sm:space-y-5 bg-neutral-50 text-slate-900">
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-200 pb-4">
         <div>
@@ -1173,7 +1173,7 @@ export function ContactsClient({
         <div className="lg:col-span-9 bg-white rounded-xl border border-neutral-200/90 shadow-2xs overflow-hidden">
           {/* Search & Filter Toolbar */}
           <div className="p-3.5 border-b border-neutral-200 flex flex-wrap items-center gap-2.5 bg-white">
-            <div className="relative flex-1 min-w-[220px]">
+            <div className="relative flex-1 min-w-0 w-full sm:min-w-[220px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
@@ -1455,7 +1455,7 @@ export function ContactsClient({
             </div>
           ) : data ? (
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
+              <table className="w-full text-left border-collapse min-w-[760px]">
                 <thead>
                   <tr className="bg-slate-50/90 border-b border-neutral-200 text-slate-500">
                     <th className="py-3 pl-4 pr-2 w-9">
@@ -1666,11 +1666,11 @@ export function ContactsClient({
       {/* ADD CONTACT MODAL                                                     */}
       {/* ===================================================================== */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-neutral-200 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-xl">
-            <div className="px-6 py-4 border-b border-neutral-200 flex items-center justify-between sticky top-0 bg-white z-10">
-              <div>
-                <h2 className="font-display text-lg font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl border border-neutral-200 w-full sm:max-w-2xl max-h-[92dvh] overflow-y-auto shadow-xl">
+            <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-neutral-200 flex items-center justify-between gap-2 sticky top-0 bg-white z-10">
+              <div className="min-w-0">
+                <h2 className="font-display text-base sm:text-lg font-bold text-slate-900 truncate">
                   Add New WhatsApp Contact
                 </h2>
                 <p className="text-xs text-slate-500">
@@ -1680,13 +1680,13 @@ export function ContactsClient({
               <button
                 type="button"
                 onClick={() => setShowAddModal(false)}
-                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 cursor-pointer"
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 cursor-pointer shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateContact} className="p-6 space-y-4">
+            <form onSubmit={handleCreateContact} className="p-4 sm:p-6 space-y-4">
               {formError && (
                 <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs font-medium text-red-700">
                   {formError}
@@ -1978,11 +1978,11 @@ export function ContactsClient({
       {/* CSV / EXCEL PASTE IMPORT MODAL                                        */}
       {/* ===================================================================== */}
       {showImportModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-neutral-200 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-xl">
-            <div className="px-6 py-4 border-b border-neutral-200 flex items-center justify-between">
-              <div>
-                <h2 className="font-display text-lg font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl border border-neutral-200 w-full sm:max-w-2xl max-h-[92dvh] overflow-y-auto shadow-xl">
+            <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-neutral-200 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <h2 className="font-display text-base sm:text-lg font-bold text-slate-900">
                   Bulk Import Contacts (CSV or Copy-Paste from Excel)
                 </h2>
                 <p className="text-xs text-slate-500">
@@ -1992,13 +1992,13 @@ export function ContactsClient({
               <button
                 type="button"
                 onClick={() => setShowImportModal(false)}
-                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 cursor-pointer"
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 cursor-pointer shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleBulkImport} className="p-6 space-y-4">
+            <form onSubmit={handleBulkImport} className="p-4 sm:p-6 space-y-4">
               {importError && (
                 <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs font-medium text-red-700">
                   {importError}
@@ -2101,8 +2101,8 @@ export function ContactsClient({
       {/* PUSH SELECTION TO BROADCAST LIST MODAL                                */}
       {/* ===================================================================== */}
       {showBroadcastListModal && data && (
-        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-neutral-200 w-full max-w-md shadow-xl">
+        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl border border-neutral-200 w-full sm:max-w-md max-h-[92dvh] overflow-y-auto shadow-xl">
             <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between">
               <h2 className="font-display text-base font-bold text-slate-900">
                 Send {selectedIds.length} Selected Contacts to Broadcast List
@@ -2180,10 +2180,10 @@ export function ContactsClient({
       {/* ===================================================================== */}
       {drawerContactId && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 flex justify-end">
-          <div className="w-full max-w-xl bg-white h-full overflow-y-auto shadow-2xl border-l border-neutral-200 flex flex-col">
-            <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between sticky top-0 bg-white z-10">
-              <div>
-                <h2 className="font-display text-lg font-bold text-slate-900">
+          <div className="w-full max-w-xl bg-white h-dvh overflow-y-auto shadow-2xl border-l border-neutral-200 flex flex-col">
+            <div className="px-4 sm:px-5 py-3.5 sm:py-4 border-b border-neutral-200 flex items-center justify-between gap-2 sticky top-0 bg-white z-10">
+              <div className="min-w-0">
+                <h2 className="font-display text-base sm:text-lg font-bold text-slate-900 truncate">
                   {drawerDetail ? drawerDetail.name : "Contact 360 Profile"}
                 </h2>
                 {drawerDetail && (
@@ -2222,7 +2222,7 @@ export function ContactsClient({
               </div>
             </div>
 
-            <div className="p-5 space-y-6 flex-1">
+            <div className="p-4 sm:p-5 space-y-5 sm:space-y-6 flex-1 min-w-0">
               {drawerLoading ? (
                 <RightDrawerSkeleton />
               ) : drawerError ? (
@@ -2234,7 +2234,7 @@ export function ContactsClient({
               ) : drawerDetail ? (
                 <>
                   {/* Quick Summary Strip */}
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
                     <div className="p-3 rounded-xl bg-slate-50 border border-neutral-200">
                       <div className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-slate-500">
                         Total Orders
