@@ -2701,8 +2701,12 @@ export function normalizeCustomerProductTypos(text: string): string {
     .replace(/\b(?:lectren|lecturn)\b/gi, "lectern")
     .replace(/\b(?:lockr|lokcer|locekr)\b/gi, "locker")
     .replace(/\b(?:trophie|trofy|tropy)\b/gi, "trophy")
+    .replace(/\b(?:momento|momentos|momemto|momemtos|mementoes)\b/gi, "memento")
+    .replace(/\b(?:locking)\s+for\b/gi, "looking for")
+    .replace(/\b(?:enquery|enqury|inquiery)\b/gi, "enquiry")
+    .replace(/\b(?:flourocent|fluroscent)\b/gi, "fluorescent")
     .replace(/\b(?:brocher|brochur|brocure)\b/gi, "brochure")
-    .replace(/\b(?:catlog|catalouge)\b/gi, "catalogue");
+    .replace(/\b(?:catlog|catalouge|catelogue)\b/gi, "catalogue");
 }
 
 /**
@@ -2802,7 +2806,7 @@ export function classifyAcrioInboundIntent(
 
   // 1. Leadership / Chairperson / Marketing / Department-wise staff contact lookup (Decision #7)
   if (
-    /\b(chairperson|chairman|chairwoman|director|directors|founder|ceo|owner|proprietor|managing\s*director|president|marketing\s*(?:head|person|team|manager|contact|department|number|email|executive)|sales\s*(?:head|manager|person|contact|number|email|department)|department\s*(?:wise|contact|contacts|head|heads|people|number|numbers|email|emails|list)|contact\s*(?:person|details|number|email)\s*(?:for|of)\s*(?:marketing|sales|machines|dispatch|fabrication|management|chairperson|director)|who\s+(?:is|are)\s+(?:the|your)\s+(?:chairperson|chairman|director|founder|ceo|owner|marketing\s*head|sales\s*head|department\s*heads?))\b/i.test(
+    /\b(chairperson|chairman|chairwoman|director|directors|founder|ceo|owner|proprietor|managing\s*director|president|marketing\s*(?:head|person|team|manager|contact|department|number|email|executive)|sales\s*(?:head|manager|person|contact|number|email|department)|department\s*(?:wise|contact|contacts|head|heads|people|number|numbers|email|emails|list)|(?:staff|team)\s*(?:details|contacts?|numbers?|emails?|list)|(?:share|send|give)\s*(?:me\s*)?(?:your\s*)?(?:staff|team)\s*(?:details|contacts?|info|numbers?)|contact\s*(?:person|details|number|email)\s*(?:for|of)\s*(?:marketing|sales|machines|dispatch|fabrication|management|chairperson|director)|who\s+(?:is|are)\s+(?:the|your)\s+(?:chairperson|chairman|director|founder|ceo|owner|marketing\s*head|sales\s*head|department\s*heads?))\b/i.test(
       lower
     )
   ) {
@@ -2811,7 +2815,7 @@ export function classifyAcrioInboundIntent(
       requiresProductLookup: false,
       allowRollingContextFallback: false,
       needsImmediateHandoff: false,
-      reason: "Customer asked for chairperson, leadership, marketing, or department-wise contact details",
+      reason: "Customer asked for chairperson, leadership, marketing, or staff/team contact details",
     };
   }
 
@@ -2833,9 +2837,10 @@ export function classifyAcrioInboundIntent(
   // 3. Explicit request to be connected to a human / sales person right now
   if (
     !/^(?:who|whom|which\s+team|what\s+team|how\s+does)\b/i.test(lower) &&
-    /\b(talk\s*to\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|speak\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|connect\s*me(?:\s*(?:now|right\s*away|please)|\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive))?|yes\s*,?\s*(?:please\s*)?connect\s*me|human\s*agent|real\s*person|call\s*me|can\s+someone\s+call|please\s*call|need\s*a\s*call|want\s*a\s*call|transfer\s*(?:me|chat)\s*to\s*(?:human|sales|team)|assign\s*(?:to\s*)?(?:human|sales|team))\b/i.test(
+    /\b(talk\s*to\s*(?:a\s*|the\s*|your\s*|some\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|speak\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*|some\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive)|connect\s*(?:me\s*)?(?:now|right\s*away|please)?(?:\s*(?:to|with)\s*(?:a\s*|the\s*|your\s*|some\s*)?(?:team|human|person|agent|staff|sales|someone|manager|executive))?|connect\s*me|yes\s*,?\s*(?:please\s*)?connect\s*me|human\s*agent|real\s*person|call\s*me|can\s+someone\s+call|please\s*call|need\s*a\s*call|want\s*a\s*call|transfer\s*(?:me|chat)\s*to\s*(?:human|sales|team|person)|assign\s*(?:to\s*)?(?:human|sales|team))\b/i.test(
       lower
-    )
+    ) &&
+    !/\bconnect\b/i.test(lower.replace(/\bconnect\s*(?:me|to|with)\b/gi, ""))
   ) {
     return {
       intent: "HUMAN_HANDOFF_REQUEST",
@@ -2863,7 +2868,7 @@ export function classifyAcrioInboundIntent(
 
   // 5. Specific order status / tracking lookup
   if (
-    /\b(?:order\s*(?:id|no|number|#)?\s*[:#-]?\s*[a-z0-9-]*\d{3,}|cc-\d+|ce-\d+|track\s+my\s+order|where\s+is\s+my\s+order|order\s+status|dispatch\s+status)\b/i.test(
+    /\b(?:order\s*(?:id|no|number|#)?\s*[:#-]?\s*[a-z0-9-]*\d{3,}|cc-\d+|ce-\d+|track\s+my\s+order|where\s+is\s+my\s+order|order\s+status|status\s+(?:on|of)\s+my\s+order|check\s+my\s+order|update\s+on\s+my\s+order|dispatch\s+status)\b/i.test(
       lower
     )
   ) {
@@ -2971,9 +2976,9 @@ export function classifyAcrioInboundIntent(
     };
   }
 
-  // 12. Company / Factory / Location / Brand info questions ("Where is your factory?", "What does Classic Concepts do?")
+  // 12. Company / Factory / Location / Brand info questions ("Where is your factory?", "Share location", "Map location")
   if (
-    /\b(where\s+(?:are\s+you|is\s+your)\s*(?:located|based|factory|office|workshop|shop|company|plant|unit|from)?|what\s+is\s+your\s+(?:location|address|factory\s+address|office\s+address|working\s+hours|timings)|your\s+(?:factory\s+location|office\s+location|company\s+address|working\s+hours|opening\s+hours)|what\s+(?:does|is)\s+classic\s+(?:concepts|edge(?:\s*53)?)(?:\s+do)?|difference\s+between\s+classic\s+concepts\s+and\s+classic\s+edge|tell\s+me\s+about\s+(?:your\s+company|classic\s+concepts|classic\s+edge(?:\s*53)?)|do\s+you\s+(?:ship|deliver)\s+(?:across|all\s+over|pan)\s+india|do\s+you\s+provide\s+gst(?:\s+invoice|\s+bill)?)\b/i.test(
+    /\b(where\s+(?:are\s+you|is\s+your)\s*(?:located|based|factory|office|workshop|shop|company|plant|unit|from)?|(?:what\s+is|share|send|give)\s*(?:me\s*)?(?:your\s*)?(?:location|map\s*location|google\s*map|address|factory\s*address|office\s*address|office\s*location|factory\s*location|company\s*details)|^\s*(?:map\s*location|location|your\s*location|address|office\s*address)\s*\??$|your\s+(?:factory\s+location|office\s+location|company\s+address|working\s+hours|opening\s+hours)|what\s+(?:does|is)\s+classic\s+(?:concepts|edge(?:\s*53)?)(?:\s+do)?|difference\s+between\s+classic\s+concepts\s+and\s+classic\s+edge|tell\s+me\s+about\s+(?:your\s+company|classic\s+concepts|classic\s+edge(?:\s*53)?)|do\s+you\s+(?:ship|deliver)\s+(?:across|all\s+over|pan)\s+india|do\s+you\s+provide\s+gst(?:\s+invoice|\s+bill)?)\b/i.test(
       lower
     ) &&
     !/\b(under|below|above|price\s+of|cost\s+of|buy|order\s+a|looking\s+for\s+a)\b/i.test(lower)
@@ -2983,7 +2988,65 @@ export function classifyAcrioInboundIntent(
       requiresProductLookup: false,
       allowRollingContextFallback: false,
       needsImmediateHandoff: false,
-      reason: "Customer asked about company, factory location, timings, shipping, or brand overview",
+      reason: "Customer asked about company, location, timings, shipping, or brand overview",
+    };
+  }
+
+  // 12b. Inbound B2B Vendor / Supplier cold pitch (offering materials/services TO us, not buying our products)
+  if (
+    /\b(tried\s+reaching\s+you|rate\s*card|drop\s+samples|turnkey\s+contractors|we\s+are\s+supporting|factory[- ]direct\s+b2b\s+rates|estimation\s+team|when\s+would\s+be\s+a\s+good\s+time\s+to\s+connect|looking\s+to\s+empanel|vendor\s+registration)\b/i.test(
+      lower
+    ) &&
+    !/\b(price\s+of|quote\s+for|looking\s+for\s+(?:a|an|your)|buy|order|podium|pulpit|trophy|memento|polishing\s+machine|bending\s+machine)\b/i.test(
+      lower
+    )
+  ) {
+    return {
+      intent: "OFF_TOPIC",
+      requiresProductLookup: false,
+      allowRollingContextFallback: false,
+      needsImmediateHandoff: false,
+      reason: "Inbound supplier or B2B sales outreach; acknowledge politely without marketing products",
+    };
+  }
+
+  // 12c. Self-Introduction or forwarded company intro blurb without an actual product request
+  const looksLikeIntroduction =
+    /^(?:hi+|hello+|hey+|hii+|good\s*(?:morning|afternoon|evening))[\s,!.]*(?:sir|madam|mam|there|team)?[\s,!.\n]*(?:this\s+is\b|i\s+am\b|i'?m\b|myself\b|we\s+are\b|classic\s+concepts\s+acrylic)/i.test(
+      trimmed
+    ) ||
+    (/\b(whatsapp\.com\/channel|follow\s+the\s+classic\s+concepts|manufacturers?\s+of\s+acrylic\s+products\s+based\s+in)\b/i.test(
+      lower
+    ) &&
+      trimmed.split(/\s+/).length <= 55);
+  const asksBuyingOrProductQuestion =
+    /\b(looking\s+for|need\s+(?:a|an|some|\d+)|want\s+(?:to\s+(?:buy|order|enquire|get)|a|an|some)|price|cost|rate|quote|quotation|how\s+much|share\s+(?:options|details|photos|catalogue|catalog)|can\s+you\s+(?:make|supply|provide|share)|ccp\d{2,4}|yn[-_\s]?jw\d{3,4})\b/i.test(
+      lower
+    );
+  if (looksLikeIntroduction && !asksBuyingOrProductQuestion) {
+    return {
+      intent: "GREETING",
+      requiresProductLookup: false,
+      allowRollingContextFallback: false,
+      needsImmediateHandoff: false,
+      reason: "Self-introduction or intro blurb without an active buying enquiry; reply politely without pushing products",
+    };
+  }
+
+  // 12d. Standalone callback phone number, another-number privacy check, or simple correction feedback ("Wrong answer")
+  if (
+    /^\s*\+?\d[\d\s()-]{8,16}\s*$/.test(trimmed) ||
+    /^\s*check\s+\+?\d[\d\s-]{6,16}\s*$/i.test(trimmed) ||
+    /^\s*(?:wrong\s*answer|incorrect\s*answer|that'?s\s*wrong|not\s*correct)\s*[.!]?\s*$/i.test(
+      trimmed
+    )
+  ) {
+    return {
+      intent: "CONVERSATIONAL_FOLLOWUP",
+      requiresProductLookup: false,
+      allowRollingContextFallback: false,
+      needsImmediateHandoff: false,
+      reason: "Phone number callback, lookup guard, or correction note; handle concisely without catalog dump",
     };
   }
 
@@ -3645,7 +3708,26 @@ export function isProductImageRequest(rawText: string): boolean {
 }
 
 export function isCatalogPdfRequest(rawText: string): boolean {
-  return /\b(pdf|brochures?|catalogues?|catalogs?)\b/i.test(String(rawText || ""));
+  const text = String(rawText || "").trim();
+  const lower = text.toLowerCase();
+  if (!/\b(pdf|brochures?|catalogues?|catalogs?)\b/i.test(lower)) {
+    return false;
+  }
+  // Never fire official brochure PDFs when customer uploaded a document or asks for a quote on THEIR PDF
+  if (/^\s*\[(?:document|pdf|file)\b/i.test(text)) {
+    return false;
+  }
+  if (
+    /\b(?:i\s+(?:gave|sent|shared|attached)|attached|uploaded|my|that|this|ok+a)\s+pdf\b|\bpdf\s+(?:ki\s+)?(?:quotation|quote|price|cost|rate|estimate)\b/i.test(
+      lower
+    ) &&
+    !/\b(?:your|company|product|podium|machine|classic\s*concepts|official)\s+(?:pdf|brochure|catalogue|catalog)\b/i.test(
+      lower
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export interface AcrioMediaAttachment {
@@ -6928,6 +7010,9 @@ async function runAcrioAutonomousTurnCore(
   );
   if (
     intentInfo.intent === "CONVERSATIONAL_FOLLOWUP" &&
+    !/^\s*\+?\d[\d\s()-]{8,16}\s*$/.test(rawText) &&
+    !/^\s*check\s+\+?\d/i.test(rawText) &&
+    !/^\s*(?:wrong\s*answer|incorrect\s*answer|that'?s\s*wrong)\b/i.test(rawText) &&
     (Boolean(quotedReplyContext) || (hasActiveProductMemory && rawText.split(/\s+/).length <= 12))
   ) {
     intentInfo = {
@@ -8144,32 +8229,34 @@ Review the earlier messages in this conversation and answer directly, warmly, an
 - If they say "I am a student", acknowledge warmly that they are welcome to explore all specs and prices for their study or project without any sales pressure.`;
         } else if (intentInfo.intent === "IDENTITY_META") {
           catalogContext = `Turn Intent: IDENTITY_META (The customer is asking who you are or what you can help with).
-Answer directly in 2-3 short lines: you are *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, furniture, signage, awards, stands, boxes: classicconcepts.in) and *Classic Edge 53* (acrylic bending, diamond edge polishing & cutting machines: classicedge.in).
-CRITICAL: Do NOT list or repeat specific products or links from earlier turns in this reply!`;
+Answer directly in 2 short lines: you are *ACRIO*, the WhatsApp assistant for *Classic Concepts* (acrylic podiums, displays, custom fabrication: classicconcepts.in) and *Classic Edge 53* (acrylic machines: classicedge.in), and ask briefly how you can help.
+CRITICAL: Keep it short and natural. Do NOT list product catalogs, menus, or links from earlier turns!`;
         } else if (intentInfo.intent === "COMPANY_INFO") {
-          catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about our company, factory location, contact details, or what we do).
-Answer directly using ONLY the verified public company details from classicconcepts.in above (${liveBrandInfo?.headOfficeLine || "Classic Concepts Acrylic Private Limited, Secunderabad, Telangana"}).`;
+          catalogContext = `Turn Intent: COMPANY_INFO (The customer is asking about company location, address, timings, shipping, or brand info).
+Answer directly and concisely (2 to 4 short lines) using ONLY the verified public company details from classicconcepts.in above (${liveBrandInfo?.headOfficeLine || "Classic Concepts Acrylic Private Limited, Secunderabad, Telangana"}).
+CRITICAL: Do NOT append unrequested product pitches or product links!`;
         } else if (intentInfo.intent === "TOPIC_RESET") {
           catalogContext = `Turn Intent: TOPIC_RESET (The customer wants to ask a different query or start a new topic).
-Acknowledge warmly in 1-2 short lines and invite them to share their new question or requirement.
+Acknowledge warmly in 1 short line and invite them to share their new question.
 CRITICAL: Do NOT carry over, repeat, or pitch any products from earlier messages in the conversation!`;
         } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
-          catalogContext = `Turn Intent: HUMAN_HANDOFF_INFO (The customer is asking an informational question about who you will connect them to).
-Explain clearly that when they want human assistance, you can ping or connect our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* (referencing the verified official team members listed from classicconcepts.in above), and ask if they would like to be connected now or keep exploring.
+          catalogContext = `Turn Intent: HUMAN_HANDOFF_INFO (The customer is asking who you will connect them to).
+Answer in 2 short lines that you connect them to our *Classic Concepts & Classic Edge 53 Team* for custom quotes, bulk orders, or dispatch help, and ask if they would like to connect now.
 CRITICAL: Set "needsHumanHandoff": false because they are only asking *whom* you connect to!`;
         } else if (intentInfo.intent === "OFF_TOPIC") {
           catalogContext = `Turn Intent: OFF_TOPIC.
-Politely state in 1-2 lines that you only assist with *Classic Concepts* acrylic products and *Classic Edge 53* fabrication machines, and ask if they need any display, podium, furniture, signage, or machine.`;
+Reply politely in 1 to 2 short lines without pushing or listing products. If the sender is an outside supplier or vendor pitching their own goods, rate cards, or services to us, politely acknowledge it for the team without pitching our products back at them.`;
         } else if (intentInfo.intent === "CONVERSATIONAL_FOLLOWUP") {
           const activeRecSummary =
             convState.lastRecommendedProducts.length > 0
               ? `\nActive product(s) in this chat: ${convState.lastRecommendedProducts.map((p) => `*${p.name}*${p.priceInr ? ` (₹${p.priceInr.toLocaleString("en-IN")})` : ""} ${p.shortUrl || ""}`).join(", ")}`
               : "";
           catalogContext = `Turn Intent: CONVERSATIONAL_FOLLOWUP.${activeRecSummary}
-Respond naturally and directly to the customer's message using the conversation history and active product context above. Keep it concise (2-4 lines) and do NOT dump a 5-product template list unless they asked for product options.`;
+Answer ONLY what the customer just asked in 1 to 3 concise lines. Do NOT push unrelated products, menus, or product links.`;
         } else {
-          catalogContext = `Turn Intent: GREETING.
-Welcome the customer briefly and ask what they are looking to display, build, or fabricate today (stage podiums/pulpits, acrylic furniture & chairs, office signages, awards, custom acrylic boxes, or Classic Edge 53 machines). Do NOT dump specific product links yet.`;
+          catalogContext = `Turn Intent: GREETING (or simple introduction).
+Reply warmly in 1 to 2 short lines and ask how you can help them today.
+CRITICAL: Do NOT market products, do NOT send a 4-bullet menu of categories, and do NOT dump links when someone only greets or introduces themselves!`;
         }
       } else {
         const nearestHint =
@@ -8252,11 +8339,14 @@ CORE CONVERSATION, ACCURACY, GIST FORMATTING & BUSINESS RULES:
    -Cheapest vs Costliest Podiums: Our most affordable ready podium is *Acrylic Podium CCP057S* (₹7,150, Top 18" x 14", Height 40"-42") followed by *Acrylic Podium CCP054* (₹14,999, Top 20" x 15"). Our most premium flagship podiums are *Acrylic & Wood Podium CCP111* (₹55,000, Top 27" x 18", 15mm clear acrylic + wood) and *Acrylic Podium CCP094* (₹52,800).
    - If the customer asks for a "cheaper alternative" or "smaller top to save more", recommend compact lower-priced models (like *CCP057S* ₹7,150, *CCP054* ₹14,999, *CCP058* ₹18,150, *CCP057* ₹19,800) instead of repeating expensive models!
    - If the customer asks about "furniture and interiors" or "they sit / Acrylic chair", show our *Acrylic Chair* (₹15,950), *Acrylic Bar Stool* (₹9,350), *Acrylic Console Table* (₹12,100), and *Acrylic Nesting Tables* (₹8,800). NEVER show podiums when they ask for furniture or chairs!
-2. SCANNABLE GIST FORMATTING (NEVER DUMP RAW DATABASE WALLS):
+2. CONCISE, NON-PUSHY WHATSAPP REPLIES (NO OVER-MARKETING):
+   - NEVER push, pitch, or market products when the customer only says "Hi", introduces themselves, asks for location/office hours/contacts, shares a phone number, asks to talk to a person, or sends a supplier/vendor message! Reply politely in 1 to 3 short, natural lines and stop there.
+   - Do NOT end every reply with menus, product links, or "check out our range" sales pitches unless the customer actually asked to browse or compare products.
+   - Keep EVERY reply short, crisp, and directly to the point (typically 2 to 5 lines on WhatsApp; target under 450 characters unless quoting multiple items).
    - NEVER repeat "Hi" or "Hello" if Already Greeted Earlier is YES.
-   - Never start every message with the robotic phrase "Here are the matching options from our range:". Vary your opening naturally based on what the user asked!
-   - For a single product ("Tell me about CCP111" or "CCP065"), give a crisp 5-6 line Gist: Price, Height & Top size, Build/Pillars/Warranty, Variants/Colours, 2-3 key highlights, and the https://ccapl.cc/... shortlink. Only list Bottom Sheet, Front Panel, Shelf, or Logo Panel sizes if the user specifically asks for full/panel dimensions.
-   - When listing multiple options, show at most 3 best matches (with 1-line key size + shortlink each) so the message is effortless to read on mobile.
+   - Never start every message with robotic templates like "Here are the matching options from our range:".
+   - For a single product ("Tell me about CCP111" or "CCP065"), give a crisp 4 to 5 line Gist: Price, Height & Top size, Key highlight/Warranty, Variants, and shortlink. Only list full panel dimensions if specifically asked.
+   - When listing multiple options, show at most 3 concise matches (1 line of key size + shortlink each) so mobile users can scan fast.
    - If "HIDE_PRICES_ACTIVE" is set (user asked "without mentioning prices"), DO NOT show any ₹ prices anywhere in the message!
    - Use single asterisks *like this* for WhatsApp bold (NEVER **double asterisks**, NEVER [markdown](links), NEVER ### headings).
 3. MULTI-ITEM PROJECT TOTALLING & BUDGET SOLVING:
@@ -8435,11 +8525,11 @@ Return ONLY valid JSON:
             actor: params.customerName,
             question: rawText,
             model: LOCKED_CLAUDE_MODEL,
-            effort: "medium",
+            effort: turnEffort,
             outcomeSource: handoff ? "HUMAN_HANDOFF" : "LIVE_AI",
             responseCacheStatus: "BYPASS",
             catalogCacheStatus: cacheMeta.catalogCacheStatus,
-            cacheDetails: `${cacheMeta.cacheSummary} • intent=${intentInfo.intent} • Multi-turn live Claude Haiku 5.5 Medium`,
+            cacheDetails: `${cacheMeta.cacheSummary} • intent=${intentInfo.intent} • effort=${turnEffort}`,
             productLookupTriggered: intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling,
             productLookupQuery: usedLookupQuery,
             productLookupBudget: budgetLabel,
@@ -8447,9 +8537,12 @@ Return ONLY valid JSON:
               intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling
                 ? allItems.length
                 : 0,
-            productsLookedUp: (linkedInReply.length > 0 ? linkedInReply : contextMatches).map(
-              mapProductToLogItem
-            ),
+            productsLookedUp:
+              intentInfo.requiresProductLookup || projectPlan.isMultiItemOrTotalling
+                ? (linkedInReply.length > 0 ? linkedInReply : contextMatches).map(
+                    mapProductToLogItem
+                  )
+                : [],
             steps,
             response: cleanedReply,
             durationMs: Date.now() - started,
@@ -8536,11 +8629,11 @@ Return ONLY valid JSON:
     priority = "NORMAL";
   } else if (intentInfo.intent === "GREETING") {
     fallbackReply = alreadyGreeted
-      ? `Tell me what you are looking to display, make, or solve today:\n\n• *Acrylic Podiums, Pulpits & Display Stands*\n• *Acrylic Furniture, Chairs & Office Signages*\n• *Awards, Trophies & Corporate Gifts*\n• *Classic Edge 53 Acrylic Machines & Tools*\n\nShare a few details and I will suggest the best options!`
-      : `Hello ${firstName}! Welcome to *Classic Concepts* & *Classic Edge 53*.\n\nHow can I help you today?\n• *Stage Podiums, Pulpits & Trophies*\n• *Acrylic Furniture, Chairs & Office Signages*\n• *Custom-Size Acrylic Boxes & Machine Covers*\n• *Acrylic Bending, Polishing & Cutting Machines*\n\nTell me what you have in mind!`;
+      ? `How can I help you today?`
+      : `Hello ${firstName}! Welcome to *Classic Concepts*. How can I help you today?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "IDENTITY_META") {
-    fallbackReply = `${greetOnce}I am *ACRIO*, the WhatsApp product & fabrication assistant for *Classic Concepts* (ready & custom acrylic podiums, furniture, signages, awards, stands, and boxes) and *Classic Edge 53* (industrial acrylic bending, diamond edge polishing, and cutting machines).\n\nTell me what you want to display, build, or fabricate and I will share matching options and prices right away.`;
+    fallbackReply = `${greetOnce}I am *ACRIO*, the assistant for *Classic Concepts* and *Classic Edge 53*. How can I help you today?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "COMPANY_INFO") {
     const officePhoneLine = liveBrandInfo?.officePhones?.length
@@ -8548,19 +8641,19 @@ Return ONLY valid JSON:
       : "+91 79016 50662, +91 79016 50663";
     const officeEmailLine = liveBrandInfo?.officeEmails?.[0] || "sales@classicconcepts.in";
     const officeWa = liveBrandInfo?.officeWhatsapp || "+91 73372 20568";
-    fallbackReply = `${greetOnce}*Classic Concepts* manufactures cast-acrylic stage podiums, furniture, signages, trophies, hotel/retail stands, and custom acrylic boxes, while *Classic Edge 53* supplies industrial acrylic bending, diamond edge polishing, and cutting machines from our facility at ${
+    fallbackReply = `${greetOnce}*Classic Concepts Acrylic Pvt. Ltd.*\n${
       liveBrandInfo?.address ||
       "1-6-44/2 Muthyam Reddy Estate, Yadamma Nagar, Kanajiguda, Alwal, Secunderabad, Telangana 500015"
-    } (Phones: ${officePhoneLine} | WhatsApp: ${officeWa} | ${officeEmailLine}).\n\nWe ship pan-India with full GST billing. What product or machine can I help you check today?`;
+    }\nPhone: ${officePhoneLine} | WhatsApp: ${officeWa} | ${officeEmailLine}`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "TOPIC_RESET") {
-    fallbackReply = `${greetOnce}Sure, let's start fresh! Tell me what you are looking for or what question you have, and I will help you right away.`;
+    fallbackReply = `${greetOnce}Sure, let's start fresh. What can I help you with today?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
-    fallbackReply = `${greetOnce}When you ask to speak with someone, I can connect you with our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* so a specialist can help you with custom quotes, bulk pricing, or order dispatch.\n\nWould you like me to connect our *Sales Team* now, or would you like to check a product first?`;
+    fallbackReply = `${greetOnce}When you ask to speak with someone, I connect you to our *Classic Concepts & Classic Edge 53 Team*. Would you like me to connect you now?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "OFF_TOPIC") {
-    fallbackReply = `${greetOnce}I only help with *Classic Concepts* acrylic products (podiums, furniture, signages, awards, stands, custom boxes) and *Classic Edge 53* acrylic fabrication machines.\n\nLet me know if you need options or pricing for any acrylic product or machine!`;
+    fallbackReply = `${greetOnce}Thank you for sharing this with us. I only assist with *Classic Concepts* and *Classic Edge 53* product enquiries, so please let me know if you need help with those.`;
     priority = "NORMAL";
   } else if (/\b(cloudy|white\s*edge|rough\s*edge|dull\s*edge|polish\s*problem|flame|burn|bubble|crack|bend\s*issue|warping|scratch|yellow)\b/i.test(lower)) {
     const issueSolutions: string[] = [];
@@ -9731,7 +9824,22 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
   const started = Date.now();
   const steps: AiTraceStep[] = [];
   const firstName = params.customerName.split(/[\s(]/)[0] || "there";
-  const combinedQuery = `${params.productName || ""} ${params.message || ""}`.trim();
+  const rawMessage = String(params.message || "");
+  const staffNoteMatch = rawMessage.match(/\[Staff Note(?:\s*\/\s*Tone)?:\s*([^\]]+)\]/i);
+  const staffNote = staffNoteMatch ? staffNoteMatch[1].trim() : "";
+  const cleanCustomerMessage = rawMessage
+    .replace(/\[Staff Note(?:\s*\/\s*Tone)?:\s*[^\]]+\]/gi, "")
+    .trim();
+  const isStaffDecline = Boolean(
+    staffNote &&
+      /\b(we\s+don'?t\s+deal|do\s+not\s+deal|we\s+do\s+not\s+make|don'?t\s+make|don'?t\s+manufacture|do\s+not\s+manufacture|we\s+don'?t\s+(?:supply|sell|offer|provide)|not\s+in\s+our\s+range|out\s+of\s+scope)\b/i.test(
+        staffNote
+      )
+  );
+  const isTestProbe =
+    /^(?:test|testing|abcd|dummy|sample|asdf)$/i.test(cleanCustomerMessage) ||
+    (/^test$/i.test(cleanCustomerMessage) && !params.productName);
+  const combinedQuery = `${params.productName || ""} ${cleanCustomerMessage}`.trim();
   const lower = combinedQuery.toLowerCase();
   const logWebsite: AiLogWebsite =
     params.brand === "CLASSIC_EDGE_53" ? "CLASSIC_EDGE_53" : "CLASSIC_CONCEPTS";
@@ -9741,7 +9849,10 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
       : "Classic Concepts (classicconcepts.in -> Hub)";
 
   const { allItems, cacheMeta } = await getCachedEcosystemCatalog();
-  const matches = searchEcosystemItems(allItems, combinedQuery, 4);
+  const matches =
+    isStaffDecline || isTestProbe
+      ? []
+      : searchEcosystemItems(allItems, combinedQuery, 4);
 
   steps.push(
     {
@@ -9754,7 +9865,9 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
     {
       stepNumber: 2,
       label: "Looked up matching products for website enquiry",
-      detail: `query="${combinedQuery.slice(0, 80)}", matched=${matches.length} of ${allItems.length}`,
+      detail: isStaffDecline
+        ? `Skipped product lookup because Staff Note says we do not deal`
+        : `query="${combinedQuery.slice(0, 80)}", matched=${matches.length} of ${allItems.length}`,
       durationMs: Date.now() - started,
       status: "OK",
     }
@@ -9764,20 +9877,23 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
     params.brand === "CLASSIC_EDGE_53"
       ? "Acrylic Machines (CE53)"
       : "General Enquiry";
-  let priority: "URGENT" | "HIGH" | "NORMAL" = "HIGH";
+  let priority: "URGENT" | "HIGH" | "NORMAL" =
+    isStaffDecline || isTestProbe ? "NORMAL" : "HIGH";
 
-  if (/machine|laser|router|polish|diamond|bending|bender|heater|yn-|ce53|blade|cutter/i.test(lower)) {
-    smartCategory = "Acrylic Machines (CE53)";
-    priority = "HIGH";
-  } else if (/podium|lectern|pulpit|stage|auditorium/i.test(lower)) {
-    smartCategory = "Podiums & Stage";
-    priority = /urgent|tomorrow|friday|today|week/i.test(lower) ? "URGENT" : "HIGH";
-  } else if (/trophy|trophies|memento|award|plaque/i.test(lower)) {
-    smartCategory = "Awards & Trophies";
-  } else if (/hotel|banquet|menu|qr|resort|table\s*stand/i.test(lower)) {
-    smartCategory = "Hotel & Banquet";
-  } else if (/cover|guard|enclosure|box|custom|mm|inch/i.test(lower)) {
-    smartCategory = "Custom Fabrication";
+  if (!isStaffDecline && !isTestProbe) {
+    if (/\b(machine|machines|laser|router|polish|polishing|diamond|bending|bender|heater|yn-|ce53|blade|cutter)\b/i.test(lower)) {
+      smartCategory = "Acrylic Machines (CE53)";
+      priority = "HIGH";
+    } else if (/\b(podium|lectern|pulpit|stage|auditorium)\b/i.test(lower)) {
+      smartCategory = "Podiums & Stage";
+      priority = /urgent|tomorrow|friday|today|week/i.test(lower) ? "URGENT" : "HIGH";
+    } else if (/\b(trophy|trophies|memento|mementos|award|plaque)\b/i.test(lower)) {
+      smartCategory = "Awards & Trophies";
+    } else if (/\b(hotel|banquet|menu|qr|resort|table\s*stand)\b/i.test(lower)) {
+      smartCategory = "Hotel & Banquet";
+    } else if (/\b(cover|guard|enclosure|box|custom|mm|inch|corian|solid\s*surface|cladding|sheet|block)\b/i.test(lower)) {
+      smartCategory = "Custom Fabrication";
+    }
   }
 
   const brandName =
@@ -9790,11 +9906,46 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
     priceInr: m.basePrice,
   }));
 
-  const groupedEnquiryBlock = buildGroupedProductShortLinksSection({
-    allItems,
-    matchedItems: matches,
-    smartCategory,
-  });
+  const groupedEnquiryBlock =
+    isStaffDecline || isTestProbe
+      ? ""
+      : buildGroupedProductShortLinksSection({
+          allItems,
+          matchedItems: matches,
+          smartCategory,
+        });
+
+  if (isTestProbe) {
+    const testReplyWa = `Hi ${firstName}, thanks for reaching out to *${brandName}*. Please reply with the product or requirement you need help with.`;
+    recordAndBroadcastAiLog({
+      website: logWebsite,
+      websiteLabel: logWebsiteLabel,
+      feature: "Website Form Enquiry AI Evaluator",
+      actor: `${params.customerName}${params.customerPhone ? ` (${params.customerPhone})` : ""}`,
+      question: cleanCustomerMessage || params.message,
+      model: "rule-test-enquiry-guard",
+      effort: "low",
+      outcomeSource: "LIVE_AI",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: cacheMeta.catalogCacheStatus,
+      cacheDetails: "Detected test form submission; skipped live AI call",
+      productLookupTriggered: false,
+      productLookupQuery: "",
+      productLookupTotalScanned: 0,
+      productsLookedUp: [],
+      steps,
+      response: testReplyWa,
+      durationMs: Date.now() - started,
+    });
+    return {
+      smartReplyText: testReplyWa.replace(/\*/g, ""),
+      whatsappSummaryText: testReplyWa,
+      smartCategory: "General Enquiry",
+      priority: "NORMAL",
+      recommendedTeamId: "team_sales",
+      matchedItems: [],
+    };
+  }
 
   const clientKey = await resolveSharedAnthropicApiKey("client");
   const adminKey = await resolveSharedAnthropicApiKey("admin");
@@ -9806,27 +9957,26 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
     try {
       const aiCall = await callClaudeHaikuMessagesDetailed({
         apiKey,
-        maxTokens: 2048,
-        effort: "medium",
+        maxTokens: 1200,
+        effort: "low",
         timeoutMs: 24000,
-        system: `You handle new website form enquiries for ${brandName} (Classic Concepts acrylic products & Classic Edge 53 acrylic machines).
-Your job is to give the customer a genuinely helpful, specific first answer right away before our Sales Team follows up!
+        system: `You draft concise, plain-English enquiry replies for ${brandName} (Classic Concepts acrylic products & Classic Edge 53 acrylic machines).
 RULES:
-1. Address "${firstName}" warmly in simple, clear, everyday English.
-2. Directly answer what they asked about, and when sharing matching products, ONLY use the exact https://ccapl.cc/<id> shortlinks and ₹ prices provided in context (never invent links or unrelated items).
-3. Ask 1-2 practical details (like required quantity, delivery city, sheet thickness, or custom size) so our Sales Team can send the final quote immediately.
+1. Address "${firstName}" politely in simple everyday English. Keep replies crisp and direct (3 to 6 short lines).
+2. If [Staff Note / Instruction] says we do not deal in or cannot make the requested item, politely decline in 2 to 4 short lines and STOP. NEVER pitch or recommend unrelated machines or products!
+3. Otherwise answer what they asked using ONLY verified https://ccapl.cc/<id> shortlinks and ₹ prices in context, and ask at most 1 to 2 practical details (quantity, delivery city, or size) so Sales can confirm.
 4. Zero em-dashes ("—"), zero "--", zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
 Return ONLY valid JSON:
 {
   "smartCategory": "${smartCategory}",
   "priority": "${priority}",
-  "smartReplyText": "Email-friendly plain text reply with clear paragraphs and numbered product links",
-  "whatsappSummaryText": "Clean WhatsApp-formatted (*bold* + ₹ prices + grouped numbered shortlinks) version of the same helpful reply"
+  "smartReplyText": "Concise email-friendly plain text reply",
+  "whatsappSummaryText": "Concise WhatsApp-formatted reply (*bold* + shortlinks only if relevant)"
 }`,
         messages: [
           {
             role: "user",
-            content: `Brand: ${brandName}\nCustomer: ${params.customerName}\nProduct Selected: ${params.productName ? cleanDisplayProductName(params.productName) : "General"}\nCustomer Enquiry: ${params.message}\n${groupedEnquiryBlock || "No direct ready catalog match; standard custom fabrication & machine range"}`,
+            content: `Brand: ${brandName}\nCustomer: ${params.customerName}\nProduct Selected: ${params.productName ? cleanDisplayProductName(params.productName) : "General"}\nCustomer Enquiry: ${cleanCustomerMessage || params.message}${staffNote ? `\nStaff Note / Instruction: ${staffNote}` : ""}\n${isStaffDecline ? "Matched Products: NONE (Staff confirmed we do not deal in this item; do NOT pitch any products or machines)." : groupedEnquiryBlock || "No direct ready catalog match; confirm whether custom fabrication applies or ask 1-2 short clarifying details."}`,
           },
         ],
       });
@@ -9841,11 +9991,14 @@ Return ONLY valid JSON:
           const cleanWaText = formatWhatsAppOutboundText(
             String(parsed.whatsappSummaryText || parsed.smartReplyText)
           );
+          const resolvedCategory = isStaffDecline
+            ? "General Enquiry"
+            : parsed.smartCategory || smartCategory;
 
           steps.push({
             stepNumber: 3,
-            label: "Evaluated enquiry with Claude Haiku 5.5 (effort=medium)",
-            detail: `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms -> category="${parsed.smartCategory || smartCategory}"`,
+            label: "Evaluated enquiry with Claude Haiku 5.5 (effort=low)",
+            detail: `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms -> category="${resolvedCategory}"`,
             durationMs: Date.now() - started,
             status: "OK",
           });
@@ -9859,15 +10012,15 @@ Return ONLY valid JSON:
               ? `[Product: ${params.productName}] ${params.message}`
               : params.message,
             model: LOCKED_CLAUDE_MODEL,
-            effort: "medium",
+            effort: "low",
             outcomeSource: "LIVE_AI",
             responseCacheStatus: "BYPASS",
             catalogCacheStatus: cacheMeta.catalogCacheStatus,
             cacheDetails: cacheMeta.cacheSummary,
-            productLookupTriggered: true,
-            productLookupQuery: combinedQuery,
-            productLookupTotalScanned: allItems.length,
-            productsLookedUp: matches.map(mapProductToLogItem),
+            productLookupTriggered: !isStaffDecline,
+            productLookupQuery: isStaffDecline ? "" : combinedQuery,
+            productLookupTotalScanned: isStaffDecline ? 0 : allItems.length,
+            productsLookedUp: isStaffDecline ? [] : matches.map(mapProductToLogItem),
             steps,
             response: cleanWaText,
             durationMs: Date.now() - started,
@@ -9877,7 +10030,7 @@ Return ONLY valid JSON:
           return {
             smartReplyText: cleanEmailText,
             whatsappSummaryText: cleanWaText,
-            smartCategory: parsed.smartCategory || smartCategory,
+            smartCategory: resolvedCategory,
             priority: parsed.priority || priority,
             recommendedTeamId: "team_sales",
             matchedItems,

@@ -1586,12 +1586,11 @@ export async function lookupCustomerOrdersAcrossEcosystem(params: {
 const SHORT_OUTER_ALPHABET =
   "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 const SHORT_INNER_ALPHABET =
-  "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789-@+$=";
+  "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789_-";
 
 /**
  * Generates an exact 6-character URL-safe short ID for `https://ccapl.cc/<6-char-id>`.
- * Outer characters (index 0 & 5) are alphanumeric so WhatsApp/iOS/Android link auto-detection
- * never trims trailing punctuation, while inner characters include numbers + URL special chars.
+ * Strictly uses URL-safe alphanumeric + `_`/`-` characters so WhatsApp, SMS, iOS, and Android link detectors never break URLs.
  */
 export function generateSixCharShortCode(seed?: string, salt = 0): string {
   const bytes = seed
@@ -3652,6 +3651,17 @@ export function searchEcosystemItems(
 
     // Reject weak description-only matches (require at least 14 topical points)
     if (matchScore < 14) continue;
+
+    // Deprioritize spare consumables/parts unless customer explicitly asked for consumables/parts
+    if (
+      item.itemType === "CONSUMABLE" &&
+      !mentionsConsumablesExplicitly &&
+      !isExplicitCodeHit &&
+      effectiveItemType !== "CONSUMABLE"
+    ) {
+      matchScore -= 22;
+      if (matchScore < 14) continue;
+    }
 
     if (wantsMachineOrTool && item.brand === "CLASSIC_EDGE_53") {
       matchScore += 10;
@@ -8517,6 +8527,25 @@ function editDistanceAtMost2(a: string, b: string): boolean {
   return dp[a.length][b.length] <= 2;
 }
 
+const SHORT_CORE_DOMAIN_NOUNS = new Set([
+  "box",
+  "cnc",
+  "led",
+  "rod",
+  "pen",
+  "key",
+  "tag",
+  "mug",
+  "cup",
+  "cap",
+  "lid",
+  "bar",
+  "mat",
+  "bin",
+  "kit",
+  "qr",
+]);
+
 /** The nouns that actually name what the customer wants, for example "mobile phone locker" gives mobile, phone, locker. */
 export function extractCustomerCoreNouns(text: string): string[] {
   const out: string[] = [];
@@ -8527,7 +8556,7 @@ export function extractCustomerCoreNouns(text: string): string[] {
     .replace(/https?:\/\/\S+/g, " ")
     .replace(/[^a-z0-9\s]/g, " ");
   for (const tok of cleaned.split(/\s+/)) {
-    if (tok.length < 4 || /^\d/.test(tok)) continue;
+    if ((tok.length < 4 && !SHORT_CORE_DOMAIN_NOUNS.has(tok)) || /^\d/.test(tok)) continue;
     if (SEARCH_STOPWORDS.has(tok) || CORE_NOUN_IGNORE.has(tok)) continue;
     if (editDistanceAtMost2(tok, "acrylic")) continue; // typos such as "acylirc" or "acrilic"
     if (seen.has(tok)) continue;

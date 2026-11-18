@@ -463,6 +463,8 @@ export async function claimInboundWaMessageId(
   const cleanId = String(waMessageId || "").trim();
   if (!cleanId) return true;
   if (claimedInboundWaIds.has(cleanId)) return false;
+  // Claim synchronously before awaiting DB I/O so parallel webhooks in the same event tick cannot race past SELECT
+  claimedInboundWaIds.add(cleanId);
 
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
@@ -471,11 +473,9 @@ export async function claimInboundWaMessageId(
     args: [cleanId],
   });
   if (existing.rows.length > 0) {
-    claimedInboundWaIds.add(cleanId);
     return false;
   }
 
-  claimedInboundWaIds.add(cleanId);
   return true;
 }
 
@@ -2600,6 +2600,56 @@ async function processInboundAutomationsLocked(
       args: [nowIso, params.conversationId],
     });
     return;
+  }
+
+  // Do not waste AI calls replying to automated OTP / verification SMS alerts
+  if (
+    !params.attachment &&
+    /\b\d{4,8}\s+is\s+your\s+(?:facebook|whatsapp|meta|instagram|google|otp|verification|confirmation)\s+code\b/i.test(
+      workingInboundText
+    )
+  ) {
+    return;
+  }
+
+  // Prevent rapid duplicate identical turns (within 45s) from firing multiple parallel ACRIO replies
+  if (!params.isButtonClick && !params.attachment && !params.buttonPayload) {
+    const normalizedCurrent = workingInboundText.trim().toLowerCase();
+    const dupCheckRes = await conv
+      .execute({
+        sql: `SELECT direction, body, created_at FROM messages
+              WHERE conversation_id = ? AND direction IN ('INBOUND', 'OUTBOUND')
+              ORDER BY created_at DESC LIMIT 6`,
+        args: [params.conversationId],
+      })
+      .catch(() => ({ rows: [] as any[] }));
+    const recentRowsDesc = dupCheckRes.rows;
+    const nowMs = Date.now();
+    let seenLatestMatch = false;
+    let sawOutboundBeforePriorMatch = false;
+    for (const r of recentRowsDesc) {
+      const dir = String(r.direction || "");
+      const bodyNorm = String(r.body || "").trim().toLowerCase();
+      const createdMs = new Date(String(r.created_at || "")).getTime();
+      if (!seenLatestMatch && dir === "INBOUND" && bodyNorm === normalizedCurrent) {
+        seenLatestMatch = true;
+        continue;
+      }
+      if (seenLatestMatch && dir === "OUTBOUND") {
+        sawOutboundBeforePriorMatch = true;
+        continue;
+      }
+      if (
+        seenLatestMatch &&
+        sawOutboundBeforePriorMatch &&
+        dir === "INBOUND" &&
+        bodyNorm === normalizedCurrent &&
+        Number.isFinite(createdMs) &&
+        nowMs - createdMs <= 45_000
+      ) {
+        return;
+      }
+    }
   }
 
   // Case B: Initial / active ACRIO assignment -> ACRIO handles the query automatically in the backend!
