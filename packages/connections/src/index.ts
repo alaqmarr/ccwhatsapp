@@ -8241,7 +8241,7 @@ Acknowledge warmly in 1 short line and invite them to share their new question.
 CRITICAL: Do NOT carry over, repeat, or pitch any products from earlier messages in the conversation!`;
         } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
           catalogContext = `Turn Intent: HUMAN_HANDOFF_INFO (The customer is asking who you will connect them to).
-Answer in 2 short lines that you connect them to our *Classic Concepts & Classic Edge 53 Team* for custom quotes, bulk orders, or dispatch help, and ask if they would like to connect now.
+Answer in 2 short lines that you connect them to our *Classic Concepts & Classic Edge 53 Sales & Fabrication Team* for custom quotes, bulk orders, or dispatch help, and ask if they would like to connect now.
 CRITICAL: Set "needsHumanHandoff": false because they are only asking *whom* you connect to!`;
         } else if (intentInfo.intent === "OFF_TOPIC") {
           catalogContext = `Turn Intent: OFF_TOPIC.
@@ -8650,7 +8650,7 @@ Return ONLY valid JSON:
     fallbackReply = `${greetOnce}Sure, let's start fresh. What can I help you with today?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "HUMAN_HANDOFF_INFO") {
-    fallbackReply = `${greetOnce}When you ask to speak with someone, I connect you to our *Classic Concepts & Classic Edge 53 Team*. Would you like me to connect you now?`;
+    fallbackReply = `${greetOnce}When you ask to speak with someone, I connect you to our *Classic Concepts & Classic Edge 53 Sales Team*. Would you like me to connect you now?`;
     priority = "NORMAL";
   } else if (intentInfo.intent === "OFF_TOPIC") {
     fallbackReply = `${greetOnce}Thank you for sharing this with us. I only assist with *Classic Concepts* and *Classic Edge 53* product enquiries, so please let me know if you need help with those.`;
