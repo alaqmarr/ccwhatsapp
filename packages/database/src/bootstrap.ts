@@ -29,7 +29,7 @@ async function runBootstrapInternal(): Promise<void> {
   const bill = getRawLibSqlClient("billing_ops");
   const queue = getRawLibSqlClient("queue_jobs");
 
-  // Enable WAL mode & busy timeout across all 7 LibSQL databases for fast concurrent reads & writes
+  // Enforce mandatory SQLite concurrency & memory pragmas across all 7 database singletons
   await Promise.all([
     auth.execute("PRAGMA journal_mode = WAL;"),
     conv.execute("PRAGMA journal_mode = WAL;"),
@@ -38,6 +38,13 @@ async function runBootstrapInternal(): Promise<void> {
     mkt.execute("PRAGMA journal_mode = WAL;"),
     bill.execute("PRAGMA journal_mode = WAL;"),
     queue.execute("PRAGMA journal_mode = WAL;"),
+    auth.execute("PRAGMA synchronous = NORMAL;"),
+    conv.execute("PRAGMA synchronous = NORMAL;"),
+    contacts.execute("PRAGMA synchronous = NORMAL;"),
+    crm.execute("PRAGMA synchronous = NORMAL;"),
+    mkt.execute("PRAGMA synchronous = NORMAL;"),
+    bill.execute("PRAGMA synchronous = NORMAL;"),
+    queue.execute("PRAGMA synchronous = NORMAL;"),
     auth.execute("PRAGMA busy_timeout = 5000;"),
     conv.execute("PRAGMA busy_timeout = 5000;"),
     contacts.execute("PRAGMA busy_timeout = 5000;"),
@@ -45,6 +52,20 @@ async function runBootstrapInternal(): Promise<void> {
     mkt.execute("PRAGMA busy_timeout = 5000;"),
     bill.execute("PRAGMA busy_timeout = 5000;"),
     queue.execute("PRAGMA busy_timeout = 5000;"),
+    auth.execute("PRAGMA foreign_keys = ON;"),
+    conv.execute("PRAGMA foreign_keys = ON;"),
+    contacts.execute("PRAGMA foreign_keys = ON;"),
+    crm.execute("PRAGMA foreign_keys = ON;"),
+    mkt.execute("PRAGMA foreign_keys = ON;"),
+    bill.execute("PRAGMA foreign_keys = ON;"),
+    queue.execute("PRAGMA foreign_keys = ON;"),
+    auth.execute("PRAGMA temp_store = MEMORY;"),
+    conv.execute("PRAGMA temp_store = MEMORY;"),
+    contacts.execute("PRAGMA temp_store = MEMORY;"),
+    crm.execute("PRAGMA temp_store = MEMORY;"),
+    mkt.execute("PRAGMA temp_store = MEMORY;"),
+    bill.execute("PRAGMA temp_store = MEMORY;"),
+    queue.execute("PRAGMA temp_store = MEMORY;"),
   ]);
 
   // 1. core_auth.db
@@ -2020,13 +2041,15 @@ async function seedInitialOperationalData(): Promise<void> {
     }
   }
 
-  // Ensure any unassigned open chats always start with System (ACRIO)
+  // Ensure only truly unassigned OPEN chats (with no human team yet) default to System (ACRIO)
   await conv.execute(
     `UPDATE conversations
      SET assigned_staff_id = 'ACRIO',
          assigned_staff_name = 'ACRIO',
          assigned_team_name = 'System (ACRIO)'
-     WHERE status != 'RESOLVED' AND (assigned_staff_id IS NULL OR assigned_staff_id = 'ACRIO')`
+     WHERE status = 'OPEN'
+       AND (assigned_team_id IS NULL OR TRIM(assigned_team_id) = '')
+       AND (assigned_staff_id IS NULL OR assigned_staff_id = 'ACRIO')`
   );
   // Keep Sales Team as #1 default priority rank
   await conv.execute(

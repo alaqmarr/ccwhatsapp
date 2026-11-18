@@ -1,8 +1,13 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { createClient, type Client } from "@libsql/client";
-import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
+import type BetterSqlite3 from "better-sqlite3";
+import type { Client } from "@libsql/client";
+import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import {
+  createBetterSqliteCompatClient,
+  openConfiguredSqliteDb,
+} from "./sqlite-compat";
 
 export type DatabaseDomain =
   | "core_auth"
@@ -172,49 +177,74 @@ export function getDatabaseFilePath(domain: DatabaseDomain): string {
   return path.join(/*turbopackIgnore: true*/ resolveDataDirectory(), DATABASE_FILES[domain]);
 }
 
-function toLibSqlFileUrl(absPath: string): string {
-  const normalized = absPath.replace(/\\/g, "/");
-  return normalized.startsWith("/") ? `file:${normalized}` : `file:///${normalized}`;
-}
-
 interface CachedMultiDb {
+  nativeDbs: Partial<Record<DatabaseDomain, BetterSqlite3.Database>>;
   rawClients: Partial<Record<DatabaseDomain, Client>>;
-  drizzleClients: Partial<Record<DatabaseDomain, LibSQLDatabase>>;
+  drizzleClients: Partial<Record<DatabaseDomain, BetterSQLite3Database>>;
   bootstrapped?: Promise<void>;
+  mainCatalogNativeDb?: BetterSqlite3.Database | null;
+  classicEdgeNativeDb?: BetterSqlite3.Database | null;
   mainCatalogClient?: Client | null;
   classicEdgeClient?: Client | null;
 }
 
 const globalDbHolder = globalThis as unknown as {
-  __ccMultiLibSql?: CachedMultiDb;
+  __ccMultiSqlite?: CachedMultiDb;
 };
 
 function getHolder(): CachedMultiDb {
-  if (!globalDbHolder.__ccMultiLibSql) {
-    globalDbHolder.__ccMultiLibSql = {
+  if (!globalDbHolder.__ccMultiSqlite) {
+    globalDbHolder.__ccMultiSqlite = {
+      nativeDbs: {},
       rawClients: {},
       drizzleClients: {},
     };
   }
-  return globalDbHolder.__ccMultiLibSql;
+  return globalDbHolder.__ccMultiSqlite;
+}
+
+/**
+ * Returns the single globalThis better-sqlite3 instance for a domain, initialized once with
+ * WAL mode, synchronous=NORMAL, busy_timeout=5000, foreign_keys=ON, and temp_store=MEMORY.
+ */
+export function getNativeSqliteDb(domain: DatabaseDomain): BetterSqlite3.Database {
+  const holder = getHolder();
+  if (!holder.nativeDbs[domain] || !holder.nativeDbs[domain]!.open) {
+    const filePath = getDatabaseFilePath(domain);
+    holder.nativeDbs[domain] = openConfiguredSqliteDb(filePath, { enableWal: true });
+    // Clear derived wrappers if handle had to be re-opened
+    delete holder.rawClients[domain];
+    delete holder.drizzleClients[domain];
+  }
+  return holder.nativeDbs[domain]!;
+}
+
+/**
+ * Runs a synchronous write transaction with BEGIN IMMEDIATE (`tx.immediate()`) to prevent SQLITE_BUSY upgrades.
+ * Never await network calls inside `fn`.
+ */
+export function runImmediateTransaction<T>(
+  domain: DatabaseDomain,
+  fn: (db: BetterSqlite3.Database) => T
+): T {
+  const db = getNativeSqliteDb(domain);
+  const tx = db.transaction(() => fn(db));
+  return tx.immediate();
 }
 
 export function getRawLibSqlClient(domain: DatabaseDomain): Client {
   const holder = getHolder();
   if (!holder.rawClients[domain]) {
-    const filePath = getDatabaseFilePath(domain);
-    const client = createClient({
-      url: toLibSqlFileUrl(filePath),
-    });
-    holder.rawClients[domain] = client;
+    const db = getNativeSqliteDb(domain);
+    holder.rawClients[domain] = createBetterSqliteCompatClient(db);
   }
   return holder.rawClients[domain]!;
 }
 
-export function getDrizzleDb(domain: DatabaseDomain): LibSQLDatabase {
+export function getDrizzleDb(domain: DatabaseDomain): BetterSQLite3Database {
   const holder = getHolder();
   if (!holder.drizzleClients[domain]) {
-    holder.drizzleClients[domain] = drizzle(getRawLibSqlClient(domain));
+    holder.drizzleClients[domain] = drizzle(getNativeSqliteDb(domain));
   }
   return holder.drizzleClients[domain]!;
 }
@@ -1954,9 +1984,9 @@ function getMainCatalogClient(): Client | null {
     holder.mainCatalogClient = null;
     return null;
   }
-  holder.mainCatalogClient = createClient({
-    url: toLibSqlFileUrl(dbPath),
-  });
+  const db = openConfiguredSqliteDb(dbPath, { enableWal: false });
+  holder.mainCatalogNativeDb = db;
+  holder.mainCatalogClient = createBetterSqliteCompatClient(db);
   return holder.mainCatalogClient;
 }
 
@@ -1968,9 +1998,9 @@ function getClassicEdgeClient(): Client | null {
     holder.classicEdgeClient = null;
     return null;
   }
-  holder.classicEdgeClient = createClient({
-    url: toLibSqlFileUrl(dbPath),
-  });
+  const db = openConfiguredSqliteDb(dbPath, { enableWal: false });
+  holder.classicEdgeNativeDb = db;
+  holder.classicEdgeClient = createBetterSqliteCompatClient(db);
   return holder.classicEdgeClient;
 }
 

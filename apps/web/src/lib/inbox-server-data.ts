@@ -240,6 +240,8 @@ export interface ConversationDetailBundle {
     collaborators: ConversationCollaborator[];
   };
   messages: ChatMessage[];
+  hasOlderMessages?: boolean;
+  oldestMessageCursor?: string | null;
   assignments?: ConversationAssignmentItem[];
   customer: CustomerProfile | null;
   orders: CustomerOrder[];
@@ -296,7 +298,7 @@ export async function getConversationDetailServer(
     await Promise.all([
       conv.execute({
         sql: `SELECT * FROM (
-                SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 250
+                SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 251
               ) ORDER BY created_at ASC`,
         args: [conversationId],
       }),
@@ -336,7 +338,11 @@ export async function getConversationDetailServer(
     () => fetchWebsiteEnquiriesForCustomer(lookupKey)
   );
 
-  const messages: ChatMessage[] = msgRes.rows.map((m) => {
+  const rawMsgRows = msgRes.rows;
+  const hasOlderMessages = rawMsgRows.length > 250;
+  const trimmedMsgRows = hasOlderMessages ? rawMsgRows.slice(rawMsgRows.length - 250) : rawMsgRows;
+
+  const messages: ChatMessage[] = trimmedMsgRows.map((m) => {
     let metadata: Record<string, unknown> | null = null;
     if (m.metadata_json) {
       try {
@@ -436,6 +442,8 @@ export async function getConversationDetailServer(
       collaborators: parseConversationCollaborators(cRow.collaborators_json),
     },
     messages,
+    hasOlderMessages,
+    oldestMessageCursor: messages[0]?.createdAt || null,
     assignments,
     customer: customerRow
       ? {

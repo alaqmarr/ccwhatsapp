@@ -57,8 +57,58 @@ export async function GET(
   await ensureDatabasesBootstrapped();
 
   const { id } = await context.params;
+  const url = new URL(_req.url);
+  const modeParam = url.searchParams.get("mode");
+  const beforeCursor = url.searchParams.get("before")?.trim() || "";
+  const isPrefetch = url.searchParams.get("prefetch") === "1";
+
   const conv = getRawLibSqlClient("conversations");
   const crm = getRawLibSqlClient("crm_orders");
+
+  if (modeParam === "older" && beforeCursor) {
+    const olderRes = await conv.execute({
+      sql: `SELECT * FROM (
+              SELECT * FROM messages
+              WHERE conversation_id = ? AND created_at < ?
+              ORDER BY created_at DESC
+              LIMIT 151
+            ) ORDER BY created_at ASC`,
+      args: [id, beforeCursor],
+    });
+    const rawOlder = olderRes.rows;
+    const hasOlderMessages = rawOlder.length > 150;
+    const trimmedOlder = hasOlderMessages ? rawOlder.slice(rawOlder.length - 150) : rawOlder;
+    const olderMessages = trimmedOlder.map((m) => {
+      let metadata: Record<string, unknown> | null = null;
+      if (m.metadata_json) {
+        try {
+          metadata = JSON.parse(String(m.metadata_json));
+        } catch {
+          metadata = null;
+        }
+      }
+      return {
+        id: String(m.id),
+        direction: String(m.direction),
+        senderType: String(m.sender_type),
+        senderName: String(m.sender_name),
+        messageType: String(m.message_type),
+        billingCategory: String(m.billing_category),
+        body: String(m.body),
+        templateName: m.template_name ? String(m.template_name) : null,
+        waMessageId: m.wa_message_id ? String(m.wa_message_id) : null,
+        deliveryStatus: String(m.delivery_status),
+        createdAt: String(m.created_at),
+        metadata,
+      };
+    });
+    return NextResponse.json({
+      ok: true,
+      messages: olderMessages,
+      hasOlderMessages,
+      oldestMessageCursor: olderMessages[0]?.createdAt || null,
+    });
+  }
 
   const convRes = await conv.execute({
     sql: `SELECT * FROM conversations WHERE id = ? LIMIT 1`,
@@ -69,7 +119,6 @@ export async function GET(
   }
   const cRow = convRes.rows[0] as Record<string, unknown>;
   const customerPhone = String(cRow.customer_phone);
-  const isPrefetch = new URL(_req.url).searchParams.get("prefetch") === "1";
   const shouldClearUnread = !isPrefetch && Number(cRow.unread_count ?? 0) > 0;
 
   const [
@@ -85,7 +134,7 @@ export async function GET(
   ] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM (
-              SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 250
+              SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 251
             ) ORDER BY created_at ASC`,
       args: [id],
     }),
@@ -126,7 +175,11 @@ export async function GET(
     () => fetchWebsiteEnquiriesForCustomer(lookupKey)
   );
 
-  const messages = msgRes.rows.map((m) => {
+  const rawMsgRows = msgRes.rows;
+  const hasOlderMessages = rawMsgRows.length > 250;
+  const trimmedMsgRows = hasOlderMessages ? rawMsgRows.slice(rawMsgRows.length - 250) : rawMsgRows;
+
+  const messages = trimmedMsgRows.map((m) => {
     let metadata: Record<string, unknown> | null = null;
     if (m.metadata_json) {
       try {
@@ -235,6 +288,8 @@ export async function GET(
       collaborators: parseConversationCollaborators(cRow.collaborators_json),
     },
     messages,
+    hasOlderMessages,
+    oldestMessageCursor: messages[0]?.createdAt || null,
     assignments,
     teams,
     customer: customerRow

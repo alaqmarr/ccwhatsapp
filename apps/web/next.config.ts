@@ -71,7 +71,7 @@ const nextConfig: NextConfig = {
     "@cc/ui",
     "@cc/workers",
   ],
-  serverExternalPackages: ["@libsql/client", "nodemailer", "ioredis"],
+  serverExternalPackages: ["better-sqlite3", "@libsql/client", "nodemailer", "ioredis"],
 };
 
 export default nextConfig;

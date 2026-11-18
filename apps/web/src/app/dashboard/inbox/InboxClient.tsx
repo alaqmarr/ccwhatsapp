@@ -2,9 +2,9 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
-  AtSign,
   BarChart3,
   Check,
   CheckSquare,
@@ -25,7 +25,6 @@ import {
   Paperclip,
   PanelRightClose,
   PanelRightOpen,
-  PhoneCall,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -60,21 +59,17 @@ import {
   formatDateShortIst,
   formatDateTimeShortIst,
   formatShortLinkUrl,
-  formatThreadTimeIst,
-  formatTimeIst,
   stripWhatsAppFormatting,
 } from "@cc/ui";
 import { MentionTextarea } from "@/components/MentionTextarea";
 import {
   AttachmentPickerPopover,
   MediaPreviewLightbox,
-  MessageMediaRenderer,
   PreSendFileConfirmModal,
   StagedAttachmentBar,
   describeAttachmentType,
   extractMessageMedia,
   type NormalizedMessageMedia,
-  type PreSendFileConfirmationTarget,
   type StagedComposerAttachment,
 } from "@/components/MediaAttachmentTools";
 import {
@@ -97,274 +92,66 @@ import type {
   StaffOption,
   TeamOption,
 } from "@/lib/inbox-server-data";
-import { parseRealtimeEventPayload, subscribeRealtimeEvent } from "@/lib/realtime-client";
-
-/** Toast text after saving a note: says who was pinged and whether ACRIO is answering. */
-function describeNoteResult(data: {
-  mentioned?: { id: string; name: string }[];
-  askedAcrio?: boolean;
-  accidentalReplyDetected?: boolean;
-}): string {
-  if (data?.accidentalReplyDetected) {
-    return "Heads up: Saved as an Internal Note, not a WhatsApp reply! Click 'Send in Chat' on the note to send it to the customer.";
-  }
-  const parts = ["Internal note saved."];
-  const names = (data?.mentioned || []).map((m) => m.name);
-  if (names.length > 0) parts.push(`Pinged ${names.join(", ")}.`);
-  if (data?.askedAcrio) parts.push("ACRIO will answer in a private note shortly.");
-  return parts.join(" ");
-}
-
-/** Builds a merged corrected customer quote when a short note ("sorry 3mm thickness") corrects a quoted outbound message. */
-function buildClientMergedCorrection(noteText: string, refBody: string): string | null {
-  const cleanNote = String(noteText || "").trim();
-  const cleanRef = String(refBody || "").trim();
-  if (!cleanNote || !cleanRef || cleanNote.toLowerCase() === cleanRef.toLowerCase()) return null;
-
-  const noteDim = cleanNote.match(/\b(\d+(?:\.\d+)?\s*(?:mm|cm|inch|inches|in|ft))(?:\s*(thickness|thick))?\b/i);
-  const refDim = cleanRef.match(/\b(\d+(?:\.\d+)?\s*(?:mm|cm|inch|inches|in|ft))(?:\s*(thickness|thick))?\b/i);
-  if (
-    noteDim &&
-    refDim &&
-    noteDim[1].replace(/\s+/g, "").toLowerCase() !== refDim[1].replace(/\s+/g, "").toLowerCase()
-  ) {
-    const newDim = noteDim[2]
-      ? `${noteDim[1]} ${noteDim[2]}`
-      : refDim[2]
-      ? `${noteDim[1]} ${refDim[2]}`
-      : noteDim[1];
-    const replaced = cleanRef.replace(refDim[0], newDim).replace(/[,;\s]+$/, "");
-    return /^sorry\b/i.test(cleanNote) && !/^sorry\b/i.test(replaced)
-      ? `Sorry, ${replaced}`
-      : replaced;
-  }
-  return null;
-}
-
-/** True when the text mentions @ACRIO or a teammate by name. */
-function hasTeamMention(text: string, people: { name: string }[]): boolean {
-  const names = ["ACRIO", ...people.map((p) => p.name)];
-  return names.some((name) => {
-    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`(^|[\\s(])@${esc}(?![A-Za-z0-9_])`, "i").test(text);
-  });
-}
-
-/** Makes @ACRIO and @Teammate names bold inside note text. */
-function emphasizeMentions(text: string, people: { name: string }[]): string {
-  let out = text;
-  const names = ["ACRIO", ...people.map((p) => p.name)].sort((a, b) => b.length - a.length);
-  for (const name of names) {
-    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    out = out.replace(new RegExp(`(^|[\\s(])@${esc}(?![A-Za-z0-9_])`, "gi"), (_m, lead) => `${lead}*@${name}*`);
-  }
-  return out;
-}
-
-interface MessageCtaButton {
-  label: string;
-  url: string;
-  footerText?: string | null;
-  orderId?: string | null;
-  providerName?: string | null;
-  awbNumber?: string | null;
-}
-
-function extractCtaButton(m: ChatMessage): MessageCtaButton | null {
-  const raw = m.metadata?.ctaButton;
-  if (!raw || typeof raw !== "object") return null;
-  const obj = raw as Record<string, unknown>;
-  const label = String(obj.label || "").trim();
-  const url = String(obj.url || "").trim();
-  if (!label || !url) return null;
-  return {
-    label,
-    url,
-    footerText: obj.footerText ? String(obj.footerText) : null,
-    orderId: obj.orderId ? String(obj.orderId) : null,
-    providerName: obj.providerName ? String(obj.providerName) : null,
-    awbNumber: obj.awbNumber ? String(obj.awbNumber) : null,
-  };
-}
-
-interface MessageLocationPin {
-  latitude: number;
-  longitude: number;
-  name: string;
-  address: string;
-  mapsUrl: string;
-}
-
-function extractLocationPin(m: ChatMessage): MessageLocationPin | null {
-  const raw = m.metadata?.locationPin;
-  if (!raw || typeof raw !== "object") return null;
-  const obj = raw as Record<string, unknown>;
-  const lat = Number(obj.latitude);
-  const lng = Number(obj.longitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  return {
-    latitude: lat,
-    longitude: lng,
-    name: String(obj.name || "Classic Concepts Acrylic Private Limited").trim(),
-    address: String(obj.address || "").trim(),
-    mapsUrl: String(obj.mapsUrl || `https://maps.google.com/?q=${lat},${lng}`).trim(),
-  };
-}
-
-function extractQuotedReply(m: ChatMessage): QuotedMessageRef | null {
-  const raw = m.metadata?.replyTo;
-  if (!raw || typeof raw !== "object") return null;
-  const obj = raw as Record<string, unknown>;
-  const body = String(obj.body || "").trim();
-  if (!body) return null;
-  return {
-    messageId: obj.messageId ? String(obj.messageId) : null,
-    waMessageId: obj.waMessageId ? String(obj.waMessageId) : null,
-    senderName: String(obj.senderName || "Message"),
-    senderType: obj.senderType ? String(obj.senderType) : "",
-    direction: obj.direction ? String(obj.direction) : "",
-    body,
-  };
-}
-
-function formatShortThreadTime(iso: string, serverNowMs?: number): string {
-  return formatThreadTimeIst(iso, serverNowMs);
-}
-
-function formatWindowCountdown(
-  expiresIso: string | null,
-  nowMs: number
-): { open: boolean; label: string } {
-  if (!expiresIso) {
-    return { open: false, label: "Chat window expired" };
-  }
-  const diffMs = new Date(expiresIso).getTime() - nowMs;
-  if (Number.isNaN(diffMs) || diffMs <= 0) {
-    return { open: false, label: "Chat window expired" };
-  }
-  const totalMinutes = Math.floor(diffMs / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  const timeText =
-    hours > 0
-      ? `${hours}h ${minutes}m`
-      : `${Math.max(1, minutes)}m`;
-  return {
-    open: true,
-    label: `Chat window expires in ${timeText}`,
-  };
-}
-
-function formatWaitingDuration(
-  waitingSinceIso: string | null,
-  nowMs: number
-): { minutes: number; text: string } | null {
-  if (!waitingSinceIso) return null;
-  const start = new Date(waitingSinceIso).getTime();
-  if (Number.isNaN(start)) return null;
-  const elapsedSec = Math.max(0, Math.floor((nowMs - start) / 1000));
-  const mins = Math.floor(elapsedSec / 60);
-  const secs = elapsedSec % 60;
-  if (mins >= 60) {
-    const hrs = Math.floor(mins / 60);
-    const remMins = mins % 60;
-    return { minutes: mins, text: `${hrs}h ${remMins}m` };
-  }
-  if (mins > 0) {
-    return { minutes: mins, text: `${mins}m ${secs}s` };
-  }
-  return { minutes: 0, text: `${secs}s` };
-}
-
-function formatResponseSpeed(seconds: number | null): string | null {
-  if (seconds === null || seconds === undefined) return null;
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return s > 0 ? `${m}m ${s}s` : `${m}m`;
-}
-
-function formatDateTimeShort(iso: string | null | undefined): string {
-  return formatDateTimeShortIst(iso);
-}
-
-const CANNED_QUICK_REPLIES = [
-  {
-    cmd: "/welcome",
-    title: "Warm Welcome",
-    body: "Hello! Thank you for reaching out to Classic Concepts. Please share the product, size, and quantity you need so we can send pricing right away.",
-  },
-  {
-    cmd: "/podiums",
-    title: "Acrylic Podiums Info",
-    body: "We make clear, frosted, and LED-lit acrylic podiums in standard and custom heights, with logo engraving and safe wooden crate shipping across India. How many podiums do you need?",
-  },
-  {
-    cmd: "/awards",
-    title: "Awards & Mementos",
-    body: "We make custom acrylic awards, plaques, and corporate mementos with UV printing or laser engraving. Share your event date, quantity, and logo to get design options.",
-  },
-  {
-    cmd: "/machines",
-    title: "Classic Edge 53 Machines",
-    body: "We supply Classic Edge 53 diamond polishing machines, flame polishers, acrylic benders, and genuine diamond tools across India. Which sheet thickness and daily volume are you working with?",
-  },
-  {
-    cmd: "/custom",
-    title: "Custom Size Quote",
-    body: "Sure, we make custom sizes and thicknesses in our Hyderabad workshop. Please share the length x width x height, thickness (mm), and quantity needed.",
-  },
-  {
-    cmd: "/track",
-    title: "Order Tracking Portal",
-    body: `You can check live dispatch and courier tracking anytime at ${TRACKING_PUBLIC_ORIGIN}. You can also reply here with your order number and I will pull the latest update.`,
-  },
-  {
-    cmd: "/gst",
-    title: "GST Billing & Dispatch",
-    body: "Yes, we provide a full GST tax invoice on all orders. Kindly share your company GSTIN, billing address, and delivery pincode to prepare the proforma invoice.",
-  },
-] as const;
-
-function getInitials(name: string): string {
-  const parts = name
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return "CC";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-}
+import { subscribeRealtimeEvent } from "@/lib/realtime-client";
+import { getDraftKey, useInboxStore } from "@/lib/inbox-store";
+import {
+  appendOptimisticMessageToCache,
+  attachInboxRealtimeQuerySync,
+  fetchConversationDetail,
+  fetchInboxThreads,
+  inboxKeys,
+  loadOlderMessagesIntoCache,
+  mergeServerDetailWithCached,
+  patchOptimisticMessageInCache,
+  prefetchConversationDetail,
+} from "@/lib/inbox-queries";
+import {
+  CANNED_QUICK_REPLIES,
+  describeNoteResult,
+  emphasizeMentions,
+  formatDateTimeShort,
+  formatResponseSpeed,
+  formatWaitingDuration,
+  formatWindowCountdown,
+  getInitials,
+  hasTeamMention,
+} from "./inbox-helpers";
+import { ThreadListPane } from "./ThreadListPane";
+import { MessageTimeline } from "./MessageTimeline";
 
 export function InboxClient({
   initialData,
 }: {
   initialData: InitialInboxPayload;
 }) {
-  const [threads, setThreads] = useState<ConversationSummary[]>(initialData.threads);
-  const [selectedId, setSelectedId] = useState<string | null>(
-    initialData.initialSelectedId
-  );
-  const [detail, setDetail] = useState<ConversationDetailBundle | null>(
-    initialData.initialDetail
-  );
-  const [mobilePane, setMobilePane] = useState<"LIST" | "CHAT" | "INFO">("LIST");
-  const [bulkMode, setBulkMode] = useState<boolean>(false);
-  const [selectedThreadIds, setSelectedThreadIds] = useState<string[]>([]);
+  const queryClient = useQueryClient();
+
+  const storeSelectedId = useInboxStore((s) => s.selectedId);
+  const selectedId = storeSelectedId ?? initialData.initialSelectedId;
+  const initSelectedId = useInboxStore((s) => s.initSelectedId);
+  const setSelectedId = useInboxStore((s) => s.setSelectedId);
+  const selectConversationInStore = useInboxStore((s) => s.selectConversation);
+
+  const mobilePane = useInboxStore((s) => s.mobilePane);
+  const setMobilePane = useInboxStore((s) => s.setMobilePane);
+  const bulkMode = useInboxStore((s) => s.bulkMode);
+  const setBulkMode = useInboxStore((s) => s.setBulkMode);
+  const selectedThreadIds = useInboxStore((s) => s.selectedThreadIds);
+  const setSelectedThreadIds = useInboxStore((s) => s.setSelectedThreadIds);
+  const toggleBulkThreadId = useInboxStore((s) => s.toggleBulkThreadId);
   const [bulkBusy, setBulkBusy] = useState<boolean>(false);
 
-  // Per-conversation client memory cache so switching threads NEVER flashes blank!
-  const detailCacheRef = useRef<Map<string, ConversationDetailBundle>>(new Map());
-  if (
-    initialData.initialSelectedId &&
-    initialData.initialDetail &&
-    !detailCacheRef.current.has(initialData.initialSelectedId)
-  ) {
-    detailCacheRef.current.set(
-      initialData.initialSelectedId,
-      initialData.initialDetail
-    );
-  }
+  useEffect(() => {
+    initSelectedId(initialData.initialSelectedId);
+    if (initialData.initialSelectedId && initialData.initialDetail) {
+      queryClient.setQueryData(
+        inboxKeys.detail(initialData.initialSelectedId),
+        (existing: ConversationDetailBundle | undefined) =>
+          existing ?? initialData.initialDetail ?? undefined
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [teams, setTeams] = useState<TeamOption[]>(initialData.teams);
   const [staffList] = useState<StaffOption[]>(initialData.staffList);
@@ -379,26 +166,91 @@ export function InboxClient({
     initialData.currentUserRole === "SUPERADMIN" ||
     initialData.currentUserRole === "ADMIN";
 
-  const [quickFilter, setQuickFilter] = useState<
-    "MINE" | "ACTIVE" | "WAITING" | "ACRIO" | "UNREAD" | "ALL" | "RESOLVED"
-  >("MINE");
-  const [teamFilter, setTeamFilter] = useState<string>("ALL");
-  const [staffFilter, setStaffFilter] = useState<string>("ALL");
-  const [searchQuery, setSearchQuery] = useState<string>("");
+  const quickFilter = useInboxStore((s) => s.quickFilter);
+  const setQuickFilter = useInboxStore((s) => s.setQuickFilter);
+  const teamFilter = useInboxStore((s) => s.teamFilter);
+  const setTeamFilter = useInboxStore((s) => s.setTeamFilter);
+  const staffFilter = useInboxStore((s) => s.staffFilter);
+  const setStaffFilter = useInboxStore((s) => s.setStaffFilter);
+  const searchQuery = useInboxStore((s) => s.searchQuery);
+  const setSearchQuery = useInboxStore((s) => s.setSearchQuery);
 
-  const [syncingThread, setSyncingThread] = useState<boolean>(false);
-  const [detailError, setDetailError] = useState<string>("");
-  const [threadsError, setThreadsError] = useState<string>("");
-  const [refreshingThreads, setRefreshingThreads] = useState<boolean>(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState<boolean>(false);
   const [nowMs, setNowMs] = useState<number>(initialData.serverNowMs);
 
   // Composer state: Free WhatsApp Reply | Paid Approved Template | Private Internal Team Note
-  const [composerMode, setComposerMode] = useState<"REPLY" | "TEMPLATE" | "NOTE">(
-    "REPLY"
+  const composerMode = useInboxStore((s) => s.composerMode);
+  const setComposerMode = useInboxStore((s) => s.setComposerMode);
+  const draftsByKey = useInboxStore((s) => s.draftsByKey);
+  const setDraft = useInboxStore((s) => s.setDraft);
+  const moveReplyDraftToNote = useInboxStore((s) => s.moveReplyDraftToNote);
+  const replyText = draftsByKey[getDraftKey(selectedId, composerMode)] ?? "";
+  const setReplyText = useCallback(
+    (next: string | ((prev: string) => string)) => {
+      const targetId = useInboxStore.getState().selectedId ?? initialData.initialSelectedId;
+      const targetMode = useInboxStore.getState().composerMode;
+      setDraft(targetId, targetMode, next);
+    },
+    [initialData.initialSelectedId, setDraft]
   );
-  const [replyText, setReplyText] = useState<string>("");
-  const [replyingTo, setReplyingTo] = useState<QuotedMessageRef | null>(null);
-  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  const replyingTo = useInboxStore((s) => s.replyingTo);
+  const setReplyingTo = useInboxStore((s) => s.setReplyingTo);
+  const highlightedMsgId = useInboxStore((s) => s.highlightedMsgId);
+  const setHighlightedMsgId = useInboxStore((s) => s.setHighlightedMsgId);
+
+  const threadsQuery = useQuery<ConversationSummary[]>({
+    queryKey: inboxKeys.threads,
+    queryFn: fetchInboxThreads,
+    initialData: initialData.threads,
+    staleTime: 10_000,
+    refetchInterval: 20_000,
+  });
+  const threads = threadsQuery.data ?? initialData.threads;
+  const refreshingThreads = threadsQuery.isFetching;
+  const threadsError = threadsQuery.isError
+    ? threadsQuery.error instanceof Error
+      ? threadsQuery.error.message
+      : "Could not refresh chats list right now."
+    : "";
+
+  const detailQuery = useQuery<ConversationDetailBundle>({
+    queryKey: inboxKeys.detail(selectedId || "__none__"),
+    enabled: Boolean(selectedId),
+    staleTime: 8_000,
+    refetchInterval: 20_000,
+    initialData:
+      selectedId &&
+      selectedId === initialData.initialSelectedId &&
+      initialData.initialDetail
+        ? initialData.initialDetail
+        : undefined,
+    queryFn: async () => {
+      const targetId = selectedId!;
+      const data = await fetchConversationDetail(targetId);
+      if (Array.isArray(data.teams) && data.teams.length > 0) {
+        setTeams((prev) => (prev.length > 0 ? prev : (data.teams as TeamOption[])));
+      }
+      const merged = mergeServerDetailWithCached(queryClient, targetId, data);
+      queryClient.setQueryData<ConversationSummary[]>(
+        inboxKeys.threads,
+        (prev) =>
+          prev
+            ? prev.map((t) =>
+                t.id === targetId ? { ...t, unreadCount: 0 } : t
+              )
+            : prev
+      );
+      return merged;
+    },
+  });
+  const detail = detailQuery.data ?? null;
+  const syncingThread = Boolean(selectedId) && detailQuery.isFetching;
+  const detailError =
+    selectedId && !detail && detailQuery.isError
+      ? detailQuery.error instanceof Error
+        ? detailQuery.error.message
+        : "Could not load this conversation right now."
+      : "";
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(
     initialData.templates[0]?.id || ""
   );
@@ -424,13 +276,13 @@ export function InboxClient({
   const [trackMessageText, setTrackMessageText] = useState<string>("");
   const [sendingTrackBtn, setSendingTrackBtn] = useState<boolean>(false);
 
-  const [showRightDrawer, setShowRightDrawer] = useState<boolean>(true);
+  const showRightDrawer = useInboxStore((s) => s.showRightDrawer);
+  const setShowRightDrawer = useInboxStore((s) => s.setShowRightDrawer);
   const [toast, setToast] = useState<string>("");
 
   // Right CRM panel tab
-  const [rightTab, setRightTab] = useState<
-    "PROFILE" | "ORDERS" | "NOTES" | "MEDIA" | "HISTORY"
-  >("PROFILE");
+  const rightTab = useInboxStore((s) => s.rightTab);
+  const setRightTab = useInboxStore((s) => s.setRightTab);
 
   // Resolve modal
   const [showResolveModal, setShowResolveModal] = useState<boolean>(false);
@@ -602,120 +454,49 @@ export function InboxClient({
   }
 
   // ------------------------------------------------------------------------
-  // Drafts are kept per chat AND per tab (reply / note). Whatever you typed is only ever shown in the
-  // chat and tab where you typed it, so a half-written message can never end up in the wrong place.
+  // ------------------------------------------------------------------------
+  // Drafts are kept in Zustand per chat AND per tab (`${convId}|${mode}`).
   // ------------------------------------------------------------------------
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [acrioActionBusyId, setAcrioActionBusyId] = useState<string | null>(null);
-  const [stagedAttachment, setStagedAttachment] =
-    useState<StagedComposerAttachment | null>(null);
+  const stagedAttachment = useInboxStore((s) => s.stagedAttachment);
+  const setStagedAttachment = useInboxStore((s) => s.setStagedAttachment);
   const [showAttachmentPicker, setShowAttachmentPicker] = useState(false);
   const [showLocationPopover, setShowLocationPopover] = useState(false);
   const [sendingLocationPin, setSendingLocationPin] = useState(false);
-  const [pendingSendConfirm, setPendingSendConfirm] =
-    useState<PreSendFileConfirmationTarget | null>(null);
+  const pendingSendConfirm = useInboxStore((s) => s.pendingSendConfirm);
+  const setPendingSendConfirm = useInboxStore((s) => s.setPendingSendConfirm);
   const [previewMedia, setPreviewMedia] =
     useState<NormalizedMessageMedia | null>(null);
-  const draftsRef = useRef<Record<string, string>>({});
-  const activeDraftKeyRef = useRef<string>("");
-  const skipDraftSaveRef = useRef(false);
   const lastDraftChatRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const key = `${selectedId || ""}|${composerMode}`;
-    if (activeDraftKeyRef.current === key) return;
-    if (skipDraftSaveRef.current) {
-      skipDraftSaveRef.current = false;
-    } else if (activeDraftKeyRef.current) {
-      draftsRef.current[activeDraftKeyRef.current] = replyText;
-    }
-    activeDraftKeyRef.current = key;
-    setReplyText(draftsRef.current[key] ?? "");
-
-    // Moving to another chat: drop anything attached to the old one.
     if (lastDraftChatRef.current !== (selectedId || null)) {
       lastDraftChatRef.current = selectedId || null;
-      setReplyingTo(null);
       setQuickNoteDraft("");
       setTemplateDialogOpen(false);
-      setStagedAttachment(null);
       setShowAttachmentPicker(false);
       setShowLocationPopover(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, composerMode]);
+  }, [selectedId]);
 
   /** Moves what the person typed into this chat's Note draft (used when they @mention in the reply box). */
   function moveDraftToNote(text: string) {
     if (!selectedId) return;
-    draftsRef.current[`${selectedId}|NOTE`] = text;
-    draftsRef.current[`${selectedId}|REPLY`] = "";
-    skipDraftSaveRef.current = true;
-    setComposerMode("NOTE");
+    moveReplyDraftToNote(selectedId, text);
   }
 
   const appendOptimisticMessage = useCallback(
     (convId: string, msg: ChatMessage, threadPreviewText?: string) => {
-      const base =
-        detailCacheRef.current.get(convId) ||
-        (detail && detail.conversation.id === convId ? detail : null);
-      if (base) {
-        const isNote = msg.messageType === "INTERNAL_NOTE";
-        const nextBundle: ConversationDetailBundle = {
-          ...base,
-          conversation: isNote
-            ? base.conversation
-            : {
-                ...base.conversation,
-                status: "ASSIGNED",
-                assignedStaffId:
-                  base.conversation.assignedStaffId === "ACRIO" ||
-                  !base.conversation.assignedStaffId
-                    ? initialData.currentUserId
-                    : base.conversation.assignedStaffId,
-                assignedStaffName:
-                  base.conversation.assignedStaffId === "ACRIO" ||
-                  !base.conversation.assignedStaffId
-                    ? initialData.currentUserName
-                    : base.conversation.assignedStaffName,
-                assignedTeamId: base.conversation.assignedTeamId || "team_sales",
-                assignedTeamName:
-                  base.conversation.assignedTeamName &&
-                  base.conversation.assignedTeamName !== "ACRIO Assistant" &&
-                  base.conversation.assignedTeamName !== "System (ACRIO)"
-                    ? base.conversation.assignedTeamName
-                    : "Sales Team",
-                waitingSince: null,
-              },
-          messages: [...base.messages, msg],
-        };
-        detailCacheRef.current.set(convId, nextBundle);
-        if (selectedIdRef.current === convId) {
-          setDetail(nextBundle);
-        }
-      }
-
-      if (msg.direction === "OUTBOUND") {
-        const preview = (threadPreviewText ?? msg.body)
-          .replace(/\s*\n+\s*/g, " ")
-          .slice(0, 140);
-        setThreads((prev) =>
-          prev.map((t) =>
-            t.id === convId
-              ? {
-                  ...t,
-                  lastMessagePreview: preview,
-                  lastMessageAt: msg.createdAt,
-                  lastMessageDirection: "OUTBOUND",
-                  lastMessageStatus: msg.deliveryStatus,
-                  waitingSince: null,
-                }
-              : t
-          )
-        );
-      }
+      appendOptimisticMessageToCache(queryClient, {
+        convId,
+        msg,
+        currentUserId: initialData.currentUserId,
+        currentUserName: initialData.currentUserName,
+        threadPreviewText,
+      });
     },
-    [detail, initialData.currentUserId, initialData.currentUserName]
+    [initialData.currentUserId, initialData.currentUserName, queryClient]
   );
 
   const patchOptimisticMessage = useCallback(
@@ -730,52 +511,15 @@ export function InboxClient({
         body?: string;
       }
     ) => {
-      if (patch.id && !patch.id.startsWith("optimistic_")) {
-        recentLocalMsgIdsRef.current.set(patch.id, Date.now());
-      }
-      const cur = detailCacheRef.current.get(convId);
-      if (cur) {
-        const nextCur: ConversationDetailBundle = {
-          ...cur,
-          messages: cur.messages.map((m) =>
-            m.id === tempId
-              ? {
-                  ...m,
-                  ...(patch.id ? { id: patch.id } : {}),
-                  ...(patch.deliveryStatus
-                    ? { deliveryStatus: patch.deliveryStatus }
-                    : {}),
-                  ...(patch.waMessageId !== undefined
-                    ? { waMessageId: patch.waMessageId }
-                    : {}),
-                  ...(patch.metadata !== undefined
-                    ? { metadata: patch.metadata }
-                    : {}),
-                  ...(patch.body !== undefined ? { body: patch.body } : {}),
-                }
-              : m
-          ),
-        };
-        detailCacheRef.current.set(convId, nextCur);
-        if (selectedIdRef.current === convId) {
-          setDetail(nextCur);
-        }
-      }
-      if (patch.deliveryStatus) {
-        setThreads((prev) =>
-          prev.map((t) =>
-            t.id === convId
-              ? {
-                  ...t,
-                  lastMessageDirection: "OUTBOUND",
-                  lastMessageStatus: patch.deliveryStatus!,
-                }
-              : t
-          )
-        );
-      }
+      patchOptimisticMessageInCache(
+        queryClient,
+        convId,
+        tempId,
+        patch,
+        recentLocalMsgIdsRef.current
+      );
     },
-    []
+    [queryClient]
   );
 
   async function sendTemplateMessage(
@@ -849,37 +593,17 @@ export function InboxClient({
     }
   }
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const timelineScrollRef = useRef<((msgId: string) => void) | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
   const optimisticSeqRef = useRef<number>(0);
   const recentLocalMsgIdsRef = useRef<Map<string, number>>(new Map());
-  const prefetchTimestampsRef = useRef<Map<string, number>>(new Map());
-  const prefetchInFlightRef = useRef<Set<string>>(new Set());
-  const threadsFetchInFlightRef = useRef<Promise<void> | null>(null);
   const threadRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastScrolledConvIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    setReplyingTo(null);
-    setHighlightedMsgId(null);
-  }, [selectedId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const chatParam = new URLSearchParams(window.location.search).get("chat");
-    if (chatParam) {
-      setMobilePane("CHAT");
-      if (chatParam !== selectedIdRef.current) {
-        setSelectedId(chatParam);
-        selectedIdRef.current = chatParam;
-        void fetchAndCacheDetail(chatParam, true);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const lastSyncedProfileConvIdRef = useRef<string | null>(
+    initialData.initialDetail?.conversation.id || null
+  );
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -911,45 +635,22 @@ export function InboxClient({
     );
   }, []);
 
-  // Silent background refresh of thread list (coalesced & deduped, never clears existing threads!)
-  const refreshThreadsSilently = useCallback(async (manual = false) => {
-    if (!manual && threadsFetchInFlightRef.current) {
-      return threadsFetchInFlightRef.current;
+  // Populate CRM form inputs when an uncached conversation finishes loading
+  useEffect(() => {
+    if (!detail) return;
+    if (lastSyncedProfileConvIdRef.current !== detail.conversation.id) {
+      lastSyncedProfileConvIdRef.current = detail.conversation.id;
+      syncProfileFields(detail);
     }
-    if (manual) {
-      setRefreshingThreads(true);
-      setThreadsError("");
-    }
-    const run = (async () => {
-      try {
-        const res = await fetch("/api/conversations", { cache: "no-store" });
-        if (!res.ok) {
-          if (manual) {
-            setThreadsError("Could not refresh chats list right now.");
-          }
-          return;
-        }
-        const data = await res.json().catch(() => ({}));
-        if (data.ok && Array.isArray(data.conversations)) {
-          setThreads(data.conversations);
-          setThreadsError("");
-        } else if (manual) {
-          setThreadsError(data.error || "Could not refresh chats list.");
-        }
-      } catch {
-        if (manual) {
-          setThreadsError("Network error while refreshing chats.");
-        }
-      } finally {
-        if (manual) setRefreshingThreads(false);
-        threadsFetchInFlightRef.current = null;
-      }
-    })();
-    if (!manual) {
-      threadsFetchInFlightRef.current = run;
-    }
-    return run;
-  }, []);
+  }, [detail, syncProfileFields]);
+
+  // Silent background refresh of thread list via TanStack Query
+  const refreshThreadsSilently = useCallback(
+    async (_manual = false) => {
+      await queryClient.refetchQueries({ queryKey: inboxKeys.threads });
+    },
+    [queryClient]
+  );
 
   const scheduleThreadsRefresh = useCallback(
     (delayMs = 220) => {
@@ -958,140 +659,81 @@ export function InboxClient({
       }
       threadRefreshTimerRef.current = setTimeout(() => {
         threadRefreshTimerRef.current = null;
-        void refreshThreadsSilently(false);
+        void queryClient.invalidateQueries({ queryKey: inboxKeys.threads });
       }, delayMs);
     },
-    [refreshThreadsSilently]
+    [queryClient]
   );
 
-  const detailFetchSeqRef = useRef<number>(0);
-
-  // Silent detail fetch: renders cached copy at 0ms if switching, or element skeletons + retry if uncached!
+  // Silent detail fetch backed by TanStack Query cache
   const fetchAndCacheDetail = useCallback(
     async (convId: string, updateProfileInputs = false) => {
-      const fetchSeq = ++detailFetchSeqRef.current;
-      const cached = detailCacheRef.current.get(convId);
-      if (cached && selectedIdRef.current === convId) {
-        setDetail(cached);
-        setDetailError("");
-        if (updateProfileInputs) syncProfileFields(cached);
-      } else if (selectedIdRef.current === convId) {
-        setDetail(null);
-        setDetailError("");
-        setSyncingThread(true);
-      }
-
       try {
-        const res = await fetch(`/api/conversations/${convId}`, {
-          cache: "no-store",
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.ok && data.conversation) {
-          const nextBundle: ConversationDetailBundle = {
-            conversation: data.conversation,
-            messages: data.messages || [],
-            assignments: data.assignments || [],
-            customer: data.customer || null,
-            orders: data.orders || [],
-            orderTrackings: data.orderTrackings || [],
-            relations: data.relations || [],
-            websiteEnquiries: data.websiteEnquiries || [],
-            acrio: data.acrio || null,
-            customLinks: data.customLinks || [],
-            verifiedLocation: data.verifiedLocation,
-          };
-          // Preserve any in-flight optimistic messages so background refreshes never make them flicker away
-          const latestCached = detailCacheRef.current.get(convId);
-          const serverIds = new Set(nextBundle.messages.map((m) => m.id));
-          const serverWaIds = new Set(
-            nextBundle.messages.map((m) => m.waMessageId).filter(Boolean)
-          );
-          const pendingOptimistic = (latestCached?.messages || []).filter(
-            (m) =>
-              m.id.startsWith("optimistic_") &&
-              !serverIds.has(m.id) &&
-              !(m.waMessageId && serverWaIds.has(m.waMessageId))
-          );
-          const mergedBundle =
-            pendingOptimistic.length > 0
-              ? {
-                  ...nextBundle,
-                  messages: [...nextBundle.messages, ...pendingOptimistic],
-                }
-              : nextBundle;
-
-          detailCacheRef.current.set(convId, mergedBundle);
-          prefetchTimestampsRef.current.set(convId, Date.now());
-          if (Array.isArray(data.teams) && data.teams.length > 0) {
-            setTeams((prev) => (prev.length > 0 ? prev : data.teams));
-          }
-          if (
-            selectedIdRef.current === convId &&
-            fetchSeq >= detailFetchSeqRef.current
-          ) {
-            setDetail(mergedBundle);
-            setDetailError("");
-            if (updateProfileInputs || !cached) {
-              syncProfileFields(mergedBundle);
+        const bundle = await queryClient.fetchQuery<ConversationDetailBundle>({
+          queryKey: inboxKeys.detail(convId),
+          staleTime: 0,
+          queryFn: async () => {
+            const data = await fetchConversationDetail(convId);
+            if (Array.isArray(data.teams) && data.teams.length > 0) {
+              setTeams((prev) =>
+                prev.length > 0 ? prev : (data.teams as TeamOption[])
+              );
             }
-          }
-          setThreads((prev) =>
-            prev.map((t) =>
-              t.id === convId ? { ...t, unreadCount: 0 } : t
-            )
-          );
-        } else if (!cached && selectedIdRef.current === convId) {
-          setDetailError(
-            data.error || "Could not load this conversation right now."
-          );
+            const merged = mergeServerDetailWithCached(
+              queryClient,
+              convId,
+              data
+            );
+            queryClient.setQueryData<ConversationSummary[]>(
+              inboxKeys.threads,
+              (prev) =>
+                prev
+                  ? prev.map((t) =>
+                      t.id === convId ? { ...t, unreadCount: 0 } : t
+                    )
+                  : prev
+            );
+            return merged;
+          },
+        });
+        if (
+          selectedIdRef.current === convId &&
+          (updateProfileInputs ||
+            lastSyncedProfileConvIdRef.current !== convId)
+        ) {
+          lastSyncedProfileConvIdRef.current = convId;
+          syncProfileFields(bundle);
         }
       } catch {
-        if (!cached && selectedIdRef.current === convId) {
-          setDetailError(
-            "Network error while loading messages. Click Try Again to reload."
-          );
-        }
-      } finally {
-        setSyncingThread(false);
+        // Error state surfaced cleanly via detailQuery
       }
     },
-    [syncProfileFields]
+    [queryClient, syncProfileFields]
   );
 
-  // Silent hover/touch prefetch (?prefetch=1 keeps unread count untouched until user opens chat)
-  const prefetchDetail = useCallback((convId: string) => {
-    if (!convId || convId === selectedIdRef.current) return;
-    if (prefetchInFlightRef.current.has(convId)) return;
-    const lastFetched = prefetchTimestampsRef.current.get(convId) || 0;
-    if (detailCacheRef.current.has(convId) && Date.now() - lastFetched < 20_000) {
-      return;
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const chatParam = new URLSearchParams(window.location.search).get("chat");
+    if (chatParam) {
+      setMobilePane("CHAT");
+      if (chatParam !== selectedIdRef.current) {
+        setSelectedId(chatParam);
+        selectedIdRef.current = chatParam;
+        lastSyncedProfileConvIdRef.current = null;
+        void fetchAndCacheDetail(chatParam, true);
+      }
     }
-    prefetchInFlightRef.current.add(convId);
-    fetch(`/api/conversations/${convId}?prefetch=1`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data?.ok && data.conversation) {
-          detailCacheRef.current.set(convId, {
-            conversation: data.conversation,
-            messages: data.messages || [],
-            assignments: data.assignments || [],
-            customer: data.customer || null,
-            orders: data.orders || [],
-            orderTrackings: data.orderTrackings || [],
-            relations: data.relations || [],
-            websiteEnquiries: data.websiteEnquiries || [],
-            acrio: data.acrio || null,
-            customLinks: data.customLinks || [],
-            verifiedLocation: data.verifiedLocation,
-          });
-          prefetchTimestampsRef.current.set(convId, Date.now());
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        prefetchInFlightRef.current.delete(convId);
-      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Hover/touch prefetch (?prefetch=1 keeps unread count untouched until user opens chat)
+  const prefetchDetail = useCallback(
+    (convId: string) => {
+      if (!convId || convId === selectedIdRef.current) return;
+      void prefetchConversationDetail(queryClient, convId);
+    },
+    [queryClient]
+  );
 
   // Background idle prefetch for top 3 chats so switching feels instantaneous
   useEffect(() => {
@@ -1113,133 +755,48 @@ export function InboxClient({
   function handleSelectConversation(convId: string) {
     setMobilePane("CHAT");
     if (convId === selectedId && (detail || syncingThread)) return;
-    setSelectedId(convId);
+    selectConversationInStore(convId);
     selectedIdRef.current = convId;
-    setDetailError("");
-    const cached = detailCacheRef.current.get(convId);
+    const cached = queryClient.getQueryData<ConversationDetailBundle>(
+      inboxKeys.detail(convId)
+    );
     if (cached) {
-      setDetail(cached);
+      lastSyncedProfileConvIdRef.current = convId;
       syncProfileFields(cached);
     } else {
-      setDetail(null);
-      setSyncingThread(true);
+      lastSyncedProfileConvIdRef.current = null;
     }
-    void fetchAndCacheDetail(convId, true);
+    void queryClient.invalidateQueries({ queryKey: inboxKeys.detail(convId) });
   }
 
-  // Real-time SSE over shared singleton stream + gentle silent poll (eliminates duplicate sockets & refresh waterfalls)
+  const handleLoadOlderMessages = useCallback(async () => {
+    const convId = selectedIdRef.current;
+    const cursor = detail?.oldestMessageCursor;
+    if (!convId || !cursor || loadingOlderMessages) return;
+    setLoadingOlderMessages(true);
+    try {
+      await loadOlderMessagesIntoCache(queryClient, convId, cursor);
+    } catch {
+      showToast("Could not load older messages right now.");
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  }, [detail?.oldestMessageCursor, loadingOlderMessages, queryClient, showToast]);
+
+  // Real-time SSE over shared singleton stream patching TanStack Query cache in place
   useEffect(() => {
-    const handleRealtimeRefresh = (ev: MessageEvent) => {
-      const payload = parseRealtimeEventPayload(ev);
-      const targetConvId = payload.conversationId ? String(payload.conversationId) : null;
-      const incomingMsgId = payload.messageId ? String(payload.messageId) : null;
-      scheduleThreadsRefresh(220);
-
-      if (selectedIdRef.current && (!targetConvId || targetConvId === selectedIdRef.current)) {
-        // Skip redundant thread reload if our own client just appended & patched this message moments ago
-        if (incomingMsgId) {
-          const localSeenAt = recentLocalMsgIdsRef.current.get(incomingMsgId);
-          if (localSeenAt && Date.now() - localSeenAt < 4000) {
-            return;
-          }
-        }
-        void fetchAndCacheDetail(selectedIdRef.current, false);
-      }
-    };
-
-    const handleStatusEvent = (ev: MessageEvent) => {
-      const payload = parseRealtimeEventPayload(ev);
-      const targetConvId = payload.conversationId ? String(payload.conversationId) : null;
-      const nextStatus = payload.status ? String(payload.status) : null;
-      const targetMsgId = payload.messageId ? String(payload.messageId) : null;
-      const targetWaMsgId = payload.waMessageId ? String(payload.waMessageId) : null;
-      const markAllRead = Boolean(payload.markAllOutboundRead);
-
-      if (targetConvId && nextStatus) {
-        let matchedAnyMessage = false;
-        const cached = detailCacheRef.current.get(targetConvId);
-        if (cached) {
-          const patchedMessages = cached.messages.map((m) => {
-            if (m.direction !== "OUTBOUND") return m;
-            if (
-              markAllRead &&
-              (m.deliveryStatus === "SENDING" ||
-                m.deliveryStatus === "SENT" ||
-                m.deliveryStatus === "DELIVERED")
-            ) {
-              matchedAnyMessage = true;
-              return { ...m, deliveryStatus: "READ" };
-            }
-            if (
-              (targetMsgId && m.id === targetMsgId) ||
-              (targetWaMsgId && m.waMessageId === targetWaMsgId)
-            ) {
-              matchedAnyMessage = true;
-              return { ...m, deliveryStatus: nextStatus };
-            }
-            return m;
-          });
-          if (matchedAnyMessage) {
-            const nextCached: ConversationDetailBundle = {
-              ...cached,
-              messages: patchedMessages,
-            };
-            detailCacheRef.current.set(targetConvId, nextCached);
-            if (selectedIdRef.current === targetConvId) {
-              setDetail(nextCached);
-            }
-          }
-        }
-
-        setThreads((prev) =>
-          prev.map((t) =>
-            t.id === targetConvId && t.lastMessageDirection === "OUTBOUND"
-              ? { ...t, lastMessageStatus: nextStatus }
-              : t
-          )
-        );
-
-        // Only fall back to fetching if the active chat wasn't cached yet
-        if (!cached && selectedIdRef.current === targetConvId) {
-          void fetchAndCacheDetail(targetConvId, false);
-        }
-      }
-    };
-
-    const unsubs = [
-      subscribeRealtimeEvent("message:new", handleRealtimeRefresh),
-      subscribeRealtimeEvent("note:new", handleRealtimeRefresh),
-      subscribeRealtimeEvent("message:status", handleStatusEvent),
-      subscribeRealtimeEvent("conversation:resolved", handleRealtimeRefresh),
-      subscribeRealtimeEvent("conversation:assigned", handleRealtimeRefresh),
-      subscribeRealtimeEvent("conversation:escalated", handleRealtimeRefresh),
-    ];
-
-    const poll = setInterval(() => {
-      void refreshThreadsSilently(false);
-      if (selectedIdRef.current) {
-        void fetchAndCacheDetail(selectedIdRef.current, false);
-      }
-    }, 20000);
-
+    const detach = attachInboxRealtimeQuerySync({
+      queryClient,
+      getSelectedId: () => selectedIdRef.current,
+      recentLocalMsgIds: recentLocalMsgIdsRef.current,
+    });
     return () => {
-      unsubs.forEach((fn) => fn());
-      clearInterval(poll);
+      detach();
       if (threadRefreshTimerRef.current) {
         clearTimeout(threadRefreshTimerRef.current);
       }
     };
-  }, [fetchAndCacheDetail, refreshThreadsSilently, scheduleThreadsRefresh]);
-
-  // Jump immediately when switching conversations; smooth scroll only for new messages in the active chat
-  const messageCount = detail?.messages.length ?? 0;
-  useEffect(() => {
-    const isSwitchingChat = lastScrolledConvIdRef.current !== selectedId;
-    lastScrolledConvIdRef.current = selectedId;
-    messagesEndRef.current?.scrollIntoView({
-      behavior: isSwitchingChat ? "auto" : "smooth",
-    });
-  }, [selectedId, messageCount]);
+  }, [queryClient]);
 
   // Pre-fill template body when user selects an approved template
   const activeConv = detail?.conversation || null;
@@ -1396,15 +953,15 @@ export function InboxClient({
       if (matched) targetId = matched.id;
     }
     if (!targetId) return;
-    const el = document.getElementById(`chat-msg-${targetId}`);
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    timelineScrollRef.current?.(targetId);
     setHighlightedMsgId(targetId);
     if (highlightTimeoutRef.current) {
       clearTimeout(highlightTimeoutRef.current);
     }
     highlightTimeoutRef.current = setTimeout(() => {
-      setHighlightedMsgId((prev) => (prev === targetId ? null : prev));
+      if (useInboxStore.getState().highlightedMsgId === targetId) {
+        setHighlightedMsgId(null);
+      }
     }, 1800);
   }
 
@@ -1683,8 +1240,7 @@ export function InboxClient({
     const activeReplyRef = replyingTo;
 
     // Clear composer immediately so staff can type consecutive replies with zero bottleneck
-    setReplyText("");
-    draftsRef.current[`${currentConvId}|${effectiveMode}`] = "";
+    setDraft(currentConvId, effectiveMode, "");
     setReplyingTo(null);
     setStagedAttachment(null);
     setShowAttachmentPicker(false);
@@ -2288,10 +1844,10 @@ export function InboxClient({
         return;
       }
 
-      const takeoverSeq = ++detailFetchSeqRef.current;
-      const cached = detailCacheRef.current.get(targetId);
       const baseBundle =
-        detail?.conversation.id === targetId ? detail : cached || null;
+        queryClient.getQueryData<ConversationDetailBundle>(
+          inboxKeys.detail(targetId)
+        ) || (detail?.conversation.id === targetId ? detail : null);
       const nextStaffId = String(
         data.conversation?.assignedStaffId || initialData.currentUserId
       );
@@ -2312,40 +1868,40 @@ export function InboxClient({
         data.conversation?.assignedTeamName ?? fallbackTeamName;
 
       if (baseBundle) {
-        const nextBundle: ConversationDetailBundle = {
-          ...baseBundle,
-          conversation: {
-            ...baseBundle.conversation,
-            ...(data.conversation && typeof data.conversation === "object"
-              ? data.conversation
-              : {}),
-            assignedStaffId: nextStaffId,
-            assignedStaffName: nextStaffName,
-            assignedTeamId: nextTeamId,
-            assignedTeamName: nextTeamName,
-          },
-        };
-        detailCacheRef.current.set(targetId, nextBundle);
-        if (
-          selectedIdRef.current === targetId &&
-          takeoverSeq >= detailFetchSeqRef.current
-        ) {
-          setDetail(nextBundle);
-        }
+        queryClient.setQueryData<ConversationDetailBundle>(
+          inboxKeys.detail(targetId),
+          {
+            ...baseBundle,
+            conversation: {
+              ...baseBundle.conversation,
+              ...(data.conversation && typeof data.conversation === "object"
+                ? data.conversation
+                : {}),
+              assignedStaffId: nextStaffId,
+              assignedStaffName: nextStaffName,
+              assignedTeamId: nextTeamId,
+              assignedTeamName: nextTeamName,
+            },
+          }
+        );
       }
 
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.id === targetId
-            ? {
-                ...t,
-                assignedStaffId: nextStaffId,
-                assignedStaffName: nextStaffName,
-                assignedTeamId: nextTeamId,
-                assignedTeamName: nextTeamName,
-              }
-            : t
-        )
+      queryClient.setQueryData<ConversationSummary[]>(
+        inboxKeys.threads,
+        (prev) =>
+          prev
+            ? prev.map((t) =>
+                t.id === targetId
+                  ? {
+                      ...t,
+                      assignedStaffId: nextStaffId,
+                      assignedStaffName: nextStaffName,
+                      assignedTeamId: nextTeamId,
+                      assignedTeamName: nextTeamName,
+                    }
+                  : t
+              )
+            : prev
       );
 
       showToast("You took over this chat and can now reply directly.");
@@ -2463,11 +2019,7 @@ export function InboxClient({
 
   function toggleBulkSelectThread(convId: string, ev?: React.MouseEvent) {
     if (ev) ev.stopPropagation();
-    setSelectedThreadIds((prev) =>
-      prev.includes(convId)
-        ? prev.filter((id) => id !== convId)
-        : [...prev, convId]
-    );
+    toggleBulkThreadId(convId);
   }
 
   async function handleBulkResolveSelected() {
@@ -2780,210 +2332,23 @@ export function InboxClient({
           </div>
         </div>
 
-        {/* WhatsApp Conversation Rows */}
-        <div className="flex-1 overflow-y-auto divide-y divide-[#f0f2f5]">
-          {threadsError && (
-            <div className="p-3">
-              <ElementErrorState
-                compact
-                title="Could not refresh chats"
-                message={threadsError}
-                onRetry={() => refreshThreadsSilently(true)}
-                retrying={refreshingThreads}
-              />
-            </div>
-          )}
-          {filteredThreads.length === 0 ? (
-            <div className="p-6 text-center text-xs text-[#667781]">
-              No chats match this filter.
-            </div>
-          ) : (
-            filteredThreads.map((t) => {
-              const active = t.id === selectedId;
-              const isBulkChecked = selectedThreadIds.includes(t.id);
-              const isAcrio = t.assignedStaffId === "ACRIO";
-              const waitObj =
-                t.status !== "RESOLVED" && !isAcrio
-                  ? formatWaitingDuration(t.waitingSince, nowMs)
-                  : null;
-              const isOverdue = waitObj && waitObj.minutes >= 5;
-              const hasThreadCallback = callbackConvIds.includes(t.id);
-              const hasUnreadMention = unreadMentionConvIds.includes(t.id);
-              const leftBorderClass = hasThreadCallback
-                ? "border-l-[3.5px] border-l-rose-500"
-                : hasUnreadMention
-                ? "border-l-[3.5px] border-l-violet-500"
-                : isOverdue
-                ? "border-l-[3.5px] border-l-red-500"
-                : waitObj
-                ? "border-l-[3.5px] border-l-amber-500"
-                : active
-                ? "border-l-[3.5px] border-l-[#00a884]"
-                : "border-l-[3.5px] border-l-transparent";
-
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  onMouseEnter={() => prefetchDetail(t.id)}
-                  onPointerDown={() => prefetchDetail(t.id)}
-                  onClick={() =>
-                    bulkMode
-                      ? toggleBulkSelectThread(t.id)
-                      : handleSelectConversation(t.id)
-                  }
-                  className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors cursor-pointer ${leftBorderClass} ${
-                    active ? "bg-[#f0f2f5]" : "hover:bg-[#f5f6f6]"
-                  }`}
-                >
-                  {bulkMode && (
-                    <span
-                      onClick={(ev) => toggleBulkSelectThread(t.id, ev)}
-                      className={`mt-3 w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                        isBulkChecked
-                          ? "bg-[#00a884] border-[#00a884] text-white"
-                          : "bg-white border-neutral-400"
-                      }`}
-                    >
-                      {isBulkChecked && <Check className="w-3 h-3" />}
-                    </span>
-                  )}
-                  {/* Customer Avatar Circle */}
-                  <div
-                    className={`w-11 h-11 rounded-full shrink-0 flex items-center justify-center text-xs font-semibold relative ${
-                      t.status === "RESOLVED"
-                        ? "bg-neutral-200 text-neutral-600"
-                        : isOverdue
-                        ? "bg-red-100 text-red-800 ring-2 ring-red-300"
-                        : isAcrio
-                        ? "bg-[#eef2ff] text-[#3730a3]"
-                        : "bg-[#dfe5e7] text-[#3b4a54]"
-                    }`}
-                  >
-                    {getInitials(t.customerName)}
-                    <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#25d366] text-white flex items-center justify-center ring-2 ring-white">
-                      <WhatsAppLogoIcon size={9} />
-                    </span>
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[14px] font-semibold tracking-[-0.015em] text-[#111b21] truncate">
-                        {t.customerName}
-                      </span>
-                      <span
-                        className={`text-[11px] tabular-nums shrink-0 ${
-                          t.unreadCount > 0
-                            ? "text-[#00a884] font-semibold"
-                            : "text-[#667781] font-medium"
-                        }`}
-                      >
-                        {formatThreadTimeIst(t.lastMessageAt, initialData.serverNowMs)}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2 mt-0.5">
-                      <p className="text-[12.5px] leading-snug text-[#54656f] truncate flex items-center gap-1 min-w-0">
-                        {t.lastMessageDirection === "OUTBOUND" && (
-                          <WhatsAppMessageTicks
-                            status={t.lastMessageStatus || "SENT"}
-                            showLabel={false}
-                            size={13}
-                          />
-                        )}
-                        <span className="truncate">
-                          {stripWhatsAppFormatting(t.lastMessagePreview) || t.customerPhone}
-                        </span>
-                      </p>
-                      {t.unreadCount > 0 && (
-                        <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#25d366] text-white text-[10px] font-bold tabular-nums flex items-center justify-center shrink-0">
-                          {t.unreadCount}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* ACRIO / Team / Escalation / Live Wait Row */}
-                    <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                      {hasThreadCallback && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200 font-semibold inline-flex items-center gap-0.5">
-                          <PhoneCall className="w-2.5 h-2.5" />
-                          <span>Callback</span>
-                        </span>
-                      )}
-                      {hasUnreadMention && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 border border-violet-200 font-semibold inline-flex items-center gap-0.5">
-                          <AtSign className="w-2.5 h-2.5" />
-                          <span>You</span>
-                        </span>
-                      )}
-                      {t.status === "RESOLVED" ? (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-medium">
-                          Resolved
-                        </span>
-                      ) : isAcrio ? (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 font-medium inline-flex items-center gap-1">
-                          <Sparkles className="w-2.5 h-2.5" />
-                          <span>System (ACRIO)</span>
-                        </span>
-                      ) : (
-                        <>
-                          <span
-                            className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
-                              t.escalationLevel === "P2"
-                                ? "bg-red-600 text-white"
-                                : t.escalationLevel === "P1"
-                                ? "bg-amber-500 text-white"
-                                : "bg-[#e9edef] text-[#3b4a54]"
-                            }`}
-                          >
-                            {t.escalationLevel || "P0"}
-                          </span>
-
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 font-medium truncate max-w-[105px]">
-                            {t.assignedTeamName || "Sales Team"}
-                          </span>
-
-                          {t.assignedStaffName && (
-                            <span className="text-[10px] text-[#54656f] truncate max-w-[85px]">
-                              • {t.assignedStaffName.split(" ")[0]}
-                            </span>
-                          )}
-
-                          {t.collaborators && t.collaborators.length > 0 && (
-                            <span
-                              title={t.collaborators
-                                .map((c) => c.staffName)
-                                .join(", ")}
-                              className="text-[10px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200 font-medium"
-                            >
-                              +{t.collaborators.length}
-                            </span>
-                          )}
-
-                          {waitObj && (
-                            <span
-                              suppressHydrationWarning
-                              className={`text-[10px] px-1.5 py-0.5 rounded font-medium inline-flex items-center gap-0.5 ${
-                                waitObj.minutes >= 8
-                                  ? "bg-red-100 text-red-800"
-                                  : waitObj.minutes >= 3
-                                  ? "bg-amber-100 text-amber-900"
-                                  : "bg-emerald-50 text-emerald-800"
-                              }`}
-                            >
-                              <Clock className="w-2.5 h-2.5" />
-                              <span suppressHydrationWarning>Wait {waitObj.text}</span>
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </button>
-              );
-            })
-          )}
-        </div>
+        {/* Virtualized WhatsApp Conversation Rows */}
+        <ThreadListPane
+          filteredThreads={filteredThreads}
+          selectedId={selectedId}
+          bulkMode={bulkMode}
+          selectedThreadIds={selectedThreadIds}
+          callbackConvIds={callbackConvIds}
+          unreadMentionConvIds={unreadMentionConvIds}
+          nowMs={nowMs}
+          serverNowMs={initialData.serverNowMs}
+          threadsError={threadsError}
+          refreshingThreads={refreshingThreads}
+          onRetryRefresh={() => refreshThreadsSilently(true)}
+          onPrefetch={prefetchDetail}
+          onSelect={handleSelectConversation}
+          onToggleBulk={toggleBulkSelectThread}
+        />
 
         {bulkMode && selectedThreadIds.length > 0 && (
           <div className="border-t border-[#d1d7db] bg-neutral-900 text-white px-3 py-2.5 flex items-center justify-between gap-2 shrink-0">
@@ -3380,983 +2745,49 @@ export function InboxClient({
               </div>
             </div>
 
-            {/* WhatsApp Chat Wallpaper + Message Stream (NEVER flashes empty!) */}
-            <div
-              style={CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE}
-              className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 sm:px-5 py-3 sm:py-4 space-y-2.5"
-            >
-              {/* Top WhatsApp Security/Context Pill (zero cost/free mentions for staff) */}
-              <div className="flex justify-center pb-1">
-                <div className="px-3 py-1 rounded-md bg-[#fff5c4] border border-[#f2df8d] text-[11px] text-[#54656f] shadow-2xs text-center max-w-xl">
-                  <strong>ACRIO</strong> runs only when a chat is assigned to{" "}
-                  <strong>System</strong>. Once a chat is assigned to a team
-                  member, ACRIO stays paused until assigned back to System.
-                </div>
-              </div>
-
-              {messages.map((m) => {
-                if (m.messageType === "ASSIGNMENT_EVENT") {
-                  const meta = (m.metadata || {}) as Record<string, unknown>;
-                  const toStaffId = meta.toStaffId ? String(meta.toStaffId) : "";
-                  const toStaffName = meta.toStaffName
-                    ? String(meta.toStaffName)
-                    : "Staff";
-                  const toTeamName = meta.toTeamName
-                    ? String(meta.toTeamName)
-                    : "Sales Team";
-                  const tier = meta.escalationLevel
-                    ? String(meta.escalationLevel)
-                    : "P0";
-                  const assignedAtIso = meta.assignedAt
-                    ? String(meta.assignedAt)
-                    : m.createdAt;
-                  const firstRespIso = meta.firstResponseAt
-                    ? String(meta.firstResponseAt)
-                    : null;
-                  const firstRespSec =
-                    typeof meta.firstResponseSeconds === "number"
-                      ? meta.firstResponseSeconds
-                      : null;
-                  const outcome = meta.outcome ? String(meta.outcome) : "ACTIVE";
-                  const isSystemAsg = toStaffId === "ACRIO";
-                  const livePendingWait =
-                    !firstRespIso &&
-                    outcome === "ACTIVE" &&
-                    !isSystemAsg &&
-                    activeConv.status !== "RESOLVED"
-                      ? formatWaitingDuration(assignedAtIso, nowMs)
-                      : null;
-
-                  return (
-                    <div key={m.id} className="flex justify-center my-2">
-                      <div className="w-full max-w-[94%] sm:max-w-[84%] rounded-lg px-3 sm:px-3.5 py-2.5 bg-white/95 border border-[#d1d7db] shadow-2xs text-[#111b21] min-w-0 [overflow-wrap:anywhere]">
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                          <div className="inline-flex flex-wrap items-center gap-1.5 font-semibold">
-                            {isSystemAsg ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
-                                <Sparkles className="w-3 h-3" />
-                                <span>System (ACRIO)</span>
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#e7fce3] text-[#008069] border border-[#b7ebaf]">
-                                <UserCheck className="w-3 h-3" />
-                                <span>
-                                  {toStaffName} • {toTeamName}
-                                </span>
-                              </span>
-                            )}
-                            {!isSystemAsg && (
-                              <span
-                                className={`px-1.5 py-0.2 rounded text-[10px] font-semibold ${
-                                  tier === "P2"
-                                    ? "bg-red-600 text-white"
-                                    : tier === "P1"
-                                    ? "bg-amber-500 text-white"
-                                    : "bg-neutral-100 text-neutral-700"
-                                }`}
-                              >
-                                {tier}
-                              </span>
-                            )}
-                          </div>
-                          <span className="text-[#54656f] font-medium">
-                            Assigned: {formatDateTimeShort(assignedAtIso)}
-                          </span>
-                        </div>
-
-                        <p className="text-xs text-[#3b4a54] mt-1 leading-snug">
-                          {m.body}
-                        </p>
-
-                        <div className="mt-1.5 pt-1.5 border-t border-neutral-100 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                          {firstRespIso ? (
-                            <span className="inline-flex items-center gap-1 text-emerald-800 font-medium">
-                              <Check className="w-3 h-3 text-emerald-600" />
-                              <span>
-                                First response:{" "}
-                                <strong>{formatDateTimeShort(firstRespIso)}</strong>
-                                {firstRespSec !== null && (
-                                  <>
-                                    {" "}
-                                    (in{" "}
-                                    <strong>
-                                      {formatResponseSpeed(firstRespSec)}
-                                    </strong>
-                                    )
-                                  </>
-                                )}
-                              </span>
-                            </span>
-                          ) : outcome === "ESCALATED" ? (
-                            <span className="inline-flex items-center gap-1 text-red-700 font-medium">
-                              <Clock className="w-3 h-3" />
-                              <span>Escalated before first response</span>
-                            </span>
-                          ) : outcome === "REASSIGNED" ? (
-                            <span className="text-neutral-500">
-                              Reassigned before first response
-                            </span>
-                          ) : livePendingWait ? (
-                            <span
-                              suppressHydrationWarning
-                              className={`inline-flex items-center gap-1 font-medium ${
-                                livePendingWait.minutes >= 5
-                                  ? "text-red-700"
-                                  : "text-amber-700"
-                              }`}
-                            >
-                              <Clock className="w-3 h-3" />
-                              <span suppressHydrationWarning>
-                                Awaiting first response ({livePendingWait.text})
-                              </span>
-                            </span>
-                          ) : (
-                            <span className="text-neutral-500">
-                              {isSystemAsg
-                                ? "Standing by for customer message"
-                                : "No outbound reply needed"}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                }
-
-                const isInternalNote =
-                  m.direction === "INTERNAL" ||
-                  m.messageType === "INTERNAL_NOTE";
-                const isOutbound = m.direction === "OUTBOUND";
-                const quotedReply = extractQuotedReply(m);
-                const ctaButton = extractCtaButton(m);
-                const locationPin = extractLocationPin(m);
-                const isHighlighted = highlightedMsgId === m.id;
-
-                if (isInternalNote) {
-                  const isAcrioNote = m.senderName === "ACRIO";
-                  return (
-                    <div
-                      key={m.id}
-                      id={`chat-msg-${m.id}`}
-                      className="flex justify-center my-2"
-                    >
-                      <div
-                        className={`w-full max-w-[94%] sm:max-w-[84%] lg:max-w-[78%] rounded-lg px-3 sm:px-3.5 py-2.5 shadow-2xs transition-all duration-300 min-w-0 [overflow-wrap:anywhere] ${
-                          isAcrioNote
-                            ? "bg-violet-50 border border-violet-300/70 text-violet-950"
-                            : "bg-[#fef3c7] border border-[#f59e0b]/45 text-[#78350f]"
-                        } ${isHighlighted ? "ring-2 ring-[#00a884]" : ""}`}
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] font-semibold mb-1 min-w-0">
-                          <span className="inline-flex items-center gap-1 min-w-0">
-                            <Lock className={`w-3 h-3 shrink-0 ${isAcrioNote ? "text-violet-700" : "text-amber-700"}`} />
-                            <span className="truncate">
-                              {isAcrioNote ? "ACRIO • Private answer for your team" : `Internal Team Note • ${m.senderName}`}
-                            </span>
-                          </span>
-                          <span className={`font-normal ${isAcrioNote ? "text-violet-800/80" : "text-amber-800/80"}`}>
-                            {formatTimeIst(m.createdAt)}
-                          </span>
-                        </div>
-                        {quotedReply && (
-                          <button
-                            type="button"
-                            onClick={() => jumpToQuotedMessage(quotedReply)}
-                            className="w-full text-left mb-1.5 rounded-md px-2.5 py-1.5 bg-amber-100/85 hover:bg-amber-200/70 border-l-[3.5px] border-amber-600 transition cursor-pointer"
-                          >
-                            <div className="text-[11px] font-semibold text-amber-950 truncate">
-                              {quotedReply.senderName}
-                            </div>
-                            <div className="text-[12px] text-amber-900/85 line-clamp-2 leading-snug">
-                              {stripWhatsAppFormatting(quotedReply.body)}
-                            </div>
-                          </button>
-                        )}
-                        <WhatsAppFormattedText
-                          text={emphasizeMentions(m.body, staffList)}
-                          className="text-[13px] leading-relaxed"
-                          onPhoneClick={handleOpenNewChatWithPhone}
-                        />
-                        {(() => {
-                          const noteMedia = extractMessageMedia(m);
-                          if (!noteMedia) return null;
-                          return (
-                            <div className="mt-2">
-                              <MessageMediaRenderer
-                                media={noteMedia}
-                                onOpenPreview={(med) => setPreviewMedia(med)}
-                              />
-                            </div>
-                          );
-                        })()}
-                        {isAcrioNote &&
-                          m.metadata &&
-                          typeof m.metadata.pendingAction === "object" &&
-                          m.metadata.pendingAction !== null &&
-                          (() => {
-                            const pa = m.metadata.pendingAction as {
-                              id?: string;
-                              status?: string;
-                              title?: string;
-                              messageText?: string;
-                              sourceLabel?: string;
-                              decidedByStaffName?: string;
-                              error?: string;
-                              attachment?: {
-                                url?: string;
-                                fileName?: string;
-                                mediaType?: string;
-                              } | null;
-                              candidateOptions?: Array<{
-                                id: string;
-                                title: string;
-                                sourceLabel: string;
-                                mediaUrl: string;
-                                mediaType: string;
-                                fileName: string;
-                                messageText?: string;
-                              }>;
-                            };
-                            const isBusy = acrioActionBusyId === m.id;
-                            const hasChoices =
-                              Array.isArray(pa.candidateOptions) &&
-                              pa.candidateOptions.length > 1;
-                            const isTextChoiceList =
-                              hasChoices &&
-                              Boolean(
-                                pa.candidateOptions?.some(
-                                  (o) => Boolean(o.messageText) && !o.mediaUrl
-                                )
-                              );
-                            if (pa.status === "CONFIRMED") {
-                              return (
-                                <div className="mt-2 pt-2 border-t border-violet-200/70 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800">
-                                  <Check className="w-3.5 h-3.5 text-emerald-700" />
-                                  <span>
-                                    Confirmed & shared with client
-                                    {pa.decidedByStaffName ? ` by ${pa.decidedByStaffName}` : ""}
-                                  </span>
-                                </div>
-                              );
-                            }
-                            if (pa.status === "CANCELLED") {
-                              return (
-                                <div className="mt-2 pt-2 border-t border-violet-200/70 flex items-center gap-1.5 text-[11px] font-medium text-neutral-600">
-                                  <X className="w-3.5 h-3.5" />
-                                  <span>
-                                    Action cancelled
-                                    {pa.decidedByStaffName ? ` by ${pa.decidedByStaffName}` : ""}
-                                  </span>
-                                </div>
-                              );
-                            }
-                            return (
-                              <div className="mt-2.5 rounded-md bg-white border border-violet-200 p-2.5 space-y-2">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <span className="text-[11px] font-semibold text-violet-950">
-                                    {isTextChoiceList
-                                      ? "Choose how to send this in the customer's WhatsApp chat:"
-                                      : hasChoices
-                                      ? "Select which document to confirm & send to client:"
-                                      : pa.title || "Confirm client action"}
-                                  </span>
-                                  {!hasChoices && pa.attachment?.fileName && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-100 text-violet-900 text-[10.5px] font-medium">
-                                      <FileText className="w-3 h-3" />
-                                      <span>
-                                        {pa.attachment.fileName}
-                                        {pa.sourceLabel ? ` (${pa.sourceLabel})` : ""}
-                                      </span>
-                                    </span>
-                                  )}
-                                </div>
-
-                                {hasChoices && pa.candidateOptions ? (
-                                  <div className="space-y-1.5">
-                                    {pa.candidateOptions.map((opt, idx) => (
-                                      <div
-                                        key={opt.id}
-                                        className="rounded border border-violet-100 bg-[#faf8ff] px-2.5 py-2 flex flex-wrap items-center justify-between gap-2"
-                                      >
-                                        <div className="min-w-0 flex-1">
-                                          <div className="text-[11.5px] font-semibold text-violet-950 truncate">
-                                            {idx + 1}. {opt.title}
-                                          </div>
-                                          {opt.messageText && !opt.mediaUrl ? (
-                                            <div className="mt-1 text-[12px] text-[#111b21] bg-white border border-violet-200/80 rounded px-2 py-1 font-medium">
-                                              {opt.messageText}
-                                            </div>
-                                          ) : (
-                                            <div className="text-[10.5px] text-neutral-600 truncate">
-                                              Source: {opt.sourceLabel} • {opt.fileName}
-                                            </div>
-                                          )}
-                                        </div>
-                                        <div className="flex items-center gap-1.5 shrink-0">
-                                          {opt.mediaUrl && (
-                                            <a
-                                              href={opt.mediaUrl}
-                                              target="_blank"
-                                              rel="noreferrer"
-                                              className="px-2 py-1 rounded border border-neutral-300 bg-white hover:bg-neutral-50 text-[10.5px] font-medium text-neutral-700"
-                                            >
-                                              View
-                                            </a>
-                                          )}
-                                          {opt.messageText && !opt.mediaUrl && (
-                                            <button
-                                              type="button"
-                                              disabled={isBusy}
-                                              onClick={() =>
-                                                handleMoveNoteToReplyBox(
-                                                  opt.messageText || "",
-                                                  quotedReply
-                                                )
-                                              }
-                                              className="px-2 py-1 rounded border border-neutral-300 bg-white hover:bg-neutral-50 text-[10.5px] font-medium text-neutral-700 cursor-pointer"
-                                            >
-                                              Edit in Reply Box
-                                            </button>
-                                          )}
-                                          <button
-                                            type="button"
-                                            disabled={isBusy}
-                                            onClick={() =>
-                                              void handleConfirmAcrioAction(
-                                                m.id,
-                                                "CONFIRM",
-                                                opt.id
-                                              )
-                                            }
-                                            className="px-2.5 py-1 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                          >
-                                            <Check className="w-3 h-3" />
-                                            <span>
-                                              {isBusy
-                                                ? "Sending..."
-                                                : opt.messageText && !opt.mediaUrl
-                                                ? "Send in Chat"
-                                                : "Confirm & Send"}
-                                            </span>
-                                          </button>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <>
-                                    {pa.messageText && (
-                                      <p className="text-[12px] text-[#3b4a54] bg-[#f8fafc] border border-neutral-200 rounded px-2 py-1.5">
-                                        {pa.messageText}
-                                      </p>
-                                    )}
-                                  </>
-                                )}
-
-                                {pa.status === "FAILED" && pa.error && (
-                                  <p className="text-[11px] text-rose-700">
-                                    Previous send failed: {pa.error}
-                                  </p>
-                                )}
-                                <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                                  {!hasChoices && (
-                                    <button
-                                      type="button"
-                                      disabled={isBusy}
-                                      onClick={() =>
-                                        void handleConfirmAcrioAction(m.id, "CONFIRM")
-                                      }
-                                      className="px-3 py-1.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                                    >
-                                      <Check className="w-3.5 h-3.5" />
-                                      <span>
-                                        {isBusy
-                                          ? "Sharing with client..."
-                                          : "Confirm & Share with Client"}
-                                      </span>
-                                    </button>
-                                  )}
-                                  {!hasChoices && pa.attachment?.url && (
-                                    <a
-                                      href={pa.attachment.url}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="px-2.5 py-1.5 rounded bg-white hover:bg-neutral-50 border border-neutral-300 text-neutral-700 text-[11px] font-medium"
-                                    >
-                                      View File
-                                    </a>
-                                  )}
-                                  <button
-                                    type="button"
-                                    disabled={isBusy}
-                                    onClick={() =>
-                                      void handleConfirmAcrioAction(m.id, "CANCEL")
-                                    }
-                                    className="px-2.5 py-1.5 rounded bg-white hover:bg-neutral-100 border border-neutral-300 text-neutral-700 text-[11px] font-medium cursor-pointer disabled:opacity-50"
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })()}
-                        {isAcrioNote &&
-                          m.metadata &&
-                          typeof m.metadata.missingCompanyDoc === "object" &&
-                          m.metadata.missingCompanyDoc !== null &&
-                          (m.metadata.missingCompanyDoc as { status?: string }).status ===
-                            "NEEDS_UPLOAD" &&
-                          (() => {
-                            const md = m.metadata.missingCompanyDoc as {
-                              slug?: string;
-                              title?: string;
-                              keywords?: string;
-                            };
-                            const isBusy = acrioActionBusyId === m.id;
-                            return (
-                              <div className="mt-2.5 rounded-md bg-white border border-violet-200 p-2.5 flex flex-wrap items-center justify-between gap-2">
-                                <span className="text-[11px] text-violet-950 font-medium">
-                                  Upload once to save permanently & confirm sharing:
-                                </span>
-                                <label
-                                  className={`px-3 py-1.5 rounded bg-violet-700 hover:bg-violet-800 text-white text-[11.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer ${
-                                    isBusy ? "opacity-50 pointer-events-none" : ""
-                                  }`}
-                                >
-                                  <Paperclip className="w-3.5 h-3.5" />
-                                  <span>
-                                    {isBusy
-                                      ? "Uploading..."
-                                      : `Upload ${md.title || "Document"}`}
-                                  </span>
-                                  <input
-                                    type="file"
-                                    accept=".pdf,image/*"
-                                    className="hidden"
-                                    disabled={isBusy}
-                                    onChange={(e) => {
-                                      const f = e.target.files?.[0];
-                                      e.target.value = "";
-                                      if (f) {
-                                        void handleUploadCompanyDocForNote(m.id, md, f);
-                                      }
-                                    }}
-                                  />
-                                </label>
-                              </div>
-                            );
-                          })()}
-                        {isAcrioNote &&
-                          m.metadata &&
-                          Array.isArray(m.metadata.actionsExecuted) &&
-                          m.metadata.actionsExecuted.length > 0 && (
-                            <div className="mt-2 pt-2 border-t border-violet-200/70 flex flex-wrap gap-1.5">
-                              {(m.metadata.actionsExecuted as (Record<string, unknown> | string)[]).map(
-                                (act, idx) => (
-                                  <span
-                                    key={`${m.id}_act_${idx}`}
-                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-200 text-[10.5px] font-semibold"
-                                  >
-                                    <Check className="w-3 h-3" />
-                                    <span>
-                                      {typeof act === "string"
-                                        ? act
-                                        : String(act.detail || act.type || "Action done")}
-                                    </span>
-                                  </span>
-                                )
-                              )}
-                            </div>
-                          )}
-                        {isAcrioNote &&
-                          m.metadata &&
-                          !m.metadata.pendingAction &&
-                          !m.metadata.missingCompanyDoc &&
-                          typeof m.metadata.suggestedReply === "string" &&
-                          m.metadata.suggestedReply.trim() && (
-                            <div className="mt-2 pt-2 border-t border-violet-200/70 flex flex-wrap items-center justify-between gap-2">
-                              <span className="text-[11px] font-medium text-violet-900">
-                                Suggested reply ready:
-                              </span>
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    void navigator.clipboard?.writeText(
-                                      String(m.metadata?.suggestedReply || "")
-                                    );
-                                    showToast("Suggested reply copied.");
-                                  }}
-                                  className="px-2 py-1 rounded bg-white border border-violet-200 text-violet-900 text-[11px] font-medium cursor-pointer"
-                                >
-                                  Copy
-                                </button>
-                                {isAssignedToCurrentUser && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setComposerMode("REPLY");
-                                      setReplyText(
-                                        String(m.metadata?.suggestedReply || "")
-                                      );
-                                      composerInputRef.current?.focus();
-                                    }}
-                                    className="px-2.5 py-1 rounded bg-violet-700 hover:bg-violet-800 text-white text-[11px] font-semibold cursor-pointer"
-                                  >
-                                    Use Reply
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        {!isAcrioNote &&
-                          (() => {
-                            const rawAcc =
-                              m.metadata &&
-                              typeof m.metadata.accidentalCustomerReply === "object" &&
-                              m.metadata.accidentalCustomerReply !== null
-                                ? (m.metadata.accidentalCustomerReply as {
-                                    detected?: boolean;
-                                    status?: "PENDING" | "SENT" | "DISMISSED";
-                                    exactMessageText?: string;
-                                    mergedCorrectionText?: string | null;
-                                    sentByStaffName?: string;
-                                  })
-                                : null;
-                            const bodyTrimmed = String(m.body || "").trim();
-                            const hasAtMention = bodyTrimmed.includes("@");
-                            const clientDetectedMistake =
-                              !hasAtMention &&
-                              (Boolean(quotedReply) ||
-                                /^(?:sorry|sry)\b/i.test(bodyTrimmed) ||
-                                /\b(?:each\s+one\s+[\d,]+|plus\s+gst|transport\s+charges|\bsir\s*[,!.]*$)/i.test(
-                                  bodyTrimmed
-                                ));
-                            const isMistakePending =
-                              rawAcc?.status === "SENT" || rawAcc?.status === "DISMISSED"
-                                ? false
-                                : Boolean(rawAcc?.detected || clientDetectedMistake);
-                            const mergedText =
-                              rawAcc?.mergedCorrectionText ||
-                              (quotedReply?.body
-                                ? buildClientMergedCorrection(bodyTrimmed, quotedReply.body)
-                                : null);
-                            const isBusy = acrioActionBusyId === m.id;
-
-                            if (rawAcc?.status === "SENT") {
-                              return (
-                                <div className="mt-2 pt-1.5 border-t border-amber-300/70 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800">
-                                  <Check className="w-3.5 h-3.5 text-emerald-700" />
-                                  <span>
-                                    Sent to customer in WhatsApp chat
-                                    {rawAcc.sentByStaffName ? ` by ${rawAcc.sentByStaffName}` : ""}
-                                  </span>
-                                </div>
-                              );
-                            }
-
-                            if (isMistakePending) {
-                              return (
-                                <div className="mt-2.5 rounded-md bg-white/95 border border-amber-400 p-2.5 space-y-2 shadow-2xs">
-                                  <div className="text-[11.5px] font-semibold text-amber-950">
-                                    Heads up: This looks like a customer reply saved in an Internal Note (the customer cannot see this).
-                                  </div>
-                                  {mergedText && (
-                                    <div className="rounded bg-emerald-50/80 border border-emerald-200 px-2.5 py-1.5 text-[11.5px] text-emerald-950">
-                                      <span className="font-semibold">Smart corrected reply: </span>
-                                      <span>{mergedText}</span>
-                                    </div>
-                                  )}
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    {mergedText && (
-                                      <button
-                                        type="button"
-                                        disabled={isBusy}
-                                        onClick={() =>
-                                          void handleSendNoteInChat(m.id, mergedText)
-                                        }
-                                        className="px-2.5 py-1 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                      >
-                                        {isBusy ? (
-                                          <Loader2 className="w-3 h-3 animate-spin" />
-                                        ) : (
-                                          <Check className="w-3 h-3" />
-                                        )}
-                                        <span>
-                                          {isBusy
-                                            ? "Sending..."
-                                            : "Send Corrected Reply in Chat"}
-                                        </span>
-                                      </button>
-                                    )}
-                                    <button
-                                      type="button"
-                                      disabled={isBusy}
-                                      onClick={() =>
-                                        void handleSendNoteInChat(m.id, bodyTrimmed)
-                                      }
-                                      className={`px-2.5 py-1 rounded text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
-                                        mergedText
-                                          ? "bg-amber-700 hover:bg-amber-800 text-white"
-                                          : "bg-[#00a884] hover:bg-[#008f6f] text-white"
-                                      }`}
-                                    >
-                                      {isBusy ? (
-                                        <Loader2 className="w-3 h-3 animate-spin" />
-                                      ) : (
-                                        <CornerUpLeft className="w-3 h-3" />
-                                      )}
-                                      <span>
-                                        {isBusy
-                                          ? "Sending..."
-                                          : mergedText
-                                          ? `Send "${bodyTrimmed.slice(0, 28)}" Only`
-                                          : "Send in Chat"}
-                                      </span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={isBusy}
-                                      onClick={() =>
-                                        handleMoveNoteToReplyBox(
-                                          mergedText || bodyTrimmed,
-                                          quotedReply
-                                        )
-                                      }
-                                      className="px-2 py-1 rounded bg-white hover:bg-neutral-50 border border-neutral-300 text-neutral-800 text-[11px] font-medium cursor-pointer"
-                                    >
-                                      Edit in Reply Box
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={isBusy}
-                                      onClick={() =>
-                                        void handleSendNoteInChat(m.id, undefined, true)
-                                      }
-                                      className="px-2 py-1 rounded bg-white hover:bg-neutral-100 border border-neutral-200 text-neutral-600 text-[10.5px] font-medium cursor-pointer"
-                                    >
-                                      Keep as Note
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            }
-
-                            if (!hasAtMention && bodyTrimmed.length > 0) {
-                              return (
-                                <div className="mt-1.5 pt-1 border-t border-amber-300/45 flex items-center justify-end gap-2">
-                                  <button
-                                    type="button"
-                                    disabled={isBusy}
-                                    onClick={() =>
-                                      handleMoveNoteToReplyBox(bodyTrimmed, quotedReply)
-                                    }
-                                    className="text-[10.5px] font-medium text-amber-900/80 hover:text-amber-950 underline cursor-pointer"
-                                  >
-                                    Edit in Reply Box
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={isBusy}
-                                    onClick={() =>
-                                      void handleSendNoteInChat(m.id, bodyTrimmed)
-                                    }
-                                    className="px-2 py-0.5 rounded bg-amber-700/15 hover:bg-amber-700/25 text-amber-950 text-[10.5px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                  >
-                                    <CornerUpLeft className="w-2.5 h-2.5" />
-                                    <span>{isBusy ? "Sending..." : "Send in Chat"}</span>
-                                  </button>
-                                </div>
-                              );
-                            }
-                            return null;
-                          })()}
-                      </div>
-                    </div>
-                  );
-                }
-
-                const isAcrioBubble = m.billingCategory === "ACRIO";
-                const isTemplateBubble = m.messageType === "TEMPLATE";
-                const quotedIsAcrio =
-                  quotedReply?.senderType === "ACRIO" ||
-                  quotedReply?.senderName === "ACRIO";
-                const quotedIsOutbound = quotedReply?.direction === "OUTBOUND";
-
-                return (
-                  <div
-                    key={m.id}
-                    id={`chat-msg-${m.id}`}
-                    className={`group flex ${
-                      isOutbound ? "justify-end" : "justify-start"
-                    }`}
-                  >
-                    <div
-                      onDoubleClick={() => startReplyToMessage(m)}
-                      title="Double-click or press Reply to quote this message"
-                      className={`max-w-[92%] sm:max-w-[82%] lg:max-w-[74%] rounded-lg px-2.5 sm:px-3 py-2 shadow-2xs relative transition-all duration-300 min-w-0 [overflow-wrap:anywhere] ${
-                        isHighlighted
-                          ? "ring-2 ring-[#00a884] bg-[#fff8d6] text-[#111b21]"
-                          : isOutbound
-                          ? "bg-[#d9fdd3] text-[#111b21] rounded-tr-none"
-                          : "bg-white text-[#111b21] rounded-tl-none"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] mb-0.5 min-w-0">
-                        <span
-                          className={`font-semibold truncate min-w-0 ${
-                            isOutbound
-                              ? isAcrioBubble
-                                ? "text-indigo-800"
-                                : "text-[#008069]"
-                              : "text-[#e31837]"
-                          }`}
-                        >
-                          {m.senderName}
-                        </span>
-                        <div className="flex flex-wrap items-center gap-1 shrink-0">
-                          {isAcrioBubble && (
-                            <span className="px-1.5 py-0.2 rounded bg-white/80 text-indigo-800 text-[10px] font-medium">
-                              ACRIO
-                            </span>
-                          )}
-                          {isTemplateBubble && (
-                            <span className="px-1.5 py-0.2 rounded bg-white/80 text-[#54656f] text-[10px] font-medium">
-                              Template
-                            </span>
-                          )}
-                          <div className="inline-flex items-center gap-0.5 opacity-75 group-hover:opacity-100 transition">
-                            <button
-                              type="button"
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                startReplyToMessage(m);
-                              }}
-                              title="Quote & reply to customer"
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-medium text-[#54656f] hover:text-[#111b21] hover:bg-black/8 cursor-pointer"
-                            >
-                              <CornerUpLeft className="w-3 h-3" />
-                              <span>Reply</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                startReplyToMessage(m);
-                                setComposerMode("NOTE");
-                                setTimeout(() => composerInputRef.current?.focus(), 20);
-                              }}
-                              title="Quote this message in a private team note (@mention or @ACRIO)"
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-medium text-amber-800 hover:bg-amber-500/15 cursor-pointer"
-                            >
-                              <StickyNote className="w-3 h-3" />
-                              <span>Note</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                void navigator.clipboard?.writeText(stripWhatsAppFormatting(m.body));
-                                showToast("Message text copied.");
-                              }}
-                              title="Copy message text"
-                              className="p-1 rounded text-[#54656f] hover:text-[#111b21] hover:bg-black/8 cursor-pointer"
-                            >
-                              <Copy className="w-3 h-3" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-
-                      {quotedReply && (
-                        <button
-                          type="button"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            jumpToQuotedMessage(quotedReply);
-                          }}
-                          title="Jump to original message"
-                          className={`w-full text-left my-1 rounded-md px-2.5 py-1.5 border-l-[3.5px] transition cursor-pointer ${
-                            quotedIsAcrio
-                              ? "border-indigo-600"
-                              : quotedIsOutbound
-                              ? "border-[#00a884]"
-                              : "border-[#e31837]"
-                          } ${
-                            isOutbound
-                              ? "bg-[#cfe9ba]/75 hover:bg-[#c5e4ae]"
-                              : "bg-[#f0f2f5] hover:bg-[#e6eaee]"
-                          }`}
-                        >
-                          <div
-                            className={`text-[11px] font-semibold truncate ${
-                              quotedIsAcrio
-                                ? "text-indigo-800"
-                                : quotedIsOutbound
-                                ? "text-[#008069]"
-                                : "text-[#e31837]"
-                            }`}
-                          >
-                            {quotedReply.senderName}
-                          </div>
-                          <div className="text-[12px] text-[#54656f] line-clamp-2 leading-snug">
-                            {stripWhatsAppFormatting(quotedReply.body)}
-                          </div>
-                        </button>
-                      )}
-
-                      {(() => {
-                        const msgMedia = extractMessageMedia(m);
-                        if (!msgMedia) return null;
-                        return (
-                          <MessageMediaRenderer
-                            media={msgMedia}
-                            onOpenPreview={(med) => setPreviewMedia(med)}
-                          />
-                        );
-                      })()}
-
-                      {locationPin ? (
-                        <div className="mb-1 rounded-md border border-[#00a884]/35 bg-[#f0fdf4] p-2.5 space-y-1.5">
-                          <div className="flex items-start gap-2">
-                            <span className="w-7 h-7 rounded-full bg-[#00a884] text-white flex items-center justify-center shrink-0 mt-0.5">
-                              <MapPin className="w-3.5 h-3.5" />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="text-xs font-bold text-[#111b21] truncate">
-                                {locationPin.name}
-                              </div>
-                              {locationPin.address && (
-                                <div className="text-[11.5px] text-[#54656f] leading-snug mt-0.5">
-                                  {locationPin.address}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1.5 pt-1">
-                            <a
-                              href={locationPin.mapsUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md bg-white hover:bg-emerald-50 border border-[#00a884]/40 text-[#008069] text-xs font-semibold shadow-2xs transition"
-                            >
-                              <MapPin className="w-3.5 h-3.5" />
-                              <span>Open in Google Maps</span>
-                              <ExternalLink className="w-3 h-3" />
-                            </a>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void navigator.clipboard?.writeText(locationPin.mapsUrl);
-                                showToast("Copied Google Maps link.");
-                              }}
-                              title={`Copy ${locationPin.mapsUrl}`}
-                              className="p-1.5 rounded-md bg-white hover:bg-neutral-50 border border-black/10 text-[#54656f] hover:text-[#111b21] cursor-pointer"
-                            >
-                              <Copy className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <WhatsAppFormattedText
-                          text={m.body}
-                          className="text-[14px] leading-[1.52] tracking-[-0.006em]"
-                          onPhoneClick={handleOpenNewChatWithPhone}
-                        />
-                      )}
-
-                      {ctaButton && (
-                        <div className="mt-2 pt-2 border-t border-black/10 space-y-1.5">
-                          {(ctaButton.orderId || ctaButton.providerName) && (
-                            <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] text-[#54656f]">
-                              {ctaButton.orderId && (
-                                <span className="font-mono font-semibold text-[#111b21]">
-                                  Order #{ctaButton.orderId}
-                                </span>
-                              )}
-                              {ctaButton.providerName && (
-                                <span className="px-1.5 py-0.5 rounded bg-white/80 text-[#008069] font-medium">
-                                  {ctaButton.providerName}
-                                  {ctaButton.awbNumber
-                                    ? ` • AWB ${ctaButton.awbNumber}`
-                                    : ""}
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          <div className="flex items-center gap-1.5">
-                            <a
-                              href={ctaButton.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md bg-white/95 hover:bg-white border border-[#00a884]/35 text-[#008069] text-xs font-semibold shadow-2xs transition"
-                            >
-                              <ExternalLink className="w-3.5 h-3.5" />
-                              <span>{ctaButton.label}</span>
-                            </a>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void navigator.clipboard?.writeText(ctaButton.url);
-                                showToast(`Copied ${ctaButton.url}`);
-                              }}
-                              title={`Copy ${ctaButton.url}`}
-                              className="p-1.5 rounded-md bg-white/90 hover:bg-white border border-black/10 text-[#54656f] hover:text-[#111b21] cursor-pointer"
-                            >
-                              <Copy className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                          <div className="text-[10.5px] font-mono text-[#54656f] truncate">
-                            {ctaButton.url}
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-end gap-1.5 mt-1 text-[10.5px] tabular-nums text-[#667781]">
-                        <span>
-                          {formatTimeIst(m.createdAt)}
-                        </span>
-                        {isOutbound && (
-                          <WhatsAppMessageTicks
-                            status={m.deliveryStatus}
-                            showLabel
-                            size={14}
-                          />
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* Chronological Bottom Resolution Event Card (so users never scroll up to see resolution!) */}
-              {activeConv.status === "RESOLVED" && (
-                <div className="mx-auto max-w-xl p-3 rounded-lg bg-emerald-50/95 border border-emerald-300 text-xs text-emerald-950 shadow-2xs flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-semibold flex items-center gap-1.5">
-                      <Check className="w-3.5 h-3.5 text-emerald-700" />
-                      <span>
-                        Resolved by {activeConv.resolvedByName || "Staff"}
-                      </span>
-                    </div>
-                    {activeConv.resolutionSummary && (
-                      <p className="mt-0.5 text-emerald-900">
-                        {activeConv.resolutionSummary}
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleReopen}
-                    className="px-2.5 py-1 rounded bg-white border border-emerald-300 hover:bg-emerald-100 text-[11px] font-semibold text-emerald-900 cursor-pointer shrink-0"
-                  >
-                    Reopen
-                  </button>
-                </div>
-              )}
-
-              <div ref={messagesEndRef} />
-            </div>
+            {/* Virtualized WhatsApp Chat Wallpaper + Message Stream */}
+            <MessageTimeline
+              conversationId={activeConv.id}
+              messages={messages}
+              conversationStatus={activeConv.status}
+              resolvedByName={activeConv.resolvedByName || null}
+              resolutionSummary={activeConv.resolutionSummary || null}
+              hasOlderMessages={Boolean(detail?.hasOlderMessages)}
+              loadingOlderMessages={loadingOlderMessages}
+              onLoadOlderMessages={handleLoadOlderMessages}
+              nowMs={nowMs}
+              staffList={staffList}
+              isAssignedToCurrentUser={isAssignedToCurrentUser}
+              highlightedMsgId={highlightedMsgId}
+              acrioActionBusyId={acrioActionBusyId}
+              onStartReplyToMessage={startReplyToMessage}
+              onStartNoteReplyToMessage={(m) => {
+                startReplyToMessage(m);
+                setComposerMode("NOTE");
+                setTimeout(() => composerInputRef.current?.focus(), 20);
+              }}
+              onJumpToQuotedMessage={jumpToQuotedMessage}
+              onOpenMediaPreview={(media) => setPreviewMedia(media)}
+              onOpenNewChatWithPhone={handleOpenNewChatWithPhone}
+              onCopyToast={showToast}
+              onSendNoteInChat={(noteId, customText, dismissOnly) => {
+                void handleSendNoteInChat(noteId, customText, dismissOnly);
+              }}
+              onMoveNoteToReplyBox={handleMoveNoteToReplyBox}
+              onConfirmAcrioAction={(noteId, decision, selectedOptionId) => {
+                void handleConfirmAcrioAction(noteId, decision, selectedOptionId);
+              }}
+              onUploadCompanyDocForNote={(noteId, md, file) => {
+                void handleUploadCompanyDocForNote(noteId, md, file);
+              }}
+              onUseSuggestedReply={(reply) => {
+                setComposerMode("REPLY");
+                setReplyText(reply);
+                composerInputRef.current?.focus();
+              }}
+              onReopen={handleReopen}
+              scrollTargetRef={timelineScrollRef}
+            />
 
             {/* Popovers for Attach Media/File, Track Order Button, Location Pin & Product Short Links (triggered from the Composer Toolbar) */}
             {detail && (showAttachmentPicker || showTrackPopover || showLocationPopover || (showShortLinksPicker && detail.customLinks.length > 0)) && (
@@ -6419,9 +4850,9 @@ export function InboxClient({
           handleSelectConversation(convId);
         }}
         onCompleted={async (convId, msg) => {
-          setSelectedId(convId);
+          selectConversationInStore(convId);
           selectedIdRef.current = convId;
-          setMobilePane("CHAT");
+          lastSyncedProfileConvIdRef.current = null;
           await Promise.all([
             refreshThreadsSilently(),
             fetchAndCacheDetail(convId, true),
