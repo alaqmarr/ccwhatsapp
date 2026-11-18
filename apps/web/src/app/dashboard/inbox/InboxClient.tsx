@@ -97,12 +97,42 @@ import type {
 function describeNoteResult(data: {
   mentioned?: { id: string; name: string }[];
   askedAcrio?: boolean;
+  accidentalReplyDetected?: boolean;
 }): string {
+  if (data?.accidentalReplyDetected) {
+    return "Heads up: Saved as an Internal Note, not a WhatsApp reply! Click 'Send in Chat' on the note to send it to the customer.";
+  }
   const parts = ["Internal note saved."];
   const names = (data?.mentioned || []).map((m) => m.name);
   if (names.length > 0) parts.push(`Pinged ${names.join(", ")}.`);
   if (data?.askedAcrio) parts.push("ACRIO will answer in a private note shortly.");
   return parts.join(" ");
+}
+
+/** Builds a merged corrected customer quote when a short note ("sorry 3mm thickness") corrects a quoted outbound message. */
+function buildClientMergedCorrection(noteText: string, refBody: string): string | null {
+  const cleanNote = String(noteText || "").trim();
+  const cleanRef = String(refBody || "").trim();
+  if (!cleanNote || !cleanRef || cleanNote.toLowerCase() === cleanRef.toLowerCase()) return null;
+
+  const noteDim = cleanNote.match(/\b(\d+(?:\.\d+)?\s*(?:mm|cm|inch|inches|in|ft))(?:\s*(thickness|thick))?\b/i);
+  const refDim = cleanRef.match(/\b(\d+(?:\.\d+)?\s*(?:mm|cm|inch|inches|in|ft))(?:\s*(thickness|thick))?\b/i);
+  if (
+    noteDim &&
+    refDim &&
+    noteDim[1].replace(/\s+/g, "").toLowerCase() !== refDim[1].replace(/\s+/g, "").toLowerCase()
+  ) {
+    const newDim = noteDim[2]
+      ? `${noteDim[1]} ${noteDim[2]}`
+      : refDim[2]
+      ? `${noteDim[1]} ${refDim[2]}`
+      : noteDim[1];
+    const replaced = cleanRef.replace(refDim[0], newDim).replace(/[,;\s]+$/, "");
+    return /^sorry\b/i.test(cleanNote) && !/^sorry\b/i.test(replaced)
+      ? `Sorry, ${replaced}`
+      : replaced;
+  }
+  return null;
 }
 
 /** True when the text mentions @ACRIO or a teammate by name. */
@@ -1474,6 +1504,58 @@ export function InboxClient({
     } finally {
       setAcrioActionBusyId(null);
     }
+  }
+
+  async function handleSendNoteInChat(
+    noteMessageId: string,
+    customText?: string,
+    dismissOnly?: boolean
+  ) {
+    if (!selectedId || acrioActionBusyId) return;
+    setAcrioActionBusyId(noteMessageId);
+    try {
+      const res = await fetch(`/api/conversations/${selectedId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send_note_in_chat",
+          noteMessageId,
+          ...(customText ? { customText } : {}),
+          ...(dismissOnly ? { dismissOnly: true } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        showToast(data.error || "Could not send note in chat.");
+        return;
+      }
+      showToast(
+        dismissOnly
+          ? "Kept as an internal team note."
+          : "Sent to customer on WhatsApp chat!"
+      );
+      await Promise.all([
+        fetchAndCacheDetail(selectedId, false),
+        refreshThreadsSilently(false),
+      ]);
+    } catch {
+      showToast("Network error while sending note in chat.");
+    } finally {
+      setAcrioActionBusyId(null);
+    }
+  }
+
+  function handleMoveNoteToReplyBox(
+    text: string,
+    quoted?: QuotedMessageRef | null
+  ) {
+    setComposerMode("REPLY");
+    setReplyText(text);
+    if (quoted) {
+      setReplyingTo(quoted);
+    }
+    setTimeout(() => composerInputRef.current?.focus(), 30);
+    showToast("Loaded into WhatsApp Reply box. Review and press Send.");
   }
 
   async function handleUploadCompanyDocForNote(
@@ -3045,12 +3127,20 @@ export function InboxClient({
                                 mediaUrl: string;
                                 mediaType: string;
                                 fileName: string;
+                                messageText?: string;
                               }>;
                             };
                             const isBusy = acrioActionBusyId === m.id;
                             const hasChoices =
                               Array.isArray(pa.candidateOptions) &&
                               pa.candidateOptions.length > 1;
+                            const isTextChoiceList =
+                              hasChoices &&
+                              Boolean(
+                                pa.candidateOptions?.some(
+                                  (o) => Boolean(o.messageText) && !o.mediaUrl
+                                )
+                              );
                             if (pa.status === "CONFIRMED") {
                               return (
                                 <div className="mt-2 pt-2 border-t border-violet-200/70 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800">
@@ -3077,7 +3167,9 @@ export function InboxClient({
                               <div className="mt-2.5 rounded-md bg-white border border-violet-200 p-2.5 space-y-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <span className="text-[11px] font-semibold text-violet-950">
-                                    {hasChoices
+                                    {isTextChoiceList
+                                      ? "Choose how to send this in the customer's WhatsApp chat:"
+                                      : hasChoices
                                       ? "Select which document to confirm & send to client:"
                                       : pa.title || "Confirm client action"}
                                   </span>
@@ -3099,13 +3191,19 @@ export function InboxClient({
                                         key={opt.id}
                                         className="rounded border border-violet-100 bg-[#faf8ff] px-2.5 py-2 flex flex-wrap items-center justify-between gap-2"
                                       >
-                                        <div className="min-w-0">
+                                        <div className="min-w-0 flex-1">
                                           <div className="text-[11.5px] font-semibold text-violet-950 truncate">
                                             {idx + 1}. {opt.title}
                                           </div>
-                                          <div className="text-[10.5px] text-neutral-600 truncate">
-                                            Source: {opt.sourceLabel} • {opt.fileName}
-                                          </div>
+                                          {opt.messageText && !opt.mediaUrl ? (
+                                            <div className="mt-1 text-[12px] text-[#111b21] bg-white border border-violet-200/80 rounded px-2 py-1 font-medium">
+                                              {opt.messageText}
+                                            </div>
+                                          ) : (
+                                            <div className="text-[10.5px] text-neutral-600 truncate">
+                                              Source: {opt.sourceLabel} • {opt.fileName}
+                                            </div>
+                                          )}
                                         </div>
                                         <div className="flex items-center gap-1.5 shrink-0">
                                           {opt.mediaUrl && (
@@ -3117,6 +3215,21 @@ export function InboxClient({
                                             >
                                               View
                                             </a>
+                                          )}
+                                          {opt.messageText && !opt.mediaUrl && (
+                                            <button
+                                              type="button"
+                                              disabled={isBusy}
+                                              onClick={() =>
+                                                handleMoveNoteToReplyBox(
+                                                  opt.messageText || "",
+                                                  quotedReply
+                                                )
+                                              }
+                                              className="px-2 py-1 rounded border border-neutral-300 bg-white hover:bg-neutral-50 text-[10.5px] font-medium text-neutral-700 cursor-pointer"
+                                            >
+                                              Edit in Reply Box
+                                            </button>
                                           )}
                                           <button
                                             type="button"
@@ -3132,7 +3245,11 @@ export function InboxClient({
                                           >
                                             <Check className="w-3 h-3" />
                                             <span>
-                                              {isBusy ? "Sending..." : "Confirm & Send"}
+                                              {isBusy
+                                                ? "Sending..."
+                                                : opt.messageText && !opt.mediaUrl
+                                                ? "Send in Chat"
+                                                : "Confirm & Send"}
                                             </span>
                                           </button>
                                         </div>
@@ -3305,6 +3422,160 @@ export function InboxClient({
                               </div>
                             </div>
                           )}
+                        {!isAcrioNote &&
+                          (() => {
+                            const rawAcc =
+                              m.metadata &&
+                              typeof m.metadata.accidentalCustomerReply === "object" &&
+                              m.metadata.accidentalCustomerReply !== null
+                                ? (m.metadata.accidentalCustomerReply as {
+                                    detected?: boolean;
+                                    status?: "PENDING" | "SENT" | "DISMISSED";
+                                    exactMessageText?: string;
+                                    mergedCorrectionText?: string | null;
+                                    sentByStaffName?: string;
+                                  })
+                                : null;
+                            const bodyTrimmed = String(m.body || "").trim();
+                            const hasAtMention = bodyTrimmed.includes("@");
+                            const clientDetectedMistake =
+                              !hasAtMention &&
+                              (Boolean(quotedReply) ||
+                                /^(?:sorry|sry)\b/i.test(bodyTrimmed) ||
+                                /\b(?:each\s+one\s+[\d,]+|plus\s+gst|transport\s+charges|\bsir\s*[,!.]*$)/i.test(
+                                  bodyTrimmed
+                                ));
+                            const isMistakePending =
+                              rawAcc?.status === "SENT" || rawAcc?.status === "DISMISSED"
+                                ? false
+                                : Boolean(rawAcc?.detected || clientDetectedMistake);
+                            const mergedText =
+                              rawAcc?.mergedCorrectionText ||
+                              (quotedReply?.body
+                                ? buildClientMergedCorrection(bodyTrimmed, quotedReply.body)
+                                : null);
+                            const isBusy = acrioActionBusyId === m.id;
+
+                            if (rawAcc?.status === "SENT") {
+                              return (
+                                <div className="mt-2 pt-1.5 border-t border-amber-300/70 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800">
+                                  <Check className="w-3.5 h-3.5 text-emerald-700" />
+                                  <span>
+                                    Sent to customer in WhatsApp chat
+                                    {rawAcc.sentByStaffName ? ` by ${rawAcc.sentByStaffName}` : ""}
+                                  </span>
+                                </div>
+                              );
+                            }
+
+                            if (isMistakePending) {
+                              return (
+                                <div className="mt-2.5 rounded-md bg-white/95 border border-amber-400 p-2.5 space-y-2 shadow-2xs">
+                                  <div className="text-[11.5px] font-semibold text-amber-950">
+                                    Heads up: This looks like a customer reply saved in an Internal Note (the customer cannot see this).
+                                  </div>
+                                  {mergedText && (
+                                    <div className="rounded bg-emerald-50/80 border border-emerald-200 px-2.5 py-1.5 text-[11.5px] text-emerald-950">
+                                      <span className="font-semibold">Smart corrected reply: </span>
+                                      <span>{mergedText}</span>
+                                    </div>
+                                  )}
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    {mergedText && (
+                                      <button
+                                        type="button"
+                                        disabled={isBusy}
+                                        onClick={() =>
+                                          void handleSendNoteInChat(m.id, mergedText)
+                                        }
+                                        className="px-2.5 py-1 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                      >
+                                        <Check className="w-3 h-3" />
+                                        <span>
+                                          {isBusy
+                                            ? "Sending..."
+                                            : "Send Corrected Reply in Chat"}
+                                        </span>
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        void handleSendNoteInChat(m.id, bodyTrimmed)
+                                      }
+                                      className={`px-2.5 py-1 rounded text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
+                                        mergedText
+                                          ? "bg-amber-700 hover:bg-amber-800 text-white"
+                                          : "bg-[#00a884] hover:bg-[#008f6f] text-white"
+                                      }`}
+                                    >
+                                      <CornerUpLeft className="w-3 h-3" />
+                                      <span>
+                                        {isBusy
+                                          ? "Sending..."
+                                          : mergedText
+                                          ? `Send "${bodyTrimmed.slice(0, 28)}" Only`
+                                          : "Send in Chat"}
+                                      </span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        handleMoveNoteToReplyBox(
+                                          mergedText || bodyTrimmed,
+                                          quotedReply
+                                        )
+                                      }
+                                      className="px-2 py-1 rounded bg-white hover:bg-neutral-50 border border-neutral-300 text-neutral-800 text-[11px] font-medium cursor-pointer"
+                                    >
+                                      Edit in Reply Box
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        void handleSendNoteInChat(m.id, undefined, true)
+                                      }
+                                      className="px-2 py-1 rounded bg-white hover:bg-neutral-100 border border-neutral-200 text-neutral-600 text-[10.5px] font-medium cursor-pointer"
+                                    >
+                                      Keep as Note
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            if (!hasAtMention && bodyTrimmed.length > 0) {
+                              return (
+                                <div className="mt-1.5 pt-1 border-t border-amber-300/45 flex items-center justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() =>
+                                      handleMoveNoteToReplyBox(bodyTrimmed, quotedReply)
+                                    }
+                                    className="text-[10.5px] font-medium text-amber-900/80 hover:text-amber-950 underline cursor-pointer"
+                                  >
+                                    Edit in Reply Box
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() =>
+                                      void handleSendNoteInChat(m.id, bodyTrimmed)
+                                    }
+                                    className="px-2 py-0.5 rounded bg-amber-700/15 hover:bg-amber-700/25 text-amber-950 text-[10.5px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                  >
+                                    <CornerUpLeft className="w-2.5 h-2.5" />
+                                    <span>{isBusy ? "Sending..." : "Send in Chat"}</span>
+                                  </button>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                       </div>
                     </div>
                   );

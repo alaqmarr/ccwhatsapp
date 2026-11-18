@@ -27,6 +27,7 @@ import { socketHub } from "@cc/sockets";
 import { listCustomAdminLinks, rememberWhatsAppCache } from "@cc/storage";
 import {
   closeActiveAssignmentOnResolve,
+  convertInternalNoteToCustomerMessage,
   executeAcrioPendingNoteAction,
   logConversationAssignment,
   markPriorOutboundMessagesRead,
@@ -787,30 +788,61 @@ export async function POST(
 
     socketHub.emit("note:new", { conversationId: id, senderName: user.name, noteText });
 
-    // @mentions ping teammates; "@ACRIO" makes ACRIO answer back in a private note.
+    // @mentions ping teammates; "@ACRIO" makes ACRIO answer back in a private note;
+    // and notes without @mentions are checked for accidental customer replies so ACRIO can offer a 1-click "Send in Chat" recovery button!
     let mentioned: { id: string; name: string }[] = [];
     let askedAcrio = false;
-    if (noteText.includes("@")) {
-      try {
-        const accounts = await listAllStaffAccounts();
-        const staff = accounts
-          .filter((a) => a.status === "ACTIVE" && a.role !== "CLIENT")
-          .map((a) => ({ id: a.id, name: a.name, email: a.email, whatsappNumber: a.whatsappNumber }));
-        const processed = await processStaffNote({
-          conversationId: id,
-          noteId,
-          noteText,
-          author: { id: user.id, name: user.name },
-          staff,
-          noteAttachment,
-        });
-        mentioned = processed.mentioned;
-        askedAcrio = processed.askedAcrio;
-      } catch (err) {
-        console.warn("[notes] mention processing failed:", (err as Error)?.message || err);
-      }
+    let accidentalReplyDetected = false;
+    try {
+      const accounts = noteText.includes("@") ? await listAllStaffAccounts() : [];
+      const staff = accounts
+        .filter((a) => a.status === "ACTIVE" && a.role !== "CLIENT")
+        .map((a) => ({ id: a.id, name: a.name, email: a.email, whatsappNumber: a.whatsappNumber }));
+      const processed = await processStaffNote({
+        conversationId: id,
+        noteId,
+        noteText,
+        author: { id: user.id, name: user.name },
+        staff,
+        noteAttachment,
+      });
+      mentioned = processed.mentioned;
+      askedAcrio = processed.askedAcrio;
+      accidentalReplyDetected = Boolean(processed.accidentalReplyDetected);
+    } catch (err) {
+      console.warn("[notes] note processing failed:", (err as Error)?.message || err);
     }
-    return NextResponse.json({ ok: true, noteId, replyTo: replyMeta, mentioned, askedAcrio });
+    return NextResponse.json({
+      ok: true,
+      noteId,
+      replyTo: replyMeta,
+      mentioned,
+      askedAcrio,
+      accidentalReplyDetected,
+    });
+  }
+
+  // 2a-i. Send an existing Internal Team Note directly to the customer in WhatsApp Chat (or dismiss the accidental-reply alert)
+  if (action === "send_note_in_chat") {
+    const noteMessageId = String(body.noteMessageId || "").trim();
+    const customText = body.customText ? String(body.customText).trim() : undefined;
+    const dismissOnly = Boolean(body.dismissOnly);
+    if (!noteMessageId) {
+      return NextResponse.json({ ok: false, error: "noteMessageId is required." }, { status: 400 });
+    }
+    const res = await convertInternalNoteToCustomerMessage({
+      conversationId: id,
+      noteMessageId,
+      actorStaffId: user.id,
+      actorStaffName: user.name,
+      customText,
+      dismissOnly,
+    });
+    if (!res.ok) {
+      return NextResponse.json({ ok: false, error: res.error || "Could not send note in chat." }, { status: 400 });
+    }
+    const { ok: _ignoredOk, ...rest } = res;
+    return NextResponse.json({ ok: true, ...rest });
   }
 
   // 2a-ii. Confirm or cancel a queued ACRIO customer action inside Internal Notes

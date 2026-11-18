@@ -193,12 +193,14 @@ export interface PendingAcrioCandidateOption {
   title: string;
   sourceLabel: string;
   mediaUrl: string;
-  mediaType: "DOCUMENT" | "IMAGE" | "VIDEO" | "AUDIO";
+  mediaType: "DOCUMENT" | "IMAGE" | "VIDEO" | "AUDIO" | "TEXT";
   mediaId?: string;
   waMediaId?: string;
   fileName: string;
   mimeType: string;
   docNumber?: string;
+  messageText?: string;
+  replyTo?: Record<string, unknown> | null;
 }
 
 export interface PendingAcrioNoteAction {
@@ -207,6 +209,8 @@ export interface PendingAcrioNoteAction {
   type: "send_customer_reply";
   title: string;
   messageText: string;
+  sourceNoteId?: string;
+  replyTo?: Record<string, unknown> | null;
   companyDocId?: string;
   companyDocTitle?: string;
   sourceLabel?: string;
@@ -220,6 +224,18 @@ export interface PendingAcrioNoteAction {
   decidedAt?: string;
   sentMessageId?: string;
   error?: string;
+}
+
+export interface AccidentalCustomerReplyMetadata {
+  detected: boolean;
+  status: "PENDING" | "SENT" | "DISMISSED";
+  reason: string;
+  exactMessageText: string;
+  mergedCorrectionText?: string | null;
+  replyTo?: Record<string, unknown> | null;
+  sentMessageId?: string;
+  sentByStaffName?: string;
+  sentAt?: string;
 }
 
 export interface MissingCompanyDocPrompt {
@@ -238,7 +254,9 @@ async function dispatchStaffCustomerReply(params: {
   actorStaffName: string;
   messageText: string;
   attachment?: NoteAttachmentPayload | null;
+  replyTo?: Record<string, unknown> | null;
   actionTagId?: string;
+  usePlainStaffSenderName?: boolean;
 }): Promise<{ ok: boolean; messageId: string; error?: string }> {
   const conv = getRawLibSqlClient("conversations");
   const nowIso = new Date().toISOString();
@@ -251,10 +269,15 @@ async function dispatchStaffCustomerReply(params: {
   const text =
     String(params.messageText || "").trim() ||
     (att?.fileName ? `Please find attached *${att.fileName}* for your reference.` : "");
+  const replyToWaMessageId =
+    params.replyTo && typeof params.replyTo.waMessageId === "string" && params.replyTo.waMessageId.trim()
+      ? params.replyTo.waMessageId.trim()
+      : undefined;
 
   const sendRes = await sendWhatsAppCloudMessage({
     toPhone: params.customerPhone,
     bodyText: text,
+    replyToWaMessageId,
     media: att
       ? {
           type: att.mediaType,
@@ -272,6 +295,9 @@ async function dispatchStaffCustomerReply(params: {
     sentViaAcrioAction: params.actionTagId || "acrio_auto",
     confirmedBy: params.actorStaffName,
   };
+  if (params.replyTo) {
+    outMetaObj.replyTo = params.replyTo;
+  }
   if (att) {
     outMetaObj.mediaType = att.mediaType;
     outMetaObj.mediaUrl = att.url;
@@ -306,7 +332,7 @@ async function dispatchStaffCustomerReply(params: {
       outMsgId,
       params.conversationId,
       params.actorStaffId,
-      `${params.actorStaffName} via ACRIO`,
+      params.usePlainStaffSenderName ? params.actorStaffName : `${params.actorStaffName} via ACRIO`,
       att ? att.mediaType : "TEXT",
       text,
       JSON.stringify(outMetaObj),
@@ -423,8 +449,29 @@ export async function executeAcrioPendingNoteAction(params: {
       args: [JSON.stringify(meta), params.noteMessageId],
     });
 
+    if (pending.sourceNoteId) {
+      const origRes = await conv.execute({
+        sql: `SELECT metadata_json FROM messages WHERE id = ? LIMIT 1`,
+        args: [pending.sourceNoteId],
+      });
+      if (origRes.rows[0]) {
+        try {
+          const origMeta = JSON.parse(String(origRes.rows[0].metadata_json || "{}"));
+          if (origMeta.accidentalCustomerReply) {
+            origMeta.accidentalCustomerReply.status = "DISMISSED";
+            await conv.execute({
+              sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+              args: [JSON.stringify(origMeta), pending.sourceNoteId],
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
     const cancelNoteId = `msg_note_acrio_${crypto.randomUUID().slice(0, 8)}`;
-    const cancelBody = `@${params.actorStaffName} Cancelled *${pending.title}*. Nothing was sent to *${customerName}*.`;
+    const cancelBody = `@${params.actorStaffName} Kept as an internal team note. Nothing was sent to *${customerName}*.`;
     await conv.execute({
       sql: `INSERT INTO messages (
         id, conversation_id, direction, sender_type, sender_name, message_type,
@@ -456,20 +503,28 @@ export async function executeAcrioPendingNoteAction(params: {
       (opt) => opt.id === params.selectedOptionId
     );
     if (chosen) {
-      pending.companyDocId = chosen.id;
-      pending.companyDocTitle = chosen.title;
-      pending.sourceLabel = chosen.sourceLabel;
-      pending.docNumber = chosen.docNumber;
-      pending.title = `Share ${chosen.title} with ${customerName}`;
-      pending.attachment = {
-        mediaId: chosen.mediaId,
-        waMediaId: chosen.waMediaId,
-        mediaType: chosen.mediaType,
-        url: chosen.mediaUrl,
-        fileName: chosen.fileName,
-        mimeType: chosen.mimeType,
-      };
-      pending.messageText = `Please find attached our *${chosen.title}*${chosen.docNumber ? ` (${chosen.docNumber})` : ""} for your reference. Please let us know if you need anything else.`;
+      if (chosen.messageText && !chosen.mediaUrl) {
+        pending.title = chosen.title;
+        pending.messageText = chosen.messageText;
+        if (chosen.replyTo !== undefined) {
+          pending.replyTo = chosen.replyTo;
+        }
+      } else {
+        pending.companyDocId = chosen.id;
+        pending.companyDocTitle = chosen.title;
+        pending.sourceLabel = chosen.sourceLabel;
+        pending.docNumber = chosen.docNumber;
+        pending.title = `Share ${chosen.title} with ${customerName}`;
+        pending.attachment = {
+          mediaId: chosen.mediaId,
+          waMediaId: chosen.waMediaId,
+          mediaType: chosen.mediaType === "TEXT" ? "DOCUMENT" : chosen.mediaType,
+          url: chosen.mediaUrl,
+          fileName: chosen.fileName,
+          mimeType: chosen.mimeType,
+        };
+        pending.messageText = `Please find attached our *${chosen.title}*${chosen.docNumber ? ` (${chosen.docNumber})` : ""} for your reference. Please let us know if you need anything else.`;
+      }
     }
   }
 
@@ -489,8 +544,35 @@ export async function executeAcrioPendingNoteAction(params: {
     actorStaffName: params.actorStaffName,
     messageText: text,
     attachment: att,
+    replyTo: pending.replyTo || null,
     actionTagId: pending.id,
+    usePlainStaffSenderName: Boolean(pending.sourceNoteId),
   });
+
+  if (sendRes.ok && pending.sourceNoteId) {
+    const origRes = await conv.execute({
+      sql: `SELECT metadata_json FROM messages WHERE id = ? LIMIT 1`,
+      args: [pending.sourceNoteId],
+    });
+    if (origRes.rows[0]) {
+      try {
+        const origMeta = JSON.parse(String(origRes.rows[0].metadata_json || "{}"));
+        origMeta.accidentalCustomerReply = {
+          ...(origMeta.accidentalCustomerReply || { detected: true }),
+          status: "SENT",
+          sentMessageId: sendRes.messageId,
+          sentByStaffName: params.actorStaffName,
+          sentAt: nowIso,
+        };
+        await conv.execute({
+          sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+          args: [JSON.stringify(origMeta), pending.sourceNoteId],
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }
 
   pending.status = sendRes.ok ? "CONFIRMED" : "FAILED";
   pending.decidedByStaffName = params.actorStaffName;
@@ -1215,9 +1297,342 @@ async function ensureCallbackRequestsTableInline(): Promise<void> {
   )`);
 }
 
+const INTERNAL_MEMO_ONLY_RE =
+  /\b(customer\s+(?:is|wants|asked|said|called|will|needs)|client\s+(?:is|wants|asked|said|called|will|needs)|spoke\s+(?:to|with)\s+(?:him|her|client|customer)|called\s+(?:him|her|client|customer)|internal\s+note|team\s+note|assign(?:ed)?\s+to|follow\s*up\s+tomorrow|fake\s+lead|spam|wrong\s+number|do\s+not\s+reply|don'?t\s+reply|waiting\s+for\s+po|payment\s+received\s+from\s+client|replied\s+in\s+note|note\s+instead\s+of)\b/i;
+
+const CUSTOMER_FACING_NOTE_SIGNAL_RE =
+  /\b(dear\s+sir|dear\s+madam|yes\s+sir|no\s+sir|ok\s+sir|okay\s+sir|sorry\s+sir|hello\s+sir|hi\s+sir|sir\s*[,!.]$|madam\s*[,!.]$|ma'?am\s*[,!.]$|thank\s+you\s+for\s+contacting|each\s+one\s+[\d,]+|\d[\d,]*\s*\/-\s*plus\s*gst|plus\s+gst(?:\s+and\s+transport)?|transport\s+charges|delivery\s+charges|please\s+let\s+us\s+know|please\s+share\s+your\s+gst|we\s+can\s+dispatch|working\s+days)\b/i;
+
+const SHORT_CORRECTION_SIGNAL_RE =
+  /^(?:sorry|sry|apologies|by\s+mistake|correction|it\s+is|actually|mean|meant)\b|\b(?:sorry|sry)\s+\d+(?:\.\d+)?\s*(?:mm|cm|inch|in|ft|rs\.?|₹|\/-|\s*thickness)\b/i;
+
 /**
- * Called after a private note is saved. Pings mentioned teammates and, when the note
- * contains "@ACRIO", has ACRIO answer in a new private note for the author.
+ * When a staff member accidentally writes a short correction in an Internal Note (e.g. "sorry 3mm thickness")
+ * quoting or following their own outbound message (e.g. "5mm thickness Each one 3,220/- plus Gst and Transport charges sir,"),
+ * builds a complete corrected customer message alongside the raw note text.
+ */
+export function buildSmartCorrectedReplyOption(
+  noteText: string,
+  referenceOutboundBody: string
+): string | null {
+  const cleanNote = String(noteText || "").trim();
+  const cleanRef = String(referenceOutboundBody || "").trim();
+  if (!cleanNote || !cleanRef || cleanNote.toLowerCase() === cleanRef.toLowerCase()) {
+    return null;
+  }
+
+  // Case 1: Thickness / dimension replacement (e.g. "sorry 3mm thickness" -> replaces "5mm thickness" in reference)
+  const noteDimMatch = cleanNote.match(
+    /\b(\d+(?:\.\d+)?\s*(?:mm|cm|inch|inches|in|ft))(?:\s*(thickness|thick))?\b/i
+  );
+  const refDimMatch = cleanRef.match(
+    /\b(\d+(?:\.\d+)?\s*(?:mm|cm|inch|inches|in|ft))(?:\s*(thickness|thick))?\b/i
+  );
+  if (noteDimMatch && refDimMatch && noteDimMatch[1].replace(/\s+/g, "").toLowerCase() !== refDimMatch[1].replace(/\s+/g, "").toLowerCase()) {
+    const newDim = noteDimMatch[2]
+      ? `${noteDimMatch[1]} ${noteDimMatch[2]}`
+      : refDimMatch[2]
+      ? `${noteDimMatch[1]} ${refDimMatch[2]}`
+      : noteDimMatch[1];
+    const replaced = cleanRef
+      .replace(refDimMatch[0], newDim)
+      .replace(/[,;\s]+$/, "");
+    return /^sorry\b/i.test(cleanNote) && !/^sorry\b/i.test(replaced)
+      ? `Sorry, ${replaced}`
+      : replaced;
+  }
+
+  // Case 2: Price replacement (e.g. "sorry 3,500/-" -> replaces "3,220/-" in reference)
+  const notePriceMatch = cleanNote.match(/\b((?:₹|rs\.?\s*)?\d[\d,]*(?:\s*\/-)?)\b/i);
+  const refPriceMatch = cleanRef.match(/\b((?:₹|rs\.?\s*)?\d[\d,]*(?:\s*\/-))\b/i);
+  if (
+    notePriceMatch &&
+    refPriceMatch &&
+    !noteDimMatch &&
+    notePriceMatch[1].replace(/[^\d]/g, "") !== refPriceMatch[1].replace(/[^\d]/g, "") &&
+    notePriceMatch[1].replace(/[^\d]/g, "").length >= 3
+  ) {
+    const newPrice = /\/-/.test(refPriceMatch[1]) && !/\/-/.test(notePriceMatch[1])
+      ? `${notePriceMatch[1]}/-`
+      : notePriceMatch[1];
+    const replaced = cleanRef
+      .replace(refPriceMatch[0], newPrice)
+      .replace(/[,;\s]+$/, "");
+    return /^sorry\b/i.test(cleanNote) && !/^sorry\b/i.test(replaced)
+      ? `Sorry, ${replaced}`
+      : replaced;
+  }
+
+  return null;
+}
+
+/**
+ * Detects when a staff member accidentally writes a reply or correction intended for the customer
+ * inside an Internal Team Note instead of the WhatsApp reply box.
+ */
+export function detectAccidentalCustomerReplyInNote(params: {
+  noteText: string;
+  replyTo?: Record<string, unknown> | null;
+  recentMessages?: Array<{
+    id?: string;
+    waMessageId?: string | null;
+    direction: string;
+    senderName: string;
+    senderType?: string;
+    messageType?: string;
+    body: string;
+  }>;
+}): {
+  isAccidentalCustomerReply: boolean;
+  reason: string;
+  exactMessageText: string;
+  mergedCorrectionText: string | null;
+  replyTo: Record<string, unknown> | null;
+} {
+  const trimmed = String(params.noteText || "").trim();
+  const emptyResult = {
+    isAccidentalCustomerReply: false,
+    reason: "",
+    exactMessageText: trimmed,
+    mergedCorrectionText: null,
+    replyTo: params.replyTo || null,
+  };
+
+  if (!trimmed || trimmed.includes("@")) {
+    return emptyResult;
+  }
+
+  // Do not flag short confirmation/cancellation keywords meant for pending ACRIO actions
+  if (
+    /^(?:yes|yep|yeah|confirm|confirmed|approve|approved|go ahead|ok|okay|proceed|send|send it|share|share it|do it|cancel|no|nope|stop|abort|#[1-9]|[1-9])[.!]*$/i.test(
+      trimmed
+    )
+  ) {
+    return emptyResult;
+  }
+
+  if (INTERNAL_MEMO_ONLY_RE.test(trimmed)) {
+    return emptyResult;
+  }
+
+  const replyTo = params.replyTo || null;
+  const replyDirection = String(replyTo?.direction || "").toUpperCase();
+  const replyBody = String(replyTo?.body || "").trim();
+  const recent = params.recentMessages || [];
+  const lastNonNoteMsg = [...recent]
+    .reverse()
+    .find(
+      (m) =>
+        (m.direction === "OUTBOUND" || m.direction === "INBOUND") &&
+        m.messageType !== "INTERNAL_NOTE"
+    );
+
+  // Signal 1: Staff clicked "Note" on an OUTBOUND or INBOUND WhatsApp bubble (quoting it) and typed a message/correction without @mention
+  if (replyTo && (replyDirection === "OUTBOUND" || replyDirection === "INBOUND" || replyBody.length > 0)) {
+    const merged =
+      replyDirection === "OUTBOUND" || (!replyDirection && replyBody)
+        ? buildSmartCorrectedReplyOption(trimmed, replyBody)
+        : null;
+    return {
+      isAccidentalCustomerReply: true,
+      reason:
+        replyDirection === "OUTBOUND"
+          ? "Staff quoted an outbound WhatsApp message inside an Internal Note without @mentioning a teammate"
+          : "Staff quoted a customer WhatsApp message inside an Internal Note without @mentioning a teammate",
+      exactMessageText: trimmed,
+      mergedCorrectionText: merged,
+      replyTo,
+    };
+  }
+
+  // Signal 2: Staff wrote a short correction ("sorry 3mm thickness", "sorry 4,500/-") right after an outbound message
+  if (SHORT_CORRECTION_SIGNAL_RE.test(trimmed)) {
+    const refOutbound =
+      lastNonNoteMsg?.direction === "OUTBOUND"
+        ? lastNonNoteMsg
+        : [...recent]
+            .reverse()
+            .find((m) => m.direction === "OUTBOUND" && m.messageType !== "INTERNAL_NOTE");
+    const inferredReplyTo =
+      refOutbound
+        ? {
+            messageId: refOutbound.id || null,
+            waMessageId: refOutbound.waMessageId || null,
+            senderName: refOutbound.senderName,
+            senderType: refOutbound.senderType || "STAFF",
+            direction: "OUTBOUND",
+            body: refOutbound.body.slice(0, 280),
+          }
+        : null;
+    const merged = refOutbound
+      ? buildSmartCorrectedReplyOption(trimmed, refOutbound.body)
+      : null;
+    return {
+      isAccidentalCustomerReply: true,
+      reason: "Staff wrote a customer correction inside an Internal Note instead of the chat reply",
+      exactMessageText: trimmed,
+      mergedCorrectionText: merged,
+      replyTo: inferredReplyTo,
+    };
+  }
+
+  // Signal 3: Direct customer-facing quote or salutation ("5mm thickness Each one 3,220/- plus Gst and Transport charges sir")
+  if (CUSTOMER_FACING_NOTE_SIGNAL_RE.test(trimmed) || /\b(?:sir|madam|ma'?am)\s*[,!.]*$/i.test(trimmed)) {
+    return {
+      isAccidentalCustomerReply: true,
+      reason: "Note directly addresses the customer or quotes pricing/GST/transport without @mentioning any teammate",
+      exactMessageText: trimmed,
+      mergedCorrectionText: null,
+      replyTo: null,
+    };
+  }
+
+  return emptyResult;
+}
+
+/**
+ * Directly sends an existing Internal Team Note (or its merged correction) to the customer on WhatsApp
+ * when a staff member clicks "Send in Chat" on the note bubble.
+ */
+export async function convertInternalNoteToCustomerMessage(params: {
+  conversationId: string;
+  noteMessageId: string;
+  actorStaffId: string;
+  actorStaffName: string;
+  customText?: string;
+  dismissOnly?: boolean;
+}): Promise<{
+  ok: boolean;
+  messageId?: string;
+  status?: "SENT" | "DISMISSED";
+  error?: string;
+}> {
+  await ensureDatabasesBootstrapped();
+  const conv = getRawLibSqlClient("conversations");
+  const nowIso = new Date().toISOString();
+
+  const [noteRes, convRes] = await Promise.all([
+    conv.execute({
+      sql: `SELECT id, body, metadata_json FROM messages WHERE id = ? AND conversation_id = ? LIMIT 1`,
+      args: [params.noteMessageId, params.conversationId],
+    }),
+    conv.execute({
+      sql: `SELECT customer_phone, customer_name FROM conversations WHERE id = ? LIMIT 1`,
+      args: [params.conversationId],
+    }),
+  ]);
+
+  const noteRow = noteRes.rows[0] as Record<string, unknown> | undefined;
+  const cRow = convRes.rows[0] as Record<string, unknown> | undefined;
+  if (!noteRow || !cRow) {
+    return { ok: false, error: "Internal note or conversation not found." };
+  }
+
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = JSON.parse(String(noteRow.metadata_json || "{}"));
+  } catch {
+    meta = {};
+  }
+
+  if (params.dismissOnly) {
+    meta.accidentalCustomerReply = {
+      ...(typeof meta.accidentalCustomerReply === "object" && meta.accidentalCustomerReply
+        ? (meta.accidentalCustomerReply as Record<string, unknown>)
+        : { detected: true, exactMessageText: String(noteRow.body || "") }),
+      status: "DISMISSED",
+    };
+    await conv.execute({
+      sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+      args: [JSON.stringify(meta), params.noteMessageId],
+    });
+    socketHub.emit("conversation:updated", { conversationId: params.conversationId });
+    return { ok: true, status: "DISMISSED" };
+  }
+
+  const customerPhone = String(cRow.customer_phone || "");
+  const textToSend = String(params.customText || noteRow.body || "").trim();
+  if (!textToSend) {
+    return { ok: false, error: "Note text is empty." };
+  }
+
+  const replyTo =
+    (meta.replyTo as Record<string, unknown> | undefined) ||
+    ((meta.accidentalCustomerReply as Record<string, unknown> | undefined)?.replyTo as
+      | Record<string, unknown>
+      | undefined) ||
+    null;
+
+  const sendRes = await dispatchStaffCustomerReply({
+    conversationId: params.conversationId,
+    customerPhone,
+    actorStaffId: params.actorStaffId,
+    actorStaffName: params.actorStaffName,
+    messageText: textToSend,
+    replyTo,
+    actionTagId: `note_to_chat_${params.noteMessageId}`,
+    usePlainStaffSenderName: true,
+  });
+
+  if (sendRes.ok) {
+    meta.accidentalCustomerReply = {
+      ...(typeof meta.accidentalCustomerReply === "object" && meta.accidentalCustomerReply
+        ? (meta.accidentalCustomerReply as Record<string, unknown>)
+        : {
+            detected: true,
+            reason: "Converted from Internal Note to WhatsApp Chat",
+            exactMessageText: String(noteRow.body || ""),
+          }),
+      status: "SENT",
+      sentMessageId: sendRes.messageId,
+      sentByStaffName: params.actorStaffName,
+      sentAt: nowIso,
+    };
+    await conv.execute({
+      sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+      args: [JSON.stringify(meta), params.noteMessageId],
+    });
+
+    // Also mark any linked ACRIO pendingAction note for this sourceNoteId as CONFIRMED
+    const acrioNotes = await conv.execute({
+      sql: `SELECT id, metadata_json FROM messages
+            WHERE conversation_id = ? AND sender_name = 'ACRIO' AND message_type = 'INTERNAL_NOTE'
+            AND metadata_json LIKE ? LIMIT 5`,
+      args: [params.conversationId, `%"sourceNoteId":"${params.noteMessageId}"%`],
+    });
+    for (const r of acrioNotes.rows) {
+      try {
+        const am = JSON.parse(String(r.metadata_json || "{}"));
+        if (am.pendingAction && am.pendingAction.status === "PENDING_CONFIRMATION") {
+          am.pendingAction.status = "CONFIRMED";
+          am.pendingAction.decidedByStaffName = params.actorStaffName;
+          am.pendingAction.decidedAt = nowIso;
+          am.pendingAction.sentMessageId = sendRes.messageId;
+          await conv.execute({
+            sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+            args: [JSON.stringify(am), String(r.id)],
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return {
+    ok: sendRes.ok,
+    messageId: sendRes.messageId,
+    status: sendRes.ok ? "SENT" : undefined,
+    error: sendRes.error,
+  };
+}
+
+/**
+ * Called after a private note is saved.
+ * 1. Pings mentioned teammates and, when the note contains "@ACRIO", has ACRIO answer in a private note.
+ * 2. Automatically detects when a staff member accidentally writes a customer reply inside an Internal Note
+ *    (or when a teammate points out "you have replied in note instead of message reply") and surfaces a
+ *    one-click "Send in Chat" smart action card.
  */
 export async function processStaffNote(params: {
   conversationId: string;
@@ -1230,20 +1645,162 @@ export async function processStaffNote(params: {
   mentioned: { id: string; name: string }[];
   askedAcrio: boolean;
   collaboratorsAdded: { staffId: string; staffName: string }[];
+  accidentalReplyDetected?: boolean;
 }> {
   await ensureStaffNotificationsTable();
   const conv = getRawLibSqlClient("conversations");
   const { mentions, askAcrio } = parseNoteMentions(params.noteText, params.staff);
-  if (mentions.length === 0 && !askAcrio) {
-    return { mentioned: [], askedAcrio: false, collaboratorsAdded: [] };
-  }
 
-  const convRes = await conv.execute({
-    sql: `SELECT customer_name, customer_phone FROM conversations WHERE id = ? LIMIT 1`,
-    args: [params.conversationId],
-  });
+  const [convRes, noteRes, recentRes] = await Promise.all([
+    conv.execute({
+      sql: `SELECT customer_name, customer_phone FROM conversations WHERE id = ? LIMIT 1`,
+      args: [params.conversationId],
+    }),
+    conv.execute({
+      sql: `SELECT metadata_json FROM messages WHERE id = ? LIMIT 1`,
+      args: [params.noteId],
+    }),
+    conv.execute({
+      sql: `SELECT id, wa_message_id, direction, sender_name, sender_type, message_type, body, metadata_json
+            FROM messages WHERE conversation_id = ? AND id != ?
+            ORDER BY created_at DESC LIMIT 16`,
+      args: [params.conversationId, params.noteId],
+    }),
+  ]);
   const customerName = String(convRes.rows[0]?.customer_name || "a customer");
   const customerPhone = String(convRes.rows[0]?.customer_phone || "");
+
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = JSON.parse(String(noteRes.rows[0]?.metadata_json || "{}"));
+  } catch {
+    meta = {};
+  }
+
+  const recentMessages = [...recentRes.rows].reverse().map((r) => ({
+    id: String(r.id),
+    waMessageId: r.wa_message_id ? String(r.wa_message_id) : null,
+    direction: String(r.direction || ""),
+    senderName: String(r.sender_name || ""),
+    senderType: String(r.sender_type || ""),
+    messageType: String(r.message_type || ""),
+    body: String(r.body || ""),
+    metadataJson: r.metadata_json ? String(r.metadata_json) : "",
+  }));
+
+  // Case A: No @mentions and no @ACRIO -> check if the staff member accidentally wrote a customer reply in an Internal Note!
+  if (mentions.length === 0 && !askAcrio) {
+    const detection = detectAccidentalCustomerReplyInNote({
+      noteText: params.noteText,
+      replyTo: (meta.replyTo as Record<string, unknown> | undefined) || null,
+      recentMessages,
+    });
+
+    if (detection.isAccidentalCustomerReply) {
+      const nowIso = new Date().toISOString();
+      const accidentalMeta: AccidentalCustomerReplyMetadata = {
+        detected: true,
+        status: "PENDING",
+        reason: detection.reason,
+        exactMessageText: detection.exactMessageText,
+        mergedCorrectionText: detection.mergedCorrectionText,
+        replyTo: detection.replyTo,
+      };
+      meta.accidentalCustomerReply = accidentalMeta;
+      await conv.execute({
+        sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+        args: [JSON.stringify(meta), params.noteId],
+      });
+
+      const candidateOptions: PendingAcrioCandidateOption[] = detection.mergedCorrectionText
+        ? [
+            {
+              id: "opt_merged_correction",
+              title: "Send full corrected message in Chat (Recommended)",
+              sourceLabel: "Merged with your previous message",
+              mediaUrl: "",
+              mediaType: "TEXT",
+              fileName: "",
+              mimeType: "text/plain",
+              messageText: detection.mergedCorrectionText,
+              replyTo: detection.replyTo,
+            },
+            {
+              id: "opt_exact_note",
+              title: "Send exact note text in Chat",
+              sourceLabel: "As written in note",
+              mediaUrl: "",
+              mediaType: "TEXT",
+              fileName: "",
+              mimeType: "text/plain",
+              messageText: detection.exactMessageText,
+              replyTo: detection.replyTo,
+            },
+          ]
+        : [];
+
+      const pendingAction: PendingAcrioNoteAction = {
+        id: `pact_note_fix_${crypto.randomUUID().slice(0, 8)}`,
+        status: "PENDING_CONFIRMATION",
+        type: "send_customer_reply",
+        title: `Send in WhatsApp Chat to ${customerName}`,
+        messageText: detection.mergedCorrectionText || detection.exactMessageText,
+        sourceNoteId: params.noteId,
+        replyTo: detection.replyTo,
+        ...(candidateOptions.length > 0 ? { candidateOptions } : {}),
+        requestedByStaffId: params.author.id,
+        requestedByStaffName: params.author.name,
+        createdAt: nowIso,
+      };
+
+      const acrioWarnId = `msg_note_acrio_${crypto.randomUUID().slice(0, 8)}`;
+      const acrioWarnBody = `@${params.author.name} Heads up! It looks like you replied inside an *Internal Team Note* by mistake (*${customerName}* cannot see internal notes).\n\nClick below to send this directly in the customer's WhatsApp chat:`;
+
+      await conv.execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, metadata_json, delivery_status, created_at
+        ) VALUES (?, ?, 'INTERNAL', 'ACRIO', 'ACRIO', 'INTERNAL_NOTE', 'INTERNAL', ?, ?, 'SAVED', ?)`,
+        args: [
+          acrioWarnId,
+          params.conversationId,
+          acrioWarnBody,
+          JSON.stringify({
+            acrioReply: true,
+            inReplyToNoteId: params.noteId,
+            forStaffId: params.author.id,
+            forStaffName: params.author.name,
+            pendingAction,
+          }),
+          nowIso,
+        ],
+      });
+
+      socketHub.emit("note:new", {
+        conversationId: params.conversationId,
+        senderName: "ACRIO",
+        noteText: acrioWarnBody,
+      });
+      await createNotification({
+        staffId: params.author.id,
+        type: "ACRIO_REPLY",
+        conversationId: params.conversationId,
+        messageId: acrioWarnId,
+        fromName: "ACRIO",
+        customerName,
+        text: `Heads up: You replied in an Internal Note instead of the customer chat ("${detection.exactMessageText.slice(0, 80)}"). Click to send it in chat.`,
+      }).catch(() => {});
+
+      return {
+        mentioned: [],
+        askedAcrio: false,
+        collaboratorsAdded: [],
+        accidentalReplyDetected: true,
+      };
+    }
+
+    return { mentioned: [], askedAcrio: false, collaboratorsAdded: [] };
+  }
 
   // Dual assignment: grant chat access to every mentioned teammate automatically
   let collaboratorsAdded: { staffId: string; staffName: string }[] = [];
@@ -1265,17 +1822,6 @@ export async function processStaffNote(params: {
     }
   }
 
-  // Save who was mentioned on the note itself (so the chat can highlight them).
-  const noteRes = await conv.execute({
-    sql: `SELECT metadata_json FROM messages WHERE id = ? LIMIT 1`,
-    args: [params.noteId],
-  });
-  let meta: Record<string, unknown> = {};
-  try {
-    meta = JSON.parse(String(noteRes.rows[0]?.metadata_json || "{}"));
-  } catch {
-    meta = {};
-  }
   meta.mentions = mentions.map((m) => ({ id: m.id, name: m.name }));
   if (askAcrio) meta.askedAcrio = true;
   await conv.execute({
@@ -1303,6 +1849,123 @@ export async function processStaffNote(params: {
       detail: `Chat with ${customerName}${customerPhone ? ` (${customerPhone})` : ""}:\n${params.noteText.slice(0, 500)}`,
       conversationId: params.conversationId,
     });
+  }
+
+  // Case B: A teammate/manager points out "@Lalitha Barma you have replied in note instead of message reply - please check"
+  if (
+    !askAcrio &&
+    /\b(replied\s+in\s+(?:a\s+|internal\s+)?note|sent\s+in\s+(?:a\s+|internal\s+)?note|wrote\s+in\s+(?:a\s+|internal\s+)?note|note\s+instead\s+of\s+(?:message|chat|reply)|in\s+note\s+by\s+mistake)\b/i.test(
+      params.noteText
+    )
+  ) {
+    const targetCandidate = [...recentMessages]
+      .reverse()
+      .find(
+        (m) =>
+          m.messageType === "INTERNAL_NOTE" &&
+          m.senderName !== "ACRIO" &&
+          !m.body.includes("@")
+      );
+    if (targetCandidate) {
+      let targetMeta: Record<string, unknown> = {};
+      try {
+        targetMeta = JSON.parse(targetCandidate.metadataJson || "{}");
+      } catch {
+        targetMeta = {};
+      }
+      const targetReplyTo =
+        (targetMeta.replyTo as Record<string, unknown> | undefined) || null;
+      const merged =
+        targetReplyTo && typeof targetReplyTo.body === "string"
+          ? buildSmartCorrectedReplyOption(targetCandidate.body, targetReplyTo.body)
+          : null;
+      const nowIso = new Date().toISOString();
+      targetMeta.accidentalCustomerReply = {
+        detected: true,
+        status: "PENDING",
+        reason: `Flagged by ${params.author.name} as an accidental internal-note reply`,
+        exactMessageText: targetCandidate.body,
+        mergedCorrectionText: merged,
+        replyTo: targetReplyTo,
+      };
+      await conv.execute({
+        sql: `UPDATE messages SET metadata_json = ? WHERE id = ?`,
+        args: [JSON.stringify(targetMeta), targetCandidate.id],
+      });
+
+      const candidateOptions: PendingAcrioCandidateOption[] = merged
+        ? [
+            {
+              id: "opt_merged_correction",
+              title: "Send full corrected message in Chat (Recommended)",
+              sourceLabel: "Merged with quoted message",
+              mediaUrl: "",
+              mediaType: "TEXT",
+              fileName: "",
+              mimeType: "text/plain",
+              messageText: merged,
+              replyTo: targetReplyTo,
+            },
+            {
+              id: "opt_exact_note",
+              title: "Send exact note text in Chat",
+              sourceLabel: "As written in note",
+              mediaUrl: "",
+              mediaType: "TEXT",
+              fileName: "",
+              mimeType: "text/plain",
+              messageText: targetCandidate.body,
+              replyTo: targetReplyTo,
+            },
+          ]
+        : [];
+
+      const pendingAction: PendingAcrioNoteAction = {
+        id: `pact_note_fix_${crypto.randomUUID().slice(0, 8)}`,
+        status: "PENDING_CONFIRMATION",
+        type: "send_customer_reply",
+        title: `Send "${targetCandidate.body.slice(0, 60)}" to ${customerName} in Chat`,
+        messageText: merged || targetCandidate.body,
+        sourceNoteId: targetCandidate.id,
+        replyTo: targetReplyTo,
+        ...(candidateOptions.length > 0 ? { candidateOptions } : {}),
+        requestedByStaffId: params.author.id,
+        requestedByStaffName: params.author.name,
+        createdAt: nowIso,
+      };
+
+      const mentionTags = [
+        ...mentions.map((m) => `@${m.name}`),
+        `@${params.author.name}`,
+      ].join(" ");
+      const acrioHelperId = `msg_note_acrio_${crypto.randomUUID().slice(0, 8)}`;
+      const acrioHelperBody = `${mentionTags} I prepared ${targetCandidate.senderName}'s note (*"${targetCandidate.body}"*) so you can send it to *${customerName}* on WhatsApp in one click:`;
+
+      await conv.execute({
+        sql: `INSERT INTO messages (
+          id, conversation_id, direction, sender_type, sender_name, message_type,
+          billing_category, body, metadata_json, delivery_status, created_at
+        ) VALUES (?, ?, 'INTERNAL', 'ACRIO', 'ACRIO', 'INTERNAL_NOTE', 'INTERNAL', ?, ?, 'SAVED', ?)`,
+        args: [
+          acrioHelperId,
+          params.conversationId,
+          acrioHelperBody,
+          JSON.stringify({
+            acrioReply: true,
+            inReplyToNoteId: params.noteId,
+            forStaffId: mentions[0]?.id || params.author.id,
+            forStaffName: mentions[0]?.name || params.author.name,
+            pendingAction,
+          }),
+          nowIso,
+        ],
+      });
+      socketHub.emit("note:new", {
+        conversationId: params.conversationId,
+        senderName: "ACRIO",
+        noteText: acrioHelperBody,
+      });
+    }
   }
 
   if (askAcrio) {
