@@ -23,7 +23,9 @@ import {
   CLASSIC_CONCEPTS_CHAT_WALLPAPER_STYLE,
   WhatsAppFormattedText,
   WhatsAppMessageTicks,
+  formatChatDateDividerIst,
   formatTimeIst,
+  getIstDateKey,
   stripWhatsAppFormatting,
 } from "@cc/ui";
 import {
@@ -50,6 +52,7 @@ import {
 type TimelineRow =
   | { key: string; kind: "top_notice" }
   | { key: string; kind: "load_older" }
+  | { key: string; kind: "date_separator"; dateKey: string; label: string }
   | { key: string; kind: "message"; message: ChatMessage }
   | { key: string; kind: "resolved_footer" };
 
@@ -122,19 +125,39 @@ export function MessageTimeline({
   const prevFirstIdRef = useRef<string | null>(null);
   const isNearBottomRef = useRef<boolean>(true);
 
+  const todayKey = getIstDateKey(nowMs);
+  const todayRefMs = useMemo(
+    () => (todayKey ? new Date(`${todayKey}T12:00:00+05:30`).getTime() : undefined),
+    [todayKey]
+  );
+
   const rows = useMemo<TimelineRow[]>(() => {
     const out: TimelineRow[] = [{ key: "top_notice", kind: "top_notice" }];
     if (hasOlderMessages) {
       out.push({ key: "load_older", kind: "load_older" });
     }
+    let lastDayKey = "";
     for (const m of messages) {
+      const dayKey = getIstDateKey(m.createdAt);
+      if (dayKey && dayKey !== lastDayKey) {
+        lastDayKey = dayKey;
+        const label = formatChatDateDividerIst(m.createdAt, todayRefMs);
+        if (label) {
+          out.push({
+            key: `date_sep_${dayKey}`,
+            kind: "date_separator",
+            dateKey: dayKey,
+            label,
+          });
+        }
+      }
       out.push({ key: m.id, kind: "message", message: m });
     }
     if (conversationStatus === "RESOLVED") {
       out.push({ key: "resolved_footer", kind: "resolved_footer" });
     }
     return out;
-  }, [conversationStatus, hasOlderMessages, messages]);
+  }, [conversationStatus, hasOlderMessages, messages, todayRefMs]);
 
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
@@ -143,6 +166,7 @@ export function MessageTimeline({
       const row = rows[idx];
       if (!row) return 88;
       if (row.kind === "top_notice" || row.kind === "load_older") return 56;
+      if (row.kind === "date_separator") return 42;
       if (row.kind === "resolved_footer") return 80;
       if (row.message.messageType === "ASSIGNMENT_EVENT") return 110;
       return 96;
@@ -276,6 +300,17 @@ export function MessageTimeline({
                       </>
                     )}
                   </button>
+                </div>
+              )}
+
+              {row.kind === "date_separator" && (
+                <div className="flex justify-center py-1 select-none">
+                  <span
+                    suppressHydrationWarning
+                    className="px-3 py-1 rounded-lg bg-white/95 border border-[#e2e5e9] text-[11.5px] font-medium text-[#54656f] shadow-2xs"
+                  >
+                    {row.label}
+                  </span>
                 </div>
               )}
 

@@ -104,13 +104,14 @@ const ThreadRow = React.memo(function ThreadRow({
             {t.customerName}
           </span>
           <span
+            suppressHydrationWarning
             className={`text-[11px] tabular-nums shrink-0 ${
               t.unreadCount > 0
                 ? "text-[#00a884] font-semibold"
                 : "text-[#667781] font-medium"
             }`}
           >
-            {formatThreadTimeIst(t.lastMessageAt, serverNowMs)}
+            {formatThreadTimeIst(t.lastMessageAt, nowMs || serverNowMs)}
           </span>
         </div>
 

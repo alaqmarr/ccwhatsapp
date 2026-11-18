@@ -53,6 +53,48 @@ export function formatDateTimeShortIst(
   return formatInTimeZone(d, APP_TIMEZONE, "dd MMM, hh:mm a");
 }
 
+export function getIstDateKey(
+  date: string | number | Date | null | undefined
+): string {
+  const d = toValidDate(date);
+  if (!d) return "";
+  return formatInTimeZone(d, APP_TIMEZONE, "yyyy-MM-dd");
+}
+
+function getReferenceIstDateKeys(serverNowMs?: number): {
+  nowDate: Date;
+  todayKey: string;
+  yesterdayKey: string;
+  currentYear: string;
+} {
+  const nowDate =
+    typeof serverNowMs === "number" && !Number.isNaN(serverNowMs)
+      ? new Date(serverNowMs)
+      : new Date();
+  const todayKey = formatInTimeZone(nowDate, APP_TIMEZONE, "yyyy-MM-dd");
+  const noonUtcMs = new Date(`${todayKey}T12:00:00+05:30`).getTime();
+  const yesterdayKey = formatInTimeZone(
+    new Date(noonUtcMs - 86_400_000),
+    APP_TIMEZONE,
+    "yyyy-MM-dd"
+  );
+  const currentYear = todayKey.slice(0, 4);
+  return { nowDate, todayKey, yesterdayKey, currentYear };
+}
+
+export function formatChatDateDividerIst(
+  date: string | number | Date | null | undefined,
+  serverNowMs?: number
+): string {
+  const d = toValidDate(date);
+  if (!d) return "";
+  const targetDateKey = formatInTimeZone(d, APP_TIMEZONE, "yyyy-MM-dd");
+  const { todayKey, yesterdayKey } = getReferenceIstDateKeys(serverNowMs);
+  if (targetDateKey === todayKey) return "Today";
+  if (targetDateKey === yesterdayKey) return "Yesterday";
+  return formatInTimeZone(d, APP_TIMEZONE, "dd MMM yyyy");
+}
+
 export function formatThreadTimeIst(
   date: string | number | Date | null | undefined,
   serverNowMs?: number
@@ -60,15 +102,18 @@ export function formatThreadTimeIst(
   const d = toValidDate(date);
   if (!d) return "";
   const targetDateKey = formatInTimeZone(d, APP_TIMEZONE, "yyyy-MM-dd");
-  const nowDate =
-    typeof serverNowMs === "number" && !Number.isNaN(serverNowMs)
-      ? new Date(serverNowMs)
-      : new Date();
-  const nowDateKey = formatInTimeZone(nowDate, APP_TIMEZONE, "yyyy-MM-dd");
-  if (targetDateKey === nowDateKey) {
+  const { todayKey, yesterdayKey, currentYear } =
+    getReferenceIstDateKeys(serverNowMs);
+  if (targetDateKey === todayKey) {
     return formatInTimeZone(d, APP_TIMEZONE, "hh:mm a");
   }
-  return formatInTimeZone(d, APP_TIMEZONE, "dd MMM");
+  if (targetDateKey === yesterdayKey) {
+    return "Yesterday";
+  }
+  if (targetDateKey.slice(0, 4) === currentYear) {
+    return formatInTimeZone(d, APP_TIMEZONE, "dd MMM");
+  }
+  return formatInTimeZone(d, APP_TIMEZONE, "dd MMM yyyy");
 }
 
 export function parseLocalIstToUtcIso(
