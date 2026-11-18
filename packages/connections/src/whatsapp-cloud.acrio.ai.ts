@@ -130,7 +130,23 @@ function pickMetaConfigValue(
   return e || d;
 }
 
+let metaSetupConfigCache: {
+  expiresAt: number;
+  value: Record<string, unknown>;
+} | null = null;
+
+export function invalidateMetaWhatsAppSetupConfigCache(): void {
+  metaSetupConfigCache = null;
+}
+
 export async function loadMetaWhatsAppSetupConfig(): Promise<Record<string, unknown>> {
+  const bypassCache =
+    process.env.WHATSAPP_FORCE_SANDBOX_FOR_TESTS === "1" ||
+    process.env.NODE_ENV === "test";
+  if (!bypassCache && metaSetupConfigCache && metaSetupConfigCache.expiresAt > Date.now()) {
+    return metaSetupConfigCache.value;
+  }
+
   await ensureDatabasesBootstrapped();
   const envMeta = resolveEnvMetaWhatsAppConfig();
   const auth = getRawLibSqlClient("core_auth");
@@ -181,7 +197,7 @@ export async function loadMetaWhatsAppSetupConfig(): Promise<Record<string, unkn
     isLikelyValidMetaNumericId(String(dbCfg.phoneNumberId || "").trim()) &&
     isLikelyValidMetaToken(String(dbCfg.systemUserAccessToken || "").trim());
 
-  return {
+  const resolved = {
     ...dbCfg,
     mode:
       envMeta.hasLiveCredentials && (!dbHasValidLivePair || dbCfg.mode === "LIVE_META_CLOUD")
@@ -197,6 +213,10 @@ export async function loadMetaWhatsAppSetupConfig(): Promise<Record<string, unkn
     metaAppId: resolvedAppId,
     metaAppSecret: dbCfg.metaAppSecret || envMeta.metaAppSecret,
   };
+  if (!bypassCache) {
+    metaSetupConfigCache = { expiresAt: Date.now() + 15_000, value: resolved };
+  }
+  return resolved;
 }
 
 export type AcrioInteractive =

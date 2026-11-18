@@ -543,6 +543,7 @@ export function WhatsAppMessageTicks({
   const stage = normalizeWhatsAppDeliveryStatus(status);
 
   if (stage === "SENDING") {
+    const spinnerPx = Math.max(11, size - 2);
     return (
       <span
         title="Sending message..."
@@ -550,28 +551,33 @@ export function WhatsAppMessageTicks({
         className="inline-flex items-center gap-1 text-[#667781] shrink-0"
       >
         <svg
-          width={Math.max(11, size - 2)}
-          height={Math.max(11, size - 2)}
+          width={spinnerPx}
+          height={spinnerPx}
           viewBox="0 0 16 16"
           fill="none"
           aria-hidden="true"
+          className="animate-spin text-[#00a884]"
         >
           <circle
             cx="8"
             cy="8"
-            r="6.2"
+            r="6"
             stroke="currentColor"
-            strokeWidth="1.5"
+            strokeOpacity="0.24"
+            strokeWidth="1.9"
           />
           <path
-            d="M8 4.6V8.2L10.4 9.6"
+            d="M14 8a6 6 0 0 0-6-6"
             stroke="currentColor"
-            strokeWidth="1.5"
+            strokeWidth="1.9"
             strokeLinecap="round"
-            strokeLinejoin="round"
           />
         </svg>
-        {showLabel && <span className="leading-none">Sending</span>}
+        {showLabel && (
+          <span className="leading-none font-medium text-[#54656f]">
+            Sending
+          </span>
+        )}
       </span>
     );
   }

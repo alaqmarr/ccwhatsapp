@@ -18,7 +18,6 @@ import {
 } from "@cc/database";
 import {
   formatWhatsAppOutboundText,
-  getCachedEcosystemCatalog,
   runAcrioConversationSummary,
   sendStaffAssignmentEmailNotification,
   sendWhatsAppCloudMessage,
@@ -70,14 +69,9 @@ export async function GET(
   }
   const cRow = convRes.rows[0] as Record<string, unknown>;
   const customerPhone = String(cRow.customer_phone);
+  const isPrefetch = new URL(_req.url).searchParams.get("prefetch") === "1";
+  const shouldClearUnread = !isPrefetch && Number(cRow.unread_count ?? 0) > 0;
 
-  // Reset unread count on open
-  await conv.execute({
-    sql: `UPDATE conversations SET unread_count = 0 WHERE id = ?`,
-    args: [id],
-  });
-
-  await getCachedEcosystemCatalog().catch(() => null);
   const [
     msgRes,
     assignRes,
@@ -115,6 +109,12 @@ export async function GET(
     conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
     listOrderTrackings({ customerPhone }).catch(() => []),
     getVerifiedLiveBrandAndTeamInfo().catch(() => null),
+    shouldClearUnread
+      ? conv.execute({
+          sql: `UPDATE conversations SET unread_count = 0 WHERE id = ?`,
+          args: [id],
+        })
+      : Promise.resolve(null),
   ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
@@ -576,20 +576,54 @@ export async function POST(
       ? String(tplRecord.language).trim()
       : undefined;
 
-    if (locationPin && !templateName) {
-      const pinSend = await sendWhatsAppCloudMessage({
+    const [pinSend, sendRes] = await Promise.all([
+      locationPin && !templateName
+        ? sendWhatsAppCloudMessage({
+            toPhone: customerPhone,
+            bodyText: `${locationPin.name}\n${locationPin.address}\n${locationPin.mapsUrl}`,
+            location: {
+              latitude: locationPin.latitude,
+              longitude: locationPin.longitude,
+              name: locationPin.name,
+              address: locationPin.address,
+            },
+            simulateAsyncDelivery: true,
+            forceSandbox: Boolean(body.forceSandbox),
+          })
+        : Promise.resolve(null),
+      sendWhatsAppCloudMessage({
         toPhone: customerPhone,
-        bodyText: `${locationPin.name}\n${locationPin.address}\n${locationPin.mapsUrl}`,
-        location: {
-          latitude: locationPin.latitude,
-          longitude: locationPin.longitude,
-          name: locationPin.name,
-          address: locationPin.address,
-        },
+        bodyText: text,
+        templateName,
+        templateComponents,
+        languageCode,
+        skipAutoChatRecord: Boolean(templateName),
+        replyToWaMessageId: replyMeta?.waMessageId || undefined,
+        media: attachment
+          ? {
+              type: attachment.mediaType,
+              url: attachment.url,
+              waMediaId: attachment.waMediaId,
+              caption: rawText || undefined,
+              fileName: attachment.fileName,
+              mimeType: attachment.mimeType,
+            }
+          : undefined,
+        ctaButton: ctaButtonMeta
+          ? {
+              label: ctaButtonMeta.label,
+              url: ctaButtonMeta.url,
+              footerText: "Classic Concepts & Classic Edge 53",
+            }
+          : undefined,
         simulateAsyncDelivery: true,
         forceSandbox: Boolean(body.forceSandbox),
-      });
-      const pinMsgId = `msg_loc_${crypto.randomUUID().slice(0, 8)}`;
+      }),
+    ]);
+
+    let pinMsgId: string | null = null;
+    if (pinSend && locationPin) {
+      pinMsgId = `msg_loc_${crypto.randomUUID().slice(0, 8)}`;
       await conv.execute({
         sql: `INSERT INTO messages (
           id, conversation_id, direction, sender_type, sender_staff_id, sender_name, message_type,
@@ -616,39 +650,13 @@ export async function POST(
       }
       socketHub.emit("message:new", {
         conversationId: id,
+        messageId: pinMsgId,
+        waMessageId: pinSend.waMessageId,
+        deliveryStatus: pinSend.deliveryStatus,
         senderName: user.name,
         text: `Location: ${locationPin.name}`,
       });
     }
-
-    const sendRes = await sendWhatsAppCloudMessage({
-      toPhone: customerPhone,
-      bodyText: text,
-      templateName,
-      templateComponents,
-      languageCode,
-      skipAutoChatRecord: Boolean(templateName),
-      replyToWaMessageId: replyMeta?.waMessageId || undefined,
-      media: attachment
-        ? {
-            type: attachment.mediaType,
-            url: attachment.url,
-            waMediaId: attachment.waMediaId,
-            caption: rawText || undefined,
-            fileName: attachment.fileName,
-            mimeType: attachment.mimeType,
-          }
-        : undefined,
-      ctaButton: ctaButtonMeta
-        ? {
-            label: ctaButtonMeta.label,
-            url: ctaButtonMeta.url,
-            footerText: "Classic Concepts & Classic Edge 53",
-          }
-        : undefined,
-      simulateAsyncDelivery: true,
-      forceSandbox: Boolean(body.forceSandbox),
-    });
 
     let responseSeconds: number | null =
       cRow.last_response_seconds !== null && cRow.last_response_seconds !== undefined
@@ -732,60 +740,61 @@ export async function POST(
       "write"
     );
 
-    if (shouldAutoAssignSender) {
-      await logConversationAssignment({
+    const [, firstRespTrack] = await Promise.all([
+      shouldAutoAssignSender
+        ? logConversationAssignment({
+            conversationId: id,
+            customerPhone,
+            customerName: String(cRow.customer_name || ""),
+            fromStaffId: cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : "ACRIO",
+            fromStaffName: cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : "ACRIO",
+            fromTeamName: cRow.assigned_team_name ? String(cRow.assigned_team_name) : "System (ACRIO)",
+            toStaffId: user.id,
+            toStaffName: user.name,
+            toTeamId: cRow.assigned_team_id ? String(cRow.assigned_team_id) : "team_sales",
+            toTeamName:
+              cRow.assigned_team_name && String(cRow.assigned_team_name) !== "System (ACRIO)"
+                ? String(cRow.assigned_team_name)
+                : "Sales Team",
+            escalationLevel: "P0",
+            assignmentSource: "STAFF_TAKEOVER",
+            assignedByName: user.name,
+            reason: `${user.name} replied in chat and took ownership`,
+            assignedAt: nowIso,
+          }).catch(() => {})
+        : Promise.resolve(),
+      recordAssignedFirstResponse({
         conversationId: id,
-        customerPhone,
-        customerName: String(cRow.customer_name || ""),
-        fromStaffId: cRow.assigned_staff_id ? String(cRow.assigned_staff_id) : "ACRIO",
-        fromStaffName: cRow.assigned_staff_name ? String(cRow.assigned_staff_name) : "ACRIO",
-        fromTeamName: cRow.assigned_team_name ? String(cRow.assigned_team_name) : "System (ACRIO)",
-        toStaffId: user.id,
-        toStaffName: user.name,
-        toTeamId: cRow.assigned_team_id ? String(cRow.assigned_team_id) : "team_sales",
-        toTeamName:
-          cRow.assigned_team_name && String(cRow.assigned_team_name) !== "System (ACRIO)"
+        responderId: user.id,
+        responderName: user.name,
+        responderTeamId: cRow.assigned_team_id
+          ? String(cRow.assigned_team_id)
+          : "team_sales",
+        responderTeamName:
+          cRow.assigned_team_name &&
+          String(cRow.assigned_team_name) !== "System (ACRIO)"
             ? String(cRow.assigned_team_name)
             : "Sales Team",
-        escalationLevel: "P0",
-        assignmentSource: "STAFF_TAKEOVER",
-        assignedByName: user.name,
-        reason: `${user.name} replied in chat and took ownership`,
-        assignedAt: nowIso,
-      }).catch(() => {});
-    }
+        messageId: msgId,
+        respondedAt: nowIso,
+        overrideWaitSeconds: responseSeconds,
+      }),
+      sendRes.ok && isTemplate
+        ? recordDualPricingLedgerEntry({
+            messageId: msgId,
+            conversationId: id,
+            customerPhone,
+            category: templateBillingCategory,
+            staffName: user.name,
+            deliveryMode: sendRes.mode,
+          })
+        : Promise.resolve(),
+    ]);
 
-    const firstRespTrack = await recordAssignedFirstResponse({
-      conversationId: id,
-      responderId: user.id,
-      responderName: user.name,
-      responderTeamId: cRow.assigned_team_id
-        ? String(cRow.assigned_team_id)
-        : "team_sales",
-      responderTeamName:
-        cRow.assigned_team_name &&
-        String(cRow.assigned_team_name) !== "System (ACRIO)"
-          ? String(cRow.assigned_team_name)
-          : "Sales Team",
-      messageId: msgId,
-      respondedAt: nowIso,
-      overrideWaitSeconds: responseSeconds,
-    });
     if (responseSeconds === null && firstRespTrack?.firstResponseSeconds) {
       await conv.execute({
         sql: `UPDATE conversations SET last_response_seconds = ? WHERE id = ?`,
         args: [firstRespTrack.firstResponseSeconds, id],
-      });
-    }
-
-    if (sendRes.ok && isTemplate) {
-      await recordDualPricingLedgerEntry({
-        messageId: msgId,
-        conversationId: id,
-        customerPhone,
-        category: templateBillingCategory,
-        staffName: user.name,
-        deliveryMode: sendRes.mode,
       });
     }
 
@@ -797,10 +806,18 @@ export async function POST(
       });
     }
 
-    socketHub.emit("message:new", { conversationId: id, senderName: user.name, text });
+    socketHub.emit("message:new", {
+      conversationId: id,
+      messageId: msgId,
+      waMessageId: sendRes.waMessageId,
+      deliveryStatus: sendRes.deliveryStatus,
+      senderName: user.name,
+      text,
+    });
     return NextResponse.json({
       ok: sendRes.ok,
       messageId: msgId,
+      pinMessageId: pinMsgId,
       waMessageId: sendRes.waMessageId,
       deliveryStatus: sendRes.deliveryStatus,
       mode: sendRes.mode,
@@ -1800,7 +1817,9 @@ export async function POST(
                     last_response_seconds = ?,
                     escalation_level = 'P0',
                     last_message_preview = ?,
-                    last_message_at = ?
+                    last_message_at = ?,
+                    last_message_direction = 'OUTBOUND',
+                    last_message_status = ?
                 WHERE id = ?`,
           args: [
             shouldAutoAssignSender ? 1 : 0,
@@ -1812,6 +1831,7 @@ export async function POST(
             responseSeconds,
             `[${buttonLabel}] ${messageBody}`.replace(/\s*\n+\s*/g, " ").slice(0, 140),
             nowIso,
+            sendRes.deliveryStatus,
             id,
           ],
         },
@@ -1846,6 +1866,9 @@ export async function POST(
 
     socketHub.emit("message:new", {
       conversationId: id,
+      messageId: msgId,
+      waMessageId: sendRes.waMessageId,
+      deliveryStatus: sendRes.deliveryStatus,
       senderName: user.name,
       text: messageBody,
     });

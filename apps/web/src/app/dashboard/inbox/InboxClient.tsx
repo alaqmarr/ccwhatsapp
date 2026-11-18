@@ -18,6 +18,7 @@ import {
   Image as ImageIcon,
   Info,
   Link2,
+  Loader2,
   Lock,
   MapPin,
   MoreHorizontal,
@@ -400,7 +401,6 @@ export function InboxClient({
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(
     initialData.templates[0]?.id || ""
   );
-  const [sending, setSending] = useState<boolean>(false);
   const [showShortLinksPicker, setShowShortLinksPicker] =
     useState<boolean>(false);
   const [shortLinkQuery, setShortLinkQuery] = useState<string>("");
@@ -655,6 +655,130 @@ export function InboxClient({
     setComposerMode("NOTE");
   }
 
+  const appendOptimisticMessage = useCallback(
+    (convId: string, msg: ChatMessage, threadPreviewText?: string) => {
+      const base =
+        detailCacheRef.current.get(convId) ||
+        (detail && detail.conversation.id === convId ? detail : null);
+      if (base) {
+        const isNote = msg.messageType === "INTERNAL_NOTE";
+        const nextBundle: ConversationDetailBundle = {
+          ...base,
+          conversation: isNote
+            ? base.conversation
+            : {
+                ...base.conversation,
+                status: "ASSIGNED",
+                assignedStaffId:
+                  base.conversation.assignedStaffId === "ACRIO" ||
+                  !base.conversation.assignedStaffId
+                    ? initialData.currentUserId
+                    : base.conversation.assignedStaffId,
+                assignedStaffName:
+                  base.conversation.assignedStaffId === "ACRIO" ||
+                  !base.conversation.assignedStaffId
+                    ? initialData.currentUserName
+                    : base.conversation.assignedStaffName,
+                assignedTeamId: base.conversation.assignedTeamId || "team_sales",
+                assignedTeamName:
+                  base.conversation.assignedTeamName &&
+                  base.conversation.assignedTeamName !== "ACRIO Assistant" &&
+                  base.conversation.assignedTeamName !== "System (ACRIO)"
+                    ? base.conversation.assignedTeamName
+                    : "Sales Team",
+                waitingSince: null,
+              },
+          messages: [...base.messages, msg],
+        };
+        detailCacheRef.current.set(convId, nextBundle);
+        if (selectedIdRef.current === convId) {
+          setDetail(nextBundle);
+        }
+      }
+
+      if (msg.direction === "OUTBOUND") {
+        const preview = (threadPreviewText ?? msg.body)
+          .replace(/\s*\n+\s*/g, " ")
+          .slice(0, 140);
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.id === convId
+              ? {
+                  ...t,
+                  lastMessagePreview: preview,
+                  lastMessageAt: msg.createdAt,
+                  lastMessageDirection: "OUTBOUND",
+                  lastMessageStatus: msg.deliveryStatus,
+                  waitingSince: null,
+                }
+              : t
+          )
+        );
+      }
+    },
+    [detail, initialData.currentUserId, initialData.currentUserName]
+  );
+
+  const patchOptimisticMessage = useCallback(
+    (
+      convId: string,
+      tempId: string,
+      patch: {
+        id?: string;
+        deliveryStatus?: string;
+        waMessageId?: string | null;
+        metadata?: Record<string, unknown> | null;
+        body?: string;
+      }
+    ) => {
+      if (patch.id && !patch.id.startsWith("optimistic_")) {
+        recentLocalMsgIdsRef.current.set(patch.id, Date.now());
+      }
+      const cur = detailCacheRef.current.get(convId);
+      if (cur) {
+        const nextCur: ConversationDetailBundle = {
+          ...cur,
+          messages: cur.messages.map((m) =>
+            m.id === tempId
+              ? {
+                  ...m,
+                  ...(patch.id ? { id: patch.id } : {}),
+                  ...(patch.deliveryStatus
+                    ? { deliveryStatus: patch.deliveryStatus }
+                    : {}),
+                  ...(patch.waMessageId !== undefined
+                    ? { waMessageId: patch.waMessageId }
+                    : {}),
+                  ...(patch.metadata !== undefined
+                    ? { metadata: patch.metadata }
+                    : {}),
+                  ...(patch.body !== undefined ? { body: patch.body } : {}),
+                }
+              : m
+          ),
+        };
+        detailCacheRef.current.set(convId, nextCur);
+        if (selectedIdRef.current === convId) {
+          setDetail(nextCur);
+        }
+      }
+      if (patch.deliveryStatus) {
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.id === convId
+              ? {
+                  ...t,
+                  lastMessageDirection: "OUTBOUND",
+                  lastMessageStatus: patch.deliveryStatus!,
+                }
+              : t
+          )
+        );
+      }
+    },
+    []
+  );
+
   async function sendTemplateMessage(
     p: TemplateSendPayload
   ): Promise<{ ok: boolean; error?: string }> {
@@ -673,6 +797,23 @@ export function InboxClient({
         parameters: p.bodyValues.map((v) => ({ type: "text", text: v })),
       });
     }
+
+    const tempId = `optimistic_${Date.now()}_${++optimisticSeqRef.current}`;
+    appendOptimisticMessage(chatId, {
+      id: tempId,
+      direction: "OUTBOUND",
+      senderType: "STAFF",
+      senderName: initialData.currentUserName,
+      messageType: "TEMPLATE",
+      billingCategory: p.template.category,
+      body: p.renderedText,
+      templateName: p.template.name,
+      deliveryStatus: "SENDING",
+      createdAt: new Date().toISOString(),
+      metadata: null,
+    });
+    setComposerMode("REPLY");
+
     try {
       const res = await fetch(`/api/conversations/${chatId}`, {
         method: "POST",
@@ -689,13 +830,22 @@ export function InboxClient({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
+        patchOptimisticMessage(chatId, tempId, {
+          id: data.messageId || tempId,
+          deliveryStatus: "FAILED",
+        });
         return { ok: false, error: data.error || "The template could not be sent." };
       }
+      patchOptimisticMessage(chatId, tempId, {
+        id: String(data.messageId || tempId),
+        deliveryStatus: String(data.deliveryStatus || "SENT"),
+        waMessageId: data.waMessageId ? String(data.waMessageId) : null,
+      });
       showToast("Template sent.");
-      setComposerMode("REPLY");
-      await Promise.all([fetchAndCacheDetail(chatId, false), refreshThreadsSilently()]);
+      scheduleThreadsRefresh(150);
       return { ok: true };
     } catch {
+      patchOptimisticMessage(chatId, tempId, { deliveryStatus: "FAILED" });
       return { ok: false, error: "Network error. The template was not sent." };
     }
   }
@@ -705,6 +855,13 @@ export function InboxClient({
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
+  const optimisticSeqRef = useRef<number>(0);
+  const recentLocalMsgIdsRef = useRef<Map<string, number>>(new Map());
+  const prefetchTimestampsRef = useRef<Map<string, number>>(new Map());
+  const prefetchInFlightRef = useRef<Set<string>>(new Set());
+  const threadsFetchInFlightRef = useRef<Promise<void> | null>(null);
+  const threadRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastScrolledConvIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setReplyingTo(null);
@@ -755,35 +912,58 @@ export function InboxClient({
     );
   }, []);
 
-  // Silent background refresh of thread list (never clears existing threads!)
+  // Silent background refresh of thread list (coalesced & deduped, never clears existing threads!)
   const refreshThreadsSilently = useCallback(async (manual = false) => {
+    if (!manual && threadsFetchInFlightRef.current) {
+      return threadsFetchInFlightRef.current;
+    }
     if (manual) {
       setRefreshingThreads(true);
       setThreadsError("");
     }
-    try {
-      const res = await fetch("/api/conversations", { cache: "no-store" });
-      if (!res.ok) {
-        if (manual) {
-          setThreadsError("Could not refresh chats list right now.");
+    const run = (async () => {
+      try {
+        const res = await fetch("/api/conversations", { cache: "no-store" });
+        if (!res.ok) {
+          if (manual) {
+            setThreadsError("Could not refresh chats list right now.");
+          }
+          return;
         }
-        return;
+        const data = await res.json().catch(() => ({}));
+        if (data.ok && Array.isArray(data.conversations)) {
+          setThreads(data.conversations);
+          setThreadsError("");
+        } else if (manual) {
+          setThreadsError(data.error || "Could not refresh chats list.");
+        }
+      } catch {
+        if (manual) {
+          setThreadsError("Network error while refreshing chats.");
+        }
+      } finally {
+        if (manual) setRefreshingThreads(false);
+        threadsFetchInFlightRef.current = null;
       }
-      const data = await res.json().catch(() => ({}));
-      if (data.ok && Array.isArray(data.conversations)) {
-        setThreads(data.conversations);
-        setThreadsError("");
-      } else if (manual) {
-        setThreadsError(data.error || "Could not refresh chats list.");
-      }
-    } catch {
-      if (manual) {
-        setThreadsError("Network error while refreshing chats.");
-      }
-    } finally {
-      if (manual) setRefreshingThreads(false);
+    })();
+    if (!manual) {
+      threadsFetchInFlightRef.current = run;
     }
+    return run;
   }, []);
+
+  const scheduleThreadsRefresh = useCallback(
+    (delayMs = 220) => {
+      if (threadRefreshTimerRef.current) {
+        clearTimeout(threadRefreshTimerRef.current);
+      }
+      threadRefreshTimerRef.current = setTimeout(() => {
+        threadRefreshTimerRef.current = null;
+        void refreshThreadsSilently(false);
+      }, delayMs);
+    },
+    [refreshThreadsSilently]
+  );
 
   const detailFetchSeqRef = useRef<number>(0);
 
@@ -819,8 +999,30 @@ export function InboxClient({
             websiteEnquiries: data.websiteEnquiries || [],
             acrio: data.acrio || null,
             customLinks: data.customLinks || [],
+            verifiedLocation: data.verifiedLocation,
           };
-          detailCacheRef.current.set(convId, nextBundle);
+          // Preserve any in-flight optimistic messages so background refreshes never make them flicker away
+          const latestCached = detailCacheRef.current.get(convId);
+          const serverIds = new Set(nextBundle.messages.map((m) => m.id));
+          const serverWaIds = new Set(
+            nextBundle.messages.map((m) => m.waMessageId).filter(Boolean)
+          );
+          const pendingOptimistic = (latestCached?.messages || []).filter(
+            (m) =>
+              m.id.startsWith("optimistic_") &&
+              !serverIds.has(m.id) &&
+              !(m.waMessageId && serverWaIds.has(m.waMessageId))
+          );
+          const mergedBundle =
+            pendingOptimistic.length > 0
+              ? {
+                  ...nextBundle,
+                  messages: [...nextBundle.messages, ...pendingOptimistic],
+                }
+              : nextBundle;
+
+          detailCacheRef.current.set(convId, mergedBundle);
+          prefetchTimestampsRef.current.set(convId, Date.now());
           if (Array.isArray(data.teams) && data.teams.length > 0) {
             setTeams((prev) => (prev.length > 0 ? prev : data.teams));
           }
@@ -828,10 +1030,10 @@ export function InboxClient({
             selectedIdRef.current === convId &&
             fetchSeq >= detailFetchSeqRef.current
           ) {
-            setDetail(nextBundle);
+            setDetail(mergedBundle);
             setDetailError("");
             if (updateProfileInputs || !cached) {
-              syncProfileFields(nextBundle);
+              syncProfileFields(mergedBundle);
             }
           }
           setThreads((prev) =>
@@ -857,6 +1059,57 @@ export function InboxClient({
     [syncProfileFields]
   );
 
+  // Silent hover/touch prefetch (?prefetch=1 keeps unread count untouched until user opens chat)
+  const prefetchDetail = useCallback((convId: string) => {
+    if (!convId || convId === selectedIdRef.current) return;
+    if (prefetchInFlightRef.current.has(convId)) return;
+    const lastFetched = prefetchTimestampsRef.current.get(convId) || 0;
+    if (detailCacheRef.current.has(convId) && Date.now() - lastFetched < 20_000) {
+      return;
+    }
+    prefetchInFlightRef.current.add(convId);
+    fetch(`/api/conversations/${convId}?prefetch=1`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.ok && data.conversation) {
+          detailCacheRef.current.set(convId, {
+            conversation: data.conversation,
+            messages: data.messages || [],
+            assignments: data.assignments || [],
+            customer: data.customer || null,
+            orders: data.orders || [],
+            orderTrackings: data.orderTrackings || [],
+            relations: data.relations || [],
+            websiteEnquiries: data.websiteEnquiries || [],
+            acrio: data.acrio || null,
+            customLinks: data.customLinks || [],
+            verifiedLocation: data.verifiedLocation,
+          });
+          prefetchTimestampsRef.current.set(convId, Date.now());
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        prefetchInFlightRef.current.delete(convId);
+      });
+  }, []);
+
+  // Background idle prefetch for top 3 chats so switching feels instantaneous
+  useEffect(() => {
+    if (threads.length === 0) return;
+    const candidates = threads
+      .filter((t) => t.id !== selectedIdRef.current)
+      .slice(0, 3);
+    if (candidates.length === 0) return;
+    const timer = setTimeout(() => {
+      for (const t of candidates) {
+        prefetchDetail(t.id);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefetchDetail]);
+
   // Select conversation handler (zero flash on cached, element skeleton on uncached!)
   function handleSelectConversation(convId: string) {
     setMobilePane("CHAT");
@@ -875,43 +1128,72 @@ export function InboxClient({
     void fetchAndCacheDetail(convId, true);
   }
 
-  // Real-time SSE + gentle silent poll (never triggers loading spinners on existing chats!)
+  // Real-time SSE + gentle silent poll (unwraps RealtimeEvent.payload and eliminates refresh waterfalls)
   useEffect(() => {
     const es = new EventSource("/api/realtime/stream");
-    const refresh = () => {
-      void refreshThreadsSilently(false);
-      if (selectedIdRef.current) {
+    const unwrapEventPayload = (ev: MessageEvent): Record<string, unknown> => {
+      try {
+        const raw = JSON.parse(String(ev.data || "{}"));
+        if (raw && typeof raw === "object" && raw.payload && typeof raw.payload === "object") {
+          return raw.payload as Record<string, unknown>;
+        }
+        return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    };
+
+    const handleRealtimeRefresh = (ev: MessageEvent) => {
+      const payload = unwrapEventPayload(ev);
+      const targetConvId = payload.conversationId ? String(payload.conversationId) : null;
+      const incomingMsgId = payload.messageId ? String(payload.messageId) : null;
+      scheduleThreadsRefresh(220);
+
+      if (selectedIdRef.current && (!targetConvId || targetConvId === selectedIdRef.current)) {
+        // Skip redundant thread reload if our own client just appended & patched this message moments ago
+        if (incomingMsgId) {
+          const localSeenAt = recentLocalMsgIdsRef.current.get(incomingMsgId);
+          if (localSeenAt && Date.now() - localSeenAt < 4000) {
+            return;
+          }
+        }
         void fetchAndCacheDetail(selectedIdRef.current, false);
       }
     };
-    const handleStatusEvent = (ev: MessageEvent) => {
-      try {
-        const payload = JSON.parse(String(ev.data || "{}"));
-        const targetConvId = payload.conversationId
-          ? String(payload.conversationId)
-          : null;
-        const nextStatus = payload.status ? String(payload.status) : null;
-        const targetMsgId = payload.messageId ? String(payload.messageId) : null;
-        const markAllRead = Boolean(payload.markAllOutboundRead);
 
-        if (targetConvId && nextStatus) {
-          const cached = detailCacheRef.current.get(targetConvId);
-          if (cached) {
-            const patchedMessages = cached.messages.map((m) => {
-              if (m.direction !== "OUTBOUND") return m;
-              if (
-                markAllRead &&
-                (m.deliveryStatus === "SENDING" ||
-                  m.deliveryStatus === "SENT" ||
-                  m.deliveryStatus === "DELIVERED")
-              ) {
-                return { ...m, deliveryStatus: "READ" };
-              }
-              if (targetMsgId && m.id === targetMsgId) {
-                return { ...m, deliveryStatus: nextStatus };
-              }
-              return m;
-            });
+    const handleStatusEvent = (ev: MessageEvent) => {
+      const payload = unwrapEventPayload(ev);
+      const targetConvId = payload.conversationId ? String(payload.conversationId) : null;
+      const nextStatus = payload.status ? String(payload.status) : null;
+      const targetMsgId = payload.messageId ? String(payload.messageId) : null;
+      const targetWaMsgId = payload.waMessageId ? String(payload.waMessageId) : null;
+      const markAllRead = Boolean(payload.markAllOutboundRead);
+
+      if (targetConvId && nextStatus) {
+        let matchedAnyMessage = false;
+        const cached = detailCacheRef.current.get(targetConvId);
+        if (cached) {
+          const patchedMessages = cached.messages.map((m) => {
+            if (m.direction !== "OUTBOUND") return m;
+            if (
+              markAllRead &&
+              (m.deliveryStatus === "SENDING" ||
+                m.deliveryStatus === "SENT" ||
+                m.deliveryStatus === "DELIVERED")
+            ) {
+              matchedAnyMessage = true;
+              return { ...m, deliveryStatus: "READ" };
+            }
+            if (
+              (targetMsgId && m.id === targetMsgId) ||
+              (targetWaMsgId && m.waMessageId === targetWaMsgId)
+            ) {
+              matchedAnyMessage = true;
+              return { ...m, deliveryStatus: nextStatus };
+            }
+            return m;
+          });
+          if (matchedAnyMessage) {
             const nextCached: ConversationDetailBundle = {
               ...cached,
               messages: patchedMessages,
@@ -921,45 +1203,54 @@ export function InboxClient({
               setDetail(nextCached);
             }
           }
-
-          setThreads((prev) =>
-            prev.map((t) =>
-              t.id === targetConvId && t.lastMessageDirection === "OUTBOUND"
-                ? { ...t, lastMessageStatus: nextStatus }
-                : t
-            )
-          );
         }
-      } catch {
-        // Ignore malformed SSE event payload
+
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.id === targetConvId && t.lastMessageDirection === "OUTBOUND"
+              ? { ...t, lastMessageStatus: nextStatus }
+              : t
+          )
+        );
+
+        // Only fall back to fetching if the active chat wasn't cached yet
+        if (!cached && selectedIdRef.current === targetConvId) {
+          void fetchAndCacheDetail(targetConvId, false);
+        }
       }
-      refresh();
     };
 
-    es.addEventListener("message:new", refresh);
-    es.addEventListener("note:new", refresh);
+    es.addEventListener("message:new", handleRealtimeRefresh as EventListener);
+    es.addEventListener("note:new", handleRealtimeRefresh as EventListener);
     es.addEventListener("message:status", handleStatusEvent as EventListener);
-    es.addEventListener("conversation:resolved", refresh);
-    es.addEventListener("conversation:assigned", refresh);
-    es.addEventListener("conversation:escalated", refresh);
+    es.addEventListener("conversation:resolved", handleRealtimeRefresh as EventListener);
+    es.addEventListener("conversation:assigned", handleRealtimeRefresh as EventListener);
+    es.addEventListener("conversation:escalated", handleRealtimeRefresh as EventListener);
 
     const poll = setInterval(() => {
       void refreshThreadsSilently(false);
       if (selectedIdRef.current) {
         void fetchAndCacheDetail(selectedIdRef.current, false);
       }
-    }, 15000);
+    }, 20000);
 
     return () => {
       es.close();
       clearInterval(poll);
+      if (threadRefreshTimerRef.current) {
+        clearTimeout(threadRefreshTimerRef.current);
+      }
     };
-  }, [fetchAndCacheDetail, refreshThreadsSilently]);
+  }, [fetchAndCacheDetail, refreshThreadsSilently, scheduleThreadsRefresh]);
 
-  // Smooth scroll only when message count changes or selected conversation changes
+  // Jump immediately when switching conversations; smooth scroll only for new messages in the active chat
   const messageCount = detail?.messages.length ?? 0;
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const isSwitchingChat = lastScrolledConvIdRef.current !== selectedId;
+    lastScrolledConvIdRef.current = selectedId;
+    messagesEndRef.current?.scrollIntoView({
+      behavior: isSwitchingChat ? "auto" : "smooth",
+    });
   }, [selectedId, messageCount]);
 
   // Pre-fill template body when user selects an approved template
@@ -1176,6 +1467,7 @@ export function InboxClient({
       return;
     }
 
+    const currentConvId = selectedId;
     const matchedOrder = detail.orders.find(
       (o) => o.orderNumber.toUpperCase() === cleanOrderId.toUpperCase()
     );
@@ -1185,10 +1477,49 @@ export function InboxClient({
         trackProviderKey,
         trackAwbNumber.trim() || cleanOrderId
       );
+    const buttonLabel = trackButtonLabel.trim() || "Track Order";
+    const firstName =
+      String(detail.conversation.customerName || "there").trim().split(/\s+/)[0] || "there";
+    const customText = trackMessageText.trim();
+    const optimisticBody =
+      customText ||
+      `Hello ${firstName}, your order ${cleanOrderId} tracking update is ready. Tap ${buttonLabel} below.`;
+    const optimisticPublicUrl = `${TRACKING_PUBLIC_ORIGIN}/${cleanOrderId}`;
+    const activeReplyRef = replyingTo;
 
+    setShowTrackPopover(false);
+    setReplyingTo(null);
     setSendingTrackBtn(true);
+
+    const tempId = `optimistic_${Date.now()}_${++optimisticSeqRef.current}`;
+    appendOptimisticMessage(
+      currentConvId,
+      {
+        id: tempId,
+        direction: "OUTBOUND",
+        senderType: "STAFF",
+        senderName: initialData.currentUserName,
+        messageType: "CUSTOM_LINK",
+        billingCategory: "FREE_CHAT",
+        body: optimisticBody,
+        templateName: null,
+        deliveryStatus: "SENDING",
+        createdAt: new Date().toISOString(),
+        metadata: {
+          ...(activeReplyRef ? { replyTo: activeReplyRef } : {}),
+          ctaButton: {
+            label: buttonLabel,
+            url: optimisticPublicUrl,
+            orderId: cleanOrderId,
+            awbNumber: trackAwbNumber.trim() || undefined,
+          },
+        },
+      },
+      `[${buttonLabel}] ${optimisticBody}`
+    );
+
     try {
-      const res = await fetch(`/api/conversations/${selectedId}`, {
+      const res = await fetch(`/api/conversations/${currentConvId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1200,25 +1531,40 @@ export function InboxClient({
           providerTrackingUrl: computedProviderUrl,
           shipmentStatus: computedProviderUrl ? "DISPATCHED" : "IN_PRODUCTION",
           itemsSummary: matchedOrder?.itemsSummary || undefined,
-          buttonLabel: trackButtonLabel.trim() || "Track Order",
-          text: trackMessageText.trim() || undefined,
-          replyToMessageId: replyingTo?.messageId || undefined,
-          replyTo: replyingTo || undefined,
+          buttonLabel,
+          text: customText || undefined,
+          replyToMessageId: activeReplyRef?.messageId || undefined,
+          replyTo: activeReplyRef || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
+        patchOptimisticMessage(currentConvId, tempId, {
+          id: data.messageId || tempId,
+          deliveryStatus: "FAILED",
+        });
         showToast(data.error || "Could not send tracking button.");
         return;
       }
-      setShowTrackPopover(false);
-      setReplyingTo(null);
+      patchOptimisticMessage(currentConvId, tempId, {
+        id: String(data.messageId || tempId),
+        deliveryStatus: String(data.deliveryStatus || "SENT"),
+        waMessageId: data.waMessageId ? String(data.waMessageId) : null,
+        ...(data.ctaButton
+          ? {
+              metadata: {
+                ...(activeReplyRef ? { replyTo: activeReplyRef } : {}),
+                ctaButton: data.ctaButton,
+              },
+            }
+          : {}),
+      });
       showToast(
-        `Sent Track Order button (${data.tracking?.publicTrackingUrl || `${TRACKING_PUBLIC_ORIGIN}/${cleanOrderId}`}).`
+        `Sent Track Order button (${data.tracking?.publicTrackingUrl || optimisticPublicUrl}).`
       );
-      await fetchAndCacheDetail(selectedId, false);
-      void refreshThreadsSilently(false);
+      scheduleThreadsRefresh(150);
     } catch {
+      patchOptimisticMessage(currentConvId, tempId, { deliveryStatus: "FAILED" });
       showToast("Network error while sending tracking button.");
     } finally {
       setSendingTrackBtn(false);
@@ -1247,11 +1593,42 @@ export function InboxClient({
 
   async function handleSendVerifiedLocationNow() {
     if (!selectedId || !detail || sendingLocationPin) return;
+    const currentConvId = selectedId;
     const loc = resolveActiveVerifiedLocation();
     const locText = buildVerifiedLocationMessageText();
+    const activeReplyRef = replyingTo;
+
+    setShowLocationPopover(false);
+    setReplyingTo(null);
     setSendingLocationPin(true);
+
+    const tempId = `optimistic_${Date.now()}_${++optimisticSeqRef.current}`;
+    const locMeta: Record<string, unknown> = {
+      ...(activeReplyRef ? { replyTo: activeReplyRef } : {}),
+      locationPin: {
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        name: loc.placeName,
+        address: loc.address,
+        mapsUrl: loc.mapsUrl,
+      },
+    };
+    appendOptimisticMessage(currentConvId, {
+      id: tempId,
+      direction: "OUTBOUND",
+      senderType: "STAFF",
+      senderName: initialData.currentUserName,
+      messageType: "TEXT",
+      billingCategory: "FREE_CHAT",
+      body: locText,
+      templateName: null,
+      deliveryStatus: "SENDING",
+      createdAt: new Date().toISOString(),
+      metadata: locMeta,
+    });
+
     try {
-      const res = await fetch(`/api/conversations/${selectedId}`, {
+      const res = await fetch(`/api/conversations/${currentConvId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1264,21 +1641,28 @@ export function InboxClient({
             address: loc.address,
             mapsUrl: loc.mapsUrl,
           },
-          replyToMessageId: replyingTo?.messageId || undefined,
-          replyTo: replyingTo || undefined,
+          replyToMessageId: activeReplyRef?.messageId || undefined,
+          replyTo: activeReplyRef || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
+        patchOptimisticMessage(currentConvId, tempId, {
+          id: data.messageId || tempId,
+          deliveryStatus: "FAILED",
+        });
         showToast(data.error || "Could not send location.");
         return;
       }
-      setShowLocationPopover(false);
-      setReplyingTo(null);
+      patchOptimisticMessage(currentConvId, tempId, {
+        id: String(data.messageId || tempId),
+        deliveryStatus: String(data.deliveryStatus || "SENT"),
+        waMessageId: data.waMessageId ? String(data.waMessageId) : null,
+      });
       showToast("Sent factory location pin + Google Maps link to customer.");
-      await fetchAndCacheDetail(selectedId, false);
-      void refreshThreadsSilently(false);
+      scheduleThreadsRefresh(150);
     } catch {
+      patchOptimisticMessage(currentConvId, tempId, { deliveryStatus: "FAILED" });
       showToast("Network error while sending location.");
     } finally {
       setSendingLocationPin(false);
@@ -1309,15 +1693,17 @@ export function InboxClient({
         : "");
     const currentConvId = selectedId;
     const activeReplyRef = replyingTo;
-    setSending(true);
+
+    // Clear composer immediately so staff can type consecutive replies with zero bottleneck
     setReplyText("");
+    draftsRef.current[`${currentConvId}|${effectiveMode}`] = "";
     setReplyingTo(null);
     setStagedAttachment(null);
     setShowAttachmentPicker(false);
     setPendingSendConfirm(null);
 
-    // Optimistic UI append at 0ms: starts as SENDING (clock + "Sending") -> SENT (1 tick) -> DELIVERED (2 grey ticks) -> READ (2 blue ticks)
-    const tempId = `optimistic_${Date.now()}`;
+    // Optimistic UI append at 0ms: SENDING (small circular loader) -> SENT (1 tick) -> DELIVERED (2 ticks) -> READ (blue ticks)
+    const tempId = `optimistic_${Date.now()}_${++optimisticSeqRef.current}`;
     const nowIso = new Date().toISOString();
     const optimisticMetadata: Record<string, unknown> | null =
       activeReplyRef || activeAtt
@@ -1369,92 +1755,7 @@ export function InboxClient({
             metadata: optimisticMetadata,
           };
 
-    const optimisticBundle: ConversationDetailBundle = {
-      ...detail,
-      conversation:
-        effectiveMode === "NOTE"
-          ? detail.conversation
-          : {
-              ...detail.conversation,
-              status: "ASSIGNED",
-              assignedStaffId:
-                detail.conversation.assignedStaffId === "ACRIO" ||
-                !detail.conversation.assignedStaffId
-                  ? initialData.currentUserId
-                  : detail.conversation.assignedStaffId,
-              assignedStaffName:
-                detail.conversation.assignedStaffId === "ACRIO" ||
-                !detail.conversation.assignedStaffId
-                  ? initialData.currentUserName
-                  : detail.conversation.assignedStaffName,
-              assignedTeamId: detail.conversation.assignedTeamId || "team_sales",
-              assignedTeamName:
-                detail.conversation.assignedTeamName &&
-                detail.conversation.assignedTeamName !== "ACRIO Assistant" &&
-                detail.conversation.assignedTeamName !== "System (ACRIO)"
-                  ? detail.conversation.assignedTeamName
-                  : "Sales Team",
-              waitingSince: null,
-            },
-      messages: [...detail.messages, optimisticMsg],
-    };
-    setDetail(optimisticBundle);
-    detailCacheRef.current.set(currentConvId, optimisticBundle);
-
-    if (effectiveMode !== "NOTE") {
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.id === currentConvId
-            ? {
-                ...t,
-                lastMessagePreview: textToSend.slice(0, 140),
-                lastMessageAt: nowIso,
-                lastMessageDirection: "OUTBOUND",
-                lastMessageStatus: "SENDING",
-                waitingSince: null,
-              }
-            : t
-        )
-      );
-    }
-
-    const patchOptimisticReceipt = (
-      nextId: string,
-      nextDeliveryStatus: string,
-      nextWaMessageId?: string | null
-    ) => {
-      const cur = detailCacheRef.current.get(currentConvId);
-      if (cur) {
-        const nextCur: ConversationDetailBundle = {
-          ...cur,
-          messages: cur.messages.map((m) =>
-            m.id === tempId
-              ? {
-                  ...m,
-                  id: nextId,
-                  deliveryStatus: nextDeliveryStatus,
-                  ...(nextWaMessageId ? { waMessageId: nextWaMessageId } : {}),
-                }
-              : m
-          ),
-        };
-        detailCacheRef.current.set(currentConvId, nextCur);
-        if (selectedIdRef.current === currentConvId) {
-          setDetail(nextCur);
-        }
-      }
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.id === currentConvId
-            ? {
-                ...t,
-                lastMessageDirection: "OUTBOUND",
-                lastMessageStatus: nextDeliveryStatus,
-              }
-            : t
-        )
-      );
-    };
+    appendOptimisticMessage(currentConvId, optimisticMsg, textToSend);
 
     try {
       if (effectiveMode === "NOTE") {
@@ -1470,7 +1771,16 @@ export function InboxClient({
           }),
         });
         const noteData = await noteRes.json().catch(() => ({}));
+        if (noteData.noteId) {
+          patchOptimisticMessage(currentConvId, tempId, {
+            id: String(noteData.noteId),
+            deliveryStatus: "SAVED",
+          });
+        }
         showToast(describeNoteResult(noteData));
+        if (noteData.askedAcrio || noteData.accidentalReplyDetected) {
+          void fetchAndCacheDetail(currentConvId, false);
+        }
       } else {
         const res = await fetch(`/api/conversations/${currentConvId}`, {
           method: "POST",
@@ -1486,27 +1796,25 @@ export function InboxClient({
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok) {
-          patchOptimisticReceipt(data.messageId || tempId, "FAILED");
+          patchOptimisticMessage(currentConvId, tempId, {
+            id: data.messageId || tempId,
+            deliveryStatus: "FAILED",
+          });
           showToast(data.error || "Message failed to send.");
           return;
         }
-        patchOptimisticReceipt(
-          String(data.messageId || tempId),
-          String(data.deliveryStatus || "SENT"),
-          data.waMessageId ? String(data.waMessageId) : null
-        );
+        patchOptimisticMessage(currentConvId, tempId, {
+          id: String(data.messageId || tempId),
+          deliveryStatus: String(data.deliveryStatus || "SENT"),
+          waMessageId: data.waMessageId ? String(data.waMessageId) : null,
+        });
+        scheduleThreadsRefresh(150);
       }
-      await Promise.all([
-        fetchAndCacheDetail(currentConvId, false),
-        refreshThreadsSilently(),
-      ]);
     } catch {
       if (effectiveMode !== "NOTE") {
-        patchOptimisticReceipt(tempId, "FAILED");
+        patchOptimisticMessage(currentConvId, tempId, { deliveryStatus: "FAILED" });
         showToast("Network error. Message marked Failed.");
       }
-    } finally {
-      setSending(false);
     }
   }
 
@@ -1581,9 +1889,24 @@ export function InboxClient({
   async function handleQuickNoteSave(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedId || !quickNoteDraft.trim()) return;
+    const convId = selectedId;
     const text = quickNoteDraft.trim();
     setQuickNoteDraft("");
-    const noteRes = await fetch(`/api/conversations/${selectedId}`, {
+    const tempId = `optimistic_${Date.now()}_${++optimisticSeqRef.current}`;
+    appendOptimisticMessage(convId, {
+      id: tempId,
+      direction: "INTERNAL",
+      senderType: "STAFF_NOTE",
+      senderName: initialData.currentUserName,
+      messageType: "INTERNAL_NOTE",
+      billingCategory: "INTERNAL",
+      body: text,
+      templateName: null,
+      deliveryStatus: "SAVED",
+      createdAt: new Date().toISOString(),
+      metadata: null,
+    });
+    const noteRes = await fetch(`/api/conversations/${convId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1592,8 +1915,16 @@ export function InboxClient({
       }),
     });
     const noteData = await noteRes.json().catch(() => ({}));
+    if (noteData.noteId) {
+      patchOptimisticMessage(convId, tempId, {
+        id: String(noteData.noteId),
+        deliveryStatus: "SAVED",
+      });
+    }
     showToast(describeNoteResult(noteData));
-    await fetchAndCacheDetail(selectedId, false);
+    if (noteData.askedAcrio || noteData.accidentalReplyDetected) {
+      void fetchAndCacheDetail(convId, false);
+    }
   }
 
   async function handleTakeOverFromAcrio() {
@@ -1645,9 +1976,30 @@ export function InboxClient({
     dismissOnly?: boolean
   ) {
     if (!selectedId || acrioActionBusyId) return;
+    const convId = selectedId;
     setAcrioActionBusyId(noteMessageId);
+
+    const tempId = !dismissOnly
+      ? `optimistic_${Date.now()}_${++optimisticSeqRef.current}`
+      : null;
+    if (tempId && customText) {
+      appendOptimisticMessage(convId, {
+        id: tempId,
+        direction: "OUTBOUND",
+        senderType: "STAFF",
+        senderName: initialData.currentUserName,
+        messageType: "TEXT",
+        billingCategory: "FREE_CHAT",
+        body: customText,
+        templateName: null,
+        deliveryStatus: "SENDING",
+        createdAt: new Date().toISOString(),
+        metadata: null,
+      });
+    }
+
     try {
-      const res = await fetch(`/api/conversations/${selectedId}`, {
+      const res = await fetch(`/api/conversations/${convId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1659,19 +2011,30 @@ export function InboxClient({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
+        if (tempId) {
+          patchOptimisticMessage(convId, tempId, { deliveryStatus: "FAILED" });
+        }
         showToast(data.error || "Could not send note in chat.");
         return;
+      }
+      if (tempId) {
+        patchOptimisticMessage(convId, tempId, {
+          id: String(data.messageId || tempId),
+          deliveryStatus: String(data.deliveryStatus || "SENT"),
+          waMessageId: data.waMessageId ? String(data.waMessageId) : null,
+        });
       }
       showToast(
         dismissOnly
           ? "Kept as an internal team note."
           : "Sent to customer on WhatsApp chat!"
       );
-      await Promise.all([
-        fetchAndCacheDetail(selectedId, false),
-        refreshThreadsSilently(false),
-      ]);
+      void fetchAndCacheDetail(convId, false);
+      scheduleThreadsRefresh(150);
     } catch {
+      if (tempId) {
+        patchOptimisticMessage(convId, tempId, { deliveryStatus: "FAILED" });
+      }
       showToast("Network error while sending note in chat.");
     } finally {
       setAcrioActionBusyId(null);
@@ -2474,6 +2837,8 @@ export function InboxClient({
                 <button
                   key={t.id}
                   type="button"
+                  onMouseEnter={() => prefetchDetail(t.id)}
+                  onPointerDown={() => prefetchDetail(t.id)}
                   onClick={() =>
                     bulkMode
                       ? toggleBulkSelectThread(t.id)
@@ -3624,7 +3989,11 @@ export function InboxClient({
                                         }
                                         className="px-2.5 py-1 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
                                       >
-                                        <Check className="w-3 h-3" />
+                                        {isBusy ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <Check className="w-3 h-3" />
+                                        )}
                                         <span>
                                           {isBusy
                                             ? "Sending..."
@@ -3644,7 +4013,11 @@ export function InboxClient({
                                           : "bg-[#00a884] hover:bg-[#008f6f] text-white"
                                       }`}
                                     >
-                                      <CornerUpLeft className="w-3 h-3" />
+                                      {isBusy ? (
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                      ) : (
+                                        <CornerUpLeft className="w-3 h-3" />
+                                      )}
                                       <span>
                                         {isBusy
                                           ? "Sending..."
@@ -3997,8 +4370,8 @@ export function InboxClient({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Popovers for Attach Media/File, Track Order Button & Product Short Links (triggered from the Composer Toolbar) */}
-            {detail && (showAttachmentPicker || showTrackPopover || (showShortLinksPicker && detail.customLinks.length > 0)) && (
+            {/* Popovers for Attach Media/File, Track Order Button, Location Pin & Product Short Links (triggered from the Composer Toolbar) */}
+            {detail && (showAttachmentPicker || showTrackPopover || showLocationPopover || (showShortLinksPicker && detail.customLinks.length > 0)) && (
               <div className="relative shrink-0 px-2 sm:px-4">
                 <AttachmentPickerPopover
                   open={showAttachmentPicker}
@@ -4260,7 +4633,11 @@ export function InboxClient({
                           disabled={sendingTrackBtn || !trackOrderId.trim()}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
                         >
-                          <Truck className="w-3.5 h-3.5" />
+                          {sendingTrackBtn ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Truck className="w-3.5 h-3.5" />
+                          )}
                           <span>
                             {sendingTrackBtn
                               ? "Sending..."
@@ -4326,7 +4703,11 @@ export function InboxClient({
                         onClick={() => void handleSendVerifiedLocationNow()}
                         className="px-3.5 py-1.5 rounded-md bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                       >
-                        <MapPin className="w-3.5 h-3.5" />
+                        {sendingLocationPin ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <MapPin className="w-3.5 h-3.5" />
+                        )}
                         <span>
                           {sendingLocationPin
                             ? "Sending Pin & Link..."
@@ -4496,7 +4877,11 @@ export function InboxClient({
                       onClick={() => void handleTakeOverChat()}
                       className="px-3.5 py-1.5 rounded-lg bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
                     >
-                      <UserCheck className="w-3.5 h-3.5" />
+                      {takingOver ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <UserCheck className="w-3.5 h-3.5" />
+                      )}
                       <span>
                         {takingOver
                           ? "Taking over..."
@@ -4541,7 +4926,7 @@ export function InboxClient({
                     />
                     <button
                       type="submit"
-                      disabled={sending || !replyText.trim()}
+                      disabled={!replyText.trim()}
                       className="h-9 px-3.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0"
                     >
                       <Lock className="w-3 h-3" />
@@ -4930,12 +5315,11 @@ export function InboxClient({
                 <button
                   type="submit"
                   disabled={
-                    sending ||
-                    (!replyText.trim() &&
-                      !(
-                        (composerMode === "REPLY" || composerMode === "NOTE") &&
-                        stagedAttachment
-                      ))
+                    !replyText.trim() &&
+                    !(
+                      (composerMode === "REPLY" || composerMode === "NOTE") &&
+                      stagedAttachment
+                    )
                   }
                   className={`h-10 px-4 rounded-lg text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0 ${
                     composerMode === "NOTE"
@@ -4987,7 +5371,7 @@ export function InboxClient({
             />
             <PreSendFileConfirmModal
               target={pendingSendConfirm}
-              busy={sending}
+              busy={false}
               onCancel={() => setPendingSendConfirm(null)}
               onConfirmSend={() =>
                 void executeComposerSend({

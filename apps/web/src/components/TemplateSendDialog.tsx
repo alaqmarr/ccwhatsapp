@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeft, Check, CheckCircle2, FileText, Search, Send, Sparkles, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CheckCircle2, FileText, Loader2, Search, Send, Sparkles, X } from "lucide-react";
 import type { ApprovedTemplateOption } from "@/lib/inbox-server-data";
 
 export interface TemplateCustomerContext {
@@ -450,7 +450,10 @@ export function TemplateSendDialog({
                   className="px-4 py-2 rounded-lg bg-[#00a884] hover:bg-[#008f6f] text-white text-sm font-semibold disabled:opacity-40 inline-flex items-center gap-1.5 cursor-pointer"
                 >
                   {sending ? (
-                    "Sending..."
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Sending...</span>
+                    </>
                   ) : (
                     <>
                       <Send className="w-3.5 h-3.5" /> Send template

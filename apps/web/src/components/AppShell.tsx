@@ -24,6 +24,7 @@ import {
   Menu,
   X,
   Link2,
+  Loader2,
   Mail,
   PhoneCall,
   Bot,
@@ -44,6 +45,14 @@ import {
 } from "@cc/ui";
 import { NotificationBell } from "@/components/NotificationBell";
 
+interface BridgeHealthSummary {
+  cc3003: boolean;
+  ce3002: boolean;
+  loaded: boolean;
+}
+
+let cachedBridgeHealth: { expiresAt: number; value: BridgeHealthSummary } | null = null;
+
 export function AppShell({
   user,
   pendingApprovalsCount = 0,
@@ -56,23 +65,35 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [bridgeSummary, setBridgeSummary] = useState<{
-    cc3003: boolean;
-    ce3002: boolean;
-    loaded: boolean;
-  }>({ cc3003: false, ce3002: false, loaded: false });
+  const [navigatingTo, setNavigatingTo] = useState<string | null>(null);
+  const [bridgeSummary, setBridgeSummary] = useState<BridgeHealthSummary>(() =>
+    cachedBridgeHealth && cachedBridgeHealth.expiresAt > Date.now()
+      ? cachedBridgeHealth.value
+      : { cc3003: false, ce3002: false, loaded: false }
+  );
 
   useEffect(() => {
     setMobileNavOpen(false);
+    setNavigatingTo(null);
   }, [pathname]);
 
   useEffect(() => {
+    if (!navigatingTo) return;
+    const safety = setTimeout(() => setNavigatingTo(null), 6000);
+    return () => clearTimeout(safety);
+  }, [navigatingTo]);
+
+  useEffect(() => {
+    if (cachedBridgeHealth && cachedBridgeHealth.expiresAt > Date.now()) {
+      setBridgeSummary(cachedBridgeHealth.value);
+      return;
+    }
     let cancelled = false;
     fetch("/api/internal/website-enquiry", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         if (cancelled || !d?.ok || !d?.health) return;
-        setBridgeSummary({
+        const next: BridgeHealthSummary = {
           cc3003: Boolean(
             d.health.classicConcepts3003?.online ||
               d.health.classicConcepts3003?.dbFallbackAvailable
@@ -82,7 +103,9 @@ export function AppShell({
               d.health.classicEdge3002?.dbFallbackAvailable
           ),
           loaded: true,
-        });
+        };
+        cachedBridgeHealth = { expiresAt: Date.now() + 30_000, value: next };
+        setBridgeSummary(next);
       })
       .catch(() => {});
     return () => {
@@ -335,7 +358,12 @@ export function AppShell({
                   <Link
                     key={item.href}
                     href={item.href}
-                    onClick={() => setMobileNavOpen(false)}
+                    onClick={() => {
+                      setMobileNavOpen(false);
+                      if (pathname !== item.href) {
+                        setNavigatingTo(item.href);
+                      }
+                    }}
                     className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12.5px] tracking-[-0.01em] transition-colors ${
                       active
                         ? "bg-[#00a884] text-white font-semibold shadow-2xs"
@@ -343,7 +371,11 @@ export function AppShell({
                     }`}
                   >
                     <span className="flex items-center gap-2 truncate">
-                      <Icon className="w-4 h-4 shrink-0" />
+                      {navigatingTo === item.href && !active ? (
+                        <Loader2 className="w-4 h-4 shrink-0 animate-spin text-[#00a884]" />
+                      ) : (
+                        <Icon className="w-4 h-4 shrink-0" />
+                      )}
                       <span className="truncate">{item.label}</span>
                     </span>
                     {item.badge && (
@@ -400,7 +432,15 @@ export function AppShell({
   );
 
   return (
-    <div className="h-dvh max-h-dvh overflow-hidden w-full flex flex-col lg:flex-row bg-neutral-50 text-slate-900">
+    <div className="h-dvh max-h-dvh overflow-hidden w-full flex flex-col lg:flex-row bg-neutral-50 text-slate-900 relative">
+      {navigatingTo && (
+        <div
+          aria-hidden="true"
+          className="fixed top-0 left-0 right-0 h-0.5 z-50 bg-[#00a884]/20 overflow-hidden pointer-events-none"
+        >
+          <div className="h-full w-1/2 bg-[#00a884] animate-pulse rounded-r-full" />
+        </div>
+      )}
       {/* Compact Sticky Mobile Top Bar (< lg) */}
       <header className="lg:hidden min-h-13 py-1.5 px-2.5 sm:px-3 bg-white border-b border-neutral-200 flex items-center justify-between gap-2 shrink-0 z-30">
         <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">

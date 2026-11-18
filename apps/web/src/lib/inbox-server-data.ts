@@ -292,14 +292,6 @@ export async function getConversationDetailServer(
   const cRow = convRes.rows[0] as Record<string, unknown>;
   const customerPhone = String(cRow.customer_phone);
 
-  if (markRead && Number(cRow.unread_count ?? 0) > 0) {
-    await conv.execute({
-      sql: `UPDATE conversations SET unread_count = 0 WHERE id = ?`,
-      args: [conversationId],
-    });
-  }
-
-  await getCachedEcosystemCatalog().catch(() => null);
   const [msgRes, assignRes, custRes, ordersRes, relationsRes, customLinks, orderTrackings, liveBrandInfo] =
     await Promise.all([
       conv.execute({
@@ -327,6 +319,12 @@ export async function getConversationDetailServer(
       listCustomAdminLinks(),
       listOrderTrackings({ customerPhone }).catch(() => []),
       getVerifiedLiveBrandAndTeamInfo().catch(() => null),
+      markRead && Number(cRow.unread_count ?? 0) > 0
+        ? conv.execute({
+            sql: `UPDATE conversations SET unread_count = 0 WHERE id = ?`,
+            args: [conversationId],
+          })
+        : Promise.resolve(null),
     ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;

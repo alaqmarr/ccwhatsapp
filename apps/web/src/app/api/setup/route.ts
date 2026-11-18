@@ -5,6 +5,7 @@ import {
   getSetupStatus,
   saveFacebookWhatsAppConfig,
 } from "@cc/auth";
+import { invalidateMetaWhatsAppSetupConfigCache } from "@cc/connections";
 import { saveSharedAnthropicApiKey } from "@cc/database";
 import { isDevRole } from "@cc/rbac";
 import { loadSetupPayload } from "@/lib/loaders/core";
@@ -67,6 +68,7 @@ export async function POST(req: Request) {
     }
 
     const updated = await saveFacebookWhatsAppConfig(body.facebookConfig || {});
+    invalidateMetaWhatsAppSetupConfigCache();
     if (typeof body.anthropicApiKey === "string" && body.anthropicApiKey.trim()) {
       await saveSharedAnthropicApiKey(
         body.anthropicApiKey.trim(),
