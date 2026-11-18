@@ -162,7 +162,9 @@ export async function POST(req: Request) {
           filename?: string;
           caption?: string;
           sha256?: string;
+          isSticker?: boolean;
         } | null = null;
+        let isUnsupportedMessage = false;
 
         if ((rawType === "image" || Boolean(msg?.image)) && msg?.image) {
           messageType = "IMAGE";
@@ -207,7 +209,17 @@ export async function POST(req: Request) {
             mediaId: String(m.id || ""),
             mimeType: String(m.mime_type || "image/webp"),
             sha256: m.sha256 ? String(m.sha256) : undefined,
+            isSticker: true,
           };
+        } else if (
+          rawType === "unsupported" ||
+          rawType === "order" ||
+          (rawType &&
+            !["text", "button", "interactive", "contacts", "location", "reaction", "system"].includes(
+              rawType
+            ))
+        ) {
+          isUnsupportedMessage = true;
         }
 
         const buttonText =
@@ -247,6 +259,8 @@ export async function POST(req: Request) {
             return phones ? `${cname}: ${phones}` : cname;
           });
           textBody = `[Shared Contact]\n${contactLines.join("\n")}`;
+        } else if (isUnsupportedMessage) {
+          textBody = "[Unsupported Attachment]";
         } else {
           textBody = msg?.text?.body || buttonText || "[Message]";
         }
@@ -411,6 +425,7 @@ export async function POST(req: Request) {
             mediaId: mediaMeta.mediaId,
             mimeType: mediaMeta.mimeType,
             downloadUrl: `/api/media/${mediaMeta.mediaId}`,
+            isSticker: Boolean(mediaMeta.isSticker),
           };
           metaObj.media_id = mediaMeta.mediaId;
           metaObj.mediaId = mediaMeta.mediaId;
@@ -419,6 +434,10 @@ export async function POST(req: Request) {
           if (mediaMeta.filename) metaObj.filename = mediaMeta.filename;
           if (mediaMeta.caption) metaObj.caption = mediaMeta.caption;
           if (mediaMeta.sha256) metaObj.sha256 = mediaMeta.sha256;
+          if (mediaMeta.isSticker) metaObj.isSticker = true;
+        } else if (isUnsupportedMessage) {
+          metaObj.unsupportedAttachment = true;
+          metaObj.rawWaType = rawType || "unsupported";
         }
 
         const inboundMetadataJson = JSON.stringify(metaObj);
@@ -458,6 +477,14 @@ export async function POST(req: Request) {
                 filename: mediaMeta.filename,
                 mimeType: mediaMeta.mimeType,
                 caption: mediaMeta.caption,
+                mediaId: mediaMeta.mediaId,
+                sha256: mediaMeta.sha256,
+                isSticker: Boolean(mediaMeta.isSticker),
+              }
+            : isUnsupportedMessage
+            ? {
+                mediaType: "UNSUPPORTED",
+                mimeType: rawType ? `whatsapp/${rawType}` : "application/octet-stream",
               }
             : null,
         }).catch((err) => {

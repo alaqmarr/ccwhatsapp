@@ -56,6 +56,26 @@ import {
   rememberWhatsAppCache,
   rememberWhatsAppCacheWithMeta,
 } from "@cc/storage";
+import {
+  analyzeCustomerImageWithVision,
+  ALLOWED_VISION_MIME_TYPES,
+  detectImageSignatureMimeType,
+  fetchAndValidateWhatsAppImage,
+  getMaxAcrioImageBytes,
+  isAllowedMetaCdnUrl,
+  isValidWhatsAppMediaId,
+  sanitizeImageFilename,
+  sanitizeVisionExtractedText,
+  validateCustomerImageBuffer,
+  type AnthropicContentBlock,
+  type CustomerImageAnalysis,
+  type CustomerImageAttachmentInput,
+  type ImageValidationResult,
+  type SupportedVisionMimeType,
+  type VisionClaudeCaller,
+} from "./image-intelligence";
+
+export * from "./image-intelligence";
 
 const LOCKED_CLAUDE_MODEL = "claude-haiku-5-5" as const;
 
@@ -169,7 +189,10 @@ export function parseClaudeJson<T = any>(raw: string | null | undefined): T | nu
 export async function callClaudeHaikuMessagesDetailed(params: {
   apiKey: string;
   system: string;
-  messages: { role: "user" | "assistant"; content: string }[];
+  messages: {
+    role: "user" | "assistant";
+    content: string | AnthropicContentBlock[];
+  }[];
   maxTokens?: number;
   temperature?: number;
   effort?: "low" | "medium" | "high";
@@ -332,7 +355,10 @@ export async function callClaudeHaikuMessagesDetailed(params: {
 export async function callClaudeHaikuMessages(params: {
   apiKey: string;
   system: string;
-  messages: { role: "user" | "assistant"; content: string }[];
+  messages: {
+    role: "user" | "assistant";
+    content: string | AnthropicContentBlock[];
+  }[];
   maxTokens?: number;
   temperature?: number;
   effort?: "low" | "medium" | "high";
@@ -3122,6 +3148,15 @@ export interface AcrioConversationState {
     family?: string | null;
     turnNumber: number;
   }[];
+  /** Most recent image-understanding summary from an uploaded customer photo in this conversation (scoped strictly to this chat). */
+  lastImageAnalysis?: CustomerImageAnalysis | null;
+  /** Per-conversation cache of already-analyzed images keyed by SHA-256 to prevent duplicate Vision calls. */
+  analyzedImagesBySha?: Record<string, CustomerImageAnalysis>;
+  /** Rolling 1-hour counter for Vision analysis rate limiting inside this conversation. */
+  imageAnalysisCountWindow?: {
+    windowStartIso: string;
+    count: number;
+  };
   switchedThisTurn?: boolean;
   turnCount: number;
   updatedAt: string;
@@ -3150,6 +3185,9 @@ export function createEmptyAcrioConversationState(): AcrioConversationState {
     languageMode: "ENGLISH",
     lastRecommendedProducts: [],
     productHistory: [],
+    lastImageAnalysis: null,
+    analyzedImagesBySha: {},
+    imageAnalysisCountWindow: undefined,
     switchedThisTurn: false,
     turnCount: 0,
     updatedAt: new Date().toISOString(),
@@ -4273,6 +4311,13 @@ export function applyTurnToAcrioConversationState(
         askedQuestionsLog: [...(prevState.askedQuestionsLog || [])],
         lastRecommendedProducts: [...(prevState.lastRecommendedProducts || [])],
         productHistory: [...(prevState.productHistory || [])],
+        lastImageAnalysis: prevState.lastImageAnalysis || null,
+        analyzedImagesBySha: prevState.analyzedImagesBySha
+          ? { ...prevState.analyzedImagesBySha }
+          : {},
+        imageAnalysisCountWindow: prevState.imageAnalysisCountWindow
+          ? { ...prevState.imageAnalysisCountWindow }
+          : undefined,
       }
     : createEmptyAcrioConversationState();
 
@@ -4321,7 +4366,7 @@ export function applyTurnToAcrioConversationState(
   }
 
   // Track cheapest / smaller top preference
-  if (/\b(cheapest|lowest\s*price|least\s*expensive|cheaper\s*alternative|cheaper\s*option|smaller\s*top\s*to\s*save|save\s*more|sasta|sabse\s*sasta)\b/i.test(lower)) {
+  if (/\b(cheapest|lowest\s*price|least\s*expensive|cheaper(?:\s+(?:one|ones|model|models|alternative|alternatives|option|options))?|smaller\s*top\s*to\s*save|save\s*more|lower\s*cost|lower\s*price|sasta|sabse\s*sasta)\b/i.test(lower)) {
     base.preferCheapest = true;
     base.preferences = base.preferences.filter((p) => p !== "premium");
     // If customer had a high podium price or is asking for a cheaper alternative to a specific model, clear minPrice
@@ -4332,12 +4377,16 @@ export function applyTurnToAcrioConversationState(
     base.preferCheapest = false;
   }
 
-  // Explicit topic reset clears active product/budget state while keeping archived productHistory
+  // Explicit topic reset clears active product/budget/image state while keeping archived productHistory & sha analysis cache
   if (intentInfo.intent === "TOPIC_RESET") {
     archivePreviousFocus();
     return {
       ...createEmptyAcrioConversationState(),
       productHistory: [...(base.productHistory || [])],
+      analyzedImagesBySha: { ...(base.analyzedImagesBySha || {}) },
+      imageAnalysisCountWindow: base.imageAnalysisCountWindow
+        ? { ...base.imageAnalysisCountWindow }
+        : undefined,
       switchedThisTurn: true,
       turnCount: base.turnCount,
       updatedAt: base.updatedAt,
@@ -4612,6 +4661,13 @@ export function reconstructAcrioConversationState(params: {
         excludedItemTypes: [...(persistedState.excludedItemTypes || [])],
         preferences: [...(persistedState.preferences || [])],
         lastRecommendedProducts: [...(persistedState.lastRecommendedProducts || [])],
+        lastImageAnalysis: persistedState.lastImageAnalysis || null,
+        analyzedImagesBySha: persistedState.analyzedImagesBySha
+          ? { ...persistedState.analyzedImagesBySha }
+          : {},
+        imageAnalysisCountWindow: persistedState.imageAnalysisCountWindow
+          ? { ...persistedState.imageAnalysisCountWindow }
+          : undefined,
       }
     : createEmptyAcrioConversationState();
 
@@ -4645,6 +4701,8 @@ export function buildNormalizedSearchFromState(
   searchQuery: string;
   searchOptions: EcosystemSearchOptions;
   budgetLabel: string | null;
+  preferCheapest: boolean;
+  asksMoreOrAlternative: boolean;
 } {
   const parts: string[] = [];
   const rawTrimmed = fallbackRawText.trim();
@@ -4685,7 +4743,7 @@ export function buildNormalizedSearchFromState(
   const preferCheapest =
     Boolean(state.preferCheapest) ||
     (state.preferences || []).includes("cheapest") ||
-    /\b(cheapest|lowest\s*price|cheaper\s*alternative|smaller\s*top\s*to\s*save|save\s*more)\b/i.test(
+    /\b(cheapest|cheaper|lowest\s*price|cheaper\s*alternative|smaller\s*top\s*to\s*save|save\s*more)\b/i.test(
       rawTrimmed
     );
   const preferPremium =
@@ -4720,7 +4778,7 @@ export function buildNormalizedSearchFromState(
       ? `>= ₹${state.minPrice.toLocaleString("en-IN")}`
       : null;
 
-  return { searchQuery, searchOptions, budgetLabel };
+  return { searchQuery, searchOptions, budgetLabel, preferCheapest, asksMoreOrAlternative };
 }
 
 let aiStateColumnChecked = false;
@@ -5755,10 +5813,14 @@ export interface AcrioTurnParams {
   replyToMessage?: AcrioReplyToMessageContext | null;
   /** Attachment metadata if the inbound message included a PDF, image, video, audio, or file. */
   attachment?: {
-    mediaType?: "IMAGE" | "DOCUMENT" | "VIDEO" | "AUDIO" | string;
+    mediaType?: "IMAGE" | "DOCUMENT" | "VIDEO" | "AUDIO" | "UNSUPPORTED" | string;
     filename?: string;
     mimeType?: string;
     caption?: string;
+    mediaId?: string;
+    sha256?: string;
+    isSticker?: boolean;
+    buffer?: Buffer;
   } | null;
   /**
    * Files the customer sent in the same burst of messages (voice notes, photos, videos, documents), plus messages
@@ -5770,10 +5832,31 @@ export interface AcrioTurnParams {
     videos: number;
     audios: number;
     unreadable: number;
+    imageItems?: CustomerImageAttachmentInput[];
+    nonImageItems?: {
+      mediaType: string;
+      filename?: string;
+      mimeType?: string;
+      mediaId?: string;
+      sha256?: string;
+    }[];
   } | null;
   /** Set false to get plain text only (website widget, tests). Defaults to true. */
   enableInteractive?: boolean;
   uiSink?: AcrioUiSink;
+  /** Optional DI hooks for deterministic Vision and media fetch verification in tests. */
+  visionAnalyzerOverride?: (input: {
+    imageBuffer: Buffer;
+    mimeType: SupportedVisionMimeType;
+    caption?: string;
+    filename?: string;
+  }) => Promise<{
+    ok: boolean;
+    analysis?: CustomerImageAnalysis;
+    usage?: AiTokenUsage | null;
+    error?: string;
+  }>;
+  mediaFetchImpl?: typeof fetch;
 }
 
 export const ACRIO_TEAM_ASK_TEXT = "How would you like to connect with our team?";
@@ -5910,9 +5993,16 @@ function decorateAcrioReplyWithInteractive(
 export async function runAcrioAutonomousTurn(
   params: AcrioTurnParams
 ): Promise<AcrioAutonomousTurnResult> {
-  const sink: AcrioUiSink = params.uiSink || { matches: [] };
+  const sink: AcrioUiSink & { skipInteractiveOverride?: boolean } = params.uiSink || { matches: [] };
   const res = await runAcrioAutonomousTurnCore({ ...params, uiSink: sink });
-  if (params.enableInteractive === false || res.needsHumanHandoff || res.interactive) return res;
+  if (
+    params.enableInteractive === false ||
+    res.needsHumanHandoff ||
+    res.interactive ||
+    sink.skipInteractiveOverride
+  ) {
+    return res;
+  }
   try {
     const extra = decorateAcrioReplyWithInteractive(res, sink, params.inboundText);
     if (extra?.interactive?.kind === "list" && res.conversationState) {
@@ -5923,6 +6013,230 @@ export async function runAcrioAutonomousTurn(
   } catch {
     return res;
   }
+}
+
+function mergeAiTokenUsage(
+  a?: AiTokenUsage | null,
+  b?: AiTokenUsage | null
+): AiTokenUsage | undefined {
+  if (!a && !b) return undefined;
+  return {
+    inputTokens: Number(a?.inputTokens || 0) + Number(b?.inputTokens || 0),
+    outputTokens: Number(a?.outputTokens || 0) + Number(b?.outputTokens || 0),
+    thinkingTokens: Number(a?.thinkingTokens || 0) + Number(b?.thinkingTokens || 0),
+    cacheReadInputTokens:
+      Number(a?.cacheReadInputTokens || 0) + Number(b?.cacheReadInputTokens || 0),
+    cacheCreationInputTokens:
+      Number(a?.cacheCreationInputTokens || 0) + Number(b?.cacheCreationInputTokens || 0),
+  };
+}
+
+function cacheConversationImageAnalysis(
+  state: AcrioConversationState,
+  sha256: string,
+  analysis: CustomerImageAnalysis,
+  recordNewVisionCall: boolean
+): void {
+  const map = { ...(state.analyzedImagesBySha || {}) };
+  map[sha256] = {
+    ...analysis,
+    sha256,
+    analyzedAt: analysis.analyzedAt || new Date().toISOString(),
+  };
+  const keys = Object.keys(map);
+  if (keys.length > 6) {
+    keys
+      .sort(
+        (x, y) =>
+          Date.parse(map[x]?.analyzedAt || "1970-01-01T00:00:00Z") -
+          Date.parse(map[y]?.analyzedAt || "1970-01-01T00:00:00Z")
+      )
+      .slice(0, keys.length - 6)
+      .forEach((oldKey) => {
+        delete map[oldKey];
+      });
+  }
+  state.analyzedImagesBySha = map;
+  state.lastImageAnalysis = map[sha256];
+  if (recordNewVisionCall) {
+    const prev = state.imageAnalysisCountWindow;
+    const prevStartMs = prev?.windowStartIso ? Date.parse(prev.windowStartIso) : 0;
+    const withinHour = prevStartMs > 0 && Date.now() - prevStartMs <= 3600_000;
+    state.imageAnalysisCountWindow = withinHour
+      ? { windowStartIso: prev!.windowStartIso, count: Number(prev!.count || 0) + 1 }
+      : { windowStartIso: new Date().toISOString(), count: 1 };
+  }
+}
+
+function buildPhaseIImageGuidancePrompt(
+  analysis: CustomerImageAnalysis,
+  fromCache: boolean
+): string {
+  const parts: string[] = [
+    `Analyzed Customer Reference Image (${fromCache ? "per-conversation SHA-256 cache hit" : "fresh Claude Vision analysis"}):`,
+    `- Detected item: ${analysis.productType || "unspecified item"} (domain hint: ${analysis.businessDomain})`,
+    `- Visual traits: shape="${analysis.shapeAndDesign || "not clear"}", colour="${analysis.colorAppearance || "not clear"}", material appearance="${analysis.materialAppearance || "not clear"}"`,
+  ];
+  if (analysis.visibleComponents.length > 0) {
+    parts.push(`- Visible components: ${analysis.visibleComponents.join(", ")}`);
+  }
+  if (analysis.readableModelCodes.length > 0) {
+    parts.push(`- Clearly readable model codes: ${analysis.readableModelCodes.join(", ")}`);
+  }
+  if (analysis.readableDimensions) {
+    parts.push(`- Clearly legible dimensions: ${analysis.readableDimensions}`);
+  }
+  if (analysis.unreadableDetails.length > 0) {
+    parts.push(
+      `- Missing / unclear details in the image: ${analysis.unreadableDetails.join(", ")}`
+    );
+  }
+  parts.push(
+    `CRITICAL IMAGE SAFETY & ACCURACY RULES FOR THIS REPLY:
+- Do NOT claim you verified exact sheet thickness, dimensions, material grade, or model numbers unless clearly readable above or verified in our catalog.
+- Treat visual colour/material observations carefully ("appears clear/frosted/black" rather than promising exact gauge).
+- If CLASSIC_CONCEPTS product photo: present up to 3 closest catalog matches, briefly note similarities and differences vs their photo, and mention that exact match or custom tweaks can be confirmed with our team.
+- If CLASSIC_EDGE_53 machinery photo and readableModelCodes is empty: list closest Classic Edge 53 machines in that category, NEVER invent or guess an unprinted model code, and clearly ask the customer to share the machine nameplate or model number.
+- If design sketch/drawing or unreadable dimensions exist: summarize ONLY what is clearly legible, call out the unreadable/missing specs without inventing numbers, and confirm that you have forwarded the custom fabrication enquiry to our Sales & Fabrication Team ("needsHumanHandoff": true).`
+  );
+  return parts.join("\n");
+}
+
+function buildPhaseIImageFallbackReply(params: {
+  greetOnce: string;
+  analysis: CustomerImageAnalysis;
+  matches: MainWebsiteProduct[];
+  hidePrices: boolean;
+}): {
+  reply: string;
+  handoff: boolean;
+  handoffReason: string;
+  needsSalesPing: boolean;
+  salesPingNote: string;
+  smartCategory: string;
+  priority: "URGENT" | "HIGH" | "NORMAL";
+} {
+  const { greetOnce, analysis, matches, hidePrices } = params;
+  const domainMatches =
+    analysis.businessDomain === "CLASSIC_EDGE_53"
+      ? matches.filter((m) => m.brand === "CLASSIC_EDGE_53")
+      : analysis.businessDomain === "CLASSIC_CONCEPTS"
+      ? matches.filter((m) => m.brand === "CLASSIC_CONCEPTS")
+      : matches;
+  const shown = (domainMatches.length > 0 ? domainMatches : matches).slice(0, 3);
+  const formatMatchLine = (item: MainWebsiteProduct, idx: number) => {
+    const title = cleanDisplayProductName(item.name);
+    const priceBit =
+      !hidePrices && typeof item.basePrice === "number" && item.basePrice > 0
+        ? ` (₹${item.basePrice.toLocaleString("en-IN")})`
+        : "";
+    const link = item.shortUrl || item.url;
+    const rawSummary = item.description || item.descriptionHtmlText || "";
+    const summaryBit = rawSummary
+      ? `: ${rawSummary.replace(/\s+/g, " ").trim().slice(0, 90)}`
+      : "";
+    return `${idx + 1}. *${title}*${priceBit}${summaryBit}\n   ${link}`;
+  };
+
+  if (analysis.isDesignSketchOrDrawing) {
+    const legibleParts: string[] = [];
+    if (analysis.productType) legibleParts.push(`• Item: *${analysis.productType}*`);
+    if (analysis.shapeAndDesign) legibleParts.push(`• Design: ${analysis.shapeAndDesign}`);
+    if (analysis.visibleComponents.length > 0) {
+      legibleParts.push(`• Features seen: ${analysis.visibleComponents.join(", ")}`);
+    }
+    if (analysis.readableDimensions) {
+      legibleParts.push(`• Readable dimensions: ${analysis.readableDimensions}`);
+    }
+    const missingText =
+      analysis.unreadableDetails.length > 0
+        ? analysis.unreadableDetails.join(", ")
+        : "exact wall thickness, overall dimensions, and tolerance details";
+    const lines = [
+      `${greetOnce}Thank you for sharing your drawing/sketch! Here is what I could clearly read from the image:`,
+      legibleParts.join("\n") || `• Custom *${analysis.productType || "acrylic fabrication"}* design`,
+      `I could not reliably read *${missingText}* from the image alone, so I have avoided guessing those measurements.`,
+      shown.length > 0
+        ? `\nClosest reference items from our catalog:\n${shown.map(formatMatchLine).join("\n")}`
+        : "",
+      `\nI have prepared this custom enquiry and forwarded your sketch directly to our *Sales & Fabrication Team* so they can confirm feasibility, exact dimensions, and quotation right away.`,
+    ].filter(Boolean);
+    return {
+      reply: lines.join("\n\n"),
+      handoff: true,
+      handoffReason: `Customer shared a custom design sketch (${analysis.productType || "custom acrylic item"}). Readable: [${analysis.readableDimensions || "design layout"}]. Unclear/missing: [${missingText}]. Forwarded for engineering & quote.`,
+      needsSalesPing: false,
+      salesPingNote: "",
+      smartCategory: "Custom Fabrication",
+      priority: "HIGH",
+    };
+  }
+
+  if (analysis.businessDomain === "CLASSIC_EDGE_53") {
+    const readableCodeLine =
+      analysis.readableModelCodes.length > 0
+        ? `Model reference visible: *${analysis.readableModelCodes.join(", ")}*.`
+        : `The exact model number plate is not clearly readable in the photo, so I will not guess a model code.`;
+    const askPlateLine =
+      analysis.readableModelCodes.length === 0
+        ? `Could you please share a closer photo of the *nameplate / serial sticker* or type the exact model number so I can confirm the right variant and spare parts?`
+        : `Let me know if you need pricing, spare parts, or consumables for this model.`;
+    const visualNote = [
+      analysis.productType ? `Looks like a *${analysis.productType}*` : "Looks like an acrylic fabrication machine",
+      analysis.visibleComponents.length > 0 ? `with ${analysis.visibleComponents.slice(0, 3).join(", ")}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const lines = [
+      `${greetOnce}${visualNote}. ${readableCodeLine}`,
+      shown.length > 0
+        ? `Closest *Classic Edge 53* models in this category:\n${shown.map(formatMatchLine).join("\n")}`
+        : `Please share the model nameplate so our Classic Edge 53 team can identify the exact model for you.`,
+      askPlateLine,
+    ];
+    return {
+      reply: lines.join("\n\n"),
+      handoff: false,
+      handoffReason: "",
+      needsSalesPing: false,
+      salesPingNote: "",
+      smartCategory: "Acrylic Machines (CE53)",
+      priority: "HIGH",
+    };
+  }
+
+  const appearanceTraits = [
+    analysis.colorAppearance ? `looks ${analysis.colorAppearance}` : "",
+    analysis.materialAppearance ? `${analysis.materialAppearance}` : "",
+    analysis.shapeAndDesign ? `${analysis.shapeAndDesign}` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const seenSentence = analysis.productType
+    ? `From your photo, this appears to be a *${analysis.productType}*${appearanceTraits ? ` (${appearanceTraits})` : ""}.`
+    : `From your photo${appearanceTraits ? `, it ${appearanceTraits}` : ""}.`;
+  const intro = `${greetOnce}${seenSentence} Visual appearance alone cannot confirm exact sheet thickness or hidden dimensions, and our team can confirm exact match or custom tweaks if needed.`;
+  const matchSection =
+    shown.length > 0
+      ? `Here are our closest verified *Classic Concepts* matches:\n${shown.map(formatMatchLine).join("\n")}\n\nNote: Ready catalog models may differ slightly in base footprint, front panel styling, or thickness compared to your reference photo.`
+      : `I could not find an exact ready match in our catalog for this design, so we can custom-build it to your size and finish.`;
+  const closing =
+    analysis.needsCustomFabrication
+      ? `Would you like me to connect our team for custom dimensions and a quote?`
+      : `Let me know which option looks closest, or share your budget/dimensions if you want me to narrow it down!`;
+  return {
+    reply: `${intro}\n\n${matchSection}\n\n${closing}`,
+    handoff: false,
+    handoffReason: "",
+    needsSalesPing: analysis.needsCustomFabrication,
+    salesPingNote: analysis.needsCustomFabrication
+      ? `ACRIO Vision flagged potential custom fabrication from customer photo (${analysis.productType || "item"}).`
+      : "",
+    smartCategory: /podium|pulpit|lectern/i.test(analysis.productType)
+      ? "Podiums & Stage"
+      : "General Enquiry",
+    priority: "NORMAL",
+  };
 }
 
 /**
@@ -5980,10 +6294,96 @@ async function runAcrioAutonomousTurnCore(
   // 0. Detect reference attachments in this turn / multi-message burst
   const attType = String(params.attachment?.mediaType || "").toUpperCase();
   const attName = String(params.attachment?.filename || "").trim();
+  const attMime = String(params.attachment?.mimeType || "").trim();
+  const attMediaId = String(params.attachment?.mediaId || "").trim();
+  const attSha = String(params.attachment?.sha256 || "").trim();
+  const isStickerOnly =
+    Boolean(params.attachment?.isSticker) &&
+    cleanCustomerText.length === 0 &&
+    !params.burstAttachments?.documents &&
+    !params.burstAttachments?.videos &&
+    !params.burstAttachments?.audios;
+
+  if (isStickerOnly) {
+    const greetLine = alreadyGreeted ? "" : `Hi ${firstName}! `;
+    const stickerReply = formatWhatsAppOutboundText(
+      `${greetLine}Tell me what product or machine you are looking for today (for example podiums, furniture, trophies, custom acrylic boxes, or Classic Edge 53 machines) and I will help right away.`
+    );
+    const stState = reconstructAcrioConversationState({
+      persistedState: storedState,
+      recentMessages: history,
+      currentInboundText: rawText,
+    });
+    await saveConversationAiState(params.conversationId, stState);
+    addStep("Handled sticker-only message without Vision call", attName || attMime || "sticker");
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: originalInboundText,
+      model: "rule-sticker-ignore",
+      outcomeSource: "LIVE_AI",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: "BYPASS",
+      cacheDetails: "Sticker ignored cleanly without burning Vision tokens",
+      productLookupTriggered: false,
+      productLookupQuery: "",
+      productLookupBudget: null,
+      productLookupTotalScanned: 0,
+      productsLookedUp: [],
+      steps,
+      response: stickerReply,
+      durationMs: Date.now() - started,
+    });
+    return {
+      needsHumanHandoff: false,
+      handoffReason: "",
+      customerReply: stickerReply,
+      smartCategory: stState.activeCategory || "General Enquiry",
+      priority: "NORMAL",
+      conversationState: stState,
+    };
+  }
+
+  const rawImageItems: CustomerImageAttachmentInput[] =
+    params.burstAttachments?.imageItems && params.burstAttachments.imageItems.length > 0
+      ? params.burstAttachments.imageItems.filter((img) => !img.isSticker)
+      : attType === "IMAGE" && !params.attachment?.isSticker
+      ? [
+          {
+            mediaId: attMediaId || undefined,
+            mimeType: attMime || undefined,
+            filename: attName || undefined,
+            caption: params.attachment?.caption || cleanCustomerText || undefined,
+            sha256: attSha || undefined,
+            buffer: params.attachment?.buffer,
+            isSticker: false,
+          },
+        ]
+      : [];
+  const rawNonImageItems =
+    params.burstAttachments?.nonImageItems && params.burstAttachments.nonImageItems.length > 0
+      ? params.burstAttachments.nonImageItems
+      : attType === "DOCUMENT" ||
+        attType === "VIDEO" ||
+        attType === "AUDIO" ||
+        attType === "UNSUPPORTED"
+      ? [
+          {
+            mediaType: attType,
+            filename: attName || undefined,
+            mimeType: attMime || undefined,
+            mediaId: attMediaId || undefined,
+            sha256: attSha || undefined,
+          },
+        ]
+      : [];
+
   const burstImages = Math.max(
     burstStripped.images,
     params.burstAttachments?.images || 0,
-    attType === "IMAGE" ? 1 : 0
+    rawImageItems.length > 0 ? rawImageItems.length : attType === "IMAGE" && !params.attachment?.isSticker ? 1 : 0
   );
   const burstDocs = Math.max(
     burstStripped.documents,
@@ -6000,24 +6400,339 @@ async function runAcrioAutonomousTurnCore(
     params.burstAttachments?.audios || 0,
     attType === "AUDIO" ? 1 : 0
   );
+  const burstUnsupported = Math.max(
+    rawNonImageItems.filter((item) => item.mediaType === "UNSUPPORTED").length,
+    attType === "UNSUPPORTED" ? 1 : 0
+  );
+  const hasNonImageAttachment =
+    burstDocs + burstVideos + burstAudios + burstUnsupported > 0 ||
+    rawNonImageItems.length > 0;
   const hasBurstReferenceMedia =
-    burstImages + burstDocs + burstVideos + burstAudios > 0;
+    burstImages + burstDocs + burstVideos + burstAudios + burstUnsupported > 0;
   const burstMediaLabel = attName
     ? `*${attName}*`
-    : burstImages > 1
-    ? `your ${burstImages} reference photos`
-    : burstImages === 1
-    ? "your reference photo"
     : burstDocs > 0
     ? "your PDF / document"
     : burstVideos > 0
     ? "your video"
     : burstAudios > 0
     ? "your voice note / audio"
+    : burstUnsupported > 0
+    ? "your file attachment"
+    : burstImages > 1
+    ? `your ${burstImages} reference photos`
+    : burstImages === 1
+    ? "your reference photo"
     : "your attachment";
+
+  // 0a. Automatic zero-AI staff routing for PDFs, docs, spreadsheets, audio, voice notes, video, and unsupported files
+  if (hasNonImageAttachment) {
+    const phState = reconstructAcrioConversationState({
+      persistedState: storedState,
+      recentMessages: history,
+      currentInboundText: originalInboundText,
+    });
+    await saveConversationAiState(params.conversationId, phState);
+    const activeReqParts: string[] = [];
+    if (phState.preferences.length > 0) {
+      activeReqParts.push(phState.preferences.join(" "));
+    }
+    if (phState.primaryProductQuery) {
+      activeReqParts.push(
+        phState.primaryProductQuery
+          .replace(/\b(photo|photos|image|images|pic|pics|pls|please|share|send|show)\b/gi, "")
+          .replace(/\s+/g, " ")
+          .trim()
+      );
+    }
+    const activeReqSummary = activeReqParts.join(" ").trim();
+    const forRequirementClause =
+      activeReqSummary && extractCustomerCoreNouns(activeReqSummary).length > 0
+        ? ` for your *${activeReqSummary}* requirement`
+        : "";
+    const preservedMetaList = rawNonImageItems
+      .map((item) => {
+        const metaBits = [
+          `type=${item.mediaType || attType || "FILE"}`,
+          item.filename ? `filename=${sanitizeImageFilename(item.filename)}` : "",
+          item.mimeType ? `mime=${item.mimeType}` : "",
+          item.mediaId ? `mediaId=${item.mediaId}` : "",
+          item.sha256 ? `sha256=${item.sha256}` : "",
+        ].filter(Boolean);
+        return metaBits.join(", ");
+      })
+      .filter(Boolean)
+      .join(" | ");
+    const greetLine = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+    const routeReply = formatWhatsAppOutboundText(
+      `${greetLine}Thank you for sharing ${burstMediaLabel}${forRequirementClause}. I have forwarded your original file directly to our team so a specialist can review it and reply to you right away.`
+    );
+    const handoffReason = `Customer shared non-image attachment (${preservedMetaList || burstMediaLabel})${forRequirementClause}${cleanCustomerText ? ` note="${cleanCustomerText.slice(0, 100)}"` : ""}. Routed directly to human staff preserving original attachment.`;
+    addStep("Routed non-image attachment directly to team (0 AI tokens)", handoffReason);
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: originalInboundText,
+      model: "rule-attachment-team-handoff",
+      outcomeSource: "HUMAN_HANDOFF",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: "BYPASS",
+      cacheDetails: `Non-image attachment (${attType || "FILE"}) routed directly to staff with zero AI cost`,
+      productLookupTriggered: false,
+      productLookupQuery: "",
+      productLookupBudget: null,
+      productLookupTotalScanned: 0,
+      productsLookedUp: [],
+      steps,
+      response: routeReply,
+      durationMs: Date.now() - started,
+    });
+    return {
+      needsHumanHandoff: true,
+      handoffReason,
+      customerReply: routeReply,
+      smartCategory: phState.activeCategory || "Custom Fabrication",
+      priority: "HIGH",
+      conversationState: phState,
+    };
+  }
+
+  // 0b. Phase I Customer Image Intelligence (only when downloadable/buffer image or SHA cache hit exists)
+  let visionAnalysis: CustomerImageAnalysis | null = null;
+  let visionUsage: AiTokenUsage | null = null;
+  let visionFromCache = false;
+  let visionSha256: string | null = null;
+  let visionRecordedNewCall = false;
+  const analyzableImage = rawImageItems.find(
+    (img) =>
+      !img.isSticker &&
+      (Boolean(img.buffer) ||
+        Boolean(img.mediaId) ||
+        Boolean(img.sha256 && storedState?.analyzedImagesBySha?.[img.sha256]))
+  );
+  const shouldAttemptVision = Boolean(analyzableImage);
+
+  if (analyzableImage) {
+    if (params.uiSink) {
+      (params.uiSink as any).skipInteractiveOverride = true;
+    }
+    const preCacheHit =
+      analyzableImage.sha256 && storedState?.analyzedImagesBySha?.[analyzableImage.sha256]
+        ? storedState.analyzedImagesBySha[analyzableImage.sha256]
+        : null;
+
+    if (preCacheHit) {
+      visionAnalysis = { ...preCacheHit, fromCache: true };
+      visionSha256 = preCacheHit.sha256;
+      visionFromCache = true;
+      addStep(
+        "Reused per-conversation SHA-256 cached image analysis",
+        `sha256=${visionSha256.slice(0, 12)}..., product="${visionAnalysis.productType || "unknown"}"`
+      );
+    } else {
+      const validation = analyzableImage.buffer
+        ? validateCustomerImageBuffer({
+            buffer: analyzableImage.buffer,
+            declaredMimeType: analyzableImage.mimeType,
+            filename: analyzableImage.filename,
+          })
+        : await (async () => {
+            const metaCfg = await loadMetaWhatsAppSetupConfig();
+            return fetchAndValidateWhatsAppImage({
+              attachment: analyzableImage,
+              accessToken: String(metaCfg.systemUserAccessToken || ""),
+              fetchImpl: params.mediaFetchImpl,
+            });
+          })();
+
+      if (!validation.ok || !validation.buffer || !validation.mimeType || !validation.sha256) {
+        const errState = reconstructAcrioConversationState({
+          persistedState: storedState,
+          recentMessages: history,
+          currentInboundText: rawText,
+        });
+        await saveConversationAiState(params.conversationId, errState);
+        const greetLine = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+        const friendlyErr =
+          validation.errorCode === "OVERSIZED_IMAGE"
+            ? `${greetLine}The image you shared is larger than our 5 MB limit, so I could not open it here. Could you please send a smaller compressed photo (under 5 MB) or describe the product you need?`
+            : validation.errorCode === "INVALID_IMAGE_TYPE" ||
+              validation.errorCode === "INVALID_IMAGE_SIGNATURE"
+            ? `${greetLine}That file does not appear to be a valid JPEG, PNG, WebP, or GIF photo, so I could not inspect it safely. Please resend it as a standard photo or let me know what product you are looking for.`
+            : `${greetLine}I could not download your photo cleanly right now, so I have not guessed what is in it. Please resend the image or share a short text description of what you need and I will help right away.`;
+        const formattedErr = formatWhatsAppOutboundText(friendlyErr);
+        addStep(
+          "Rejected or failed to fetch customer image safely",
+          `code=${validation.errorCode || "UNKNOWN"}: ${validation.errorMessage || ""}`,
+          "WARN"
+        );
+        recordAndBroadcastAiLog({
+          website: "WHATSAPP_HUB",
+          websiteLabel: "Classic Concepts WhatsApp Hub",
+          feature: "Autonomous WhatsApp Concierge (ACRIO)",
+          actor: params.customerName,
+          question: originalInboundText,
+          model: "rule-image-validation-guard",
+          outcomeSource: "LOCAL_FALLBACK",
+          responseCacheStatus: "BYPASS",
+          catalogCacheStatus: "BYPASS",
+          cacheDetails: `Image safety/fetch guard (${validation.errorCode || "ERROR"}) blocked Vision call (0 tokens)`,
+          productLookupTriggered: false,
+          productLookupQuery: "",
+          productLookupBudget: null,
+          productLookupTotalScanned: 0,
+          productsLookedUp: [],
+          steps,
+          response: formattedErr,
+          durationMs: Date.now() - started,
+        });
+        return {
+          needsHumanHandoff: false,
+          handoffReason: "",
+          customerReply: formattedErr,
+          smartCategory: errState.activeCategory || "General Enquiry",
+          priority: "NORMAL",
+          conversationState: errState,
+        };
+      }
+
+      visionSha256 = validation.sha256;
+      const postCacheHit = storedState?.analyzedImagesBySha?.[validation.sha256] || null;
+      if (postCacheHit) {
+        visionAnalysis = { ...postCacheHit, fromCache: true };
+        visionFromCache = true;
+        addStep(
+          "Reused per-conversation byte SHA-256 cached image analysis",
+          `sha256=${validation.sha256.slice(0, 12)}..., product="${visionAnalysis.productType || "unknown"}"`
+        );
+      } else {
+        const maxPerHour = Math.max(
+          1,
+          Number(process.env.ACRIO_MAX_IMAGES_PER_CONV_HOUR || 10)
+        );
+        const win = storedState?.imageAnalysisCountWindow;
+        const winStartMs = win?.windowStartIso ? Date.parse(win.windowStartIso) : 0;
+        const recentImageCount =
+          winStartMs > 0 && Date.now() - winStartMs <= 3600_000
+            ? Number(win?.count || 0)
+            : 0;
+        if (recentImageCount >= maxPerHour) {
+          const limitState = reconstructAcrioConversationState({
+            persistedState: storedState,
+            recentMessages: history,
+            currentInboundText: rawText,
+          });
+          await saveConversationAiState(params.conversationId, limitState);
+          const greetLine = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+          const rateMsg = formatWhatsAppOutboundText(
+            `${greetLine}You have already shared several photos in this chat. To keep responses fast, please share any remaining product details by text or ask to connect with our Sales Team.`
+          );
+          addStep("Enforced per-conversation hourly image analysis limit", `count=${recentImageCount}/${maxPerHour}`, "WARN");
+          return {
+            needsHumanHandoff: false,
+            handoffReason: "",
+            customerReply: rateMsg,
+            smartCategory: limitState.activeCategory || "General Enquiry",
+            priority: "NORMAL",
+            conversationState: limitState,
+          };
+        }
+
+        const { apiKey: visionKey } = await resolveSharedAnthropicApiKey("client");
+        const visionResult: {
+          ok: boolean;
+          analysis?: CustomerImageAnalysis;
+          usage?: AiTokenUsage | null;
+          error?: string;
+        } = params.visionAnalyzerOverride
+          ? await params.visionAnalyzerOverride({
+              imageBuffer: validation.buffer,
+              mimeType: validation.mimeType,
+              caption: analyzableImage.caption || cleanCustomerText || undefined,
+              filename: validation.safeFileName,
+            })
+          : visionKey
+          ? await analyzeCustomerImageWithVision({
+              validation,
+              caption: analyzableImage.caption || cleanCustomerText || undefined,
+              callVisionClaude: (callParams) =>
+                callClaudeHaikuMessagesDetailed({
+                  apiKey: visionKey,
+                  system: callParams.system,
+                  messages: callParams.messages,
+                  maxTokens: callParams.maxTokens,
+                  effort: callParams.effort || "low",
+                  timeoutMs: callParams.timeoutMs || 18000,
+                }),
+              parseJson: parseClaudeJson,
+            })
+          : { ok: false, error: "Client Anthropic API key is not configured." };
+
+        visionUsage =
+          visionResult.usage || visionResult.analysis?.analysisTokenUsage || null;
+        if (!visionResult.ok || !visionResult.analysis) {
+          const failState = reconstructAcrioConversationState({
+            persistedState: storedState,
+            recentMessages: history,
+            currentInboundText: rawText,
+          });
+          await saveConversationAiState(params.conversationId, failState);
+          const greetLine = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+          const failMsg = formatWhatsAppOutboundText(
+            `${greetLine}I received your photo, but our image reader could not inspect it right now. Could you briefly tell me what product or machine you are looking for, or ask for our team to review it?`
+          );
+          addStep(
+            "Vision analysis unavailable; returned honest non-hallucinated fallback",
+            visionResult.error || "Unknown Vision failure",
+            "WARN"
+          );
+          recordAndBroadcastAiLog({
+            website: "WHATSAPP_HUB",
+            websiteLabel: "Classic Concepts WhatsApp Hub",
+            feature: "Autonomous WhatsApp Concierge (ACRIO)",
+            actor: params.customerName,
+            question: originalInboundText,
+            model: LOCKED_CLAUDE_MODEL,
+            outcomeSource: "LOCAL_FALLBACK",
+            responseCacheStatus: "BYPASS",
+            catalogCacheStatus: "BYPASS",
+            cacheDetails: `Vision call failed safely (${visionResult.error || "unavailable"})`,
+            productLookupTriggered: false,
+            productLookupQuery: "",
+            productLookupBudget: null,
+            productLookupTotalScanned: 0,
+            productsLookedUp: [],
+            steps,
+            response: failMsg,
+            durationMs: Date.now() - started,
+            tokenUsage: visionUsage || undefined,
+            error: visionResult.error || null,
+          });
+          return {
+            needsHumanHandoff: false,
+            handoffReason: "",
+            customerReply: failMsg,
+            smartCategory: failState.activeCategory || "General Enquiry",
+            priority: "NORMAL",
+            conversationState: failState,
+          };
+        }
+
+        visionAnalysis = visionResult.analysis;
+        visionRecordedNewCall = true;
+        addStep(
+          "Analyzed customer image via Claude Haiku 5.5 Vision",
+          `sha256=${validation.sha256.slice(0, 12)}..., domain=${visionAnalysis.businessDomain}, product="${visionAnalysis.productType || "unknown"}", sketch=${visionAnalysis.isDesignSketchOrDrawing}`
+        );
+      }
+    }
+  }
 
   const isMediaPlaceholderOnly =
     cleanCustomerText.length === 0 &&
+    !shouldAttemptVision &&
     (/^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note|sticker)\b/i.test(
       originalInboundText
     ) ||
@@ -6028,15 +6743,14 @@ async function runAcrioAutonomousTurnCore(
     (extractExplicitProductOrModelCodes(cleanCustomerText).length > 0 ||
       Boolean(params.forcedFocusSlug));
 
-  // Route immediately at Step 0 ONLY when there is no customer text enquiry alongside the attachment in the burst
+  // Route legacy unanalyzable mock images (no mediaId/buffer/cache) at Step 0 when no text enquiry was sent
   const shouldRouteAttachmentImmediately =
-    isMediaPlaceholderOnly ||
-    (cleanCustomerText.length === 0 &&
-      Boolean(params.attachment) &&
-      (attType === "DOCUMENT" ||
-        attType === "VIDEO" ||
-        attType === "AUDIO" ||
-        (attType === "IMAGE" && !hasExplicitProductCodeWithImage)));
+    !shouldAttemptVision &&
+    (isMediaPlaceholderOnly ||
+      (cleanCustomerText.length === 0 &&
+        Boolean(params.attachment) &&
+        attType === "IMAGE" &&
+        !hasExplicitProductCodeWithImage));
 
   if (shouldRouteAttachmentImmediately) {
     const phState = reconstructAcrioConversationState({
@@ -6273,14 +6987,76 @@ async function runAcrioAutonomousTurnCore(
     };
   }
 
-  // 1b. Reconstruct & update structured per-conversation state (Phase B)
+  // 1b. Reconstruct & update structured per-conversation state (Phase B + Phase I image state)
   const convState = reconstructAcrioConversationState({
     persistedState: storedState,
     recentMessages: history,
     currentInboundText: rawText,
   });
 
-  if (intentInfo.intent === "TOPIC_RESET") {
+  if (visionAnalysis) {
+    if (visionSha256) {
+      cacheConversationImageAnalysis(
+        convState,
+        visionSha256,
+        visionAnalysis,
+        visionRecordedNewCall
+      );
+    } else {
+      convState.lastImageAnalysis = visionAnalysis;
+    }
+
+    const visionQuery = (
+      visionAnalysis.recommendedSearchQuery ||
+      visionAnalysis.productType ||
+      ""
+    ).trim();
+    const isGenericPhotoText =
+      !cleanCustomerText ||
+      /^\[(?:image|photo)\b/i.test(originalInboundText) ||
+      /^(?:do you have|can you make|is this|how much|price|cost|send details|available|looking for this|something like this|similar)/i.test(
+        cleanCustomerText
+      ) ||
+      extractCustomerCoreNouns(cleanCustomerText).length === 0;
+    if (visionQuery && isGenericPhotoText) {
+      convState.primaryProductQuery = visionQuery;
+      convState.focusProductSlug = null;
+      convState.lastRecommendedProducts = [];
+    }
+    if (visionAnalysis.businessDomain === "CLASSIC_EDGE_53") {
+      convState.activeBrand = "CLASSIC_EDGE_53";
+      convState.activeCategory = "Acrylic Machines (CE53)";
+    } else if (visionAnalysis.businessDomain === "CLASSIC_CONCEPTS") {
+      convState.activeBrand = "CLASSIC_CONCEPTS";
+    }
+    if (/podium|pulpit|lectern/i.test(`${visionAnalysis.productType} ${visionQuery}`)) {
+      convState.productFamily = "podium";
+      if (!convState.activeCategory) {
+        convState.activeCategory = "Podiums & Stage";
+      }
+    }
+    const visualPrefMatches =
+      `${visionAnalysis.colorAppearance} ${visionAnalysis.materialAppearance}`.match(
+        /\b(transparent|clear|frosted|black|white|acrylic|wood|wooden|led|blue)\b/gi
+      ) || [];
+    for (const p of visualPrefMatches) {
+      const normalizedPref = p.toLowerCase();
+      if (!convState.preferences.includes(normalizedPref)) {
+        convState.preferences.push(normalizedPref);
+      }
+    }
+
+    if (!intentInfo.needsImmediateHandoff) {
+      intentInfo = {
+        intent: "PRODUCT_SEARCH",
+        requiresProductLookup: true,
+        needsImmediateHandoff: false,
+        allowRollingContextFallback: false,
+        reason: "Analyzed customer reference image via ACRIO Vision",
+      };
+    }
+    await saveConversationAiState(params.conversationId, convState);
+  } else if (intentInfo.intent === "TOPIC_RESET") {
     await saveConversationAiState(params.conversationId, convState);
   }
 
@@ -6300,6 +7076,7 @@ async function runAcrioAutonomousTurnCore(
   const stateCoreNounsEarly = extractCustomerCoreNouns(convState.primaryProductQuery || "");
   const isPreferenceOnlyFragment =
     !hasBurstReferenceMedia &&
+    !visionAnalysis &&
     !params.forcedFocusSlug &&
     !quotedReplyContext &&
     !intentInfo.needsImmediateHandoff &&
@@ -6522,6 +7299,22 @@ async function runAcrioAutonomousTurnCore(
 
     const normalizedSearch = buildNormalizedSearchFromState(convState, rawText);
     usedLookupQuery = normalizedSearch.searchQuery;
+    if (visionAnalysis) {
+      const visionLookupTokens = [
+        cleanCustomerText && !/^\[(?:image|photo)\b/i.test(cleanCustomerText)
+          ? cleanCustomerText
+          : "",
+        visionAnalysis.recommendedSearchQuery,
+        visionAnalysis.productType,
+        ...visionAnalysis.readableModelCodes,
+        ...visionAnalysis.visibleComponents.slice(0, 3),
+      ]
+        .map((s) => String(s || "").trim())
+        .filter(Boolean);
+      if (visionLookupTokens.length > 0) {
+        usedLookupQuery = Array.from(new Set(visionLookupTokens)).join(" ");
+      }
+    }
     budgetLabel = normalizedSearch.budgetLabel;
 
     const prevMaxPrice = storedState?.maxPrice ?? null;
@@ -6563,8 +7356,11 @@ async function runAcrioAutonomousTurnCore(
       }
     }
 
-    let focusItem = quotedFocusItem || findItemBySlug(convState.focusProductSlug);
+    let focusItem = visionAnalysis
+      ? quotedFocusItem
+      : quotedFocusItem || findItemBySlug(convState.focusProductSlug);
     if (
+      !visionAnalysis &&
       !focusItem &&
       !convState.switchedThisTurn &&
       !hasExplicitCodeOrDimInTurn &&
@@ -6622,6 +7418,8 @@ async function runAcrioAutonomousTurnCore(
     } else if (
       focusItem &&
       !projectPlan.isMultiItemOrTotalling &&
+      !normalizedSearch.preferCheapest &&
+      !normalizedSearch.asksMoreOrAlternative &&
       isFocusedProductFollowUp(rawText, focusItem, Boolean(quotedFocusItem))
     ) {
       pinnedFocusItem = focusItem;
@@ -6784,7 +7582,7 @@ async function runAcrioAutonomousTurnCore(
 
     // Core-noun relevance guard: never keep unrelated colour/material matches (e.g. "Acrylic Bathroom Stool" for "black acrylic mobile phone locker")!
     if (!pinnedFocusItem && !hasExplicitCodeOrDimInTurn && contextMatches.length > 0 && !aggregateResult) {
-      const coreNounProbe = `${convState.primaryProductQuery || ""} ${rawText}`.trim();
+      const coreNounProbe = `${convState.primaryProductQuery || ""} ${visionAnalysis?.productType || ""} ${rawText}`.trim();
       const coreRank = rankItemsByCustomerCoreNouns(contextMatches, coreNounProbe);
       if (coreRank.coreNouns.length > 0) {
         if (coreRank.anyMatch) {
@@ -6795,6 +7593,32 @@ async function runAcrioAutonomousTurnCore(
           contextMatches = [];
         }
       }
+    }
+
+    // Domain isolation guard for image-based product vs machine discovery and follow-up turns
+    const desiredBrand =
+      visionAnalysis &&
+      (visionAnalysis.businessDomain === "CLASSIC_CONCEPTS" ||
+        visionAnalysis.businessDomain === "CLASSIC_EDGE_53")
+        ? visionAnalysis.businessDomain
+        : !convState.switchedThisTurn &&
+          (convState.activeBrand === "CLASSIC_CONCEPTS" ||
+            convState.activeBrand === "CLASSIC_EDGE_53")
+        ? convState.activeBrand
+        : null;
+    if (desiredBrand && contextMatches.length > 0) {
+      const brandOnly = contextMatches.filter((it) => it.brand === desiredBrand);
+      if (brandOnly.length > 0) {
+        contextMatches = brandOnly;
+      }
+    }
+
+    if (normalizedSearch.preferCheapest && contextMatches.length > 1) {
+      contextMatches = [...contextMatches].sort((a, b) => {
+        const pa = typeof a.basePrice === "number" && a.basePrice > 0 ? a.basePrice : Number.MAX_SAFE_INTEGER;
+        const pb = typeof b.basePrice === "number" && b.basePrice > 0 ? b.basePrice : Number.MAX_SAFE_INTEGER;
+        return pa - pb;
+      });
     }
 
     if (
@@ -7241,6 +8065,12 @@ async function runAcrioAutonomousTurnCore(
 
   // 4. Multi-turn Claude Haiku 5.5 (Medium Effort) Diagnostic & Conversational Assistant
   const { apiKey, source: keySource } = await resolveSharedAnthropicApiKey("client");
+  const hasLegacyUnanalyzedMedia = hasBurstReferenceMedia && !visionAnalysis;
+  const imageNeedsTeamHandoff = Boolean(
+    visionAnalysis &&
+      visionAnalysis.isDesignSketchOrDrawing &&
+      (visionAnalysis.needsCustomFabrication || visionAnalysis.unreadableDetails.length > 0)
+  );
   let lastAiError: string | null = null;
   let lastUsage: AiTokenUsage | null = null;
 
@@ -7362,7 +8192,9 @@ Welcome the customer briefly and ask what they are looking to display, build, or
         const customStructureNote = isCustomStructureEnquiry
           ? `\nCRITICAL CUSTOM FABRICATION NOTE: The customer is asking for a custom/multi-compartment acrylic structure ("${combinedEnquiryProbe.replace(/\s+/g, " ")}"${convState.preferences.length ? `, preferences: ${convState.preferences.join(", ")}` : ""}). We custom-fabricate *${convState.preferences.includes("black") ? "Black " : ""}Acrylic Lockers / Multi-Compartment Boxes & Enclosures* to exact compartment counts, lock types, and dimensions! Any ready items listed above are desktop/countertop organizers only; do NOT claim a desktop mobile stand is a full locker!`
           : "";
-        const burstMediaNote = hasBurstReferenceMedia
+        const burstMediaNote = visionAnalysis
+          ? `\n\n${buildPhaseIImageGuidancePrompt(visionAnalysis, visionFromCache)}`
+          : hasLegacyUnanalyzedMedia
           ? `\nCRITICAL REFERENCE MEDIA NOTE: In this same message burst, the customer also shared ${burstMediaLabel}! Acknowledge both their text requirement AND ${burstMediaLabel} in one unified reply, confirm that you have forwarded their reference photo(s)/file(s) and requirement to our Sales & Fabrication Team for an exact quote, and set "needsHumanHandoff": true.`
           : "";
         catalogContext = prebuiltGroupedBlock
@@ -7477,7 +8309,7 @@ Return ONLY valid JSON:
             : null);
         if (parsed && typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
           const handoff =
-            hasBurstReferenceMedia
+            hasLegacyUnanalyzedMedia || imageNeedsTeamHandoff
               ? true
               : intentInfo.intent === "HUMAN_HANDOFF_INFO" ||
                 intentInfo.intent === "LEADERSHIP_CONTACT_INFO" ||
@@ -7562,6 +8394,8 @@ Return ONLY valid JSON:
           if (
             finalMediaAttachments.length === 0 &&
             linkedInReply.length > 0 &&
+            !isCustomStructureEnquiry &&
+            !hasBurstReferenceMedia &&
             (asksForImages ||
               /\b(photos?|images?|pictures?)\b[^.!?\n]{0,60}\b(coming|attached|shared|here|with\s+this\s+message)\b/i.test(
                 cleanedReply
@@ -7614,14 +8448,16 @@ Return ONLY valid JSON:
             steps,
             response: cleanedReply,
             durationMs: Date.now() - started,
-            tokenUsage: aiCall.usage,
+            tokenUsage: mergeAiTokenUsage(visionUsage, aiCall.usage),
           });
 
           return {
             needsHumanHandoff: handoff,
             handoffReason: handoff
               ? parsed.handoffReason ||
-                `Customer ready for Sales Team follow-up ("${rawText.slice(0, 100)}").`
+                (visionAnalysis
+                  ? `Customer shared custom design/reference image (${visionAnalysis.productType || "custom acrylic item"}). Missing/unclear: [${visionAnalysis.unreadableDetails.join(", ") || "none"}].`
+                  : `Customer ready for Sales Team follow-up ("${rawText.slice(0, 100)}").`)
               : "",
             needsSalesTeamPing: pingSales,
             salesTeamPingNote: finalPingNote,
@@ -7755,7 +8591,23 @@ Return ONLY valid JSON:
     salesTeamPingNote = `ACRIO Consultative Ping: Customer shared 3D custom dimensions for quote ("${rawText.slice(0, 120)}").`;
     smartCategory = "Custom Fabrication";
     priority = "HIGH";
-  } else if (hasBurstReferenceMedia || isCustomStructureEnquiry) {
+  } else if (visionAnalysis) {
+    const imgFallback = buildPhaseIImageFallbackReply({
+      greetOnce,
+      analysis: visionAnalysis,
+      matches: contextMatches,
+      hidePrices: hidePricesActive,
+    });
+    fallbackReply = imgFallback.reply;
+    fallbackHandoff = imgFallback.handoff;
+    fallbackReason = imgFallback.handoffReason;
+    if (imgFallback.needsSalesPing) {
+      needsSalesTeamPing = true;
+      salesTeamPingNote = imgFallback.salesPingNote;
+    }
+    smartCategory = imgFallback.smartCategory;
+    priority = imgFallback.priority;
+  } else if (hasLegacyUnanalyzedMedia || isCustomStructureEnquiry) {
     const reqSummary = [
       ...(convState.preferences || []).filter(
         (p) => !rawText.toLowerCase().includes(p.toLowerCase())
@@ -7769,7 +8621,7 @@ Return ONLY valid JSON:
       .join(" ")
       .trim();
     const cleanReqLabel = reqSummary || convState.primaryProductQuery || "custom acrylic item";
-    const refMediaLine = hasBurstReferenceMedia
+    const refMediaLine = hasLegacyUnanalyzedMedia
       ? `Thank you for sharing ${burstMediaLabel} along with your requirement for *${cleanReqLabel}*.\n\n`
       : `Got your requirement for *${cleanReqLabel}*.\n\n`;
     const customBuildLine = isCustomStructureEnquiry
@@ -7779,7 +8631,7 @@ Return ONLY valid JSON:
       prebuiltGroupedBlock && contextMatches.length > 0
         ? `\n\nIf you also want to check our ready tabletop organizers in the meantime:\n${prebuiltGroupedBlock}`
         : "";
-    if (hasBurstReferenceMedia) {
+    if (hasLegacyUnanalyzedMedia) {
       fallbackHandoff = true;
       fallbackReason = `Customer shared ${burstMediaLabel} with enquiry "${cleanReqLabel.slice(0, 100)}" for team review and custom quote.`;
       fallbackReply = `${greetOnce}${refMediaLine}${customBuildLine}${closestReadyBlock}\n\nI have forwarded your ${burstImages > 1 ? "reference photos" : "reference details"} and requirement directly to our *Sales & Fabrication Team* so a specialist can share reference locker photos and an exact quote right away.`;
@@ -7845,7 +8697,7 @@ Return ONLY valid JSON:
     steps,
     response: finalFallback,
     durationMs: Date.now() - started,
-    tokenUsage: lastUsage,
+    tokenUsage: mergeAiTokenUsage(visionUsage, lastUsage),
     error: lastAiError,
   });
 

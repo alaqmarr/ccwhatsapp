@@ -29,6 +29,7 @@ import {
   ACRIO_TEAM_ASK_TEXT,
   type AcrioInteractive,
   type AcrioMediaAttachment,
+  type CustomerImageAttachmentInput,
   type WhatsAppTemplateButton,
 } from "@cc/connections";
 import {
@@ -894,6 +895,14 @@ async function loadPendingInboundBurst(
     videos: number;
     audios: number;
     unreadable: number;
+    imageItems: CustomerImageAttachmentInput[];
+    nonImageItems: {
+      mediaType: string;
+      filename?: string;
+      mimeType?: string;
+      mediaId?: string;
+      sha256?: string;
+    }[];
   };
 }> {
   const emptyAttachments = {
@@ -902,6 +911,14 @@ async function loadPendingInboundBurst(
     videos: 0,
     audios: 0,
     unreadable: 0,
+    imageItems: [] as CustomerImageAttachmentInput[],
+    nonImageItems: [] as {
+      mediaType: string;
+      filename?: string;
+      mimeType?: string;
+      mediaId?: string;
+      sha256?: string;
+    }[],
   };
   const conv = getRawLibSqlClient("conversations");
   const lastOutRes = await conv
@@ -930,10 +947,10 @@ async function loadPendingInboundBurst(
   const pendingRes = await conv
     .execute({
       sql: lastOutIso
-        ? `SELECT id, body, message_type, created_at FROM messages
+        ? `SELECT id, body, message_type, metadata_json, created_at FROM messages
            WHERE conversation_id = ? AND direction = 'INBOUND' AND sender_type = 'CUSTOMER' AND created_at > ?
            ORDER BY created_at ASC LIMIT 16`
-        : `SELECT id, body, message_type, created_at FROM messages
+        : `SELECT id, body, message_type, metadata_json, created_at FROM messages
            WHERE conversation_id = ? AND direction = 'INBOUND' AND sender_type = 'CUSTOMER'
            ORDER BY created_at ASC LIMIT 16`,
       args: lastOutIso ? [conversationId, lastOutIso] : [conversationId],
@@ -952,20 +969,102 @@ async function loadPendingInboundBurst(
 
   const textLines: string[] = [];
   const allLines: string[] = [];
-  const burstAttachments = { ...emptyAttachments };
+  const burstAttachments = {
+    images: 0,
+    documents: 0,
+    videos: 0,
+    audios: 0,
+    unreadable: 0,
+    imageItems: [] as CustomerImageAttachmentInput[],
+    nonImageItems: [] as {
+      mediaType: string;
+      filename?: string;
+      mimeType?: string;
+      mediaId?: string;
+      sha256?: string;
+    }[],
+  };
 
   for (const r of pendingRes.rows) {
     const t = String(r.body || "").trim();
     const mType = String(r.message_type || "").toUpperCase();
+    let rowMeta: Record<string, any> = {};
+    if (r.metadata_json) {
+      try {
+        rowMeta = JSON.parse(String(r.metadata_json));
+      } catch {
+        rowMeta = {};
+      }
+    }
+    const mediaObj =
+      rowMeta.media && typeof rowMeta.media === "object"
+        ? (rowMeta.media as Record<string, any>)
+        : {};
+    const mediaId = String(
+      mediaObj.mediaId || mediaObj.media_id || rowMeta.mediaId || rowMeta.media_id || ""
+    ).trim();
+    const mimeType = String(
+      mediaObj.mimeType || mediaObj.mime_type || rowMeta.mimeType || rowMeta.mime_type || ""
+    ).trim();
+    const filename = String(mediaObj.filename || rowMeta.filename || "").trim();
+    const caption = String(mediaObj.caption || rowMeta.caption || "").trim();
+    const sha256 = String(mediaObj.sha256 || rowMeta.sha256 || "").trim();
+    const isSticker = Boolean(mediaObj.isSticker || rowMeta.isSticker || /^\[sticker\b/i.test(t));
+
     if (mType === "IMAGE" || /^\[(?:image|photo|picture|sticker)\b[^\]]*\]$/i.test(t)) {
-      burstAttachments.images++;
+      if (!isSticker) {
+        burstAttachments.images++;
+        if (mediaId || mimeType || filename || sha256) {
+          burstAttachments.imageItems.push({
+            mediaId: mediaId || undefined,
+            mimeType: mimeType || undefined,
+            filename: filename || undefined,
+            caption: caption || undefined,
+            sha256: sha256 || undefined,
+            isSticker: false,
+          });
+        }
+      }
     } else if (mType === "DOCUMENT" || /^\[(?:document|pdf|file)\b[^\]]*\]$/i.test(t)) {
       burstAttachments.documents++;
+      burstAttachments.nonImageItems.push({
+        mediaType: "DOCUMENT",
+        filename: filename || undefined,
+        mimeType: mimeType || undefined,
+        mediaId: mediaId || undefined,
+        sha256: sha256 || undefined,
+      });
     } else if (mType === "VIDEO" || /^\[(?:video)\b[^\]]*\]$/i.test(t)) {
       burstAttachments.videos++;
+      burstAttachments.nonImageItems.push({
+        mediaType: "VIDEO",
+        filename: filename || undefined,
+        mimeType: mimeType || undefined,
+        mediaId: mediaId || undefined,
+        sha256: sha256 || undefined,
+      });
     } else if (mType === "AUDIO" || /^\[(?:audio|voice\s*note)\b[^\]]*\]$/i.test(t)) {
       burstAttachments.audios++;
-    } else if (/^\[(?:message|media|attachment|unsupported)\b[^\]]*\]$/i.test(t)) {
+      burstAttachments.nonImageItems.push({
+        mediaType: "AUDIO",
+        filename: filename || undefined,
+        mimeType: mimeType || undefined,
+        mediaId: mediaId || undefined,
+        sha256: sha256 || undefined,
+      });
+    } else if (
+      rowMeta.unsupportedAttachment ||
+      /^\[unsupported\b[^\]]*\]$/i.test(t)
+    ) {
+      burstAttachments.unreadable++;
+      burstAttachments.nonImageItems.push({
+        mediaType: "UNSUPPORTED",
+        filename: filename || undefined,
+        mimeType: mimeType || (rowMeta.rawWaType ? `whatsapp/${String(rowMeta.rawWaType)}` : undefined),
+        mediaId: mediaId || undefined,
+        sha256: sha256 || undefined,
+      });
+    } else if (/^\[(?:message|media|attachment)\b[^\]]*\]$/i.test(t)) {
       burstAttachments.unreadable++;
     }
 
@@ -974,7 +1073,7 @@ async function loadPendingInboundBurst(
       allLines.push(t);
     }
     const isBarePlaceholder =
-      /^\[(?:image|photo|picture|sticker|document|pdf|file|video|audio|voice\s*note|message|media|attachment|unsupported)\b[^\]]*\]$/i.test(
+      /^\[(?:image|photo|picture|sticker|document|pdf|file|video|audio|voice\s*note|message|media|attachment|unsupported(?:\s+attachment)?)\b[^\]]*\]$/i.test(
         t
       );
     if (!isBarePlaceholder && textLines[textLines.length - 1] !== t) {
@@ -1009,8 +1108,14 @@ export async function processInboundAutomations(params: {
     filename?: string;
     mimeType?: string;
     caption?: string;
+    mediaId?: string;
+    sha256?: string;
+    isSticker?: boolean;
+    buffer?: Buffer;
   } | null;
   onBeforeAcrioSend?: () => Promise<void> | void;
+  visionAnalyzerOverride?: Parameters<typeof runAcrioAutonomousTurn>[0]["visionAnalyzerOverride"];
+  mediaFetchImpl?: Parameters<typeof runAcrioAutonomousTurn>[0]["mediaFetchImpl"];
 }): Promise<void> {
   const cleanWaId = String(params.waMessageId || "").trim();
   if (cleanWaId) {
@@ -1070,8 +1175,14 @@ async function processInboundAutomationsLocked(
       filename?: string;
       mimeType?: string;
       caption?: string;
+      mediaId?: string;
+      sha256?: string;
+      isSticker?: boolean;
+      buffer?: Buffer;
     } | null;
     onBeforeAcrioSend?: () => Promise<void> | void;
+    visionAnalyzerOverride?: Parameters<typeof runAcrioAutonomousTurn>[0]["visionAnalyzerOverride"];
+    mediaFetchImpl?: Parameters<typeof runAcrioAutonomousTurn>[0]["mediaFetchImpl"];
   },
   entrySeq: number
 ): Promise<void> {
@@ -2301,6 +2412,13 @@ async function processInboundAutomationsLocked(
   const rulesRes = await conv.execute(
     `SELECT * FROM automations WHERE is_enabled = 1 ORDER BY COALESCE(priority_order, 100) ASC, created_at ASC`
   );
+  const hasInboundMediaAttachment =
+    Boolean(params.attachment) ||
+    initialBurst.burstAttachments.images > 0 ||
+    initialBurst.burstAttachments.documents > 0 ||
+    initialBurst.burstAttachments.videos > 0 ||
+    initialBurst.burstAttachments.audios > 0 ||
+    initialBurst.burstAttachments.unreadable > 0;
   let ruleStoppedFurtherAi = false;
 
   for (const r of rulesRes.rows) {
@@ -2323,6 +2441,14 @@ async function processInboundAutomationsLocked(
     });
 
     if (!matched) continue;
+    // Never let a generic FIRST_CONTACT greeting intercept an inbound photo, PDF, document, video, or voice note!
+    if (
+      triggerType === "FIRST_CONTACT" &&
+      actionType === "AUTO_REPLY" &&
+      hasInboundMediaAttachment
+    ) {
+      continue;
+    }
 
     await conv.execute({
       sql: `UPDATE automations SET runs_count = runs_count + 1, last_triggered_at = ? WHERE id = ?`,
@@ -2557,6 +2683,8 @@ async function processInboundAutomationsLocked(
       replyToMessage,
       attachment: params.attachment || null,
       burstAttachments: activeBurstAttachments,
+      visionAnalyzerOverride: params.visionAnalyzerOverride,
+      mediaFetchImpl: params.mediaFetchImpl,
     });
 
     // Freshness gate: did the customer send another message while AI was generating this reply?
@@ -2620,26 +2748,26 @@ async function processInboundAutomationsLocked(
   }
   void finalReplyIso;
 
-  // Send ACRIO's automatic WhatsApp reply (text, or text with buttons / "View options" list, plus any product/variant images)
-  const { acrioMsgId, replyIso } = await sendAcrioChatMessage({
-    conversationId: params.conversationId,
-    customerPhone: params.customerPhone,
-    text: acrioTurn.customerReply,
-    interactive: acrioTurn.interactive,
-    mediaAttachments: acrioTurn.mediaAttachments,
-  });
-
-  await recordAssignedFirstResponse({
-    conversationId: params.conversationId,
-    responderId: "ACRIO",
-    responderName: "ACRIO",
-    responderTeamId: null,
-    responderTeamName: "System (ACRIO)",
-    messageId: acrioMsgId,
-    respondedAt: replyIso,
-  });
-
   if (!acrioTurn.needsHumanHandoff) {
+    // Send ACRIO's automatic WhatsApp reply (text, or text with buttons / "View options" list, plus any product/variant images)
+    const { acrioMsgId, replyIso } = await sendAcrioChatMessage({
+      conversationId: params.conversationId,
+      customerPhone: params.customerPhone,
+      text: acrioTurn.customerReply,
+      interactive: acrioTurn.interactive,
+      mediaAttachments: acrioTurn.mediaAttachments,
+    });
+
+    await recordAssignedFirstResponse({
+      conversationId: params.conversationId,
+      responderId: "ACRIO",
+      responderName: "ACRIO",
+      responderTeamId: null,
+      responderTeamName: "System (ACRIO)",
+      messageId: acrioMsgId,
+      respondedAt: replyIso,
+    });
+
     // ACRIO answered the query automatically - keep assigned to ACRIO with zero customer wait!
     // When needsSalesTeamPing is true (Decision #4), ping the Sales Team internally without transferring ownership away from ACRIO.
     const teamLabel = acrioTurn.needsSalesTeamPing
@@ -2747,7 +2875,45 @@ async function processInboundAutomationsLocked(
     return;
   }
 
-  // Customer asked to speak to support OR ACRIO could not resolve -> connect to Sales Team (default always)!
+  // Customer shared non-image/sketch attachment, asked to speak to support, or ACRIO escalated -> route to staff FIRST before sending transfer confirmation!
+  let assigned: Awaited<ReturnType<typeof smartAssignConversation>> | null = null;
+  let routingSucceeded = false;
+  try {
+    assigned = await smartAssignConversation({
+      conversationId: params.conversationId,
+      inboundText: params.inboundText,
+      preferredTeamId: "team_sales",
+      onlyIfUnassigned: true,
+      startWaitingTimer: true,
+      handoffReasonFromAcrio: acrioTurn.handoffReason,
+    });
+    routingSucceeded = Boolean(assigned?.assignedTeamId || assigned?.assignedStaffId);
+  } catch {
+    routingSucceeded = false;
+  }
+
+  const outboundHandoffText = routingSucceeded
+    ? acrioTurn.customerReply
+    : "I could not transfer your message to an available staff member right now. Please contact our Sales Team directly on WhatsApp at +91 73372 20568, call +91 79016 50662, or email sales@classicconcepts.in with your requirement.";
+
+  const { acrioMsgId, replyIso } = await sendAcrioChatMessage({
+    conversationId: params.conversationId,
+    customerPhone: params.customerPhone,
+    text: outboundHandoffText,
+    interactive: routingSucceeded ? acrioTurn.interactive : undefined,
+    mediaAttachments: routingSucceeded ? acrioTurn.mediaAttachments : undefined,
+  });
+
+  await recordAssignedFirstResponse({
+    conversationId: params.conversationId,
+    responderId: "ACRIO",
+    responderName: "ACRIO",
+    responderTeamId: null,
+    responderTeamName: "System (ACRIO)",
+    messageId: acrioMsgId,
+    respondedAt: replyIso,
+  });
+
   await conv.execute({
     sql: `UPDATE conversations
           SET smart_category = ?,
@@ -2764,21 +2930,20 @@ async function processInboundAutomationsLocked(
     ],
   });
 
-  const assigned = await smartAssignConversation({
+  socketHub.emit("message:new", {
     conversationId: params.conversationId,
-    inboundText: params.inboundText,
-    preferredTeamId: "team_sales",
-    onlyIfUnassigned: false,
-    startWaitingTimer: true,
-    handoffReasonFromAcrio: acrioTurn.handoffReason,
+    senderName: "ACRIO",
+    text: outboundHandoffText,
   });
 
-  socketHub.emit("conversation:assigned", {
-    conversationId: params.conversationId,
-    assignedTeamName: assigned.assignedTeamName,
-    assignedStaffName: assigned.assignedStaffName,
-    escalationLevel: assigned.escalationLevel,
-  });
+  if (routingSucceeded && assigned) {
+    socketHub.emit("conversation:assigned", {
+      conversationId: params.conversationId,
+      assignedTeamName: assigned.assignedTeamName,
+      assignedStaffName: assigned.assignedStaffName,
+      escalationLevel: assigned.escalationLevel,
+    });
+  }
 }
 
 /**

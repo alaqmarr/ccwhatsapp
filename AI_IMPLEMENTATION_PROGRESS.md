@@ -12,6 +12,7 @@
 - [x] **Phase G — Add Evaluation & Regression Test Suite & Final Integration Review** *(Completed)*
 - [x] **Phase H — Complete Product Knowledge & Deep Retrieval** *(Completed)*
 - [x] **Phase I — Developer-Only Claude API Usage & Spend Comparison (Acrio vs Acro)** *(Completed)*
+- [x] **Phase I (WhatsApp Only) — Customer Image Intelligence & Automatic Staff Routing (`ccwhatsapp`)** *(Completed)*
 
 ---
 
@@ -328,4 +329,38 @@
 ### 4. Verification & Regression Tests Run
 - `npx tsx scripts/test-phase-i-claude-usage-and-spend.ts` in `ccwhatsapp`: **PASS (8/8 checks: developer 403 auth guard, USD cent conversion, 3-page cursor pagination, separate workspaces + unrelated-integration labeling, shared workspace behavior, 5m cache hit + stale fallback on 503, separate organizations + zero-usage state, and live organization auto-discovery)**
 - `npm run typecheck` in `ccwhatsapp`: **PASS (0 errors)**
+
+---
+
+## Phase I (WhatsApp Only) — Customer Image Intelligence & Automatic Staff Routing — Completed Summary
+
+### 1. Scope
+- Scoped strictly to **WhatsApp chat in `ccwhatsapp`** per user instruction (no website chat changes in `classicconcepts` or `classicedge`).
+
+### 2. Customer Image Validation, Security & Claude Vision (`ccwhatsapp`)
+- **Validation & Security (`packages/connections/src/image-intelligence.ts`)**:
+  - Supports genuine JPEG, PNG, WebP, and GIF images validated via both declared MIME type and binary magic bytes (`FF D8 FF`, `89 50 4E 47`, `RIFF...WEBP`, `GIF87a/89a`).
+  - Rejects SVG/HTML/script files, spoofed extensions/magic bytes (`INVALID_IMAGE_TYPE`, `INVALID_IMAGE_SIGNATURE`), and oversized files (`> 5 MB` hard cap via `ACRIO_MAX_IMAGE_BYTES`) before calling Claude Vision (`0` Vision tokens).
+  - Enforces strict SSRF protection (`isValidWhatsAppMediaId` + `isAllowedMetaCdnUrl` allowlist restricting downloads to official Meta CDN hosts) with pre-download size checks, streaming byte caps, safe filename sanitization, in-memory processing, and prompt-injection filtering (`sanitizeVisionExtractedText`).
+- **Cost-Controlled Claude Haiku 5.5 Vision & Caching (`packages/connections/src/index.ts`, `apps/web/src/app/api/webhooks/whatsapp/route.ts`)**:
+  - Analyzes customer photos (with or without captions) using `claude-haiku-5-5` Vision (`effort: "low"`), extracting product traits, domain hints (`CLASSIC_CONCEPTS` vs `CLASSIC_EDGE_53`), readable model codes/dimensions, and unreadable/unclear details without fabricating missing specs.
+  - Persists per-conversation SHA-256 cached image analyses (`analyzedImagesBySha` capped at 6 entries) and `lastImageAnalysis` strictly inside `conversations.ai_state_json`, eliminating duplicate Vision calls on repeat uploads or text follow-ups (`"Show cheaper ones"`) and isolating cache per customer conversation.
+  - Enforces a per-conversation 1-hour Vision rate limit (`ACRIO_MAX_IMAGES_PER_CONV_HOUR`, default `10`), ignores stickers without Vision calls, accumulates Vision + Reply token usage into AI trace logs, and returns honest fallback messages on download or validation failure.
+
+### 3. Product Matching, Machinery & Custom Sketch Escalation (`ccwhatsapp`)
+- **Classic Concepts Product Photos**: Matches verified catalog items, describes visual similarities/differences carefully without claiming unverified sheet thickness or material grades, and handles cheaper-option follow-ups from conversation state.
+- **Classic Edge 53 Machinery Photos**: Isolates recommendations to `CLASSIC_EDGE_53`, never invents unprinted model codes, and explicitly asks for the machine nameplate/model number when not clearly legible.
+- **Custom Design Sketches**: Extracts legible features/dimensions, explicitly calls out unreadable measurements without guessing, prepares a structured custom enquiry, and hands off to Sales & Fabrication staff.
+
+### 4. Automatic Zero-AI Staff Routing for Non-Image Attachments (`packages/workers/src/index.ts`)
+- Routes PDFs, Word (`.doc`/`.docx`), Excel (`.xls`/`.xlsx`/`.csv`), videos, voice notes/audio, and unsupported attachments directly to human staff at Step 0 with **0 AI interpretation tokens**, preserving original attachment metadata (`mediaId`, `mimeType`, `filename`, `sha256`) and extracting multi-bubble `metadata_json` in `loadPendingInboundBurst`.
+- Bypasses generic `FIRST_CONTACT` static greeting auto-replies when an inbound message contains photos or file attachments so first-time media messages receive full image analysis or staff handoff.
+- Executes `smartAssignConversation({ onlyIfUnassigned: true })` **before** sending the WhatsApp handoff confirmation so ACRIO never falsely claims a file was transferred if routing fails, maintains idempotency on duplicate webhooks, and suspends ACRIO once assigned to human staff.
+
+### 5. Verification & Regression Tests Run (`ccwhatsapp`)
+- `npx tsx scripts/test-phase-i-image-intelligence.ts`: **PASS (50/50 checks)**
+- `npx tsx scripts/test-customer-multi-message-burst.ts`: **PASS (all assertions passed)**
+- `npx tsx scripts/test-owner-lead-forwarding.ts`: **PASS (all assertions passed)**
+- `npx tsx scripts/test-accidental-note-reply.ts`: **PASS (13/13 checks)**
+- `npm run typecheck` and `npm run build` in `ccwhatsapp`: verified passing after final edit.
 
