@@ -550,3 +550,147 @@ export function clearAiTraceLogs(): { filePath: string } {
   ensureLogFileInitialized(filePath);
   return { filePath };
 }
+
+/**
+ * Official Anthropic Claude Haiku 4.5 (claude-haiku-5-5 alias) token pricing in USD per 1M tokens.
+ */
+export const CLAUDE_HAIKU_RATES_USD_PER_1M = {
+  input: 1.0,
+  output: 5.0,
+  cacheWrite5m: 1.25,
+  cacheRead: 0.1,
+} as const;
+
+export interface AiCostBucket {
+  tracesCount: number;
+  billedCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  inputUsd: number;
+  outputUsd: number;
+  cacheReadUsd: number;
+  cacheWriteUsd: number;
+  totalUsd: number;
+  baseInr: number;
+  gstInr: number;
+  totalWithGstInr: number;
+}
+
+export interface EcosystemAiCostSummary {
+  usdToInrRate: number;
+  gstRatePct: number;
+  whatsappHub: AiCostBucket;
+  websitesOnly: AiCostBucket;
+  classicConcepts: AiCostBucket;
+  classicEdge53: AiCostBucket;
+  allEcosystem: AiCostBucket;
+}
+
+function emptyCostBucket(): AiCostBucket {
+  return {
+    tracesCount: 0,
+    billedCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    inputUsd: 0,
+    outputUsd: 0,
+    cacheReadUsd: 0,
+    cacheWriteUsd: 0,
+    totalUsd: 0,
+    baseInr: 0,
+    gstInr: 0,
+    totalWithGstInr: 0,
+  };
+}
+
+function finalizeCostBucket(
+  b: AiCostBucket,
+  usdToInrRate: number,
+  gstRatePct: number
+): AiCostBucket {
+  const inputUsd = (b.inputTokens * CLAUDE_HAIKU_RATES_USD_PER_1M.input) / 1_000_000;
+  const outputUsd = (b.outputTokens * CLAUDE_HAIKU_RATES_USD_PER_1M.output) / 1_000_000;
+  const cacheReadUsd = (b.cacheReadTokens * CLAUDE_HAIKU_RATES_USD_PER_1M.cacheRead) / 1_000_000;
+  const cacheWriteUsd = (b.cacheWriteTokens * CLAUDE_HAIKU_RATES_USD_PER_1M.cacheWrite5m) / 1_000_000;
+  const totalUsd = inputUsd + outputUsd + cacheReadUsd + cacheWriteUsd;
+  const baseInr = totalUsd * usdToInrRate;
+  const gstInr = baseInr * (gstRatePct / 100);
+  const totalWithGstInr = baseInr + gstInr;
+
+  return {
+    ...b,
+    inputUsd: Number(inputUsd.toFixed(4)),
+    outputUsd: Number(outputUsd.toFixed(4)),
+    cacheReadUsd: Number(cacheReadUsd.toFixed(4)),
+    cacheWriteUsd: Number(cacheWriteUsd.toFixed(4)),
+    totalUsd: Number(totalUsd.toFixed(4)),
+    baseInr: Number(baseInr.toFixed(2)),
+    gstInr: Number(gstInr.toFixed(2)),
+    totalWithGstInr: Number(totalWithGstInr.toFixed(2)),
+  };
+}
+
+/**
+ * Computes exact Claude Haiku API costs across uncached input, 5-min cache write, cache read, and output
+ * tokens in USD and INR (ex-GST + GST), cleanly split between WhatsApp Hub and Websites.
+ */
+export function computeClaudeAiCostBreakdown(
+  entries: AiTraceLogEntry[],
+  opts?: { usdToInrRate?: number; gstRatePct?: number }
+): EcosystemAiCostSummary {
+  const usdToInrRate =
+    typeof opts?.usdToInrRate === "number" && Number.isFinite(opts.usdToInrRate) && opts.usdToInrRate > 0
+      ? opts.usdToInrRate
+      : 93.4;
+  const gstRatePct =
+    typeof opts?.gstRatePct === "number" && Number.isFinite(opts.gstRatePct) && opts.gstRatePct >= 0
+      ? opts.gstRatePct
+      : 18;
+
+  const wa = emptyCostBucket();
+  const cc = emptyCostBucket();
+  const ce = emptyCostBucket();
+  const web = emptyCostBucket();
+  const all = emptyCostBucket();
+
+  const addEntry = (bucket: AiCostBucket, e: AiTraceLogEntry) => {
+    const u = e.tokenUsage;
+    const inT = Number(u?.inputTokens ?? 0) || 0;
+    const outT = Number(u?.outputTokens ?? 0) || 0;
+    const crT = Number(u?.cacheReadInputTokens ?? 0) || 0;
+    const cwT = Number(u?.cacheCreationInputTokens ?? 0) || 0;
+    bucket.tracesCount++;
+    if (inT + outT + crT + cwT > 0) bucket.billedCalls++;
+    bucket.inputTokens += inT;
+    bucket.outputTokens += outT;
+    bucket.cacheReadTokens += crT;
+    bucket.cacheWriteTokens += cwT;
+  };
+
+  for (const e of entries) {
+    addEntry(all, e);
+    if (e.website === "WHATSAPP_HUB") {
+      addEntry(wa, e);
+    } else if (e.website === "CLASSIC_CONCEPTS") {
+      addEntry(cc, e);
+      addEntry(web, e);
+    } else if (e.website === "CLASSIC_EDGE_53") {
+      addEntry(ce, e);
+      addEntry(web, e);
+    }
+  }
+
+  return {
+    usdToInrRate,
+    gstRatePct,
+    whatsappHub: finalizeCostBucket(wa, usdToInrRate, gstRatePct),
+    websitesOnly: finalizeCostBucket(web, usdToInrRate, gstRatePct),
+    classicConcepts: finalizeCostBucket(cc, usdToInrRate, gstRatePct),
+    classicEdge53: finalizeCostBucket(ce, usdToInrRate, gstRatePct),
+    allEcosystem: finalizeCostBucket(all, usdToInrRate, gstRatePct),
+  };
+}

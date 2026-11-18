@@ -648,6 +648,7 @@ export async function POST(req: Request) {
       customerPhone: phoneCheck.e164,
       category: templateCategory,
       staffName: user.name,
+      deliveryMode: sandboxMode ? "SANDBOX_SIMULATOR" : "LIVE_META_CLOUD",
     });
   }
 

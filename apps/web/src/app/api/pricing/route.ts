@@ -56,6 +56,8 @@ export async function POST(req: Request) {
               actual_meta_utility_rate_inr = COALESCE(?, actual_meta_utility_rate_inr),
               actual_meta_auth_rate_inr = COALESCE(?, actual_meta_auth_rate_inr),
               actual_meta_service_rate_inr = COALESCE(?, actual_meta_service_rate_inr),
+              gst_rate_pct = COALESCE(?, gst_rate_pct),
+              usd_to_inr_rate = COALESCE(?, usd_to_inr_rate),
               updated_by = ?,
               updated_at = ?
           WHERE id = 'default'`,
@@ -66,6 +68,8 @@ export async function POST(req: Request) {
       body.actualMetaUtilityRateInr !== undefined ? Number(body.actualMetaUtilityRateInr) : null,
       body.actualMetaAuthRateInr !== undefined ? Number(body.actualMetaAuthRateInr) : null,
       body.actualMetaServiceRateInr !== undefined ? Number(body.actualMetaServiceRateInr) : null,
+      body.gstRatePct !== undefined ? Number(body.gstRatePct) : null,
+      body.usdToInrRate !== undefined ? Number(body.usdToInrRate) : null,
       user.name,
       new Date().toISOString(),
     ],

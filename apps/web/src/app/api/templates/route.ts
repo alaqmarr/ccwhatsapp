@@ -647,6 +647,7 @@ export async function POST(req: Request) {
       customerPhone: toPhone,
       category: cat,
       staffName: `Template Test (${user.name})`,
+      deliveryMode: sendRes.mode,
     });
     await mkt.execute({
       sql: `UPDATE templates SET sent_count = sent_count + 1 WHERE id = ?`,

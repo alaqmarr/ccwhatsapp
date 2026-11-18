@@ -78,6 +78,7 @@ export async function recordDualPricingLedgerEntry(params: {
   customerPhone: string;
   category: BillingMessageCategory;
   staffName: string;
+  deliveryMode?: "LIVE_META_CLOUD" | "SANDBOX_SIMULATOR" | "SEED";
 }): Promise<{
   clientUnitRateInr: number;
   actualMetaUnitCostInr: number;
@@ -94,10 +95,10 @@ export async function recordDualPricingLedgerEntry(params: {
   const clientMarketing = Number(cfg.client_marketing_rate_inr ?? 0.95);
   const clientOther = Number(cfg.client_other_rate_inr ?? 0.3);
 
-  const metaMarketing = Number(cfg.actual_meta_marketing_rate_inr ?? 0.7846);
+  const metaMarketing = Number(cfg.actual_meta_marketing_rate_inr ?? 0.8631);
   const metaUtility = Number(cfg.actual_meta_utility_rate_inr ?? 0.115);
   const metaAuth = Number(cfg.actual_meta_auth_rate_inr ?? 0.115);
-  const metaAcrio = Number(cfg.actual_meta_service_rate_inr ?? 0.04);
+  const metaAcrio = Number(cfg.actual_meta_service_rate_inr ?? 0.0);
 
   const clientUnitRateInr =
     params.category === "MARKETING" ? clientMarketing : clientOther;
@@ -110,12 +111,13 @@ export async function recordDualPricingLedgerEntry(params: {
   const marginInr = Number(
     (clientUnitRateInr - actualMetaUnitCostInr).toFixed(4)
   );
+  const deliveryMode = params.deliveryMode || "LIVE_META_CLOUD";
 
   await bill.execute({
     sql: `INSERT INTO message_billing_ledger (
       id, message_id, broadcast_id, conversation_id, customer_phone,
-      category, client_unit_rate_inr, actual_meta_unit_cost_inr, margin_inr, staff_name, billed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      category, client_unit_rate_inr, actual_meta_unit_cost_inr, margin_inr, delivery_mode, staff_name, billed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       `ldg_${crypto.randomUUID().slice(0, 10)}`,
       params.messageId || null,
@@ -126,6 +128,7 @@ export async function recordDualPricingLedgerEntry(params: {
       clientUnitRateInr,
       actualMetaUnitCostInr,
       marginInr,
+      deliveryMode,
       params.staffName,
       new Date().toISOString(),
     ],
@@ -669,13 +672,16 @@ async function sendAcrioChatMessage(params: {
     });
   }
 
-  await recordDualPricingLedgerEntry({
-    messageId: acrioMsgId,
-    conversationId: params.conversationId,
-    customerPhone: params.customerPhone,
-    category: "ACRIO",
-    staffName: "ACRIO Auto-Handler",
-  });
+  if (sendRes.ok) {
+    await recordDualPricingLedgerEntry({
+      messageId: acrioMsgId,
+      conversationId: params.conversationId,
+      customerPhone: params.customerPhone,
+      category: "ACRIO",
+      staffName: "ACRIO Auto-Handler",
+      deliveryMode: sendRes.mode,
+    });
+  }
 
   return { acrioMsgId, replyIso, sendRes };
 }
@@ -2269,6 +2275,7 @@ async function processInboundAutomationsLocked(
             customerPhone: params.customerPhone,
             category: tplCat,
             staffName: `Template Flow (${btnLabel})`,
+            deliveryMode: sendRes.mode,
           });
         }
         socketHub.emit("message:new", {
@@ -2308,13 +2315,16 @@ async function processInboundAutomationsLocked(
           nowIso,
         ],
       });
-      await recordDualPricingLedgerEntry({
-        messageId: msgId,
-        conversationId: params.conversationId,
-        customerPhone: params.customerPhone,
-        category: "ACRIO",
-        staffName: "ACRIO Button Flow",
-      });
+      if (sendRes.ok) {
+        await recordDualPricingLedgerEntry({
+          messageId: msgId,
+          conversationId: params.conversationId,
+          customerPhone: params.customerPhone,
+          category: "ACRIO",
+          staffName: "ACRIO Button Flow",
+          deliveryMode: sendRes.mode,
+        });
+      }
       socketHub.emit("message:new", {
         conversationId: params.conversationId,
         senderName: "ACRIO (Button Flow)",
@@ -4220,6 +4230,7 @@ export async function processMarketingBroadcastQueue(): Promise<number> {
           customerPhone: phone,
           category,
           staffName: `Broadcast: ${String(bRow.name)}`,
+          deliveryMode: out.mode,
         });
 
         const nextSentCount = Number(bRow.sent_count ?? 0) + 1;

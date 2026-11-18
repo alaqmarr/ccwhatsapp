@@ -1,5 +1,6 @@
 ﻿import { formatInTimeZone, toZonedTime, fromZonedTime } from "date-fns-tz";
 import {
+  computeClaudeAiCostBreakdown,
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
   readAiTraceLogs,
@@ -101,6 +102,7 @@ export async function loadAnalyticsPayload(
     templatesRes,
     broadcastsRes,
     ledgerRes,
+    pricingCfgRes,
     usersRes,
   ] = await Promise.all([
     conv.execute(`SELECT * FROM conversations ORDER BY last_message_at DESC`),
@@ -153,6 +155,7 @@ export async function loadAnalyticsPayload(
        ORDER BY billed_at DESC`,
       [cutoffIso]
     ),
+    bill.execute(`SELECT * FROM pricing_config WHERE id = 'default' LIMIT 1`),
     auth.execute(
       `SELECT id, name, email, role, department, status
        FROM users
@@ -763,14 +766,40 @@ export async function loadAnalyticsPayload(
     },
   };
 
+  const pricingCfg = (pricingCfgRes.rows[0] || {}) as Record<string, unknown>;
+  const cfgMetaMarketing = Number(pricingCfg.actual_meta_marketing_rate_inr ?? 0.8631);
+  const cfgMetaUtility = Number(pricingCfg.actual_meta_utility_rate_inr ?? 0.115);
+  const cfgMetaAuth = Number(pricingCfg.actual_meta_auth_rate_inr ?? 0.115);
+  const cfgMetaService = Number(pricingCfg.actual_meta_service_rate_inr ?? 0.0);
+  const gstRatePct = Number(pricingCfg.gst_rate_pct ?? 18.0);
+  const usdToInrRate = Number(pricingCfg.usd_to_inr_rate ?? 93.4);
+  const metaRateForPeriodCat = (cat: string): number => {
+    switch (cat.toUpperCase()) {
+      case "MARKETING":
+        return cfgMetaMarketing;
+      case "UTILITY":
+        return cfgMetaUtility;
+      case "AUTHENTICATION":
+        return cfgMetaAuth;
+      case "ACRIO":
+      case "SERVICE":
+        return cfgMetaService;
+      default:
+        return cfgMetaUtility;
+    }
+  };
+
+  let totalPeriodMetaBaseInr = 0;
   for (const l of ledgerRes.rows) {
     const cat = String(l.category || "UTILITY").toUpperCase();
     const clientAmt = Number(l.client_unit_rate_inr ?? 0);
-    const metaAmt = Number(l.actual_meta_unit_cost_inr ?? 0);
-    const marginAmt = Number(l.margin_inr ?? 0);
+    const metaAmt = metaRateForPeriodCat(cat);
+    const metaWithGstAmt = metaAmt * (1 + gstRatePct / 100);
+    const marginAmt = clientAmt - metaWithGstAmt;
 
     totalClientBilledInr += clientAmt;
-    totalActualMetaCostInr += metaAmt;
+    totalPeriodMetaBaseInr += metaAmt;
+    totalActualMetaCostInr += metaWithGstAmt;
     totalNetMarginInr += marginAmt;
 
     const bucket =
@@ -786,7 +815,7 @@ export async function loadAnalyticsPayload(
     );
     if (isDevPricing) {
       bucket.actualMetaCostInr = Number(
-        ((bucket.actualMetaCostInr || 0) + metaAmt).toFixed(4)
+        ((bucket.actualMetaCostInr || 0) + metaWithGstAmt).toFixed(4)
       );
       bucket.marginInr = Number(
         ((bucket.marginInr || 0) + marginAmt).toFixed(4)
@@ -851,39 +880,64 @@ export async function loadAnalyticsPayload(
     outcome: String(a.outcome || "ACTIVE"),
   }));
 
-  // Aggregate AI Tokens In & Out across all 3 ecosystem websites for the selected period
+  // Aggregate AI Tokens In & Out & real costs (incl. cache_write & cache_read + 18% GST) for the selected period
   const aiLogsReport = readAiTraceLogs({
     sinceUtc: cutoffIso,
     limit: 5000,
   });
-  let aiTokensIn = 0;
-  let aiTokensOut = 0;
-  let aiCacheReadTokens = 0;
-  let aiLiveCallsCount = 0;
+  const periodAiCosts = computeClaudeAiCostBreakdown(aiLogsReport.entries, {
+    usdToInrRate,
+    gstRatePct,
+  });
+  const aiTokensIn = periodAiCosts.allEcosystem.inputTokens;
+  const aiTokensOut = periodAiCosts.allEcosystem.outputTokens;
+  const aiCacheReadTokens = periodAiCosts.allEcosystem.cacheReadTokens;
+  const aiCacheWriteTokens = periodAiCosts.allEcosystem.cacheWriteTokens;
+  const aiLiveCallsCount = aiLogsReport.entries.filter(
+    (e) => e.outcomeSource === "LIVE_AI"
+  ).length;
   const aiTokensByWebsite = {
-    WHATSAPP_HUB: { inputTokens: 0, outputTokens: 0, calls: 0 },
-    CLASSIC_CONCEPTS: { inputTokens: 0, outputTokens: 0, calls: 0 },
-    CLASSIC_EDGE_53: { inputTokens: 0, outputTokens: 0, calls: 0 },
+    WHATSAPP_HUB: {
+      inputTokens: periodAiCosts.whatsappHub.inputTokens,
+      outputTokens: periodAiCosts.whatsappHub.outputTokens,
+      calls: periodAiCosts.whatsappHub.billedCalls,
+    },
+    CLASSIC_CONCEPTS: {
+      inputTokens: periodAiCosts.classicConcepts.inputTokens,
+      outputTokens: periodAiCosts.classicConcepts.outputTokens,
+      calls: periodAiCosts.classicConcepts.billedCalls,
+    },
+    CLASSIC_EDGE_53: {
+      inputTokens: periodAiCosts.classicEdge53.inputTokens,
+      outputTokens: periodAiCosts.classicEdge53.outputTokens,
+      calls: periodAiCosts.classicEdge53.billedCalls,
+    },
   };
-  for (const entry of aiLogsReport.entries) {
-    const tIn = Number(entry.tokenUsage?.inputTokens ?? 0) || 0;
-    const tOut = Number(entry.tokenUsage?.outputTokens ?? 0) || 0;
-    const tCache = Number(entry.tokenUsage?.cacheReadInputTokens ?? 0) || 0;
-    aiTokensIn += tIn;
-    aiTokensOut += tOut;
-    aiCacheReadTokens += tCache;
-    if (entry.outcomeSource === "LIVE_AI") {
-      aiLiveCallsCount++;
-    }
-    if (entry.website in aiTokensByWebsite) {
-      aiTokensByWebsite[entry.website].inputTokens += tIn;
-      aiTokensByWebsite[entry.website].outputTokens += tOut;
-      if (tIn > 0 || tOut > 0 || entry.outcomeSource === "LIVE_AI") {
-        aiTokensByWebsite[entry.website].calls++;
-      }
-    }
-  }
   const aiTokensTotal = aiTokensIn + aiTokensOut;
+  const periodMetaWithGstInr = Number(totalActualMetaCostInr.toFixed(2));
+  const periodMetaGstInr = Number(
+    (totalPeriodMetaBaseInr * (gstRatePct / 100)).toFixed(2)
+  );
+  const periodCombinedCostWithGstInr = Number(
+    (periodMetaWithGstInr + periodAiCosts.whatsappHub.totalWithGstInr).toFixed(2)
+  );
+  const periodNetProfitWithGstInr = Number(
+    (totalClientBilledInr - periodCombinedCostWithGstInr).toFixed(2)
+  );
+  if (isDevPricing && billingByCategory.ACRIO) {
+    billingByCategory.ACRIO.actualMetaCostInr = Number(
+      (
+        (billingByCategory.ACRIO.actualMetaCostInr || 0) +
+        periodAiCosts.whatsappHub.totalWithGstInr
+      ).toFixed(2)
+    );
+    billingByCategory.ACRIO.marginInr = Number(
+      (
+        billingByCategory.ACRIO.clientBilledInr -
+        billingByCategory.ACRIO.actualMetaCostInr
+      ).toFixed(2)
+    );
+  }
 
   return {
     ok: true,
@@ -947,8 +1001,13 @@ export async function loadAnalyticsPayload(
         : {}),
       ...(isDevPricing
         ? {
-            actualMetaCostInr: Number(totalActualMetaCostInr.toFixed(4)),
-            netMarginInr: Number(totalNetMarginInr.toFixed(4)),
+            metaWholesaleBaseInr: Number(totalPeriodMetaBaseInr.toFixed(2)),
+            metaWholesaleGstInr: periodMetaGstInr,
+            metaWholesaleWithGstInr: periodMetaWithGstInr,
+            whatsappAiCostWithGstInr: periodAiCosts.whatsappHub.totalWithGstInr,
+            ecosystemAiCostWithGstInr: periodAiCosts.allEcosystem.totalWithGstInr,
+            actualMetaCostInr: periodCombinedCostWithGstInr,
+            netMarginInr: periodNetProfitWithGstInr,
           }
         : {}),
     },
@@ -957,8 +1016,10 @@ export async function loadAnalyticsPayload(
       periodTokensOut: aiTokensOut,
       periodTokensTotal: aiTokensTotal,
       periodCacheReadTokens: aiCacheReadTokens,
+      periodCacheWriteTokens: aiCacheWriteTokens,
       periodLiveAiCalls: aiLiveCallsCount,
       periodTotalTraces: aiLogsReport.entries.length,
+      ...(isDevPricing ? { periodAiCosts } : {}),
       allTimeTokensIn: aiLogsReport.totalInputTokens,
       allTimeTokensOut: aiLogsReport.totalOutputTokens,
       allTimeTokensTotal: aiLogsReport.totalCombinedTokens,

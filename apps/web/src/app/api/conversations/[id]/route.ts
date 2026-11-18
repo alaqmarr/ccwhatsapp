@@ -785,6 +785,7 @@ export async function POST(
         customerPhone,
         category: templateBillingCategory,
         staffName: user.name,
+        deliveryMode: sendRes.mode,
       });
     }
 

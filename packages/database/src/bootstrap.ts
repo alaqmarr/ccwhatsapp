@@ -673,10 +673,12 @@ async function runBootstrapInternal(): Promise<void> {
         id TEXT PRIMARY KEY,
         client_marketing_rate_inr REAL NOT NULL DEFAULT 0.95,
         client_other_rate_inr REAL NOT NULL DEFAULT 0.30,
-        actual_meta_marketing_rate_inr REAL NOT NULL DEFAULT 0.7846,
+        actual_meta_marketing_rate_inr REAL NOT NULL DEFAULT 0.8631,
         actual_meta_utility_rate_inr REAL NOT NULL DEFAULT 0.115,
         actual_meta_auth_rate_inr REAL NOT NULL DEFAULT 0.115,
-        actual_meta_service_rate_inr REAL NOT NULL DEFAULT 0.08,
+        actual_meta_service_rate_inr REAL NOT NULL DEFAULT 0.0,
+        gst_rate_pct REAL NOT NULL DEFAULT 18.0,
+        usd_to_inr_rate REAL NOT NULL DEFAULT 93.40,
         currency TEXT NOT NULL DEFAULT 'INR',
         updated_by TEXT DEFAULT 'System',
         updated_at TEXT NOT NULL
@@ -691,6 +693,7 @@ async function runBootstrapInternal(): Promise<void> {
         client_unit_rate_inr REAL NOT NULL,
         actual_meta_unit_cost_inr REAL NOT NULL,
         margin_inr REAL NOT NULL,
+        delivery_mode TEXT NOT NULL DEFAULT 'LIVE_META_CLOUD',
         staff_name TEXT NOT NULL,
         billed_at TEXT NOT NULL
       )`,
@@ -729,6 +732,18 @@ async function runBootstrapInternal(): Promise<void> {
     ],
     "write"
   );
+
+  for (const alterSql of [
+    `ALTER TABLE pricing_config ADD COLUMN gst_rate_pct REAL NOT NULL DEFAULT 18.0`,
+    `ALTER TABLE pricing_config ADD COLUMN usd_to_inr_rate REAL NOT NULL DEFAULT 93.40`,
+    `ALTER TABLE message_billing_ledger ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'LIVE_META_CLOUD'`,
+  ]) {
+    try {
+      await bill.execute(alterSql);
+    } catch {
+      // Column already exists
+    }
+  }
 
   // 6. queue_jobs.db
   await queue.batch(
@@ -775,16 +790,34 @@ async function seedInitialOperationalData(): Promise<void> {
   const yesterday = new Date(now.getTime() - 22 * 60 * 60 * 1000).toISOString();
   const windowOpen = new Date(now.getTime() + 20 * 60 * 60 * 1000).toISOString();
 
-  // Default Pricing Config (0.95 Marketing, 0.30 Other/Auth/Utility for Admins & Client; Actual Meta Cost for Dev)
+  // Default Pricing Config (0.95 Marketing, 0.30 Other/Auth/Utility for Admins & Client; Official Meta India Wholesale Cost ex-GST + 18% GST for Dev)
   const existingPricing = await bill.execute(`SELECT COUNT(*) as cnt FROM pricing_config`);
   if (Number(existingPricing.rows[0]?.cnt ?? 0) === 0) {
     await bill.execute({
       sql: `INSERT INTO pricing_config (
         id, client_marketing_rate_inr, client_other_rate_inr,
         actual_meta_marketing_rate_inr, actual_meta_utility_rate_inr,
-        actual_meta_auth_rate_inr, actual_meta_service_rate_inr, currency, updated_by, updated_at
-      ) VALUES ('default', 0.95, 0.30, 0.7846, 0.115, 0.115, 0.08, 'INR', 'System Bootstrap', ?)`,
+        actual_meta_auth_rate_inr, actual_meta_service_rate_inr,
+        gst_rate_pct, usd_to_inr_rate, currency, updated_by, updated_at
+      ) VALUES ('default', 0.95, 0.30, 0.8631, 0.115, 0.115, 0.0, 18.0, 93.40, 'INR', 'System Bootstrap', ?)`,
       args: [isoNow],
+    });
+  } else {
+    // Migrate legacy default Meta India marketing (0.7846 -> 0.8631) and fake ACRIO fee (0.08 -> 0.0) if still untouched
+    await bill.execute({
+      sql: `UPDATE pricing_config
+            SET actual_meta_marketing_rate_inr = CASE
+                  WHEN updated_by = 'System Bootstrap' AND ABS(actual_meta_marketing_rate_inr - 0.7846) < 0.001
+                  THEN 0.8631
+                  ELSE actual_meta_marketing_rate_inr
+                END,
+                actual_meta_service_rate_inr = CASE
+                  WHEN updated_by = 'System Bootstrap' AND ABS(actual_meta_service_rate_inr - 0.08) < 0.001
+                  THEN 0.0
+                  ELSE actual_meta_service_rate_inr
+                END
+            WHERE id = 'default'`,
+      args: [],
     });
   }
 
@@ -1769,20 +1802,20 @@ async function seedInitialOperationalData(): Promise<void> {
       staff: string;
       at: string;
     }[] = [
-      { id: "ldg_1", cat: "MARKETING", phone: "+919848011223", clientRate: 0.95, metaCost: 0.7846, staff: "Campaign Broadcast", at: yesterday },
-      { id: "ldg_2", cat: "MARKETING", phone: "+919900145678", clientRate: 0.95, metaCost: 0.7846, staff: "Campaign Broadcast", at: yesterday },
-      { id: "ldg_3", cat: "MARKETING", phone: "+919848099112", clientRate: 0.95, metaCost: 0.7846, staff: "Campaign Broadcast", at: threeHoursAgo },
+      { id: "ldg_1", cat: "MARKETING", phone: "+919848011223", clientRate: 0.95, metaCost: 0.8631, staff: "Campaign Broadcast", at: yesterday },
+      { id: "ldg_2", cat: "MARKETING", phone: "+919900145678", clientRate: 0.95, metaCost: 0.8631, staff: "Campaign Broadcast", at: yesterday },
+      { id: "ldg_3", cat: "MARKETING", phone: "+919848099112", clientRate: 0.95, metaCost: 0.8631, staff: "Campaign Broadcast", at: threeHoursAgo },
       { id: "ldg_4", cat: "UTILITY", phone: "+919701234500", clientRate: 0.30, metaCost: 0.115, staff: "Order Template", at: yesterday },
       { id: "ldg_5", cat: "UTILITY", phone: "+919848011223", clientRate: 0.30, metaCost: 0.115, staff: "Dispatch Template", at: threeHoursAgo },
       { id: "ldg_6", cat: "AUTHENTICATION", phone: "+919000112233", clientRate: 0.30, metaCost: 0.115, staff: "OTP Template", at: oneHourAgo },
-      { id: "ldg_7", cat: "ACRIO", phone: "+919900145678", clientRate: 0.30, metaCost: 0.04, staff: "ACRIO Auto-Handler", at: oneHourAgo },
+      { id: "ldg_7", cat: "ACRIO", phone: "+919900145678", clientRate: 0.30, metaCost: 0.0, staff: "ACRIO Auto-Handler", at: oneHourAgo },
     ];
 
     for (const r of sampleRows) {
       await bill.execute({
         sql: `INSERT INTO message_billing_ledger (
-          id, customer_phone, category, client_unit_rate_inr, actual_meta_unit_cost_inr, margin_inr, staff_name, billed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, customer_phone, category, client_unit_rate_inr, actual_meta_unit_cost_inr, margin_inr, delivery_mode, staff_name, billed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'SEED', ?, ?)`,
         args: [
           r.id,
           r.phone,
@@ -2040,14 +2073,24 @@ async function seedInitialOperationalData(): Promise<void> {
     }
   }
 
-  // Enforce billing rule: migrate ACRIO rows to 'ACRIO' and purge any legacy 'SERVICE' charges from normal free chat
+  // Enforce billing rule: tag legacy bootstrap/test ledger rows cleanly and purge legacy SERVICE rows
   await bill.execute(
     `UPDATE message_billing_ledger
-     SET category = 'ACRIO',
-         staff_name = 'ACRIO Auto-Handler',
-         actual_meta_unit_cost_inr = 0.04,
-         margin_inr = ROUND(client_unit_rate_inr - 0.04, 4)
-     WHERE category = 'SERVICE' AND (staff_name LIKE '%ACRIO%' OR id = 'ldg_7')`
+     SET delivery_mode = 'SEED'
+     WHERE id IN ('ldg_1', 'ldg_2', 'ldg_3', 'ldg_4', 'ldg_5', 'ldg_6', 'ldg_7') AND delivery_mode = 'LIVE_META_CLOUD'`
+  );
+  await bill.execute(
+    `UPDATE message_billing_ledger
+     SET delivery_mode = 'SANDBOX_SIMULATOR'
+     WHERE delivery_mode = 'LIVE_META_CLOUD'
+       AND (
+         conversation_id LIKE 'conv_test_%'
+         OR conversation_id LIKE 'conv_failroute_%'
+         OR conversation_id LIKE 'conv_dupwa_%'
+         OR conversation_id LIKE 'conv_att_%'
+         OR customer_phone LIKE '+910000%'
+         OR staff_name LIKE '%Live Mode Test%'
+       )`
   );
   await bill.execute(
     `DELETE FROM message_billing_ledger WHERE category = 'SERVICE'`

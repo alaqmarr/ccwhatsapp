@@ -268,10 +268,12 @@ export const pricingConfigTable = sqliteTable("pricing_config", {
   id: text("id").primaryKey(),
   clientMarketingRateInr: real("client_marketing_rate_inr").notNull().default(0.95),
   clientOtherRateInr: real("client_other_rate_inr").notNull().default(0.3),
-  actualMetaMarketingRateInr: real("actual_meta_marketing_rate_inr").notNull().default(0.7846),
+  actualMetaMarketingRateInr: real("actual_meta_marketing_rate_inr").notNull().default(0.8631),
   actualMetaUtilityRateInr: real("actual_meta_utility_rate_inr").notNull().default(0.115),
   actualMetaAuthRateInr: real("actual_meta_auth_rate_inr").notNull().default(0.115),
-  actualMetaServiceRateInr: real("actual_meta_service_rate_inr").notNull().default(0.08),
+  actualMetaServiceRateInr: real("actual_meta_service_rate_inr").notNull().default(0.0),
+  gstRatePct: real("gst_rate_pct").notNull().default(18),
+  usdToInrRate: real("usd_to_inr_rate").notNull().default(93.4),
   currency: text("currency").notNull().default("INR"),
   updatedBy: text("updated_by").default("System"),
   updatedAt: text("updated_at").notNull(),
@@ -283,10 +285,11 @@ export const messageBillingLedgerTable = sqliteTable("message_billing_ledger", {
   broadcastId: text("broadcast_id"),
   conversationId: text("conversation_id"),
   customerPhone: text("customer_phone").notNull(),
-  category: text("category").notNull(), // MARKETING | UTILITY | AUTHENTICATION | SERVICE
+  category: text("category").notNull(), // MARKETING | UTILITY | AUTHENTICATION | ACRIO
   clientUnitRateInr: real("client_unit_rate_inr").notNull(),
   actualMetaUnitCostInr: real("actual_meta_unit_cost_inr").notNull(),
   marginInr: real("margin_inr").notNull(),
+  deliveryMode: text("delivery_mode").notNull().default("LIVE_META_CLOUD"),
   staffName: text("staff_name").notNull(),
   billedAt: text("billed_at").notNull(),
 });

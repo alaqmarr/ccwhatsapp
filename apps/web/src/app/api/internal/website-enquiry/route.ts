@@ -393,6 +393,7 @@ export async function POST(req: Request) {
           customerPhone: normalizedPhone,
           category: "ACRIO",
           staffName: "ACRIO Website Concierge",
+          deliveryMode: dispatch.mode,
         });
       }
     } else {
@@ -425,6 +426,7 @@ export async function POST(req: Request) {
           customerPhone: normalizedPhone,
           category: "MARKETING",
           staffName: "ACRIO Website Concierge",
+          deliveryMode: tplDispatch.mode,
         });
       }
 
