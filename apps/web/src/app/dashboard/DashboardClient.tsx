@@ -16,6 +16,7 @@ import {
   Timer,
   Trophy,
 } from "lucide-react";
+import { subscribeRealtimeEvent } from "@/lib/realtime-client";
 
 interface Metrics {
   staffId: string;
@@ -240,12 +241,11 @@ export function DashboardClient({
     }
     const timer = setInterval(() => void load(true), 30000);
     let debounce: ReturnType<typeof setTimeout> | null = null;
-    const es = new EventSource("/api/realtime/stream");
     const refresh = () => {
       if (debounce) clearTimeout(debounce);
       debounce = setTimeout(() => void load(true), 800);
     };
-    for (const t of [
+    const unsubs = [
       "message:new",
       "note:new",
       "conversation:assigned",
@@ -255,13 +255,11 @@ export function DashboardClient({
       "staff:mention",
       "enquiry:new",
       "enquiry:updated",
-    ]) {
-      es.addEventListener(t, refresh);
-    }
+    ].map((t) => subscribeRealtimeEvent(t, refresh));
     return () => {
       clearInterval(timer);
       if (debounce) clearTimeout(debounce);
-      es.close();
+      unsubs.forEach((fn) => fn());
     };
   }, [load]);
 

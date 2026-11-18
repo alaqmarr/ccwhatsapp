@@ -97,6 +97,7 @@ import type {
   StaffOption,
   TeamOption,
 } from "@/lib/inbox-server-data";
+import { parseRealtimeEventPayload, subscribeRealtimeEvent } from "@/lib/realtime-client";
 
 /** Toast text after saving a note: says who was pinged and whether ACRIO is answering. */
 function describeNoteResult(data: {
@@ -493,16 +494,29 @@ export function InboxClient({
   );
   const [quickNoteDraft, setQuickNoteDraft] = useState<string>("");
   const [showHeaderMenu, setShowHeaderMenu] = useState<boolean>(false);
-  // Pending "Request a callback" for the open chat + across the thread list
-  const [pendingCallback, setPendingCallback] = useState<{
-    id: string;
-    slot: string;
-    topic: string;
-    phone: string;
-    createdAt: string;
-  } | null>(null);
-  const [callbackConvIds, setCallbackConvIds] = useState<string[]>([]);
+  // Pending "Request a callback" for the open chat + across the thread list (derived synchronously at 0ms when switching chats)
+  const [callbackReqs, setCallbackReqs] = useState<Record<string, unknown>[]>([]);
   const [unreadMentionConvIds, setUnreadMentionConvIds] = useState<string[]>([]);
+
+  const callbackConvIds = useMemo(
+    () => callbackReqs.map((r) => String(r.conversation_id)),
+    [callbackReqs]
+  );
+
+  const pendingCallback = useMemo(() => {
+    const row = selectedId
+      ? callbackReqs.find((r) => String(r.conversation_id) === selectedId)
+      : undefined;
+    return row
+      ? {
+          id: String(row.id),
+          slot: String(row.preferred_slot || ""),
+          topic: String(row.topic || ""),
+          phone: String(row.customer_phone || ""),
+          createdAt: String(row.created_at || ""),
+        }
+      : null;
+  }, [callbackReqs, selectedId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -518,22 +532,7 @@ export function InboxClient({
         ]);
         if (cancelled) return;
         if (cbData?.ok) {
-          const reqs = (cbData.requests || []) as Record<string, unknown>[];
-          setCallbackConvIds(reqs.map((r) => String(r.conversation_id)));
-          const row = selectedId
-            ? reqs.find((r) => String(r.conversation_id) === selectedId)
-            : undefined;
-          setPendingCallback(
-            row
-              ? {
-                  id: String(row.id),
-                  slot: String(row.preferred_slot || ""),
-                  topic: String(row.topic || ""),
-                  phone: String(row.customer_phone || ""),
-                  createdAt: String(row.created_at || ""),
-                }
-              : null
-          );
+          setCallbackReqs((cbData.requests || []) as Record<string, unknown>[]);
         }
         if (ntfData?.ok) {
           const unreadIds = ((ntfData.notifications || []) as Record<string, unknown>[])
@@ -547,15 +546,15 @@ export function InboxClient({
     };
     void loadSignals();
     const timer = setInterval(loadSignals, 30000);
-    const es = new EventSource("/api/realtime/stream");
-    es.addEventListener("callback:new", loadSignals);
-    es.addEventListener("staff:mention", loadSignals);
+    const unsubCb = subscribeRealtimeEvent("callback:new", loadSignals);
+    const unsubMention = subscribeRealtimeEvent("staff:mention", loadSignals);
     return () => {
       cancelled = true;
       clearInterval(timer);
-      es.close();
+      unsubCb();
+      unsubMention();
     };
-  }, [selectedId]);
+  }, []);
 
   // Global keyboard shortcuts for fast desk handling (Alt+R Reply, Alt+N Note, Alt+T Template, Alt+A Ask @ACRIO, Alt+D Drawer)
   useEffect(() => {
@@ -592,13 +591,13 @@ export function InboxClient({
 
   async function markPendingCallbackDone() {
     if (!pendingCallback) return;
+    const targetId = pendingCallback.id;
+    setCallbackReqs((prev) => prev.filter((r) => String(r.id) !== targetId));
     await fetch("/api/callback-requests", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: pendingCallback.id, status: "DONE" }),
+      body: JSON.stringify({ id: targetId, status: "DONE" }),
     });
-    setPendingCallback(null);
-    setCallbackConvIds((prev) => prev.filter((cid) => cid !== selectedId));
     showToast("Marked as called.");
   }
 
@@ -887,9 +886,9 @@ export function InboxClient({
     setTimeout(() => setToast(""), 3200);
   }, []);
 
-  // Tick every second for live wait-time counter + "Chat window expires in {time}"
+  // Refresh thread wait-time & chat window labels every 15s (avoids 60/min full-inbox re-renders while typing/scrolling)
   useEffect(() => {
-    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    const t = setInterval(() => setNowMs(Date.now()), 15000);
     return () => clearInterval(t);
   }, []);
 
@@ -1128,23 +1127,10 @@ export function InboxClient({
     void fetchAndCacheDetail(convId, true);
   }
 
-  // Real-time SSE + gentle silent poll (unwraps RealtimeEvent.payload and eliminates refresh waterfalls)
+  // Real-time SSE over shared singleton stream + gentle silent poll (eliminates duplicate sockets & refresh waterfalls)
   useEffect(() => {
-    const es = new EventSource("/api/realtime/stream");
-    const unwrapEventPayload = (ev: MessageEvent): Record<string, unknown> => {
-      try {
-        const raw = JSON.parse(String(ev.data || "{}"));
-        if (raw && typeof raw === "object" && raw.payload && typeof raw.payload === "object") {
-          return raw.payload as Record<string, unknown>;
-        }
-        return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-      } catch {
-        return {};
-      }
-    };
-
     const handleRealtimeRefresh = (ev: MessageEvent) => {
-      const payload = unwrapEventPayload(ev);
+      const payload = parseRealtimeEventPayload(ev);
       const targetConvId = payload.conversationId ? String(payload.conversationId) : null;
       const incomingMsgId = payload.messageId ? String(payload.messageId) : null;
       scheduleThreadsRefresh(220);
@@ -1162,7 +1148,7 @@ export function InboxClient({
     };
 
     const handleStatusEvent = (ev: MessageEvent) => {
-      const payload = unwrapEventPayload(ev);
+      const payload = parseRealtimeEventPayload(ev);
       const targetConvId = payload.conversationId ? String(payload.conversationId) : null;
       const nextStatus = payload.status ? String(payload.status) : null;
       const targetMsgId = payload.messageId ? String(payload.messageId) : null;
@@ -1220,12 +1206,14 @@ export function InboxClient({
       }
     };
 
-    es.addEventListener("message:new", handleRealtimeRefresh as EventListener);
-    es.addEventListener("note:new", handleRealtimeRefresh as EventListener);
-    es.addEventListener("message:status", handleStatusEvent as EventListener);
-    es.addEventListener("conversation:resolved", handleRealtimeRefresh as EventListener);
-    es.addEventListener("conversation:assigned", handleRealtimeRefresh as EventListener);
-    es.addEventListener("conversation:escalated", handleRealtimeRefresh as EventListener);
+    const unsubs = [
+      subscribeRealtimeEvent("message:new", handleRealtimeRefresh),
+      subscribeRealtimeEvent("note:new", handleRealtimeRefresh),
+      subscribeRealtimeEvent("message:status", handleStatusEvent),
+      subscribeRealtimeEvent("conversation:resolved", handleRealtimeRefresh),
+      subscribeRealtimeEvent("conversation:assigned", handleRealtimeRefresh),
+      subscribeRealtimeEvent("conversation:escalated", handleRealtimeRefresh),
+    ];
 
     const poll = setInterval(() => {
       void refreshThreadsSilently(false);
@@ -1235,7 +1223,7 @@ export function InboxClient({
     }, 20000);
 
     return () => {
-      es.close();
+      unsubs.forEach((fn) => fn());
       clearInterval(poll);
       if (threadRefreshTimerRef.current) {
         clearTimeout(threadRefreshTimerRef.current);

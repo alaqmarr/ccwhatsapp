@@ -3763,69 +3763,71 @@ export async function fetchWebsiteEnquiriesForCustomer(
   const emailVal = phoneDigitsOrEmail.includes("@") ? phoneDigitsOrEmail.trim() : "";
   if (last10.length < 7 && !emailVal) return [];
 
+  const ccClient = getMainCatalogClient();
+  const ceClient = getClassicEdgeClient();
+
+  const [ccRes, ceRes] = await Promise.all([
+    ccClient
+      ? ccClient
+          .execute({
+            sql: `
+              SELECT id, name, email, phone, message, source, status, createdAt
+              FROM Enquiry
+              WHERE (? != '' AND phone LIKE ?) OR (? != '' AND LOWER(email) = LOWER(?))
+              ORDER BY createdAt DESC
+              LIMIT 6
+            `,
+            args: [last10, `%${last10}%`, emailVal, emailVal],
+          })
+          .catch(() => null)
+      : Promise.resolve(null),
+    ceClient
+      ? ceClient
+          .execute({
+            sql: `
+              SELECT id, name, email, phone, message, productName, repliedAt, createdAt
+              FROM Enquiry
+              WHERE (? != '' AND phone LIKE ?) OR (? != '' AND LOWER(email) = LOWER(?))
+              ORDER BY createdAt DESC
+              LIMIT 6
+            `,
+            args: [last10, `%${last10}%`, emailVal, emailVal],
+          })
+          .catch(() => null)
+      : Promise.resolve(null),
+  ]);
+
   const combined: MainWebsiteEnquiry[] = [];
 
-  // 1. Classic Concepts (`classicconcepts.in`) enquiries
-  try {
-    const ccClient = getMainCatalogClient();
-    if (ccClient) {
-      const res = await ccClient.execute({
-        sql: `
-          SELECT id, name, email, phone, message, source, status, createdAt
-          FROM Enquiry
-          WHERE (? != '' AND phone LIKE ?) OR (? != '' AND LOWER(email) = LOWER(?))
-          ORDER BY createdAt DESC
-          LIMIT 6
-        `,
-        args: [last10, `%${last10}%`, emailVal, emailVal],
+  if (ccRes) {
+    for (const r of ccRes.rows) {
+      combined.push({
+        id: `cc_${String(r.id)}`,
+        name: String(r.name || ""),
+        email: String(r.email || ""),
+        phone: String(r.phone || ""),
+        message: String(r.message || ""),
+        source: `classicconcepts.in (${String(r.source || "Website")})`,
+        status: String(r.status || "New"),
+        createdAt: String(r.createdAt || ""),
       });
-      for (const r of res.rows) {
-        combined.push({
-          id: `cc_${String(r.id)}`,
-          name: String(r.name || ""),
-          email: String(r.email || ""),
-          phone: String(r.phone || ""),
-          message: String(r.message || ""),
-          source: `classicconcepts.in (${String(r.source || "Website")})`,
-          status: String(r.status || "New"),
-          createdAt: String(r.createdAt || ""),
-        });
-      }
     }
-  } catch {
-    // Non-blocking
   }
 
-  // 2. Classic Edge 53 (`classicedge53.com`) machine enquiries
-  try {
-    const ceClient = getClassicEdgeClient();
-    if (ceClient) {
-      const res = await ceClient.execute({
-        sql: `
-          SELECT id, name, email, phone, message, productName, repliedAt, createdAt
-          FROM Enquiry
-          WHERE (? != '' AND phone LIKE ?) OR (? != '' AND LOWER(email) = LOWER(?))
-          ORDER BY createdAt DESC
-          LIMIT 6
-        `,
-        args: [last10, `%${last10}%`, emailVal, emailVal],
+  if (ceRes) {
+    for (const r of ceRes.rows) {
+      const prod = r.productName ? String(r.productName) : "";
+      combined.push({
+        id: `ce_${String(r.id)}`,
+        name: String(r.name || ""),
+        email: String(r.email || ""),
+        phone: String(r.phone || ""),
+        message: prod ? `[Machine: ${prod}] ${String(r.message || "")}` : String(r.message || ""),
+        source: `classicedge53.com${prod ? ` (${prod})` : ""}`,
+        status: r.repliedAt ? "Replied" : "New",
+        createdAt: String(r.createdAt || ""),
       });
-      for (const r of res.rows) {
-        const prod = r.productName ? String(r.productName) : "";
-        combined.push({
-          id: `ce_${String(r.id)}`,
-          name: String(r.name || ""),
-          email: String(r.email || ""),
-          phone: String(r.phone || ""),
-          message: prod ? `[Machine: ${prod}] ${String(r.message || "")}` : String(r.message || ""),
-          source: `classicedge53.com${prod ? ` (${prod})` : ""}`,
-          status: r.repliedAt ? "Replied" : "New",
-          createdAt: String(r.createdAt || ""),
-        });
-      }
     }
-  } catch {
-    // Non-blocking
   }
 
   combined.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -3835,63 +3837,67 @@ export async function fetchWebsiteEnquiriesForCustomer(
 export async function fetchAllEcosystemWebsiteEnquiries(
   limit = 500
 ): Promise<MainWebsiteEnquiry[]> {
+  const ccClient = getMainCatalogClient();
+  const ceClient = getClassicEdgeClient();
+
+  const [ccRes, ceRes] = await Promise.all([
+    ccClient
+      ? ccClient
+          .execute({
+            sql: `SELECT id, name, email, phone, message, source, status, createdAt
+                  FROM Enquiry
+                  WHERE phone IS NOT NULL AND TRIM(phone) != ''
+                  ORDER BY createdAt DESC
+                  LIMIT ?`,
+            args: [limit],
+          })
+          .catch(() => null)
+      : Promise.resolve(null),
+    ceClient
+      ? ceClient
+          .execute({
+            sql: `SELECT id, name, email, phone, message, productName, repliedAt, createdAt
+                  FROM Enquiry
+                  WHERE phone IS NOT NULL AND TRIM(phone) != ''
+                  ORDER BY createdAt DESC
+                  LIMIT ?`,
+            args: [limit],
+          })
+          .catch(() => null)
+      : Promise.resolve(null),
+  ]);
+
   const combined: MainWebsiteEnquiry[] = [];
 
-  try {
-    const ccClient = getMainCatalogClient();
-    if (ccClient) {
-      const res = await ccClient.execute({
-        sql: `SELECT id, name, email, phone, message, source, status, createdAt
-              FROM Enquiry
-              WHERE phone IS NOT NULL AND TRIM(phone) != ''
-              ORDER BY createdAt DESC
-              LIMIT ?`,
-        args: [limit],
+  if (ccRes) {
+    for (const r of ccRes.rows) {
+      combined.push({
+        id: `cc_${String(r.id)}`,
+        name: String(r.name || ""),
+        email: String(r.email || ""),
+        phone: String(r.phone || ""),
+        message: String(r.message || ""),
+        source: `classicconcepts.in`,
+        status: String(r.status || "New"),
+        createdAt: String(r.createdAt || ""),
       });
-      for (const r of res.rows) {
-        combined.push({
-          id: `cc_${String(r.id)}`,
-          name: String(r.name || ""),
-          email: String(r.email || ""),
-          phone: String(r.phone || ""),
-          message: String(r.message || ""),
-          source: `classicconcepts.in`,
-          status: String(r.status || "New"),
-          createdAt: String(r.createdAt || ""),
-        });
-      }
     }
-  } catch {
-    // Non-blocking
   }
 
-  try {
-    const ceClient = getClassicEdgeClient();
-    if (ceClient) {
-      const res = await ceClient.execute({
-        sql: `SELECT id, name, email, phone, message, productName, repliedAt, createdAt
-              FROM Enquiry
-              WHERE phone IS NOT NULL AND TRIM(phone) != ''
-              ORDER BY createdAt DESC
-              LIMIT ?`,
-        args: [limit],
+  if (ceRes) {
+    for (const r of ceRes.rows) {
+      const prod = r.productName ? String(r.productName) : "";
+      combined.push({
+        id: `ce_${String(r.id)}`,
+        name: String(r.name || ""),
+        email: String(r.email || ""),
+        phone: String(r.phone || ""),
+        message: prod ? `[Machine: ${prod}] ${String(r.message || "")}` : String(r.message || ""),
+        source: `classicedge53.com`,
+        status: r.repliedAt ? "Replied" : "New",
+        createdAt: String(r.createdAt || ""),
       });
-      for (const r of res.rows) {
-        const prod = r.productName ? String(r.productName) : "";
-        combined.push({
-          id: `ce_${String(r.id)}`,
-          name: String(r.name || ""),
-          email: String(r.email || ""),
-          phone: String(r.phone || ""),
-          message: prod ? `[Machine: ${prod}] ${String(r.message || "")}` : String(r.message || ""),
-          source: `classicedge53.com`,
-          status: r.repliedAt ? "Replied" : "New",
-          createdAt: String(r.createdAt || ""),
-        });
-      }
     }
-  } catch {
-    // Non-blocking
   }
 
   return combined;

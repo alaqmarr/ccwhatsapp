@@ -342,7 +342,6 @@ export async function loadMarketingPayload(user: AuthenticatedUser) {
 
   const mkt = getRawLibSqlClient("marketing");
   const bill = getRawLibSqlClient("billing_ops");
-  await getCachedEcosystemCatalog().catch(() => null);
   const [tplRes, listRes, bcRes, links, pricingRes, queueSettings] =
     await Promise.all([
       mkt.execute(`SELECT * FROM templates ORDER BY created_at DESC`),
@@ -351,6 +350,7 @@ export async function loadMarketingPayload(user: AuthenticatedUser) {
       listCustomAdminLinks(),
       bill.execute(`SELECT * FROM pricing_config WHERE id = 'default' LIMIT 1`),
       getBroadcastQueueSettings(),
+      getCachedEcosystemCatalog().catch(() => null),
     ]);
 
   const pRow = (pricingRes.rows[0] || {}) as Record<string, unknown>;

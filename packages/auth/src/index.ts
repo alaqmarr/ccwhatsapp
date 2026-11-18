@@ -622,6 +622,15 @@ export async function listAllStaffAccounts(): Promise<AuthenticatedUser[]> {
   return res.rows.map((r) => mapUserRow(r as Record<string, unknown>));
 }
 
+export async function countPendingStaffApprovals(): Promise<number> {
+  await ensureDatabasesBootstrapped();
+  const auth = getRawLibSqlClient("core_auth");
+  const res = await auth.execute(
+    `SELECT COUNT(*) AS cnt FROM users WHERE status = 'PENDING_APPROVAL'`
+  );
+  return Number(res.rows[0]?.cnt ?? 0);
+}
+
 export async function createDevAccountByDev(params: {
   creator: AuthenticatedUser;
   name: string;

@@ -854,7 +854,7 @@ function renderWhatsAppInline(
   return nodes;
 }
 
-export function WhatsAppFormattedText({
+export const WhatsAppFormattedText = React.memo(function WhatsAppFormattedText({
   text,
   className = "",
   onPhoneClick,
@@ -973,7 +973,7 @@ export function WhatsAppFormattedText({
       })}
     </div>
   );
-}
+});
 
 export * from "./dates";
 

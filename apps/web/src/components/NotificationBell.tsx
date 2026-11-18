@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { AtSign, Bell, Bot, CheckCheck, PhoneCall } from "lucide-react";
+import { parseRealtimeEventPayload, subscribeRealtimeEvent } from "@/lib/realtime-client";
 
 interface Notif {
   id: string;
@@ -64,19 +65,12 @@ export function NotificationBell({ userId }: { userId: string }) {
 
   useEffect(() => {
     void load();
-    const es = new EventSource("/api/realtime/stream");
-    const onMention = (evt: MessageEvent) => {
-      try {
-        const data = JSON.parse(evt.data);
-        if (data?.payload?.staffId === userId) void load();
-      } catch {
-        // ignore
-      }
-    };
-    es.addEventListener("staff:mention", onMention);
+    const unsub = subscribeRealtimeEvent("staff:mention", (evt: MessageEvent) => {
+      const payload = parseRealtimeEventPayload(evt);
+      if (payload.staffId === userId) void load();
+    });
     return () => {
-      es.removeEventListener("staff:mention", onMention);
-      es.close();
+      unsub();
     };
   }, [load, userId]);
 

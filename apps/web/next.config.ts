@@ -44,8 +44,12 @@ function loadRootEnvFiles() {
 loadRootEnvFiles();
 
 const nextConfig: NextConfig = {
+  compress: true,
   turbopack: {
     root: monorepoRoot,
+  },
+  experimental: {
+    optimizePackageImports: ["lucide-react"],
   },
   outputFileTracingRoot: monorepoRoot,
   allowedDevOrigins: [

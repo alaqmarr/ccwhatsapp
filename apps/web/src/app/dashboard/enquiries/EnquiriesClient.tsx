@@ -21,6 +21,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { formatDateTimeIst } from "@cc/ui";
+import { subscribeRealtimeEvent } from "@/lib/realtime-client";
 
 interface EcosystemEnquiry {
   id: string;
@@ -162,30 +163,11 @@ export function EnquiriesClient({
     }
   }, [initialData, loadEnquiries]);
 
-  // Listen to SSE realtime stream for instant enquiry updates across all 3 sites
+  // Listen to shared SSE realtime stream for instant enquiry updates across all 3 sites
   useEffect(() => {
-    let es: EventSource | null = null;
-    try {
-      es = new EventSource("/api/realtime/stream");
-      es.onmessage = (ev) => {
-        try {
-          const parsed = JSON.parse(ev.data);
-          if (
-            parsed?.event === "enquiry:updated" ||
-            parsed?.type === "enquiry:updated"
-          ) {
-            void loadEnquiries(false);
-          }
-        } catch {
-          // Ignore malformed event
-        }
-      };
-    } catch {
-      // Non-blocking
-    }
-    return () => {
-      if (es) es.close();
-    };
+    return subscribeRealtimeEvent("enquiry:updated", () => {
+      void loadEnquiries(false);
+    });
   }, [loadEnquiries]);
 
   const filteredEnquiries = useMemo(() => {

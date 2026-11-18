@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { subscribeRealtimeEvent } from "@/lib/realtime-client";
 import {
   AlertTriangle,
   Check,
@@ -417,35 +418,38 @@ export function MarketingClient({
     [broadcasts]
   );
 
+  const inspectBroadcastRef = useRef(inspectBroadcast);
+  inspectBroadcastRef.current = inspectBroadcast;
+
   useEffect(() => {
-    const es = new EventSource("/api/realtime/stream");
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const onProgress = () => {
-      void loadMarketingData(true);
-      if (inspectBroadcast) {
-        void loadBroadcastRecipients(inspectBroadcast.id);
-      }
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        void loadMarketingData(true);
+        if (inspectBroadcastRef.current) {
+          void loadBroadcastRecipients(inspectBroadcastRef.current.id);
+        }
+      }, 250);
     };
-    es.addEventListener("broadcast:progress", onProgress);
-    es.addEventListener("template:updated", onProgress);
+    const unsubProgress = subscribeRealtimeEvent("broadcast:progress", onProgress);
+    const unsubTpl = subscribeRealtimeEvent("template:updated", onProgress);
 
     const intervalMs = hasActiveQueue ? 3000 : 15000;
     const poll = setInterval(() => {
       void loadMarketingData(true);
-      if (inspectBroadcast && hasActiveQueue) {
-        void loadBroadcastRecipients(inspectBroadcast.id);
+      if (inspectBroadcastRef.current && hasActiveQueue) {
+        void loadBroadcastRecipients(inspectBroadcastRef.current.id);
       }
     }, intervalMs);
 
     return () => {
-      es.close();
+      unsubProgress();
+      unsubTpl();
+      if (debounceTimer) clearTimeout(debounceTimer);
       clearInterval(poll);
     };
-  }, [
-    hasActiveQueue,
-    inspectBroadcast,
-    loadBroadcastRecipients,
-    loadMarketingData,
-  ]);
+  }, [hasActiveQueue, loadBroadcastRecipients, loadMarketingData]);
 
   const approvedTemplates = useMemo(
     () => templates.filter((t) => t.approvalStatus === "APPROVED"),

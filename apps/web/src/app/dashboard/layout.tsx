@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { listAllStaffAccounts } from "@cc/auth";
+import { countPendingStaffApprovals } from "@cc/auth";
 import { isSuperAdminCapable } from "@cc/rbac";
 import { AppShell } from "@/components/AppShell";
 import { getAppBootContext } from "@/lib/session";
@@ -26,11 +26,9 @@ export default async function DashboardLayout({
     redirect("/onboarding");
   }
 
-  let pendingCount = 0;
-  if (isSuperAdminCapable(user.role)) {
-    const all = await listAllStaffAccounts();
-    pendingCount = all.filter((a) => a.status === "PENDING_APPROVAL").length;
-  }
+  const pendingCount = isSuperAdminCapable(user.role)
+    ? await countPendingStaffApprovals()
+    : 0;
 
   return (
     <AppShell user={user} pendingApprovalsCount={pendingCount}>

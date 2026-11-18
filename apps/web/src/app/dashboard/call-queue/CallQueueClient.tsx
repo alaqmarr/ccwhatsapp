@@ -22,6 +22,7 @@ import {
   Users,
 } from "lucide-react";
 import { formatDateTimeIst } from "@cc/ui";
+import { subscribeRealtimeEvent } from "@/lib/realtime-client";
 
 type AssignmentMode =
   | "AUTO_PERFORMANCE"
@@ -160,10 +161,8 @@ export function CallQueueClient({
     if (!initialData) {
       void loadQueue(false);
     }
-    const es = new EventSource("/api/realtime/stream");
     const refresh = () => void loadQueue(true);
-    es.addEventListener("call_queue:updated", refresh);
-    return () => es.close();
+    return subscribeRealtimeEvent("call_queue:updated", refresh);
   }, [initialData, loadQueue]);
 
   async function uploadMedia(file: File, kind: "audio" | "file") {
