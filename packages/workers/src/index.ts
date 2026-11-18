@@ -46,6 +46,14 @@ export {
   runStaffNoteAnswerJob,
 } from "./staff-notes";
 import { notifyCallbackRequest, requeueStaleStaffNoteJobs, runStaffNoteAnswerJob } from "./staff-notes";
+import {
+  buildOwnerStaffProfile,
+  flushPendingLeadForwards,
+  handleOwnerDeskMessage,
+  handleStaffDeskMessage,
+  isOwnerWhatsAppPhone,
+  isStaffGreeting,
+} from "./owner-desk";
 
 export type BillingMessageCategory =
   | "MARKETING"
@@ -1042,9 +1050,13 @@ async function processInboundAutomationsLocked(
   // 0. Internal Staff Identification & Personalized Staff WhatsApp Desk
   // Checks both `core_auth.users.whatsapp_number` AND `classicconcepts.in` team numbers.
   // --------------------------------------------------------------------------
-  const internalStaff = await resolveInternalStaffCallerByPhone(params.customerPhone).catch(
+  const isOwnerCaller = isOwnerWhatsAppPhone(params.customerPhone);
+  const linkedInternalStaff = await resolveInternalStaffCallerByPhone(params.customerPhone).catch(
     () => null
   );
+  // The owner is always treated as internal, even if his number is not linked to a hub login.
+  const internalStaff =
+    linkedInternalStaff ?? (isOwnerCaller ? buildOwnerStaffProfile(params.customerPhone) : null);
   if (internalStaff) {
     // Ensure internal teammate chats are labeled cleanly & never counted as waiting customer SLAs
     await conv
@@ -1107,6 +1119,21 @@ async function processInboundAutomationsLocked(
         text: formatted,
       });
     };
+
+    // Staff just messaged us, so their 24 hour window is open. Deliver any lead that was waiting on a locked chat.
+    // (A plain "hi" is answered first, then the leads follow.)
+    const flushLeads = () =>
+      flushPendingLeadForwards({
+        staffPhone: params.customerPhone,
+        conversationId: params.conversationId,
+        deliver: sendStaffReply,
+      }).catch((err) => {
+        console.warn("[owner-desk] pending lead delivery failed:", err);
+        return 0;
+      });
+    if (!isStaffGreeting(workingInboundText)) {
+      await flushLeads();
+    }
 
     // Template quick-reply button taps AND typed first-come, first-serve confirmations ("confirm", "accept", "claim")
     const isClaimConfirmationCmd =
@@ -1306,6 +1333,39 @@ async function processInboundAutomationsLocked(
       }
       await sendStaffReply(replyText);
       return;
+    }
+
+    // Owner desk: "please assign to @staff", lead forwarding, and the owner's read-only admin commands.
+    if (isOwnerCaller && !params.isButtonClick) {
+      const ownerHandled = await handleOwnerDeskMessage({
+        conversationId: params.conversationId,
+        ownerPhone: params.customerPhone,
+        text: workingInboundText,
+        currentWaMessageId: params.waMessageId,
+        replyToWaMessageId: params.replyToWaMessageId,
+        hubBase,
+        logAssignment: logConversationAssignment,
+        reply: sendStaffReply,
+      }).catch(async (err) => {
+        console.error("[owner-desk] owner command failed:", err);
+        await sendStaffReply(
+          "Sorry sir, something went wrong while handling that. Nothing was lost. Please try again in a moment."
+        ).catch(() => {});
+        return true;
+      });
+      if (ownerHandled) return;
+    }
+
+    // Staff desk: "hi" unlocks the chat, "my leads" lists forwarded leads.
+    if (!params.isButtonClick) {
+      const staffHandled = await handleStaffDeskMessage({
+        staff: internalStaff,
+        text: workingInboundText,
+        hubBase,
+        flushLeads,
+        reply: sendStaffReply,
+      }).catch(() => false);
+      if (staffHandled) return;
     }
 
     // Fast personalized internal shortcuts: "my chats", "callbacks", "stats", or "check <phone>"
@@ -4842,3 +4902,4 @@ export function ensureBackgroundWorkersRunning(): void {
 }
 
 export * from "./staff-notes";
+export * from "./owner-desk";
