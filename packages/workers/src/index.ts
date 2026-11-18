@@ -888,29 +888,54 @@ async function loadPendingInboundBurst(
   latestInboundId: string | null;
   latestInboundCreatedAt: string | null;
   count: number;
+  burstAttachments: {
+    images: number;
+    documents: number;
+    videos: number;
+    audios: number;
+    unreadable: number;
+  };
 }> {
+  const emptyAttachments = {
+    images: 0,
+    documents: 0,
+    videos: 0,
+    audios: 0,
+    unreadable: 0,
+  };
   const conv = getRawLibSqlClient("conversations");
   const lastOutRes = await conv
     .execute({
-      sql: `SELECT created_at FROM messages
+      sql: `SELECT body, created_at FROM messages
             WHERE conversation_id = ? AND direction = 'OUTBOUND'
-            ORDER BY created_at DESC LIMIT 1`,
+            ORDER BY created_at DESC LIMIT 2`,
       args: [conversationId],
     })
     .catch(() => ({ rows: [] as Record<string, unknown>[] }));
-  const lastOutIso = lastOutRes.rows[0]?.created_at
+
+  let lastOutIso = lastOutRes.rows[0]?.created_at
     ? String(lastOutRes.rows[0].created_at)
     : "";
+  const lastOutBody = String(lastOutRes.rows[0]?.body || "");
+  if (
+    lastOutIso &&
+    /^Noted\s+\*/i.test(lastOutBody.trim()) &&
+    Date.now() - new Date(lastOutIso).getTime() <= 90_000
+  ) {
+    lastOutIso = lastOutRes.rows[1]?.created_at
+      ? String(lastOutRes.rows[1].created_at)
+      : "";
+  }
 
   const pendingRes = await conv
     .execute({
       sql: lastOutIso
-        ? `SELECT id, body, created_at FROM messages
+        ? `SELECT id, body, message_type, created_at FROM messages
            WHERE conversation_id = ? AND direction = 'INBOUND' AND sender_type = 'CUSTOMER' AND created_at > ?
-           ORDER BY created_at ASC LIMIT 12`
-        : `SELECT id, body, created_at FROM messages
+           ORDER BY created_at ASC LIMIT 16`
+        : `SELECT id, body, message_type, created_at FROM messages
            WHERE conversation_id = ? AND direction = 'INBOUND' AND sender_type = 'CUSTOMER'
-           ORDER BY created_at ASC LIMIT 12`,
+           ORDER BY created_at ASC LIMIT 16`,
       args: lastOutIso ? [conversationId, lastOutIso] : [conversationId],
     })
     .catch(() => ({ rows: [] as Record<string, unknown>[] }));
@@ -921,23 +946,51 @@ async function loadPendingInboundBurst(
       latestInboundId: null,
       latestInboundCreatedAt: null,
       count: 0,
+      burstAttachments: emptyAttachments,
     };
   }
 
-  const lines: string[] = [];
+  const textLines: string[] = [];
+  const allLines: string[] = [];
+  const burstAttachments = { ...emptyAttachments };
+
   for (const r of pendingRes.rows) {
     const t = String(r.body || "").trim();
+    const mType = String(r.message_type || "").toUpperCase();
+    if (mType === "IMAGE" || /^\[(?:image|photo|picture|sticker)\b[^\]]*\]$/i.test(t)) {
+      burstAttachments.images++;
+    } else if (mType === "DOCUMENT" || /^\[(?:document|pdf|file)\b[^\]]*\]$/i.test(t)) {
+      burstAttachments.documents++;
+    } else if (mType === "VIDEO" || /^\[(?:video)\b[^\]]*\]$/i.test(t)) {
+      burstAttachments.videos++;
+    } else if (mType === "AUDIO" || /^\[(?:audio|voice\s*note)\b[^\]]*\]$/i.test(t)) {
+      burstAttachments.audios++;
+    } else if (/^\[(?:message|media|attachment|unsupported)\b[^\]]*\]$/i.test(t)) {
+      burstAttachments.unreadable++;
+    }
+
     if (!t) continue;
-    if (lines[lines.length - 1] !== t) {
-      lines.push(t);
+    if (allLines[allLines.length - 1] !== t) {
+      allLines.push(t);
+    }
+    const isBarePlaceholder =
+      /^\[(?:image|photo|picture|sticker|document|pdf|file|video|audio|voice\s*note|message|media|attachment|unsupported)\b[^\]]*\]$/i.test(
+        t
+      );
+    if (!isBarePlaceholder && textLines[textLines.length - 1] !== t) {
+      textLines.push(t);
     }
   }
   const latest = pendingRes.rows[pendingRes.rows.length - 1];
+  const coalescedText =
+    (textLines.length > 0 ? textLines.join("\n").trim() : allLines.join("\n").trim()) ||
+    fallbackText;
   return {
-    coalescedText: lines.join("\n").trim() || fallbackText,
+    coalescedText,
     latestInboundId: latest?.id ? String(latest.id) : null,
     latestInboundCreatedAt: latest?.created_at ? String(latest.created_at) : null,
     count: pendingRes.rows.length,
+    burstAttachments,
   };
 }
 
@@ -972,8 +1025,19 @@ export async function processInboundAutomations(params: {
 
   // Brief debounce window for rapid consecutive WhatsApp bubbles so AI waits and answers all of them once
   const debounceDisabled = process.env.ACRIO_DISABLE_DEBOUNCE === "1";
+  const isShortFragmentOrMedia =
+    Boolean(params.attachment) ||
+    /^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note|sticker|message)\b/i.test(
+      params.inboundText.trim()
+    ) ||
+    params.inboundText.trim().split(/\s+/).filter(Boolean).length <= 4;
+  const defaultDebounceMs = cleanWaId
+    ? isShortFragmentOrMedia
+      ? 2600
+      : 1600
+    : 250;
   const configuredDebounce = Number(
-    process.env.ACRIO_INBOUND_DEBOUNCE_MS ?? (cleanWaId ? 1500 : 250)
+    process.env.ACRIO_INBOUND_DEBOUNCE_MS ?? defaultDebounceMs
   );
   if (!debounceDisabled && !params.isButtonClick && configuredDebounce > 0) {
     await sleepMs(configuredDebounce);
@@ -1024,6 +1088,13 @@ async function processInboundAutomationsLocked(
         latestInboundId: null,
         latestInboundCreatedAt: null,
         count: 1,
+        burstAttachments: {
+          images: 0,
+          documents: 0,
+          videos: 0,
+          audios: 0,
+          unreadable: 0,
+        },
       };
   let workingInboundText = initialBurst.coalescedText || params.inboundText;
 
@@ -2411,7 +2482,8 @@ async function processInboundAutomationsLocked(
   let acrioTurn!: Awaited<ReturnType<typeof runAcrioAutonomousTurn>>;
   let finalReplyIso = new Date().toISOString();
   let lastSeenInboundId = initialBurst.latestInboundId;
-  let activePromptText = params.inboundText;
+  let activePromptText = workingInboundText;
+  let activeBurstAttachments = initialBurst.burstAttachments;
 
   for (let aiAttempt = 0; aiAttempt < 3; aiAttempt++) {
     const seqAtAiStart = inboundTurnSeqMap.get(params.conversationId);
@@ -2484,6 +2556,7 @@ async function processInboundAutomationsLocked(
       forcedFocusSlug,
       replyToMessage,
       attachment: params.attachment || null,
+      burstAttachments: activeBurstAttachments,
     });
 
     // Freshness gate: did the customer send another message while AI was generating this reply?
@@ -2511,6 +2584,7 @@ async function processInboundAutomationsLocked(
         );
         lastSeenInboundId = settledBurst.latestInboundId;
         activePromptText = settledBurst.coalescedText;
+        activeBurstAttachments = settledBurst.burstAttachments;
         continue;
       }
     }

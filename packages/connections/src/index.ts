@@ -11,6 +11,9 @@ import {
   cleanDisplayProductName,
   extractCompactDimensionPairsFromText,
   extractExplicitProductOrModelCodes,
+  extractCustomerCoreNouns,
+  countCoreNounMatches,
+  rankItemsByCustomerCoreNouns,
   loadLiveDatabaseOperationalContext,
   ensureDatabasesBootstrapped,
   extractBudgetConstraintsFromQuery,
@@ -2660,8 +2663,81 @@ export function detectAcrioCustomerProfile(
   };
 }
 
+/**
+ * Normalizes common customer product/material spelling mistakes (such as "Acylirc" -> "Acrylic",
+ * "poduim" -> "podium", "lockr" -> "locker") so intent detection and catalog search never miss a noun.
+ */
+export function normalizeCustomerProductTypos(text: string): string {
+  return String(text || "")
+    .replace(/\b(?:acylirc|acyrlic|acrilic|acrlic|acrylc|ackrylic|acraylic|acrylik|acralic)\b/gi, "acrylic")
+    .replace(/\b(?:poduim|podiym|podiam|podiumn)\b/gi, "podium")
+    .replace(/\b(?:pulpet|pulpitt)\b/gi, "pulpit")
+    .replace(/\b(?:lectren|lecturn)\b/gi, "lectern")
+    .replace(/\b(?:lockr|lokcer|locekr)\b/gi, "locker")
+    .replace(/\b(?:trophie|trofy|tropy)\b/gi, "trophy")
+    .replace(/\b(?:brocher|brochur|brocure)\b/gi, "brochure")
+    .replace(/\b(?:catlog|catalouge)\b/gi, "catalogue");
+}
+
+/**
+ * Separates bare WhatsApp media/webhook placeholders (`[Image]`, `[Message]`, `[Audio]`, `[Document]`, `[Video]`)
+ * from actual customer text lines in a multi-message burst so `[Image]` never pollutes catalog search.
+ */
+export function stripBurstMediaPlaceholders(rawText: string): {
+  cleanText: string;
+  images: number;
+  documents: number;
+  videos: number;
+  audios: number;
+  unreadable: number;
+  totalMediaPlaceholders: number;
+} {
+  const lines = String(rawText || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  let images = 0;
+  let documents = 0;
+  let videos = 0;
+  let audios = 0;
+  let unreadable = 0;
+  const textLines: string[] = [];
+
+  for (const line of lines) {
+    if (/^\[(?:image|photo|picture|sticker)\b[^\]]*\]$/i.test(line)) {
+      images++;
+    } else if (/^\[(?:document|pdf|file)\b[^\]]*\]$/i.test(line)) {
+      documents++;
+    } else if (/^\[(?:video)\b[^\]]*\]$/i.test(line)) {
+      videos++;
+    } else if (/^\[(?:audio|voice\s*note)\b[^\]]*\]$/i.test(line)) {
+      audios++;
+    } else if (/^\[(?:message|media|attachment|unsupported)\b[^\]]*\]$/i.test(line)) {
+      unreadable++;
+    } else {
+      const strippedInline = line
+        .replace(/\[(?:image|photo|video|document|pdf|file|audio|voice\s*note|sticker|message)\]/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (strippedInline) {
+        textLines.push(strippedInline);
+      }
+    }
+  }
+
+  return {
+    cleanText: textLines.join("\n").trim(),
+    images,
+    documents,
+    videos,
+    audios,
+    unreadable,
+    totalMediaPlaceholders: images + documents + videos + audios + unreadable,
+  };
+}
+
 const ACRIO_DOMAIN_PRODUCT_NOUN_RE =
-  /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|showcase|vitrine|frame|frames|easel|signage|signages|sign|signs|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keychains|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|tables|stool|stools|chair|chairs|desk|desks|furniture|interior|interiors|interiora|decor|furnishing|seating|sit|sitting|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|acrylic|perspex|pmma|polycarbonate|lexan)\b/i;
+  /\b(ccpo?[-_\s]?\d{2,4}[a-z]?|yn[-_\s]?jw\d{3,4}|abm[-_\s]?\d{3,4}|ce53[-_\s]?[a-z0-9-]+|cw[-_\s]?\d{3,5}|f[-_\s]?(?:308|500)|sd[-_\s]?\d{3,4}|jw[-_\s]?\d{3,4}|zd[-_\s]?\d{3,4}|d30|ce[-_\s]?(?:lc|cnc|fp|to)\d{2,4}|c[-\s]*podium|podium|podiums|pulpit|pulpits|lectern|lecterns|rostrum|rostrums|trophy|trophies|memento|mementos|award|awards|plaque|plaques|medal|medals|gift|gifts|gifting|corporate\s*gift|corporate\s*clients?|souvenir|souvenirs|paper\s*weight|paperweight|pen\s*stand|stand|stands|holder|holders|riser|risers|menu|qr|tent\s*card|brochure|leaflet|pamphlet|tray|trays|coaster|coasters|tissue|napkin|box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display|displays|cabinet|cabinets|locker|lockers|mobile\s*locker|phone\s*locker|cell\s*phone|mobile|mobiles|phone|phones|tablet|tablets|compartment|compartments|pigeon\s*hole|rack|racks|shelf|shelves|caddy|counter|counters|partition|partitions|shield|shields|sneeze\s*guard|key\s*box|key\s*cabinet|medicine\s*box|first\s*aid\s*box|showcase|vitrine|frame|frames|easel|signage|signages|sign|signs|name\s*plate|name\s*plates|nameplate|nameplates|name\s*board|board|sheet|sheets|rod|rods|tube|tubes|pipe|pipes|ball|balls|sphere|turntable|rotating\s*disc|machine|machines|polisher|polishing|bender|bending|heater|laser|router|cnc|cutter|blade|consumable|consumables|carbide|collet|chiller|compressor|solvent|chloroform|glue|adhesive|buffing|flame|oven|thermoforming|accessor(?:y|ies)|add[-\s]?ons?|hinge|hinges|camlock|camlocks|standoff|standoffs|spacer|spacers|knob|knobs|handle|handles|latch|latches|catch|catches|hasp|staple|screw|screws|bolt|nut|washer|bracket|brackets|photo\s*magnet|radeon|glitter|mirror|metallic|keychain|keychains|keyring|bookmark|globe|hanger|organizer|organiser|dispenser|glove|mask|shoe|table|tables|stool|stools|chair|chairs|desk|desks|furniture|interior|interiors|interiora|decor|furnishing|seating|sit|sitting|donation|suggestion\s*box|ballot|cake\s*stand|cupcake|cosmetic|makeup|lipstick|jewelry|jewellery|watch\s*stand|eyewear|sunglass|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible|photo\s*frame|poster|wall\s*mount|keyway|lockable|custom\s*size|fabrication|cast\s*acrylic|extruded\s*acrylic|acrylic\s*sheet)\b/i;
 
 const ACRIO_FOLLOW_UP_REFINEMENT_RE =
   /\b(under|below|above|over|between|within|around|budget|price|cost|rate|mrp|how\s*much|kitna|kitne|cheaper|cheapest|lowest\s*price|costliest|most\s*expensive|smaller\s*top|save\s*more|lower\s*price|higher\s*budget|increase\s*(?:the\s*)?budget|raise\s*(?:the\s*)?budget|stretch\s*(?:the\s*)?budget|extend\s*(?:the\s*)?budget|without\s*(?:mentioning\s*)?prices?|no\s*prices?|hide\s*prices?|premium|most\s*premium|high\s*end|flagship|best\s*one|best\s*ones|first\s*two|top\s*two|both\s*of\s*them|all\s*(?:three|two|four|five|of\s*them)|rs\.?|inr|₹|\d+\s*(?:k|lac|lacs|lakh|lakhs|cr|crore)\b|\d{4,7}\b|\d+\s*(?:pcs?|pieces?|nos?|units?|qty|quantity|sets?)\b|single\s*piece|just\s*one|transparent|clear|frost|frosted|black|white|gold|golden|silver|stainless|colored|coloured|color|colors|colour|colours|variant|variants|finish|finishes|imag[a-z]*|phot[a-z]*|phto[a-z]*|pics?|pictures?|snaps?|visuals?|videos?|pdf|brochure|catalogue|catalog|dikha[a-z]*|photo\s*bhejo|bhejo\s*photo|close[-\s]*up|how\s+does\s+(?:it|this|that)\s+look|look\s+like|dimension|dimensions|size|sizes|height|width|depth|reading\s*top|top\s*sheet|bottom\s*sheet|front\s*panel|shelf\s*size|logo\s*panel|spec|specs|specification|specifications|feature|features|details?|pillar|pillars|warranty|wheel|wheels|weight|assembly|diy|thick|thickness|available|availability|in\s*stock|stock|delivery|shipping|dispatch|gst|tax|invoice|how\s+to\s+(?:order|buy|book)|order\s+this|buy\s+this|book\s+this|i\s+want\s+this|this\s+one|that\s+one|same\s+one|\d+\s*(?:mm|cm|inch|inches|in|ft)\b|bigger|biggest|larger|largest|smaller|wider|widest|taller|tallest|compact|portable|foldable|wheeled|castor|led|light|backlit|logo|branding|print|engraving|uv\s*print|without\s*logo|no\s*logo|with\s*logo|show\s*more|more\s*options|any\s*more|other\s*options|any\s*other|another\s*model|different\s*size|different\s*model|which\s*one|which\s*of\s*these|alternative|alternatives)\b/i;
@@ -2679,7 +2755,11 @@ export function classifyAcrioInboundIntent(
   rawText: string,
   hasConversationHistory = false
 ): AcrioIntentClassification {
-  const trimmed = String(rawText || "").trim();
+  const strippedBurst = stripBurstMediaPlaceholders(rawText);
+  const effectiveText = normalizeCustomerProductTypos(
+    strippedBurst.cleanText || String(rawText || "")
+  ).trim();
+  const trimmed = effectiveText;
   const lower = trimmed.toLowerCase();
 
   if (!trimmed) {
@@ -3085,7 +3165,10 @@ function detectProductFamilyAndQuery(rawText: string): {
   excludedItemTypes: ("PRODUCT" | "MACHINE" | "CONSUMABLE")[];
   isCorrectionOnly: boolean;
 } {
-  const lower = String(rawText || "").toLowerCase();
+  const cleanedRaw = normalizeCustomerProductTypos(
+    stripBurstMediaPlaceholders(rawText).cleanText || String(rawText || "")
+  ).trim();
+  const lower = cleanedRaw.toLowerCase();
 
   const excludesConsumables =
     /\b(?:not\s+looking\s+for|don'?t\s+want|do\s+not\s+want|no|without|exclude|excluding|skip)\s+(?:any\s+)?(?:tools?|consumables?|blades?|cutters?|solvents?|accessories)\b|\b(?:just|only)\s+machines?\b/i.test(
@@ -3280,14 +3363,14 @@ function detectProductFamilyAndQuery(rawText: string): {
   }
 
   if (
-    /\b(box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display\s*stand|riser|risers|cabinet|showcase|frame|frames|sheet|rod|tube|donation|suggestion\s*box|ballot|cake\s*stand|cosmetic|makeup|jewelry|jewellery|watch\s*stand|eyewear|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible)\b/i.test(
+    /\b(box|boxes|case|cases|cover|covers|enclosure|enclosures|guard|guards|display\s*stand|riser|risers|cabinet|cabinets|locker|lockers|mobile\s*locker|phone\s*locker|cell\s*phone|mobile|mobiles|phone|phones|tablet|tablets|compartment|compartments|pigeon\s*hole|organizer|organiser|rack|racks|shelf|shelves|caddy|counter|counters|partition|partitions|shield|shields|sneeze\s*guard|key\s*box|key\s*cabinet|medicine\s*box|first\s*aid\s*box|showcase|frame|frames|sheet|rod|tube|donation|suggestion\s*box|ballot|cake\s*stand|cosmetic|makeup|jewelry|jewellery|watch\s*stand|eyewear|mobile\s*stand|laptop\s*stand|book\s*stand|quran|rehal|bible)\b/i.test(
       lower
     )
   ) {
     const nounMatch = lower.match(ACRIO_DOMAIN_PRODUCT_NOUN_RE);
     return {
       productFamily: nounMatch ? nounMatch[1].toLowerCase() : "custom_display",
-      primaryProductQuery: rawText.trim(),
+      primaryProductQuery: cleanedRaw || rawText.trim(),
       activeCategory: "Custom Fabrication",
       activeBrand: "CLASSIC_CONCEPTS",
       itemTypeFilter: "PRODUCT",
@@ -3431,18 +3514,28 @@ export function matchProductVariantsByColourTokens(
 export function findCatalogProductsByVariantTokens(
   allItems: MainWebsiteProduct[],
   rawText: string,
-  productFamily?: string | null
+  productFamily?: string | null,
+  activeProductQuery?: string | null
 ): { item: MainWebsiteProduct; matchedVariant: { name: string; price: number | null; imageUrl?: string | null } }[] {
   const queryTokens = extractNormalizedColourTokens(rawText);
   if (queryTokens.length === 0) return [];
-  const lower = rawText.toLowerCase();
+  const lower = normalizeCustomerProductTypos(rawText).toLowerCase();
   const wantsPodium =
     productFamily === "podium" ||
     /\b(podiums?|pulpits?|lecterns?|rostrums?)\b/i.test(lower);
+  const coreNouns = extractCustomerCoreNouns(
+    `${activeProductQuery || ""} ${rawText}`
+  );
+
+  // Never scan the open catalog for random colour variants when the customer hasn't named a product family or core product noun!
+  if (!wantsPodium && coreNouns.length === 0) {
+    return [];
+  }
 
   const results: {
     item: MainWebsiteProduct;
     matchedVariant: { name: string; price: number | null; imageUrl?: string | null };
+    nounHits: number;
   }[] = [];
 
   for (const it of allItems) {
@@ -3453,12 +3546,21 @@ export function findCatalogProductsByVariantTokens(
     ) {
       continue;
     }
+    const nounHits = coreNouns.length > 0 ? countCoreNounMatches(it, coreNouns) : 0;
+    if (!wantsPodium && coreNouns.length > 0 && nounHits === 0) {
+      continue;
+    }
     const matchedVars = matchProductVariantsByColourTokens(it.variants || [], rawText);
     if (matchedVars.length > 0) {
-      results.push({ item: it, matchedVariant: matchedVars[0] });
+      results.push({ item: it, matchedVariant: matchedVars[0], nounHits });
     }
   }
-  return results.sort((a, b) => (a.item.basePrice || 999999) - (b.item.basePrice || 999999));
+  return results
+    .sort((a, b) => {
+      if (b.nounHits !== a.nounHits) return b.nounHits - a.nounHits;
+      return (a.item.basePrice || 999999) - (b.item.basePrice || 999999);
+    })
+    .map(({ item, matchedVariant }) => ({ item, matchedVariant }));
 }
 
 /** True when the customer refers to multiple products from the previous reply ("all three", "both", "these three", "all of them"). */
@@ -4178,8 +4280,12 @@ export function applyTurnToAcrioConversationState(
   base.updatedAt = new Date().toISOString();
   base.switchedThisTurn = false;
 
-  const lower = String(rawText || "").toLowerCase();
-  const profileInfo = detectAcrioCustomerProfile(rawText);
+  const cleanedTurnText = normalizeCustomerProductTypos(
+    stripBurstMediaPlaceholders(rawText).cleanText || String(rawText || "")
+  ).trim();
+  const effectiveRawText = cleanedTurnText || String(rawText || "").trim();
+  const lower = effectiveRawText.toLowerCase();
+  const profileInfo = detectAcrioCustomerProfile(effectiveRawText);
   base.customerProfile = profileInfo.customerProfile;
   base.languageMode = profileInfo.languageMode;
 
@@ -4281,24 +4387,44 @@ export function applyTurnToAcrioConversationState(
     }
   }
 
-  // Non-product informational/greeting turns do not mutate active product state
+  const detected = detectProductFamilyAndQuery(effectiveRawText);
+  const budget = extractBudgetConstraintsFromQuery(effectiveRawText);
+  const turnPrefs = extractPreferencesFromTurn(effectiveRawText);
+  const meta = extractMetadataFromTurn(effectiveRawText);
+  const explicitCodesInTurn = extractExplicitProductOrModelCodes(effectiveRawText);
+  const turnCoreNouns = extractCustomerCoreNouns(effectiveRawText);
+
+  // Non-product informational/greeting turns do not mutate active product state,
+  // EXCEPT when the customer sends a colour/material/size/quantity fragment ("On black acrylic") in a multi-message enquiry!
   if (!intentInfo.requiresProductLookup) {
+    if (turnPrefs.length > 0) {
+      base.preferences = Array.from(new Set([...base.preferences, ...turnPrefs]));
+    }
+    if (budget.maxPrice !== null || budget.minPrice !== null) {
+      base.maxPrice = budget.maxPrice;
+      base.minPrice = budget.minPrice;
+    }
+    if (meta.applicationContext) base.applicationContext = meta.applicationContext;
+    if (meta.dimensionsOrThickness) base.dimensionsOrThickness = meta.dimensionsOrThickness;
+    if (meta.quantity) base.quantity = meta.quantity;
     return base;
   }
 
-  const detected = detectProductFamilyAndQuery(rawText);
-  const budget = extractBudgetConstraintsFromQuery(rawText);
-  const turnPrefs = extractPreferencesFromTurn(rawText);
-  const meta = extractMetadataFromTurn(rawText);
-  const explicitCodesInTurn = extractExplicitProductOrModelCodes(rawText);
   const isComparisonTurn =
     intentInfo.intent === "PRODUCT_COMPARISON" ||
     /\b(compare|comparison|vs\.?|versus|difference\s+between|both|all\s+three|earlier|previous)\b/i.test(lower);
 
   // Detect product switch even within the same family (e.g. CCP054 -> CCP065 -> CCP094) OR from a product to any new distinct item/noun!
+  // However, if the previous state had ZERO core product nouns (e.g. Turn 1 was a fragment like "On black acrylic"),
+  // then Turn 2 ("Acylirc Mobile phone locker photo pls") is completing the same requirement, NOT switching away from a product!
+  const prevCoreNouns = extractCustomerCoreNouns(base.primaryProductQuery || "");
+  const prevHadRealProduct =
+    prevCoreNouns.length > 0 || Boolean(base.focusProductSlug);
+
   const focusCodeNorm = (base.focusProductSlug || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const explicitSwitchedCode =
     !isComparisonTurn &&
+    prevHadRealProduct &&
     explicitCodesInTurn.length >= 1 &&
     Boolean(base.focusProductSlug || base.primaryProductQuery) &&
     !explicitCodesInTurn.some((c) => focusCodeNorm.includes(c.toLowerCase().replace(/[^a-z0-9]/g, "")));
@@ -4309,6 +4435,7 @@ export function applyTurnToAcrioConversationState(
   const switchedToUnseenNoun =
     !isComparisonTurn &&
     !detected.isCorrectionOnly &&
+    prevHadRealProduct &&
     Boolean(distinctNounInTurn) &&
     Boolean(base.primaryProductQuery || base.focusProductSlug) &&
     !prevQueryLower.includes(distinctNounInTurn) &&
@@ -4317,6 +4444,7 @@ export function applyTurnToAcrioConversationState(
   const familyChanged =
     !isComparisonTurn &&
     !detected.isCorrectionOnly &&
+    prevHadRealProduct &&
     Boolean(detected.productFamily) &&
     Boolean(base.productFamily) &&
     detected.productFamily !== base.productFamily &&
@@ -4331,6 +4459,7 @@ export function applyTurnToAcrioConversationState(
 
   const hasExplicitSwitchPhrase =
     !isComparisonTurn &&
+    prevHadRealProduct &&
     (Boolean(detected.primaryProductQuery) || explicitCodesInTurn.length > 0 || Boolean(distinctNounInTurn)) &&
     /\b(now\s+(?:tell|show|what\s+about|check)|what\s+about|how\s+about|instead(?:\s+of)?|switch\s+to|other\s+than\s+that|also\s+(?:show|need|check)|next\s+item|another\s+product)\b/i.test(lower);
 
@@ -4343,7 +4472,9 @@ export function applyTurnToAcrioConversationState(
     base.activeBrand = detected.activeBrand;
     base.activeCategory = detected.activeCategory;
     base.productFamily = detected.productFamily;
-    base.primaryProductQuery = detected.primaryProductQuery || rawText.trim();
+    base.primaryProductQuery =
+      detected.primaryProductQuery ||
+      (turnCoreNouns.length > 0 || explicitCodesInTurn.length > 0 ? effectiveRawText : null);
     base.itemTypeFilter = detected.itemTypeFilter;
     base.excludedItemTypes = [...detected.excludedItemTypes];
     base.minPrice = budget.minPrice;
@@ -4356,6 +4487,14 @@ export function applyTurnToAcrioConversationState(
     base.shownProductSlugs = [];
     base.focusProductSlug = null;
     return base;
+  }
+
+  // If the previous state had no real product noun (e.g. "On black acrylic") and this turn now supplies the product noun
+  // ("Acylirc Mobile phone locker photo pls"), clear any bogus recommendations from the fragment turn while KEEPING preferences!
+  if (!prevHadRealProduct && (turnCoreNouns.length > 0 || Boolean(detected.productFamily))) {
+    base.lastRecommendedProducts = [];
+    base.shownProductSlugs = [];
+    base.focusProductSlug = null;
   }
 
   // If customer explicitly names SKU codes (e.g. "CCP057S and CCP054" or "Tell me about CCP111") without a budget in this turn, clear any stale budget from an earlier turn!
@@ -4385,9 +4524,10 @@ export function applyTurnToAcrioConversationState(
   if (detected.productFamily && (!base.productFamily || base.productFamily === "machine" || detected.productFamily !== base.productFamily)) {
     base.productFamily = detected.productFamily;
   }
-  if (detected.primaryProductQuery && (!base.primaryProductQuery || !detected.isCorrectionOnly)) {
+  if (detected.primaryProductQuery && (!base.primaryProductQuery || !prevHadRealProduct || !detected.isCorrectionOnly)) {
     if (
       !base.primaryProductQuery ||
+      !prevHadRealProduct ||
       detected.productFamily === "podium" ||
       detected.productFamily === "furniture" ||
       detected.productFamily === "signage" ||
@@ -4401,11 +4541,14 @@ export function applyTurnToAcrioConversationState(
   } else if (!base.primaryProductQuery && detected.isCorrectionOnly && detected.activeBrand === "CLASSIC_EDGE_53") {
     base.primaryProductQuery = "acrylic machine";
   } else if (
-    !base.primaryProductQuery &&
-    intentInfo.intent === "PRODUCT_SEARCH" &&
-    rawText.trim()
+    (!base.primaryProductQuery || !prevHadRealProduct) &&
+    (turnCoreNouns.length > 0 || explicitCodesInTurn.length > 0) &&
+    effectiveRawText
   ) {
-    base.primaryProductQuery = rawText.trim();
+    base.primaryProductQuery = effectiveRawText;
+  } else if (prevCoreNouns.length === 0 && base.primaryProductQuery && turnCoreNouns.length === 0) {
+    // Never keep a colour/material-only fragment like "On black acrylic" as primaryProductQuery!
+    base.primaryProductQuery = null;
   }
 
   if (detected.itemTypeFilter) {
@@ -5617,6 +5760,17 @@ export interface AcrioTurnParams {
     mimeType?: string;
     caption?: string;
   } | null;
+  /**
+   * Files the customer sent in the same burst of messages (voice notes, photos, videos, documents), plus messages
+   * WhatsApp could not show. The words of those messages are not part of `inboundText`.
+   */
+  burstAttachments?: {
+    images: number;
+    documents: number;
+    videos: number;
+    audios: number;
+    unreadable: number;
+  } | null;
   /** Set false to get plain text only (website widget, tests). Defaults to true. */
   enableInteractive?: boolean;
   uiSink?: AcrioUiSink;
@@ -5799,7 +5953,10 @@ async function runAcrioAutonomousTurnCore(
     });
   };
 
-  const rawText = params.inboundText.trim();
+  const originalInboundText = params.inboundText.trim();
+  const burstStripped = stripBurstMediaPlaceholders(originalInboundText);
+  const cleanCustomerText = normalizeCustomerProductTypos(burstStripped.cleanText).trim();
+  const rawText = cleanCustomerText || originalInboundText;
   const lower = rawText.toLowerCase();
   const rawFirstToken = (params.customerName || "").split(/[\s(]/)[0] || "";
   const firstName =
@@ -5820,51 +5977,103 @@ async function runAcrioAutonomousTurnCore(
       ? params.persistedState
       : await loadConversationAiState(params.conversationId);
 
-  // 0. Route PDFs, Documents, Audio, Video, or unclear Images/Attachments directly to the human team
+  // 0. Detect reference attachments in this turn / multi-message burst
   const attType = String(params.attachment?.mediaType || "").toUpperCase();
   const attName = String(params.attachment?.filename || "").trim();
-  const isMediaPlaceholder = /^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note|sticker)\b/i.test(rawText);
+  const burstImages = Math.max(
+    burstStripped.images,
+    params.burstAttachments?.images || 0,
+    attType === "IMAGE" ? 1 : 0
+  );
+  const burstDocs = Math.max(
+    burstStripped.documents,
+    params.burstAttachments?.documents || 0,
+    attType === "DOCUMENT" ? 1 : 0
+  );
+  const burstVideos = Math.max(
+    burstStripped.videos,
+    params.burstAttachments?.videos || 0,
+    attType === "VIDEO" ? 1 : 0
+  );
+  const burstAudios = Math.max(
+    burstStripped.audios,
+    params.burstAttachments?.audios || 0,
+    attType === "AUDIO" ? 1 : 0
+  );
+  const hasBurstReferenceMedia =
+    burstImages + burstDocs + burstVideos + burstAudios > 0;
+  const burstMediaLabel = attName
+    ? `*${attName}*`
+    : burstImages > 1
+    ? `your ${burstImages} reference photos`
+    : burstImages === 1
+    ? "your reference photo"
+    : burstDocs > 0
+    ? "your PDF / document"
+    : burstVideos > 0
+    ? "your video"
+    : burstAudios > 0
+    ? "your voice note / audio"
+    : "your attachment";
+
+  const isMediaPlaceholderOnly =
+    cleanCustomerText.length === 0 &&
+    (/^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note|sticker)\b/i.test(
+      originalInboundText
+    ) ||
+      hasBurstReferenceMedia);
   const hasExplicitProductCodeWithImage =
     attType === "IMAGE" &&
-    !isMediaPlaceholder &&
-    (extractExplicitProductOrModelCodes(rawText).length > 0 ||
+    cleanCustomerText.length > 0 &&
+    (extractExplicitProductOrModelCodes(cleanCustomerText).length > 0 ||
       Boolean(params.forcedFocusSlug));
-  const shouldRouteAttachmentToTeam =
-    (Boolean(params.attachment) &&
+
+  // Route immediately at Step 0 ONLY when there is no customer text enquiry alongside the attachment in the burst
+  const shouldRouteAttachmentImmediately =
+    isMediaPlaceholderOnly ||
+    (cleanCustomerText.length === 0 &&
+      Boolean(params.attachment) &&
       (attType === "DOCUMENT" ||
         attType === "VIDEO" ||
         attType === "AUDIO" ||
-        (attType === "IMAGE" && !hasExplicitProductCodeWithImage))) ||
-    isMediaPlaceholder;
+        (attType === "IMAGE" && !hasExplicitProductCodeWithImage)));
 
-  if (shouldRouteAttachmentToTeam) {
-    const fileLabel = attName
-      ? `*${attName}*`
-      : attType === "DOCUMENT"
-      ? "your PDF / document"
-      : attType === "VIDEO"
-      ? "your video"
-      : attType === "AUDIO"
-      ? "your voice note / audio"
-      : "your attachment";
-    const greetLine = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
-    const routeReply = formatWhatsAppOutboundText(
-      `${greetLine}Thank you for sharing ${fileLabel}. I have forwarded this directly to our team so a specialist can review it and reply to you right away.`
-    );
+  if (shouldRouteAttachmentImmediately) {
     const phState = reconstructAcrioConversationState({
       persistedState: storedState,
       recentMessages: history,
-      currentInboundText: rawText,
+      currentInboundText: originalInboundText,
     });
     await saveConversationAiState(params.conversationId, phState);
-    const handoffReason = `Customer shared ${attName || attType || "an attachment"} (${rawText.slice(0, 100)}) which needs team review.`;
+    const activeReqParts: string[] = [];
+    if (phState.preferences.length > 0) {
+      activeReqParts.push(phState.preferences.join(" "));
+    }
+    if (phState.primaryProductQuery) {
+      activeReqParts.push(
+        phState.primaryProductQuery
+          .replace(/\b(photo|photos|image|images|pic|pics|pls|please|share|send|show)\b/gi, "")
+          .replace(/\s+/g, " ")
+          .trim()
+      );
+    }
+    const activeReqSummary = activeReqParts.join(" ").trim();
+    const forRequirementClause =
+      activeReqSummary && extractCustomerCoreNouns(activeReqSummary).length > 0
+        ? ` for your *${activeReqSummary}* requirement`
+        : "";
+    const greetLine = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+    const routeReply = formatWhatsAppOutboundText(
+      `${greetLine}Thank you for sharing ${burstMediaLabel}${forRequirementClause}. I have forwarded this directly to our team so a specialist can review it and reply to you right away.`
+    );
+    const handoffReason = `Customer shared ${attName || burstMediaLabel}${forRequirementClause} (${originalInboundText.slice(0, 100)}) which needs team review.`;
     addStep("Routed attachment directly to team", handoffReason);
     recordAndBroadcastAiLog({
       website: "WHATSAPP_HUB",
       websiteLabel: "Classic Concepts WhatsApp Hub",
       feature: "Autonomous WhatsApp Concierge (ACRIO)",
       actor: params.customerName,
-      question: rawText,
+      question: originalInboundText,
       model: "rule-attachment-team-handoff",
       outcomeSource: "HUMAN_HANDOFF",
       responseCacheStatus: "BYPASS",
@@ -5889,8 +6098,8 @@ async function runAcrioAutonomousTurnCore(
     };
   }
 
-  // Handle non-text "[Message]" fallback deterministically
-  if (/^\[message\]$/i.test(rawText)) {
+  // Handle non-text "[Message]" fallback deterministically when there is no real text in the burst
+  if (cleanCustomerText.length === 0 && /^\[message\]$/i.test(originalInboundText)) {
     const greetLine = alreadyGreeted ? "" : `Hi ${firstName}, welcome to *Classic Concepts*!\n\n`;
     const placeholderReply = `${greetLine}What are you looking to explore today?\n1. *Acrylic Podiums & Pulpits* for stages, auditoriums, or classrooms\n2. *Acrylic Furniture, Chairs & Tables* for interiors or events\n3. *Signages, Trophies & Custom Boxes*\n4. *Classic Edge 53 Machines* for acrylic bending and polishing\n\nReply with *1*, *2*, *3*, *4*, or a model code to get started!`;
     const formattedPlaceholder = formatWhatsAppOutboundText(placeholderReply);
@@ -6084,6 +6293,79 @@ async function runAcrioAutonomousTurnCore(
     "Classified inbound turn intent",
     `intent=${intentInfo.intent}, requiresProductLookup=${intentInfo.requiresProductLookup}, allowRollingFallback=${intentInfo.allowRollingContextFallback} (${intentInfo.reason})`
   );
+
+  // 1c. Material / Colour / Dimension-Only Fragment Guard (e.g. customer sends "On black acrylic" first before typing the product name):
+  // Never guess a random black catalog product (like a bathroom stool)! Save the preference in convState and ask which item they need.
+  const turnCoreNounsEarly = extractCustomerCoreNouns(rawText);
+  const stateCoreNounsEarly = extractCustomerCoreNouns(convState.primaryProductQuery || "");
+  const isPreferenceOnlyFragment =
+    !hasBurstReferenceMedia &&
+    !params.forcedFocusSlug &&
+    !quotedReplyContext &&
+    !intentInfo.needsImmediateHandoff &&
+    turnCoreNounsEarly.length === 0 &&
+    stateCoreNounsEarly.length === 0 &&
+    !convState.focusProductSlug &&
+    convState.lastRecommendedProducts.length === 0 &&
+    extractExplicitProductOrModelCodes(rawText).length === 0 &&
+    intentInfo.intent !== "GREETING" &&
+    intentInfo.intent !== "IDENTITY_META" &&
+    intentInfo.intent !== "COMPANY_INFO" &&
+    intentInfo.intent !== "LEADERSHIP_CONTACT_INFO" &&
+    intentInfo.intent !== "CHAT_HISTORY_META" &&
+    intentInfo.intent !== "HUMAN_HANDOFF_INFO" &&
+    intentInfo.intent !== "OFF_TOPIC" &&
+    intentInfo.intent !== "TOPIC_RESET" &&
+    (convState.preferences.length > 0 ||
+      Boolean(convState.dimensionsOrThickness) ||
+      Boolean(convState.quantity) ||
+      /\b(acrylic|perspex|pmma|polycarbonate|black|white|clear|transparent|frosted|gold|silver|wood|wooden)\b/i.test(
+        rawText
+      ));
+
+  if (isPreferenceOnlyFragment) {
+    await saveConversationAiState(params.conversationId, convState);
+    const notedFinish =
+      convState.preferences.length > 0
+        ? `${convState.preferences.join(" ")} acrylic`
+        : convState.dimensionsOrThickness || rawText;
+    const greetPrefix = alreadyGreeted ? "" : `Hi ${firstName}!\n\n`;
+    const fragmentReply = formatWhatsAppOutboundText(
+      `${greetPrefix}Noted *${notedFinish}*! Which product or custom item are you looking for in this finish (for example a stage podium, mobile phone locker, signage, display stand, box, or furniture)?\n\nJust share the item name or a reference photo and I will share matching options right away.`
+    );
+    addStep(
+      "Saved colour/material fragment preference and prompted for product noun",
+      `noted="${notedFinish}", prefs=[${convState.preferences.join(",")}]`
+    );
+    recordAndBroadcastAiLog({
+      website: "WHATSAPP_HUB",
+      websiteLabel: "Classic Concepts WhatsApp Hub",
+      feature: "Autonomous WhatsApp Concierge (ACRIO)",
+      actor: params.customerName,
+      question: rawText,
+      model: "rule-fragment-preference-capture",
+      outcomeSource: "LIVE_AI",
+      responseCacheStatus: "BYPASS",
+      catalogCacheStatus: "BYPASS",
+      cacheDetails: `Captured colour/material preference (${notedFinish}) without guessing an unrelated product`,
+      productLookupTriggered: false,
+      productLookupQuery: "",
+      productLookupBudget: null,
+      productLookupTotalScanned: 0,
+      productsLookedUp: [],
+      steps,
+      response: fragmentReply,
+      durationMs: Date.now() - started,
+    });
+    return {
+      needsHumanHandoff: false,
+      handoffReason: "",
+      customerReply: fragmentReply,
+      smartCategory: convState.activeCategory || "Custom Fabrication",
+      priority: "NORMAL",
+      conversationState: convState,
+    };
+  }
 
   // 2. Immediate deterministic handoff for explicit human requests, support issues, or order tracking
   if (intentInfo.needsImmediateHandoff) {
@@ -6441,7 +6723,8 @@ async function runAcrioAutonomousTurnCore(
       const variantCatalogHits = findCatalogProductsByVariantTokens(
         allItems,
         rawText,
-        convState.productFamily
+        convState.productFamily,
+        convState.primaryProductQuery
       );
       if (variantCatalogHits.length > 0) {
         contextMatches = variantCatalogHits.map((h) => h.item).slice(0, 8);
@@ -6496,6 +6779,21 @@ async function runAcrioAutonomousTurnCore(
             return true;
           })
           .slice(0, 12);
+      }
+    }
+
+    // Core-noun relevance guard: never keep unrelated colour/material matches (e.g. "Acrylic Bathroom Stool" for "black acrylic mobile phone locker")!
+    if (!pinnedFocusItem && !hasExplicitCodeOrDimInTurn && contextMatches.length > 0 && !aggregateResult) {
+      const coreNounProbe = `${convState.primaryProductQuery || ""} ${rawText}`.trim();
+      const coreRank = rankItemsByCustomerCoreNouns(contextMatches, coreNounProbe);
+      if (coreRank.coreNouns.length > 0) {
+        if (coreRank.anyMatch) {
+          contextMatches = coreRank.ranked.filter(
+            (it) => countCoreNounMatches(it, coreRank.coreNouns) > 0
+          );
+        } else {
+          contextMatches = [];
+        }
       }
     }
 
@@ -6789,7 +7087,17 @@ async function runAcrioAutonomousTurnCore(
     }
   }
 
-  const imageTargetItem = asksForImages
+  const combinedEnquiryProbe = `${convState.primaryProductQuery || ""} ${rawText}`.trim();
+  const isCustomStructureEnquiry =
+    /\b(locker|lockers|mobile\s*locker|phone\s*locker|cupboard|almirah|wardrobe|pigeon\s*hole|partition|sneeze\s*guard|key\s*cabinet|medicine\s*box)\b/i.test(
+      combinedEnquiryProbe
+    ) &&
+    (!top ||
+      !/\b(locker|cupboard|almirah|wardrobe|pigeon\s*hole|partition|sneeze\s*guard|key\s*cabinet|medicine\s*box)\b/i.test(
+        top.name
+      ));
+
+  const candidateImageTargetItem = asksForImages
     ? pinnedFocusItem ||
       (convState.focusProductSlug
         ? allItems.find(
@@ -6807,6 +7115,20 @@ async function runAcrioAutonomousTurnCore(
           ) || null
         : null)
     : null;
+  const turnImgCoreNouns = extractCustomerCoreNouns(rawText);
+  const imageTargetMatchesCoreNouns =
+    Boolean(pinnedFocusItem) ||
+    explicitCodesForImg.length > 0 ||
+    turnImgCoreNouns.length === 0 ||
+    (Boolean(candidateImageTargetItem) &&
+      countCoreNounMatches(candidateImageTargetItem!, turnImgCoreNouns) > 0);
+  const imageTargetItem =
+    candidateImageTargetItem &&
+    imageTargetMatchesCoreNouns &&
+    !isCustomStructureEnquiry &&
+    !hasBurstReferenceMedia
+      ? candidateImageTargetItem
+      : null;
   const resolvedMedia =
     asksForImages && imageTargetItem
       ? resolveProductMediaAttachments(imageTargetItem, rawText, hidePricesActive)
@@ -7037,9 +7359,15 @@ Welcome the customer briefly and ask what they are looking to display, build, or
         const priceSuppressionNote = hidePricesActive
           ? `\nCRITICAL PRICE SUPPRESSION RULE: The customer explicitly asked NOT to mention prices ("without mentioning prices"). DO NOT include any ₹ prices, MRP, or rupee numbers anywhere in your reply!`
           : "";
+        const customStructureNote = isCustomStructureEnquiry
+          ? `\nCRITICAL CUSTOM FABRICATION NOTE: The customer is asking for a custom/multi-compartment acrylic structure ("${combinedEnquiryProbe.replace(/\s+/g, " ")}"${convState.preferences.length ? `, preferences: ${convState.preferences.join(", ")}` : ""}). We custom-fabricate *${convState.preferences.includes("black") ? "Black " : ""}Acrylic Lockers / Multi-Compartment Boxes & Enclosures* to exact compartment counts, lock types, and dimensions! Any ready items listed above are desktop/countertop organizers only; do NOT claim a desktop mobile stand is a full locker!`
+          : "";
+        const burstMediaNote = hasBurstReferenceMedia
+          ? `\nCRITICAL REFERENCE MEDIA NOTE: In this same message burst, the customer also shared ${burstMediaLabel}! Acknowledge both their text requirement AND ${burstMediaLabel} in one unified reply, confirm that you have forwarded their reference photo(s)/file(s) and requirement to our Sales & Fabrication Team for an exact quote, and set "needsHumanHandoff": true.`
+          : "";
         catalogContext = prebuiltGroupedBlock
-          ? `Turn Intent: ${intentInfo.intent}\nMatched Products strictly filtered for the customer's query${budgetLabel && !hidePricesActive ? ` (Budget filter applied: ${budgetLabel})` : ""}:\n${prebuiltGroupedBlock}${deepBlock}${verifiedDeepReference}${priceSuppressionNote}\n\nIMPORTANT: Format your reply as a crisp, scannable Gist (show at most 3 top matching products unless the user asked for all models; for a single product, show a 5-6 line gist with Height, Top size, Build/Warranty, Variants, 2-3 key highlights, and shortlink). Never dump raw database paragraphs!`
-          : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}.${nearestHint} Explain honestly and helpfully without inventing prices, and share the closest starting option or custom fabrication option.`;
+          ? `Turn Intent: ${intentInfo.intent}\nMatched Products strictly filtered for the customer's query${budgetLabel && !hidePricesActive ? ` (Budget filter applied: ${budgetLabel})` : ""}:\n${prebuiltGroupedBlock}${deepBlock}${verifiedDeepReference}${priceSuppressionNote}${customStructureNote}${burstMediaNote}\n\nIMPORTANT: Format your reply as a crisp, scannable Gist (show at most 3 top matching products unless the user asked for all models; for a single product, show a 5-6 line gist with Height, Top size, Build/Warranty, Variants, 2-3 key highlights, and shortlink). Never dump raw database paragraphs!`
+          : `Turn Intent: ${intentInfo.intent}\nNo exact ready-priced product matched "${usedLookupQuery}"${budgetLabel ? ` within budget ${budgetLabel}` : ""}.${nearestHint}${customStructureNote}${burstMediaNote} Explain honestly and helpfully without inventing prices, and share the closest starting option or custom fabrication option.`;
       }
 
       const stateSummaryLine = `Active Conversation Memory: product="${convState.primaryProductQuery || "unspecified"}", family="${convState.productFamily || "open"}", category="${smartCategory}", budget="${hidePricesActive ? "HIDE_PRICES_ACTIVE" : budgetLabel || "open"}", preferCheapest=${Boolean(convState.preferCheapest)}, switchedProductThisTurn=${Boolean(convState.switchedThisTurn)}, customerProfile="${customerProfileInfo.customerProfile}", languageMode="${customerProfileInfo.languageMode}"`;
@@ -7149,23 +7477,28 @@ Return ONLY valid JSON:
             : null);
         if (parsed && typeof parsed.customerReply === "string" && parsed.customerReply.trim()) {
           const handoff =
-            intentInfo.intent === "HUMAN_HANDOFF_INFO" ||
-            intentInfo.intent === "LEADERSHIP_CONTACT_INFO" ||
-            intentInfo.intent === "CHAT_HISTORY_META" ||
-            intentInfo.intent === "MENU_SELECTION" ||
-            intentInfo.intent === "CATEGORY_OVERVIEW" ||
-            intentInfo.intent === "MULTI_ITEM_PROJECT" ||
-            intentInfo.intent === "CONVERSATIONAL_FOLLOWUP" ||
-            intentInfo.intent === "IDENTITY_META" ||
-            intentInfo.intent === "COMPANY_INFO" ||
-            intentInfo.intent === "TOPIC_RESET" ||
-            intentInfo.intent === "GREETING" ||
-            intentInfo.intent === "OFF_TOPIC"
+            hasBurstReferenceMedia
+              ? true
+              : intentInfo.intent === "HUMAN_HANDOFF_INFO" ||
+                intentInfo.intent === "LEADERSHIP_CONTACT_INFO" ||
+                intentInfo.intent === "CHAT_HISTORY_META" ||
+                intentInfo.intent === "MENU_SELECTION" ||
+                intentInfo.intent === "CATEGORY_OVERVIEW" ||
+                intentInfo.intent === "MULTI_ITEM_PROJECT" ||
+                intentInfo.intent === "CONVERSATIONAL_FOLLOWUP" ||
+                intentInfo.intent === "IDENTITY_META" ||
+                intentInfo.intent === "COMPANY_INFO" ||
+                intentInfo.intent === "TOPIC_RESET" ||
+                intentInfo.intent === "GREETING" ||
+                intentInfo.intent === "OFF_TOPIC"
               ? false
               : Boolean(parsed.needsHumanHandoff);
 
           const pingSales =
-            !handoff && (needsSalesTeamPing || Boolean(parsed.needsSalesTeamPing));
+            !handoff &&
+            (needsSalesTeamPing ||
+              isCustomStructureEnquiry ||
+              Boolean(parsed.needsSalesTeamPing));
           const finalPingNote =
             parsed.salesTeamPingNote ||
             salesTeamPingNote ||
@@ -7420,6 +7753,41 @@ Return ONLY valid JSON:
     fallbackReply = `${greetOnce}Got your custom size details! I have pinged our *Sales Team* on this chat with your dimensions so they can share exact sheet thickness, fabrication cost, and dispatch time.`;
     needsSalesTeamPing = true;
     salesTeamPingNote = `ACRIO Consultative Ping: Customer shared 3D custom dimensions for quote ("${rawText.slice(0, 120)}").`;
+    smartCategory = "Custom Fabrication";
+    priority = "HIGH";
+  } else if (hasBurstReferenceMedia || isCustomStructureEnquiry) {
+    const reqSummary = [
+      ...(convState.preferences || []).filter(
+        (p) => !rawText.toLowerCase().includes(p.toLowerCase())
+      ),
+      rawText
+        .replace(/\b(photo|photos|image|images|pic|pics|pls|please|share|send|show)\b/gi, "")
+        .replace(/\s+/g, " ")
+        .trim(),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    const cleanReqLabel = reqSummary || convState.primaryProductQuery || "custom acrylic item";
+    const refMediaLine = hasBurstReferenceMedia
+      ? `Thank you for sharing ${burstMediaLabel} along with your requirement for *${cleanReqLabel}*.\n\n`
+      : `Got your requirement for *${cleanReqLabel}*.\n\n`;
+    const customBuildLine = isCustomStructureEnquiry
+      ? `We custom-fabricate *${convState.preferences.includes("black") ? "Black " : ""}Acrylic Mobile Phone Lockers & Multi-Compartment Cabinets* to your exact compartment count, lock type, and dimensions.`
+      : `We can custom-build this in cast acrylic to your exact size and finish.`;
+    const closestReadyBlock =
+      prebuiltGroupedBlock && contextMatches.length > 0
+        ? `\n\nIf you also want to check our ready tabletop organizers in the meantime:\n${prebuiltGroupedBlock}`
+        : "";
+    if (hasBurstReferenceMedia) {
+      fallbackHandoff = true;
+      fallbackReason = `Customer shared ${burstMediaLabel} with enquiry "${cleanReqLabel.slice(0, 100)}" for team review and custom quote.`;
+      fallbackReply = `${greetOnce}${refMediaLine}${customBuildLine}${closestReadyBlock}\n\nI have forwarded your ${burstImages > 1 ? "reference photos" : "reference details"} and requirement directly to our *Sales & Fabrication Team* so a specialist can share reference locker photos and an exact quote right away.`;
+    } else {
+      needsSalesTeamPing = true;
+      salesTeamPingNote = `ACRIO Consultative Ping: Customer enquired about custom fabrication ("${cleanReqLabel.slice(0, 120)}").`;
+      fallbackReply = `${greetOnce}${refMediaLine}${customBuildLine}${closestReadyBlock}\n\nHow many compartments/slots do you need, and what quantity are you looking for? I have also pinged our *Sales & Fabrication Team* to share reference locker photos and pricing with you here.`;
+    }
     smartCategory = "Custom Fabrication";
     priority = "HIGH";
   } else if (aggregateResult) {

@@ -8441,3 +8441,102 @@ export async function resolveInternalStaffCallerByPhone(
         : "CC_OFFICIAL_TEAM",
   };
 }
+
+
+// ============================================================================
+// CUSTOMER CORE-NOUN RELEVANCE (multi-message enquiries, typos, colour-first fragments)
+// ============================================================================
+
+/** Words that describe an item but do not name it: colours, materials, filler and request words. */
+const CORE_NOUN_IGNORE = new Set([
+  "black", "white", "red", "blue", "green", "yellow", "orange", "pink", "purple", "violet", "maroon", "brown",
+  "gold", "golden", "silver", "grey", "gray", "clear", "transparent", "frosted", "frost", "smoke", "fluorescent",
+  "flourocent", "colour", "colours", "color", "colors", "shade", "shades", "finish", "variant", "variants",
+  "acrylic", "acrylics", "perspex", "plastic", "glass",
+  "photo", "photos", "phot", "photograph", "pics", "pic", "picture", "pictures", "image", "images", "video",
+  "videos", "snap", "snaps", "message", "messages", "attachment", "attached",
+  "design", "designs", "model", "models", "size", "sizes", "type", "types", "kind", "similar", "custom",
+  "customized", "customised", "logo", "print", "printing", "available", "availability", "required", "requirement",
+  "requirements", "enquiry", "inquiry", "regarding", "urgent", "urgently", "quantity", "delivery", "kindly",
+  "looking", "wanted", "interested", "details", "detail", "information", "bhejo", "dikhao", "chahiye",
+  "budget", "under", "below", "above", "within", "around", "increase", "raise", "stretch", "extend", "option",
+  "options", "price", "prices", "cost", "rate", "share", "send", "show", "need", "want", "make", "build",
+  "college", "school", "church", "auditorium", "classroom", "hotel", "office", "stage", "conference", "seminar",
+  "banquet", "hospital", "event", "rupees", "lakh", "lakhs", "thousand",
+]);
+
+function editDistanceAtMost2(a: string, b: string): boolean {
+  if (Math.abs(a.length - b.length) > 2) return false;
+  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+  }
+  return dp[a.length][b.length] <= 2;
+}
+
+/** The nouns that actually name what the customer wants, for example "mobile phone locker" gives mobile, phone, locker. */
+export function extractCustomerCoreNouns(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const cleaned = String(text || "")
+    .toLowerCase()
+    .replace(/\[[^\]]*\]/g, " ")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ");
+  for (const tok of cleaned.split(/\s+/)) {
+    if (tok.length < 4 || /^\d/.test(tok)) continue;
+    if (SEARCH_STOPWORDS.has(tok) || CORE_NOUN_IGNORE.has(tok)) continue;
+    if (editDistanceAtMost2(tok, "acrylic")) continue; // typos such as "acylirc" or "acrilic"
+    if (seen.has(tok)) continue;
+    seen.add(tok);
+    out.push(tok);
+  }
+  return out;
+}
+
+function coreNounVariants(token: string): string[] {
+  const singular = token.replace(/(?:ies)$/, "y").replace(/(?:es|s)$/, "");
+  const base = new Set<string>([token, singular].filter((t) => t.length >= 3));
+  for (const grp of DOMAIN_SYNONYM_GROUPS) {
+    if (grp.some((g) => base.has(g))) for (const g of grp) base.add(g);
+  }
+  return [...base];
+}
+
+/** How many of the customer's core nouns appear in the item's name, category or keywords. */
+export function countCoreNounMatches(item: MainWebsiteProduct, coreNouns: string[]): number {
+  if (coreNouns.length === 0) return 0;
+  const hay = `${item.name || ""} ${item.categoryName || ""} ${item.searchKeywords || ""}`.toLowerCase();
+  let hits = 0;
+  for (const noun of coreNouns) {
+    const variants = coreNounVariants(noun);
+    if (variants.some((v) => new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(hay))) hits += 1;
+  }
+  return hits;
+}
+
+/**
+ * Puts items that match what the customer actually named ahead of items that only match a colour or the word
+ * "acrylic". The order is otherwise unchanged. `anyMatch` is false when nothing in the list matches any named noun.
+ */
+export function rankItemsByCustomerCoreNouns(
+  items: MainWebsiteProduct[],
+  text: string
+): { ranked: MainWebsiteProduct[]; coreNouns: string[]; anyMatch: boolean } {
+  const coreNouns = extractCustomerCoreNouns(text);
+  if (coreNouns.length === 0 || items.length === 0) {
+    return { ranked: items, coreNouns, anyMatch: true };
+  }
+  const scored = items.map((item, idx) => ({ item, idx, hits: countCoreNounMatches(item, coreNouns) }));
+  const anyMatch = scored.some((s) => s.hits > 0);
+  scored.sort((a, b) => b.hits - a.hits || a.idx - b.idx);
+  return { ranked: scored.map((s) => s.item), coreNouns, anyMatch };
+}
