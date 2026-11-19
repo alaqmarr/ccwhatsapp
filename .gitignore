@@ -8,6 +8,11 @@ packages/*/node_modules/
 # Next.js & TypeScript build outputs
 .next/
 apps/*/.next/
+*.next.rollback/
+.deploy-staging/
+.update.lock/
+.node_modules.rollback/
+.build-db/
 out/
 apps/*/out/
 dist/

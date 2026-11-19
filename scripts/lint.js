@@ -41,7 +41,21 @@ function checkFile(filePath) {
 
 function walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (["node_modules", ".next", ".git", ".agents"].includes(entry.name)) continue;
+    if (
+      [
+        "node_modules",
+        ".next",
+        ".git",
+        ".agents",
+        ".deploy-staging",
+        ".update.lock",
+        ".node_modules.rollback",
+        ".submodules.rollback",
+      ].includes(entry.name) ||
+      entry.name.endsWith(".rollback")
+    ) {
+      continue;
+    }
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       walk(full);
