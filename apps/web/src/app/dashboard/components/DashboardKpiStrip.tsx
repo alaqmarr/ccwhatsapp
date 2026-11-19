@@ -15,7 +15,7 @@ export function DashboardKpiStrip({ data }: { data: DashboardData }) {
         hint={`${me.waitingChats} waiting`}
         icon={<MessageSquare className="w-3.5 h-3.5" />}
         tone="emerald"
-        href="/dashboard/inbox"
+        href="/dashboard/inbox?filter=MINE"
       />
       <Kpi
         label="Resolved today"
@@ -44,7 +44,7 @@ export function DashboardKpiStrip({ data }: { data: DashboardData }) {
         hint={`${snapshot.newChatsToday} new today`}
         icon={<MessageSquare className="w-3.5 h-3.5" />}
         tone="emerald"
-        href="/dashboard/inbox"
+        href="/dashboard/inbox?filter=ACTIVE"
       />
       <Kpi
         label="Hot leads"
@@ -67,6 +67,7 @@ export function DashboardKpiStrip({ data }: { data: DashboardData }) {
         hint={`${snapshot.waitingForHuman} need human`}
         icon={<Bot className="w-3.5 h-3.5" />}
         tone="violet"
+        href="/dashboard/inbox?filter=ACRIO"
       />
     </div>
   );

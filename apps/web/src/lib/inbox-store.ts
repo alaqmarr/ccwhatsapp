@@ -6,18 +6,11 @@ import type {
   StagedComposerAttachment,
 } from "@/components/MediaAttachmentTools";
 import type { QuotedMessageRef } from "@/lib/inbox-server-data";
+import type { InboxQuickFilter } from "./inbox-filter-helpers";
 
 export const MY_LEADS_THREAD_ID = "__MY_LEADS__" as const;
 
-export type InboxQuickFilter =
-  | "ALL"
-  | "MINE"
-  | "ACTIVE"
-  | "LEAD_ASSIGNED"
-  | "WAITING"
-  | "ACRIO"
-  | "UNREAD"
-  | "RESOLVED";
+export type { InboxQuickFilter };
 
 export type InboxComposerMode = "REPLY" | "TEMPLATE" | "NOTE";
 export type InboxRightTab = "PROFILE" | "ORDERS" | "NOTES" | "MEDIA" | "HISTORY";
@@ -123,9 +116,20 @@ export const useInboxStore = create<InboxUiState>((set) => ({
 
   setMobilePane: (mobilePane) => set({ mobilePane }),
   setShowRightDrawer: (next) =>
-    set((s) => ({
-      showRightDrawer: typeof next === "function" ? next(s.showRightDrawer) : next,
-    })),
+    set((s) => {
+      const value = typeof next === "function" ? next(s.showRightDrawer) : next;
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(
+            "cc_inbox_right_drawer",
+            value ? "1" : "0"
+          );
+        }
+      } catch {
+        // ignore storage errors
+      }
+      return { showRightDrawer: value };
+    }),
   setRightTab: (rightTab) => set({ rightTab }),
 
   setQuickFilter: (quickFilter) => set({ quickFilter }),

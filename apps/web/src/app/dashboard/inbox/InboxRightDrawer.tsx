@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ArrowLeft, Copy, FileText, Plus, Sparkles } from "lucide-react";
+import { ArrowLeft, ChevronsRight, Copy, FileText, Plus, Sparkles } from "lucide-react";
 import { ElementErrorState, RightDrawerSkeleton } from "@cc/ui";
 import type { NormalizedMessageMedia } from "@/components/MediaAttachmentTools";
 import type {
@@ -82,6 +82,7 @@ export function InboxRightDrawer({
   const mobilePane = useInboxStore((s) => s.mobilePane);
   const setMobilePane = useInboxStore((s) => s.setMobilePane);
   const showRightDrawer = useInboxStore((s) => s.showRightDrawer);
+  const setShowRightDrawer = useInboxStore((s) => s.setShowRightDrawer);
   const rightTab = useInboxStore((s) => s.rightTab);
   const setRightTab = useInboxStore((s) => s.setRightTab);
 
@@ -94,10 +95,29 @@ export function InboxRightDrawer({
           ? "flex w-full min-w-0 h-full overflow-hidden"
           : "hidden"
       } ${
-        showRightDrawer ? "lg:flex" : "lg:hidden"
-      } lg:w-[330px] xl:w-[360px] shrink-0 border-l border-[#d1d7db] bg-white flex-col`}
+        showRightDrawer
+          ? "lg:flex lg:w-[330px] xl:w-[360px] lg:border-l lg:border-[#d1d7db] lg:opacity-100"
+          : "lg:flex lg:w-0 lg:border-l-0 lg:opacity-0 lg:pointer-events-none"
+      } shrink-0 bg-white flex-col overflow-hidden transition-[width,opacity] duration-200`}
     >
-      <div className="lg:hidden h-[50px] px-3.5 bg-[#f0f2f5] border-b border-[#d1d7db] flex items-center justify-between shrink-0">
+      <div className="w-full lg:min-w-[330px] xl:min-w-[360px] flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div className="hidden lg:flex h-[38px] px-3 bg-[#f0f2f5] border-b border-[#d1d7db] items-center justify-between shrink-0">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-[#54656f]">
+            Customer details
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowRightDrawer(false)}
+            title="Hide customer panel (Alt+D)"
+            aria-label="Hide customer details panel"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-[#d1d7db] hover:bg-neutral-50 text-[11px] font-medium text-[#3b4a54] cursor-pointer"
+          >
+            <ChevronsRight className="w-3.5 h-3.5" />
+            <span>Hide</span>
+          </button>
+        </div>
+
+        <div className="lg:hidden h-[50px] px-3.5 bg-[#f0f2f5] border-b border-[#d1d7db] flex items-center justify-between shrink-0">
         <button
           type="button"
           onClick={() => setMobilePane("CHAT")}
@@ -274,6 +294,7 @@ export function InboxRightDrawer({
         ) : (
           <RightDrawerHistoryTab detail={detail} nowMs={nowMs} />
         )}
+      </div>
       </div>
     </div>
   );

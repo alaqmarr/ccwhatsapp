@@ -6,6 +6,10 @@ import {
 import { canAssignToDev, type UserRole } from "@cc/rbac";
 import { ensureBackgroundWorkersRunning } from "@cc/workers";
 import { getConversationDetailServer } from "./detail";
+import {
+  pickInitialConversationId,
+  type InboxQuickFilter,
+} from "../inbox-filter-helpers";
 import type {
   ApprovedTemplateOption,
   ConversationSummary,
@@ -51,6 +55,7 @@ export async function getInitialInboxPayload(params: {
   userName: string;
   userRole: UserRole;
   selectedConversationId?: string;
+  initialFilter?: InboxQuickFilter;
 }): Promise<InitialInboxPayload> {
   await ensureDatabasesBootstrapped();
   ensureBackgroundWorkersRunning();
@@ -232,16 +237,12 @@ export async function getInitialInboxPayload(params: {
     isMine: String(qr.staff_id) === params.userId,
   }));
 
-  const mineFirst = threads.find(
-    (t) =>
-      t.assignedStaffId === params.userId ||
-      t.collaborators.some((c) => c.staffId === params.userId)
-  );
-  const preferredId =
-    params.selectedConversationId &&
-    threads.some((t) => t.id === params.selectedConversationId)
-      ? params.selectedConversationId
-      : mineFirst?.id || threads[0]?.id || null;
+  const preferredId = pickInitialConversationId({
+    threads,
+    currentUserId: params.userId,
+    selectedConversationId: params.selectedConversationId,
+    initialFilter: params.initialFilter,
+  });
 
   const initialDetail = preferredId
     ? await getConversationDetailServer(preferredId, true)
@@ -260,6 +261,8 @@ export async function getInitialInboxPayload(params: {
     threads,
     initialSelectedId: preferredId,
     initialDetail,
+    initialFilter: params.initialFilter,
+    requestedChatId: params.selectedConversationId,
     teams,
     staffList,
     templates,

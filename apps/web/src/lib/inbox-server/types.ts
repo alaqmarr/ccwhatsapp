@@ -3,6 +3,7 @@ import type {
   OrderTrackingRecord,
 } from "@cc/database";
 import type { UserRole } from "@cc/rbac";
+import type { InboxQuickFilter } from "../inbox-filter-helpers";
 
 export interface ConversationSummary {
   id: string;
@@ -260,6 +261,8 @@ export interface InitialInboxPayload {
   threads: ConversationSummary[];
   initialSelectedId: string | null;
   initialDetail: ConversationDetailBundle | null;
+  initialFilter?: InboxQuickFilter;
+  requestedChatId?: string;
   teams: TeamOption[];
   staffList: StaffOption[];
   templates: ApprovedTemplateOption[];

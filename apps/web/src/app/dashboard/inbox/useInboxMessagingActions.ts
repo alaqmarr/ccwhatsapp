@@ -14,7 +14,10 @@ import type {
 } from "@/lib/inbox-server-data";
 import type { InboxComposerMode } from "@/lib/inbox-store";
 import type { VerifiedLocationInfo } from "./ComposerPopovers";
-import { describeNoteResult, hasTeamMention } from "./inbox-helpers";
+import {
+  describeNoteResult,
+  shouldRouteTextAsInternalNote,
+} from "./inbox-helpers";
 import { useInboxMediaAndTemplateActions } from "./useInboxMediaAndTemplateActions";
 
 export interface UseInboxMessagingActionsParams {
@@ -112,15 +115,18 @@ export function useInboxMessagingActions(p: UseInboxMessagingActionsParams) {
     overrideCaption?: string;
     modeOverride?: "REPLY" | "NOTE";
   }) {
+    const rawCaptionText = (
+      opts?.overrideCaption !== undefined ? opts.overrideCaption : p.replyText
+    ).trim();
+    const isAtNote =
+      p.composerMode === "NOTE" ||
+      shouldRouteTextAsInternalNote(rawCaptionText, p.staffList);
     const effectiveMode =
-      opts?.modeOverride || (p.composerMode === "NOTE" ? "NOTE" : "REPLY");
+      opts?.modeOverride || (isAtNote ? "NOTE" : "REPLY");
     const activeAtt =
       opts?.overrideAttachment !== undefined
         ? opts.overrideAttachment
         : p.stagedAttachment;
-    const rawCaptionText = (
-      opts?.overrideCaption !== undefined ? opts.overrideCaption : p.replyText
-    ).trim();
     if (!p.selectedId || (!rawCaptionText && !activeAtt) || !p.detail) return;
 
     const textToSend =
@@ -134,8 +140,16 @@ export function useInboxMessagingActions(p: UseInboxMessagingActionsParams) {
         : "");
     const currentConvId = p.selectedId;
     const activeReplyRef = p.replyingTo;
+    const windowOpenNow = Boolean(
+      activeConv?.windowExpiresAt &&
+        new Date(String(activeConv.windowExpiresAt)).getTime() > Date.now()
+    );
 
     p.setDraft(currentConvId, effectiveMode, "");
+    p.setDraft(currentConvId, p.composerMode, "");
+    if (effectiveMode === "NOTE") {
+      p.setComposerMode(windowOpenNow ? "REPLY" : "TEMPLATE");
+    }
     p.setReplyingTo(null);
     p.setStagedAttachment(null);
     p.setShowAttachmentPicker(false);
@@ -260,10 +274,18 @@ export function useInboxMessagingActions(p: UseInboxMessagingActionsParams) {
 
   async function handleComposerSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const isAtNote =
+      p.composerMode === "NOTE" ||
+      shouldRouteTextAsInternalNote(p.replyText, p.staffList);
     const hasStagedAtt =
-      (p.composerMode === "REPLY" || p.composerMode === "NOTE") &&
-      Boolean(p.stagedAttachment);
+      (p.composerMode === "REPLY" || isAtNote) && Boolean(p.stagedAttachment);
     if (!p.selectedId || (!p.replyText.trim() && !hasStagedAtt) || !p.detail) {
+      return;
+    }
+
+    // Whenever @ is used, save automatically as an internal note and switch right back cleanly
+    if (isAtNote) {
+      await executeComposerSend({ modeOverride: "NOTE" });
       return;
     }
 
@@ -276,25 +298,12 @@ export function useInboxMessagingActions(p: UseInboxMessagingActionsParams) {
       activeConv?.windowExpiresAt &&
         new Date(String(activeConv.windowExpiresAt)).getTime() > Date.now()
     );
-    if (p.composerMode === "REPLY" && !windowOpen) {
+    if (!windowOpen) {
       p.setComposerMode("TEMPLATE");
       p.setTemplateDialogOpen(true);
       p.showToast(
-        "24-hour window is closed. Choose an approved template or switch to Internal Note."
+        "24-hour window is closed. Choose a template, or type @ for a private note."
       );
-      return;
-    }
-
-    if (p.composerMode !== "NOTE" && hasTeamMention(p.replyText, p.staffList)) {
-      const asNote = window.confirm(
-        "This message has an @mention, so it looks meant for your team. Sent as a reply, the CUSTOMER would see it on WhatsApp.\n\nPress OK to switch to a private note (then press Save Note).\nPress Cancel to go back and edit it."
-      );
-      if (asNote) {
-        p.moveDraftToNote(p.replyText);
-        p.showToast(
-          "Switched to Note mode. Press Save Note to post it privately."
-        );
-      }
       return;
     }
 

@@ -8,8 +8,6 @@ import {
   MapPin,
   Paperclip,
   Settings2,
-  Sparkles,
-  StickyNote,
   Truck,
   X,
   Zap,
@@ -71,13 +69,13 @@ export function ComposerToolbarAndBars({
 }) {
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
-        <div className="inline-flex max-w-full overflow-x-auto rounded-lg bg-white p-0.5 border border-[#d1d7db]">
+      <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-1.5 sm:gap-2">
+        <div className="inline-flex max-w-full shrink-0 rounded-lg bg-white p-0.5 border border-[#d1d7db]">
           {windowOpen && (
             <button
               type="button"
               onClick={() => setComposerMode("REPLY")}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer whitespace-nowrap ${
                 composerMode === "REPLY"
                   ? "bg-[#00a884] text-white"
                   : "text-[#54656f] hover:text-[#111b21]"
@@ -94,7 +92,7 @@ export function ComposerToolbarAndBars({
               setComposerMode("TEMPLATE");
               onOpenTemplateDialog();
             }}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer ${
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer whitespace-nowrap ${
               composerMode === "TEMPLATE"
                 ? "bg-neutral-900 text-white"
                 : "text-[#54656f] hover:text-[#111b21]"
@@ -103,28 +101,15 @@ export function ComposerToolbarAndBars({
             <FileText className="w-3 h-3" />
             <span>Send Template</span>
           </button>
-
-          <button
-            type="button"
-            onClick={() => setComposerMode("NOTE")}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer ${
-              composerMode === "NOTE"
-                ? "bg-amber-500 text-white"
-                : "text-[#54656f] hover:text-[#111b21]"
-            }`}
-          >
-            <StickyNote className="w-3 h-3" />
-            <span>Internal Note</span>
-          </button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          {(windowOpen || composerMode === "NOTE") && (
+        <div className="flex items-center gap-1.5 overflow-x-auto max-w-full pb-0.5 sm:pb-0 sm:flex-wrap">
+          {windowOpen && (
             <button
               type="button"
               onClick={onToggleAttachmentPicker}
               title="Attach & send Image, Video, PDF, CAD/Office file, or Catalog Photo/Brochure"
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-semibold cursor-pointer transition ${
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-semibold cursor-pointer transition whitespace-nowrap shrink-0 ${
                 showAttachmentPicker || stagedAttachment
                   ? "bg-[#00a884] text-white border-[#00a884]"
                   : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
@@ -137,7 +122,8 @@ export function ComposerToolbarAndBars({
                     : "text-[#00a884]"
                 }`}
               />
-              <span>Attach Media / PDF</span>
+              <span className="hidden sm:inline">Attach Media / PDF</span>
+              <span className="sm:hidden">Attach</span>
             </button>
           )}
 
@@ -146,7 +132,7 @@ export function ComposerToolbarAndBars({
               type="button"
               onClick={onToggleTrackPopover}
               title="Create & send a dynamic order tracking button (track.ccapl.cc)"
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-medium cursor-pointer transition whitespace-nowrap shrink-0 ${
                 showTrackPopover
                   ? "bg-[#00a884] text-white border-[#00a884]"
                   : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
@@ -162,7 +148,7 @@ export function ComposerToolbarAndBars({
               type="button"
               onClick={onToggleLocationPopover}
               title="Share verified factory address, native WhatsApp pin, and Google Maps link"
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-medium cursor-pointer transition whitespace-nowrap shrink-0 ${
                 showLocationPopover
                   ? "bg-[#00a884] text-white border-[#00a884]"
                   : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
@@ -182,34 +168,19 @@ export function ComposerToolbarAndBars({
               type="button"
               onClick={onToggleShortLinksPicker}
               title="Search & insert verified product short links (ccapl.cc)"
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-medium cursor-pointer transition whitespace-nowrap shrink-0 ${
                 showShortLinksPicker
                   ? "bg-[#00a884] text-white border-[#00a884]"
                   : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
               }`}
             >
               <Link2 className="w-3.5 h-3.5 text-[#00a884]" />
-              <span>Product Links ({customLinksCount})</span>
+              <span className="hidden sm:inline">
+                Product Links ({customLinksCount})
+              </span>
+              <span className="sm:hidden">Links ({customLinksCount})</span>
             </button>
           )}
-
-          <button
-            type="button"
-            onClick={() => {
-              setComposerMode("NOTE");
-              setTimeout(() => {
-                setReplyText((prev) =>
-                  prev.includes("@ACRIO") ? prev : `@ACRIO ${prev}`
-                );
-                composerInputRef.current?.focus();
-              }, 20);
-            }}
-            title="Ask ACRIO a private question in an internal note"
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-violet-200 bg-violet-50 hover:bg-violet-100 text-violet-900 text-xs font-semibold cursor-pointer transition"
-          >
-            <Sparkles className="w-3 h-3 text-violet-700" />
-            <span>Ask @ACRIO</span>
-          </button>
 
           {windowOpen && composerMode === "REPLY" && (
             <div className="inline-flex items-center gap-1">

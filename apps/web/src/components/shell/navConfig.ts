@@ -37,8 +37,19 @@ export interface NavItem {
 }
 
 export interface NavSection {
+  id: string;
   heading: string;
   items: NavItem[];
+}
+
+export function buildPinnedInboxNavItem(user: AuthenticatedUser): NavItem {
+  const isInternalStaff = user.status === "ACTIVE" && user.role !== "CLIENT";
+  return {
+    href: "/dashboard/inbox",
+    label: "Customer Chats",
+    icon: WhatsAppLogoIcon,
+    visible: isInternalStaff,
+  };
 }
 
 export function buildNavSections(
@@ -56,18 +67,13 @@ export function buildNavSections(
 
   return [
     {
+      id: "workspace",
       heading: "Workspace",
       items: [
         {
           href: "/dashboard",
           label: "Dashboard",
           icon: LayoutDashboard,
-          visible: isInternalStaff,
-        },
-        {
-          href: "/dashboard/inbox",
-          label: "Customer Chats",
-          icon: WhatsAppLogoIcon,
           visible: isInternalStaff,
         },
         {
@@ -111,6 +117,7 @@ export function buildNavSections(
       ],
     },
     {
+      id: "campaigns",
       heading: "Campaigns & Flows",
       items: [
         {
@@ -147,6 +154,7 @@ export function buildNavSections(
       ],
     },
     {
+      id: "admin",
       heading: canViewPricing ? "Admin & Costs" : "Administration",
       items: [
         {

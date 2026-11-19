@@ -56,6 +56,19 @@ export function hasTeamMention(text: string, people: { name: string }[]): boolea
   });
 }
 
+/**
+ * True whenever the user writes an @mention or starts an @note trigger
+ * (ignores email addresses such as name@domain.com because @ must follow start/space/paren).
+ */
+export function shouldRouteTextAsInternalNote(
+  text: string,
+  people: { name: string }[]
+): boolean {
+  return (
+    hasTeamMention(text, people) || /(^|[\s(])@[A-Za-z0-9._-]*/.test(text)
+  );
+}
+
 /** Makes @ACRIO and @Teammate names bold inside note text. */
 export function emphasizeMentions(text: string, people: { name: string }[]): string {
   let out = text;

@@ -2,6 +2,7 @@ import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
 import { getCurrentUser } from "@/lib/session";
+import { normalizeInboxQuickFilter } from "@/lib/inbox-filter-helpers";
 import InboxLoading from "./loading";
 import { InboxDataBoundary } from "./InboxDataBoundary";
 
@@ -10,7 +11,7 @@ export const dynamic = "force-dynamic";
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ chat?: string }>;
+  searchParams: Promise<{ chat?: string; filter?: string }>;
 }) {
   const user = await getCurrentUser();
   if (!user) {
@@ -21,6 +22,7 @@ export default async function InboxPage({
   }
 
   const sp = await searchParams;
+  const initialFilter = normalizeInboxQuickFilter(sp?.filter);
 
   return (
     <Suspense fallback={<InboxLoading />}>
@@ -29,6 +31,7 @@ export default async function InboxPage({
         userName={user.name}
         userRole={user.role}
         selectedConversationId={sp?.chat}
+        initialFilter={initialFilter}
       />
     </Suspense>
   );

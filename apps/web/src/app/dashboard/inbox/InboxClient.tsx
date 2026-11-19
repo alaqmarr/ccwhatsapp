@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft } from "lucide-react";
 import {
   extractMessageMedia,
   type NormalizedMessageMedia,
@@ -42,6 +43,12 @@ export function InboxClient({
 
   const mobilePane = useInboxStore((s) => s.mobilePane);
   const setMobilePane = useInboxStore((s) => s.setMobilePane);
+  const showRightDrawer = useInboxStore((s) => s.showRightDrawer);
+  const setShowRightDrawer = useInboxStore((s) => s.setShowRightDrawer);
+  const setQuickFilter = useInboxStore((s) => s.setQuickFilter);
+  const setTeamFilter = useInboxStore((s) => s.setTeamFilter);
+  const setStaffFilter = useInboxStore((s) => s.setStaffFilter);
+  const setSearchQuery = useInboxStore((s) => s.setSearchQuery);
   const bulkMode = useInboxStore((s) => s.bulkMode);
   const setBulkMode = useInboxStore((s) => s.setBulkMode);
   const selectedThreadIds = useInboxStore((s) => s.selectedThreadIds);
@@ -105,6 +112,7 @@ export function InboxClient({
     useState<NormalizedMessageMedia | null>(null);
 
   const lastDraftChatRef = useRef<string | null>(null);
+  const lastAppliedNavKeyRef = useRef<string | null>(null);
   const timelineScrollRef = useRef<((msgId: string) => void) | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -136,7 +144,35 @@ export function InboxClient({
   });
 
   useEffect(() => {
-    initSelectedId(initialData.initialSelectedId);
+    try {
+      const savedDrawer = window.localStorage.getItem("cc_inbox_right_drawer");
+      if (savedDrawer === "0") {
+        setShowRightDrawer(false);
+      } else if (savedDrawer === "1") {
+        setShowRightDrawer(true);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, [setShowRightDrawer]);
+
+  useEffect(() => {
+    const navKey = `${initialData.requestedChatId || ""}|${initialData.initialFilter || ""}`;
+    if (lastAppliedNavKeyRef.current !== navKey) {
+      lastAppliedNavKeyRef.current = navKey;
+      if (initialData.initialFilter) {
+        setQuickFilter(initialData.initialFilter);
+        setTeamFilter("ALL");
+        setStaffFilter("ALL");
+        setSearchQuery("");
+      }
+      if (initialData.requestedChatId || initialData.initialFilter) {
+        setSelectedId(initialData.initialSelectedId);
+        setMobilePane(initialData.requestedChatId ? "CHAT" : "LIST");
+      } else {
+        initSelectedId(initialData.initialSelectedId);
+      }
+    }
     if (initialData.initialSelectedId && initialData.initialDetail) {
       rt.queryClient.setQueryData(
         inboxKeys.detail(initialData.initialSelectedId),
@@ -144,8 +180,20 @@ export function InboxClient({
           existing ?? initialData.initialDetail ?? undefined
       );
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [
+    initialData.requestedChatId,
+    initialData.initialFilter,
+    initialData.initialSelectedId,
+    initialData.initialDetail,
+    initSelectedId,
+    setSelectedId,
+    setMobilePane,
+    setQuickFilter,
+    setTeamFilter,
+    setStaffFilter,
+    setSearchQuery,
+    rt.queryClient,
+  ]);
 
   useEffect(() => {
     if (lastDraftChatRef.current !== (selectedId || null)) {
@@ -386,7 +434,7 @@ export function InboxClient({
   });
 
   return (
-    <div className="h-[calc(100dvh-52px)] lg:h-full w-full flex overflow-hidden bg-[#f0f2f5] select-text">
+    <div className="flex-1 min-h-0 h-full w-full flex overflow-hidden bg-[#f0f2f5] select-text relative">
       {toast && (
         <div className="fixed bottom-20 sm:bottom-5 left-3 right-3 sm:left-auto sm:right-5 sm:max-w-sm z-50 px-3.5 py-2 rounded-lg bg-neutral-900 text-white text-xs font-medium shadow-lg text-center sm:text-left [overflow-wrap:anywhere]">
           {toast}
@@ -598,6 +646,18 @@ export function InboxClient({
           onOpenNewChatWithPhone={handleOpenNewChatWithPhone}
           onOpenMediaPreview={(media) => setPreviewMedia(media)}
         />
+      )}
+
+      {!isMyLeadsSelected && !showRightDrawer && (
+        <button
+          type="button"
+          onClick={() => setShowRightDrawer(true)}
+          title="Slide open customer panel (Alt+D)"
+          aria-label="Show customer details panel"
+          className="hidden lg:flex absolute right-0 top-1/2 -translate-y-1/2 z-30 h-14 w-5 rounded-l-lg bg-white border border-r-0 border-[#d1d7db] shadow-md hover:w-7 hover:bg-[#e7fce3] hover:text-[#008069] text-[#54656f] items-center justify-center cursor-pointer transition-all"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
       )}
 
       <InboxModalsHost

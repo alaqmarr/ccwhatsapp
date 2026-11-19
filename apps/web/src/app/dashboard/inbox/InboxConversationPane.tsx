@@ -357,7 +357,12 @@ export function InboxConversationPane({
             onStartReplyToMessage={startReplyToMessage}
             onStartNoteReplyToMessage={(m) => {
               startReplyToMessage(m);
-              setComposerMode("NOTE");
+              if (!isAssignedToCurrentUser) {
+                setShowNoteForNonOwner(true);
+              }
+              setReplyText((prev) =>
+                prev.trim().startsWith("@") ? prev : `@ACRIO ${prev}`
+              );
               setTimeout(() => composerInputRef.current?.focus(), 20);
             }}
             onJumpToQuotedMessage={jumpToQuotedMessage}

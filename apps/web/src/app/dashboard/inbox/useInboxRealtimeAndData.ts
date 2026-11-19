@@ -10,6 +10,7 @@ import type {
   TeamOption,
 } from "@/lib/inbox-server-data";
 import { subscribeRealtimeEvent } from "@/lib/realtime-client";
+import { matchesInboxQuickFilter } from "@/lib/inbox-filter-helpers";
 import { MY_LEADS_THREAD_ID, useInboxStore } from "@/lib/inbox-store";
 import type { MyLeadItem } from "@/app/api/leads/mine/route";
 import {
@@ -549,35 +550,8 @@ export function useInboxRealtimeAndData({
 
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
-      const isMine =
-        t.assignedStaffId === initialData.currentUserId ||
-        Boolean(
-          t.collaborators?.some(
-            (c) => c.staffId === initialData.currentUserId
-          )
-        );
-
-      if (quickFilter === "MINE") {
-        if (!isMine) return false;
-      } else if (quickFilter === "ACTIVE") {
-        if (t.status === "RESOLVED") return false;
-      } else if (quickFilter === "LEAD_ASSIGNED") {
-        if (
-          t.status === "RESOLVED" ||
-          !t.assignedStaffId ||
-          t.assignedStaffId === "ACRIO"
-        ) {
-          return false;
-        }
-      } else if (quickFilter === "WAITING") {
-        if (t.status === "RESOLVED" || !t.waitingSince) return false;
-      } else if (quickFilter === "ACRIO") {
-        if (t.status === "RESOLVED" || t.assignedStaffId !== "ACRIO")
-          return false;
-      } else if (quickFilter === "UNREAD") {
-        if (t.unreadCount <= 0) return false;
-      } else if (quickFilter === "RESOLVED") {
-        if (t.status !== "RESOLVED") return false;
+      if (!matchesInboxQuickFilter(t, quickFilter, initialData.currentUserId)) {
+        return false;
       }
 
       if (teamFilter !== "ALL" && t.assignedTeamId !== teamFilter) {
