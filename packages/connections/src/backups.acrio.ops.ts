@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import zlib from "node:zlib";
 import {
   ensureDatabasesBootstrapped,
@@ -9,6 +10,8 @@ import {
   snapshotAllDatabasesToFolder,
 } from "@cc/database";
 import { socketHub } from "@cc/sockets";
+
+const gzipAsync = promisify(zlib.gzip);
 
 // ============================================================================
 // 3. GOOGLE DRIVE MIDNIGHT MULTI-DB BACKUP CONNECTOR
@@ -32,6 +35,7 @@ async function getGoogleDriveAccessToken(cfg: {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      signal: AbortSignal.timeout(15000),
     });
     if (res.ok) {
       const json: any = await res.json();
@@ -68,6 +72,7 @@ async function getGoogleDriveAccessToken(cfg: {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      signal: AbortSignal.timeout(15000),
     });
     if (res.ok) {
       const json: any = await res.json();
@@ -108,22 +113,27 @@ export async function executeMultiDatabaseBackup(
     const snap = await snapshotAllDatabasesToFolder(runFolder, includeMain);
 
     // Bundle all SQLite snapshots into a compressed .json.gz archive ready for Google Drive upload
-    const bundlePayload = {
-      createdAt: startedAt,
-      triggerSource,
-      databases: snap.files.map((f) => ({
+    const databases = await Promise.all(
+      snap.files.map(async (f) => ({
         domain: f.domain,
         fileName: path.basename(/*turbopackIgnore: true*/ f.filePath),
         sizeBytes: f.sizeBytes,
-        base64: fs.readFileSync(/*turbopackIgnore: true*/ f.filePath).toString("base64"),
-      })),
+        base64: (
+          await fs.promises.readFile(/*turbopackIgnore: true*/ f.filePath)
+        ).toString("base64"),
+      }))
+    );
+    const bundlePayload = {
+      createdAt: startedAt,
+      triggerSource,
+      databases,
     };
-    const compressedArchive = zlib.gzipSync(
+    const compressedArchive = await gzipAsync(
       Buffer.from(JSON.stringify(bundlePayload), "utf8")
     );
     const archiveName = `ccwhatsapp_libsql_backup_${stamp}.json.gz`;
     const archivePath = path.join(/*turbopackIgnore: true*/ runFolder, archiveName);
-    fs.writeFileSync(/*turbopackIgnore: true*/ archivePath, compressedArchive);
+    await fs.promises.writeFile(/*turbopackIgnore: true*/ archivePath, compressedArchive);
 
     let status: "UPLOADED_TO_GDRIVE" | "SAVED_LOCAL_SNAPSHOT" =
       "SAVED_LOCAL_SNAPSHOT";
@@ -189,12 +199,18 @@ export async function executeMultiDatabaseBackup(
 
     // Prune local snapshots older than retentionDays
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-    for (const entry of fs.readdirSync(/*turbopackIgnore: true*/ backupRoot, { withFileTypes: true })) {
+    const backupEntries = await fs.promises.readdir(/*turbopackIgnore: true*/ backupRoot, {
+      withFileTypes: true,
+    });
+    for (const entry of backupEntries) {
       if (entry.isDirectory() && entry.name.startsWith("snapshot_")) {
         const full = path.join(/*turbopackIgnore: true*/ backupRoot, entry.name);
-        const st = fs.statSync(/*turbopackIgnore: true*/ full);
+        const st = await fs.promises.stat(/*turbopackIgnore: true*/ full);
         if (st.mtimeMs < cutoffMs) {
-          fs.rmSync(/*turbopackIgnore: true*/ full, { recursive: true, force: true });
+          await fs.promises.rm(/*turbopackIgnore: true*/ full, {
+            recursive: true,
+            force: true,
+          });
         }
       }
     }

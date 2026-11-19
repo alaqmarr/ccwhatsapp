@@ -5,7 +5,7 @@ import {
   saveAnthropicBillingConfigToDb,
 } from "@cc/connections";
 import { loadClaudeUsagePayload } from "@/lib/loaders/operations";
-import { getCurrentUser } from "../../../../lib/session";
+import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 

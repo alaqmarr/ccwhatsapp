@@ -151,11 +151,16 @@ export async function callClaudeHaikuMessagesDetailed(params: {
     overrideDisableThinking = false
   ) => {
     const requestedMax = params.maxTokens ?? 4096;
+    const isExplicitLegacyTemp =
+      includeLegacyTemp && typeof params.temperature === "number";
+    const resolvedMaxTokens = overrideDisableThinking
+      ? Math.min(requestedMax, 2048)
+      : isExplicitLegacyTemp && typeof params.maxTokens === "number"
+      ? requestedMax
+      : Math.max(requestedMax, 4096);
     const bodyObj: Record<string, unknown> = {
       model: LOCKED_CLAUDE_MODEL,
-      max_tokens: overrideDisableThinking
-        ? Math.min(requestedMax, 2048)
-        : Math.max(requestedMax, 4096),
+      max_tokens: resolvedMaxTokens,
       system: [
         {
           type: "text",

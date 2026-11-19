@@ -1,22 +1,15 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import dynamic from "next/dynamic";
 import {
-  Activity,
   AlertTriangle,
   Calendar,
   CheckCircle2,
   Clock,
-  Cpu,
   DollarSign,
-  Info,
-  KeyRound,
-  Layers,
   RefreshCw,
-  Save,
   Settings,
-  ShieldCheck,
 } from "lucide-react";
 import {
   CardListSkeleton,
@@ -24,174 +17,22 @@ import {
   MetricStatCard,
   StatCardsSkeleton,
 } from "@cc/ui";
+import {
+  formatInt,
+  formatUsd,
+  statusBadgeMeta,
+  type ClaudeUsageAndSpendComparisonReport,
+  type UsagePresetRange,
+} from "./claude-usage-types";
+import { ClaudeUsageIntegrationCard } from "./ClaudeUsageIntegrationCard";
+import { ClaudeUsageSharedWorkspaceCard } from "./ClaudeUsageSharedWorkspaceCard";
 
-type UsagePresetRange = "mtd" | "7d" | "30d" | "custom";
-type ReportDataStatus =
-  | "LIVE_OK"
-  | "ZERO_USAGE"
-  | "MISSING_CONFIG"
-  | "UNAVAILABLE_ATTRIBUTION"
-  | "STALE_DATA"
-  | "FETCH_ERROR";
-type SpendAttributionMode =
-  | "SEPARATE_WORKSPACES"
-  | "SHARED_WORKSPACE"
-  | "UNCONFIGURED_WORKSPACE";
-
-interface TokenMetrics {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-}
-
-interface KeyModelTokenBreakdown extends TokenMetrics {
-  apiKeyId: string;
-  workspaceId: string | null;
-  model: string;
-}
-
-interface DailyTokenPoint extends TokenMetrics {
-  dateUtc: string;
-}
-
-interface DailySpendPoint {
-  dateUtc: string;
-  amountCents: number;
-  spendUsd: number;
-  byDescription: Record<string, number>;
-}
-
-interface IntegrationBillingIdentity {
-  integration: "ACRIO" | "ACRO";
-  label: string;
-  description: string;
-  runtimeKeyConfigured: boolean;
-  runtimeKeyPrefix: string | null;
-  runtimeKeySource: string;
-  runtimeKeyType: "service_key" | "standard_api_key" | "admin_key" | "missing";
-  organizationId: string | null;
-  organizationName: string | null;
-  adminApiKeyConfigured: boolean;
-  adminApiKeyPrefix: string | null;
-  adminApiKeyEnvVar: string;
-  workspaceId: string | null;
-  workspaceName: string | null;
-  workspaceEnvVar: string;
-  apiKeyId: string | null;
-  apiKeyName: string | null;
-  apiKeyIdEnvVar: string;
-  sharedWithUnrelatedIntegrations: boolean;
-}
-
-interface IntegrationUsageAndSpendSummary {
-  integration: "ACRIO" | "ACRO";
-  identity: IntegrationBillingIdentity;
-  usageStatus: ReportDataStatus;
-  usageStatusMessage: string;
-  spendStatus: ReportDataStatus;
-  spendStatusMessage: string;
-  perKeySpendAvailable: boolean;
-  spendLabel: string;
-  totalSpendUsd: number | null;
-  totalSpendCents: number | null;
-  dailySpend: DailySpendPoint[];
-  tokens: TokenMetrics;
-  byKeyAndModel: KeyModelTokenBreakdown[];
-  dailyTokens: DailyTokenPoint[];
-}
-
-interface SharedWorkspaceSpendSummary {
-  workspaceId: string;
-  workspaceName: string | null;
-  sharedBetweenAcrioAndAcro: boolean;
-  servesUnrelatedIntegrations: boolean;
-  spendLabel: string;
-  totalSpendUsd: number;
-  totalSpendCents: number;
-  dailySpend: DailySpendPoint[];
-  unattributedKeyIds: string[];
-}
-
-interface ClaudeUsageAndSpendComparisonReport {
-  ok: boolean;
-  reportingTimeZone: "UTC";
-  preset: UsagePresetRange;
-  startingAtUtc: string;
-  endingAtUtc: string;
-  generatedAtUtc: string;
-  lastSuccessfulRefreshUtc: string | null;
-  cacheHit: boolean;
-  isStale: boolean;
-  sameOrganization: boolean;
-  spendAttributionMode: SpendAttributionMode;
-  overallStatus: ReportDataStatus;
-  overallStatusMessage: string;
-  acrio: IntegrationUsageAndSpendSummary;
-  acro: IntegrationUsageAndSpendSummary;
-  sharedWorkspaceSpend: SharedWorkspaceSpendSummary | null;
-  organizationTotalSpendUsd: number | null;
-  organizationUnattributedTokens: TokenMetrics;
-  requiredEnvConfigGuide: {
-    missingVariables: string[];
-    instructions: string[];
-  };
-  warnings: string[];
-  error?: string;
-}
-
-function formatUsd(usd: number | null | undefined): string {
-  if (usd === null || usd === undefined || !Number.isFinite(usd)) {
-    return "Unavailable";
+const ClaudeUsageConfigDrawer = dynamic(
+  () => import("./ClaudeUsageConfigDrawer"),
+  {
+    loading: () => <CardListSkeleton rows={2} />,
   }
-  if (usd === 0) return "$0.00";
-  if (usd > 0 && usd < 0.01) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(2)}`;
-}
-
-function formatInt(n: number | null | undefined): string {
-  return Number(n ?? 0).toLocaleString("en-US");
-}
-
-function statusBadgeMeta(status: ReportDataStatus): {
-  label: string;
-  className: string;
-} {
-  switch (status) {
-    case "LIVE_OK":
-      return {
-        label: "Live Anthropic Data",
-        className: "bg-emerald-50 text-emerald-800 border-emerald-200",
-      };
-    case "ZERO_USAGE":
-      return {
-        label: "Zero Usage in Period",
-        className: "bg-slate-100 text-slate-700 border-slate-300",
-      };
-    case "MISSING_CONFIG":
-      return {
-        label: "Missing Configuration",
-        className: "bg-amber-50 text-amber-800 border-amber-200",
-      };
-    case "UNAVAILABLE_ATTRIBUTION":
-      return {
-        label: "Attribution Unavailable",
-        className: "bg-purple-50 text-purple-800 border-purple-200",
-      };
-    case "STALE_DATA":
-      return {
-        label: "Stale Cached Data",
-        className: "bg-orange-50 text-orange-800 border-orange-200",
-      };
-    case "FETCH_ERROR":
-    default:
-      return {
-        label: "Upstream Fetch Error",
-        className: "bg-red-50 text-red-800 border-red-200",
-      };
-  }
-}
+);
 
 export function ClaudeUsageClient({
   initialData,
@@ -221,7 +62,6 @@ export function ClaudeUsageClient({
     Boolean(initialData || initialError)
   );
 
-  // Optional Dev Attribution Mapping Drawer
   const [showConfigDrawer, setShowConfigDrawer] = useState<boolean>(false);
   const [sharedAdminKeyDraft, setSharedAdminKeyDraft] = useState<string>("");
   const [acrioWorkspaceDraft, setAcrioWorkspaceDraft] = useState<string>(
@@ -347,295 +187,8 @@ export function ClaudeUsageClient({
     }
   }
 
-  const renderIntegrationCard = (side: IntegrationUsageAndSpendSummary) => {
-    const isAcrio = side.integration === "ACRIO";
-    const usageBadge = statusBadgeMeta(side.usageStatus);
-    const spendBadge = statusBadgeMeta(side.spendStatus);
-
-    return (
-      <div className="bg-white border border-slate-200 rounded-xl shadow-2xs flex flex-col overflow-hidden">
-        {/* Card Header */}
-        <div
-          className={`px-4 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 ${
-            isAcrio ? "bg-emerald-50/60" : "bg-indigo-50/60"
-          }`}
-        >
-          <div>
-            <div className="flex items-center gap-2">
-              <span
-                className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider ${
-                  isAcrio
-                    ? "bg-emerald-600 text-white"
-                    : "bg-indigo-600 text-white"
-                }`}
-              >
-                {side.integration}
-              </span>
-              <h2 className="text-sm sm:text-base font-extrabold text-slate-900">
-                {side.identity.label}
-              </h2>
-            </div>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              {side.identity.description}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span
-              className={`px-2 py-0.5 rounded border text-[10px] font-bold ${usageBadge.className}`}
-            >
-              Usage: {usageBadge.label}
-            </span>
-            <span
-              className={`px-2 py-0.5 rounded border text-[10px] font-bold ${spendBadge.className}`}
-            >
-              Spend: {spendBadge.label}
-            </span>
-          </div>
-        </div>
-
-        <div className="p-4 space-y-4 flex-1 flex flex-col">
-          {/* Billing & Attribution Identity Metadata */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-3 rounded-lg bg-slate-50 border border-slate-200/80 text-xs">
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                Anthropic Organization
-              </span>
-              <span className="font-mono font-semibold text-slate-800 break-all">
-                {side.identity.organizationName
-                  ? `${side.identity.organizationName} (${side.identity.organizationId})`
-                  : side.identity.organizationId || "Not detected"}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                Runtime Inference Key
-              </span>
-              <span className="font-mono font-semibold text-slate-800">
-                {side.identity.runtimeKeyPrefix || "Not configured"}{" "}
-                <span className="text-[10px] text-slate-500 font-sans">
-                  ({side.identity.runtimeKeyType.replace(/_/g, " ")})
-                </span>
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                Spend Attribution Workspace ID
-              </span>
-              <span className="font-mono font-semibold text-slate-800">
-                {side.identity.workspaceId
-                  ? `${side.identity.workspaceName ? `${side.identity.workspaceName} · ` : ""}${side.identity.workspaceId}`
-                  : `Unconfigured (${side.identity.workspaceEnvVar})`}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                Usage Attribution API Key ID
-              </span>
-              <span className="font-mono font-semibold text-slate-800">
-                {side.identity.apiKeyId
-                  ? `${side.identity.apiKeyName ? `${side.identity.apiKeyName} · ` : ""}${side.identity.apiKeyId}`
-                  : `Unconfigured (${side.identity.apiKeyIdEnvVar})`}
-              </span>
-            </div>
-          </div>
-
-          {/* USD Spend Box */}
-          <div className="p-3.5 rounded-xl border border-slate-200 bg-white space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                {side.spendLabel}
-              </span>
-              <span className="text-[11px] font-mono text-slate-400">
-                Currency: USD
-              </span>
-            </div>
-
-            {side.perKeySpendAvailable && side.totalSpendUsd !== null ? (
-              <div className="flex items-baseline gap-2">
-                <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                  {formatUsd(side.totalSpendUsd)}
-                </span>
-                <span className="text-xs font-mono text-slate-500">
-                  ({side.totalSpendCents?.toFixed(2)}¢ USD cents)
-                </span>
-              </div>
-            ) : side.totalSpendUsd !== null &&
-              side.identity.sharedWithUnrelatedIntegrations ? (
-              <div className="space-y-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-2xl sm:text-3xl font-black text-amber-800">
-                    {formatUsd(side.totalSpendUsd)}
-                  </span>
-                  <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-bold">
-                    Workspace Total (Includes Unrelated Integrations)
-                  </span>
-                </div>
-                <p className="text-[11px] text-amber-800">
-                  Per-key spend is unavailable because this workspace also serves
-                  other API keys.
-                </p>
-              </div>
-            ) : (
-              <div className="py-1">
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-50 border border-purple-200 text-purple-900 text-xs font-bold">
-                  <AlertTriangle className="w-3.5 h-3.5 text-purple-700 shrink-0" />
-                  <span>Per-Key Spend Unavailable</span>
-                </span>
-              </div>
-            )}
-
-            <p className="text-[11px] text-slate-600 leading-relaxed">
-              {side.spendStatusMessage}
-            </p>
-          </div>
-
-          {/* Token Metrics Grid (Input, Output, Cache-Read, Cache-Write) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800">
-                Token Consumption (Anthropic usage_report/messages)
-              </span>
-              <span className="text-[11px] text-slate-500">
-                Total:{" "}
-                <strong className="text-slate-900">
-                  {formatInt(side.tokens.totalTokens)}
-                </strong>
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-                <span className="text-[10px] font-bold uppercase text-slate-400 block">
-                  Uncached Input
-                </span>
-                <span className="text-sm font-extrabold text-slate-900 font-mono">
-                  {formatInt(side.tokens.inputTokens)}
-                </span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-                <span className="text-[10px] font-bold uppercase text-slate-400 block">
-                  Output Tokens
-                </span>
-                <span className="text-sm font-extrabold text-slate-900 font-mono">
-                  {formatInt(side.tokens.outputTokens)}
-                </span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-emerald-50/50 border border-emerald-200/80">
-                <span className="text-[10px] font-bold uppercase text-emerald-700 block">
-                  Cache Read
-                </span>
-                <span className="text-sm font-extrabold text-emerald-900 font-mono">
-                  {formatInt(side.tokens.cacheReadTokens)}
-                </span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-sky-50/50 border border-sky-200/80">
-                <span className="text-[10px] font-bold uppercase text-sky-700 block">
-                  Cache Write
-                </span>
-                <span className="text-sm font-extrabold text-sky-900 font-mono">
-                  {formatInt(side.tokens.cacheWriteTokens)}
-                </span>
-              </div>
-            </div>
-            <p className="text-[11px] text-slate-500">{side.usageStatusMessage}</p>
-          </div>
-
-          {/* Breakdown by API Key & Model */}
-          <div className="space-y-1.5">
-            <h3 className="text-xs font-bold text-slate-800">
-              Tokens by API Key &amp; Model
-            </h3>
-            {side.byKeyAndModel.length === 0 ? (
-              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-500">
-                {side.usageStatus === "ZERO_USAGE"
-                  ? "0 token rows returned for this API key in the selected UTC range."
-                  : "No attributed API key + model rows available."}
-              </div>
-            ) : (
-              <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-left border-collapse text-xs min-w-[560px]">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold uppercase text-slate-500">
-                      <th className="py-2 px-2.5">API Key ID</th>
-                      <th className="py-2 px-2.5">Model</th>
-                      <th className="py-2 px-2.5 text-right">Input</th>
-                      <th className="py-2 px-2.5 text-right">Output</th>
-                      <th className="py-2 px-2.5 text-right">Cache Read</th>
-                      <th className="py-2 px-2.5 text-right">Cache Write</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
-                    {side.byKeyAndModel.map((row) => (
-                      <tr key={`${row.apiKeyId}-${row.model}`}>
-                        <td className="py-1.5 px-2.5 text-slate-800">
-                          {row.apiKeyId}
-                        </td>
-                        <td className="py-1.5 px-2.5 text-indigo-700 font-semibold">
-                          {row.model}
-                        </td>
-                        <td className="py-1.5 px-2.5 text-right">
-                          {formatInt(row.inputTokens)}
-                        </td>
-                        <td className="py-1.5 px-2.5 text-right">
-                          {formatInt(row.outputTokens)}
-                        </td>
-                        <td className="py-1.5 px-2.5 text-right text-emerald-700">
-                          {formatInt(row.cacheReadTokens)}
-                        </td>
-                        <td className="py-1.5 px-2.5 text-right text-sky-700">
-                          {formatInt(row.cacheWriteTokens)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Daily Spend Breakdown (when workspace spend is attributed to this integration) */}
-          {side.dailySpend.length > 0 && (
-            <div className="space-y-1.5">
-              <h3 className="text-xs font-bold text-slate-800">
-                Daily Spend Breakdown (UTC) — {side.spendLabel}
-              </h3>
-              <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-56 overflow-y-auto">
-                <table className="w-full text-left border-collapse text-xs min-w-[560px]">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold uppercase text-slate-500">
-                      <th className="py-2 px-2.5">Date (UTC)</th>
-                      <th className="py-2 px-2.5 text-right">USD Cents</th>
-                      <th className="py-2 px-2.5 text-right">Spend (USD)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
-                    {side.dailySpend.map((d) => (
-                      <tr key={d.dateUtc}>
-                        <td className="py-1.5 px-2.5 text-slate-800">
-                          {d.dateUtc}
-                        </td>
-                        <td className="py-1.5 px-2.5 text-right text-slate-600">
-                          {d.amountCents.toFixed(2)}¢
-                        </td>
-                        <td className="py-1.5 px-2.5 text-right font-bold text-slate-900">
-                          {formatUsd(d.spendUsd)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
   return (
     <div className="p-4 sm:p-6 space-y-5 w-full">
-      {/* Top Header & Reporting Period Bar */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs flex flex-wrap items-center justify-between gap-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2 flex-wrap">
@@ -660,7 +213,6 @@ export function ClaudeUsageClient({
           </p>
         </div>
 
-        {/* Date Preset Selector & Refresh */}
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
             {(
@@ -701,15 +253,12 @@ export function ClaudeUsageClient({
             onClick={() => void fetchReport(preset, customStart, customEnd, true)}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-2xs disabled:opacity-50 cursor-pointer"
           >
-            <RefreshCw
-              className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`}
-            />
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
             <span>{refreshing ? "Refreshing..." : "Refresh Live"}</span>
           </button>
         </div>
       </div>
 
-      {/* Custom Date Range Picker */}
       {preset === "custom" && (
         <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-end gap-3 shadow-2xs">
           <div>
@@ -745,7 +294,6 @@ export function ClaudeUsageClient({
         </div>
       )}
 
-      {/* Reporting Time Zone, Window & Last Successful Refresh Metadata Bar */}
       {report && (
         <div className="bg-slate-900 text-slate-200 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="flex flex-wrap items-center gap-4">
@@ -753,13 +301,8 @@ export function ClaudeUsageClient({
               <Calendar className="w-3.5 h-3.5 text-emerald-400" />
               <span>
                 Window:{" "}
-                <strong className="font-mono text-white">
-                  {report.startingAtUtc}
-                </strong>{" "}
-                →{" "}
-                <strong className="font-mono text-white">
-                  {report.endingAtUtc}
-                </strong>
+                <strong className="font-mono text-white">{report.startingAtUtc}</strong> →{" "}
+                <strong className="font-mono text-white">{report.endingAtUtc}</strong>
               </span>
             </span>
             <span className="px-2 py-0.5 rounded bg-white/10 text-emerald-300 font-mono text-[11px] font-bold">
@@ -804,7 +347,6 @@ export function ClaudeUsageClient({
         />
       )}
 
-      {/* Overall Status & Configuration Banner when Admin Key or Workspace/Key IDs are missing */}
       {report && report.overallStatus !== "LIVE_OK" && (
         <div
           className={`p-4 rounded-xl border text-xs space-y-2 ${
@@ -822,7 +364,7 @@ export function ClaudeUsageClient({
             <div className="font-bold text-sm flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0" />
               <span>
-                Status: {statusBadgeMeta(report.overallStatus).label} —{" "}
+                Status: {statusBadgeMeta(report.overallStatus).label}:{" "}
                 {report.overallStatusMessage}
               </span>
             </div>
@@ -853,146 +395,26 @@ export function ClaudeUsageClient({
         </div>
       )}
 
-      {/* Optional Attribution Config Drawer */}
       {showConfigDrawer && (
-        <form
-          onSubmit={handleSaveAttributionConfig}
-          className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-4"
-        >
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <div>
-              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <KeyRound className="w-4 h-4 text-indigo-600" />
-                <span>
-                  Anthropic Admin API &amp; Workspace / API Key Attribution Settings
-                </span>
-              </h2>
-              <p className="text-[11px] text-slate-500">
-                Stored server-side only in <code>core_auth.db</code> (or set via{" "}
-                <code>.env</code>). Used exclusively for{" "}
-                <code>/v1/organizations/usage_report/messages</code> and{" "}
-                <code>/v1/organizations/cost_report</code>.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowConfigDrawer(false)}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-800"
-            >
-              Close
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-            <div className="md:col-span-3">
-              <label className="block font-bold text-slate-700 mb-1">
-                Anthropic Organization Admin API Key (<code>ANTHROPIC_ORG_ADMIN_API_KEY</code>)
-              </label>
-              <input
-                type="password"
-                value={sharedAdminKeyDraft}
-                onChange={(e) => setSharedAdminKeyDraft(e.target.value)}
-                placeholder="sk-ant-admin01-... (Leave blank to keep existing key)"
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 font-mono text-xs text-slate-900"
-              />
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">
-                Acrio Workspace ID (<code>ACRIO_ANTHROPIC_WORKSPACE_ID</code>)
-              </label>
-              <input
-                type="text"
-                value={acrioWorkspaceDraft}
-                onChange={(e) => setAcrioWorkspaceDraft(e.target.value)}
-                placeholder="wrkspc_01..."
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 font-mono text-xs text-slate-900"
-              />
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">
-                Acrio API Key ID (<code>ACRIO_ANTHROPIC_API_KEY_ID</code>)
-              </label>
-              <input
-                type="text"
-                value={acrioKeyIdDraft}
-                onChange={(e) => setAcrioKeyIdDraft(e.target.value)}
-                placeholder="apikey_01..."
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 font-mono text-xs text-slate-900"
-              />
-            </div>
-
-            <div className="flex items-center pt-5">
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={acrioSharedOthersDraft}
-                  onChange={(e) => setAcrioSharedOthersDraft(e.target.checked)}
-                  className="rounded border-slate-300"
-                />
-                <span className="text-slate-700 font-medium">
-                  Acrio workspace also serves unrelated integrations
-                </span>
-              </label>
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">
-                Acro Workspace ID (<code>ACRO_ANTHROPIC_WORKSPACE_ID</code>)
-              </label>
-              <input
-                type="text"
-                value={acroWorkspaceDraft}
-                onChange={(e) => setAcroWorkspaceDraft(e.target.value)}
-                placeholder="wrkspc_01..."
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 font-mono text-xs text-slate-900"
-              />
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">
-                Acro API Key ID (<code>ACRO_ANTHROPIC_API_KEY_ID</code>)
-              </label>
-              <input
-                type="text"
-                value={acroKeyIdDraft}
-                onChange={(e) => setAcroKeyIdDraft(e.target.value)}
-                placeholder="apikey_01..."
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 font-mono text-xs text-slate-900"
-              />
-            </div>
-
-            <div className="flex items-center pt-5">
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={acroSharedOthersDraft}
-                  onChange={(e) => setAcroSharedOthersDraft(e.target.checked)}
-                  className="rounded border-slate-300"
-                />
-                <span className="text-slate-700 font-medium">
-                  Acro workspace also serves unrelated integrations
-                </span>
-              </label>
-            </div>
-          </div>
-
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={savingConfig}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold cursor-pointer"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>
-                {savingConfig
-                  ? "Saving & Fetching..."
-                  : "Save Attribution Config & Refresh"}
-              </span>
-            </button>
-          </div>
-        </form>
+        <ClaudeUsageConfigDrawer
+          sharedAdminKeyDraft={sharedAdminKeyDraft}
+          setSharedAdminKeyDraft={setSharedAdminKeyDraft}
+          acrioWorkspaceDraft={acrioWorkspaceDraft}
+          setAcrioWorkspaceDraft={setAcrioWorkspaceDraft}
+          acrioKeyIdDraft={acrioKeyIdDraft}
+          setAcrioKeyIdDraft={setAcrioKeyIdDraft}
+          acrioSharedOthersDraft={acrioSharedOthersDraft}
+          setAcrioSharedOthersDraft={setAcrioSharedOthersDraft}
+          acroWorkspaceDraft={acroWorkspaceDraft}
+          setAcroWorkspaceDraft={setAcroWorkspaceDraft}
+          acroKeyIdDraft={acroKeyIdDraft}
+          setAcroKeyIdDraft={setAcroKeyIdDraft}
+          acroSharedOthersDraft={acroSharedOthersDraft}
+          setAcroSharedOthersDraft={setAcroSharedOthersDraft}
+          savingConfig={savingConfig}
+          onClose={() => setShowConfigDrawer(false)}
+          onSave={(e) => void handleSaveAttributionConfig(e)}
+        />
       )}
 
       {loading ? (
@@ -1002,7 +424,6 @@ export function ClaudeUsageClient({
         </div>
       ) : report ? (
         <>
-          {/* Top Summary Stat Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
             <MetricStatCard
               label="Acrio USD Spend"
@@ -1036,75 +457,13 @@ export function ClaudeUsageClient({
             />
           </div>
 
-          {/* Shared Workspace Combined Spend Section (when both integrations share a workspace) */}
           {report.sharedWorkspaceSpend && (
-            <div className="bg-white border-2 border-purple-200 rounded-xl p-4 sm:p-5 shadow-2xs space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-900 text-[10px] font-extrabold uppercase tracking-wider">
-                    Shared Workspace Spend
-                  </span>
-                  <h2 className="text-base font-extrabold text-slate-900 mt-1">
-                    {report.sharedWorkspaceSpend.spendLabel}
-                  </h2>
-                  <p className="text-xs text-slate-600">
-                    Both Acrio and Acro share workspace{" "}
-                    <code className="font-mono font-bold">
-                      {report.sharedWorkspaceSpend.workspaceId}
-                    </code>
-                    . Token usage is separated by API key ID below, while spend is
-                    reported at the workspace level.
-                  </p>
-                </div>
-
-                <div className="text-right">
-                  <div className="text-2xl sm:text-3xl font-black text-purple-900">
-                    {formatUsd(report.sharedWorkspaceSpend.totalSpendUsd)}
-                  </div>
-                  <div className="text-xs font-mono text-slate-500">
-                    ({report.sharedWorkspaceSpend.totalSpendCents.toFixed(2)}¢ USD
-                    cents)
-                  </div>
-                </div>
-              </div>
-
-              {report.sharedWorkspaceSpend.dailySpend.length > 0 && (
-                <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-56 overflow-y-auto">
-                  <table className="w-full text-left border-collapse text-xs min-w-[560px]">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold uppercase text-slate-500">
-                        <th className="py-2 px-3">Date (UTC)</th>
-                        <th className="py-2 px-3 text-right">USD Cents</th>
-                        <th className="py-2 px-3 text-right">
-                          Shared Workspace Spend (USD)
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
-                      {report.sharedWorkspaceSpend.dailySpend.map((d) => (
-                        <tr key={d.dateUtc}>
-                          <td className="py-1.5 px-3 text-slate-800">
-                            {d.dateUtc}
-                          </td>
-                          <td className="py-1.5 px-3 text-right text-slate-600">
-                            {d.amountCents.toFixed(2)}¢
-                          </td>
-                          <td className="py-1.5 px-3 text-right font-bold text-slate-900">
-                            {formatUsd(d.spendUsd)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+            <ClaudeUsageSharedWorkspaceCard shared={report.sharedWorkspaceSpend} />
           )}
 
-          {/* Side-by-Side Comparison Grid: Acrio (Left) vs Acro (Right) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {renderIntegrationCard(report.acrio)}
-            {renderIntegrationCard(report.acro)}
+            <ClaudeUsageIntegrationCard side={report.acrio} />
+            <ClaudeUsageIntegrationCard side={report.acro} />
           </div>
         </>
       ) : null}

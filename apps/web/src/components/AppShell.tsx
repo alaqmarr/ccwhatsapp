@@ -1,40 +1,10 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  BarChart3,
-  BookOpen,
-  Contact2,
-  LayoutDashboard,
-  Truck,
-  Users,
-  Megaphone,
-  FileText,
-  Workflow,
-  UserCheck,
-  IndianRupee,
-  HardDrive,
-  FileCode,
-  ShieldAlert,
-  Cpu,
-  Settings,
-  LogOut,
-  Menu,
-  X,
-  Link2,
-  Loader2,
-  Mail,
-  PhoneCall,
-  Bot,
-} from "lucide-react";
+import { Link2, Loader2, LogOut, Menu, RefreshCw, X } from "lucide-react";
 import type { AuthenticatedUser } from "@cc/auth";
-import {
-  canViewCostBreakdown,
-  isDevRole,
-  isSuperAdminCapable,
-} from "@cc/rbac";
 import {
   AccountStatusBadge,
   ClassicConceptsWordmark,
@@ -44,6 +14,7 @@ import {
   WhatsAppLogoIcon,
 } from "@cc/ui";
 import { NotificationBell } from "@/components/NotificationBell";
+import { buildNavSections } from "@/components/shell/navConfig";
 
 interface BridgeHealthSummary {
   cc3003: boolean;
@@ -52,6 +23,13 @@ interface BridgeHealthSummary {
 }
 
 let cachedBridgeHealth: { expiresAt: number; value: BridgeHealthSummary } | null = null;
+
+function shouldAutoProbeBridge(pathname: string): boolean {
+  return (
+    pathname.startsWith("/dashboard/enquiries") ||
+    pathname.startsWith("/dashboard/dev")
+  );
+}
 
 export function AppShell({
   user,
@@ -66,6 +44,7 @@ export function AppShell({
   const router = useRouter();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [navigatingTo, setNavigatingTo] = useState<string | null>(null);
+  const [checkingBridge, setCheckingBridge] = useState(false);
   const [bridgeSummary, setBridgeSummary] = useState<BridgeHealthSummary>(() =>
     cachedBridgeHealth && cachedBridgeHealth.expiresAt > Date.now()
       ? cachedBridgeHealth.value
@@ -83,199 +62,51 @@ export function AppShell({
     return () => clearTimeout(safety);
   }, [navigatingTo]);
 
+  const checkBridgeHealth = useCallback(async (force = false) => {
+    if (!force && cachedBridgeHealth && cachedBridgeHealth.expiresAt > Date.now()) {
+      setBridgeSummary(cachedBridgeHealth.value);
+      return;
+    }
+    setCheckingBridge(true);
+    try {
+      const r = await fetch("/api/internal/website-enquiry", { cache: "no-store" });
+      const d = await r.json().catch(() => null);
+      if (!d?.ok || !d?.health) return;
+      const next: BridgeHealthSummary = {
+        cc3003: Boolean(
+          d.health.classicConcepts3003?.online ||
+            d.health.classicConcepts3003?.dbFallbackAvailable
+        ),
+        ce3002: Boolean(
+          d.health.classicEdge3002?.online ||
+            d.health.classicEdge3002?.dbFallbackAvailable
+        ),
+        loaded: true,
+      };
+      cachedBridgeHealth = { expiresAt: Date.now() + 30_000, value: next };
+      setBridgeSummary(next);
+    } catch {
+      // Keep standby state cleanly when offline or unreachable.
+    } finally {
+      setCheckingBridge(false);
+    }
+  }, []);
+
+  // Only probe local website bridges automatically on Enquiries / Dev pages.
   useEffect(() => {
     if (cachedBridgeHealth && cachedBridgeHealth.expiresAt > Date.now()) {
       setBridgeSummary(cachedBridgeHealth.value);
       return;
     }
-    let cancelled = false;
-    fetch("/api/internal/website-enquiry", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (cancelled || !d?.ok || !d?.health) return;
-        const next: BridgeHealthSummary = {
-          cc3003: Boolean(
-            d.health.classicConcepts3003?.online ||
-              d.health.classicConcepts3003?.dbFallbackAvailable
-          ),
-          ce3002: Boolean(
-            d.health.classicEdge3002?.online ||
-              d.health.classicEdge3002?.dbFallbackAvailable
-          ),
-          loaded: true,
-        };
-        cachedBridgeHealth = { expiresAt: Date.now() + 30_000, value: next };
-        setBridgeSummary(next);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!shouldAutoProbeBridge(pathname)) return;
+    void checkBridgeHealth(false);
+  }, [pathname, checkBridgeHealth]);
 
   const isActiveAccount = user.status === "ACTIVE";
-  const canSuperAdmin = isSuperAdminCapable(user.role) && isActiveAccount;
-  const isDev = isDevRole(user.role) && isActiveAccount;
-  const canViewPricing = isActiveAccount && canViewCostBreakdown(user.role);
-  const canManageFlows =
-    isActiveAccount &&
-    ["DEV", "SUPERADMIN", "MANAGER", "ADMIN"].includes(user.role);
-
-  const navSections: Array<{
-    heading: string;
-    items: Array<{
-      href: string;
-      label: string;
-      icon: React.ComponentType<{ className?: string }>;
-      visible: boolean;
-      badge?: string;
-    }>;
-  }> = [
-    {
-      heading: "Workspace",
-      items: [
-        {
-          href: "/dashboard",
-          label: "Dashboard",
-          icon: LayoutDashboard,
-          visible: isActiveAccount && user.role !== "CLIENT",
-        },
-        {
-          href: "/dashboard/inbox",
-          label: "Customer Chats",
-          icon: WhatsAppLogoIcon,
-          visible: isActiveAccount && user.role !== "CLIENT",
-        },
-        {
-          href: "/dashboard/enquiries",
-          label: "Website Enquiries",
-          icon: Mail,
-          visible: isActiveAccount && user.role !== "CLIENT",
-          badge: "CC+CE53",
-        },
-        {
-          href: "/dashboard/call-queue",
-          label: "Call & Lead Queue",
-          icon: PhoneCall,
-          visible: isActiveAccount && user.role !== "CLIENT",
-          badge: "Queue",
-        },
-        {
-          href: "/dashboard/contacts",
-          label: "Contacts Database",
-          icon: Contact2,
-          visible: isActiveAccount && user.role !== "CLIENT",
-        },
-        {
-          href: "/dashboard/teams",
-          label: "Teams & Escalation",
-          icon: Users,
-          visible: isActiveAccount && user.role !== "CLIENT",
-        },
-        {
-          href: "/dashboard/analytics",
-          label: "Analytics & Reports",
-          icon: BarChart3,
-          visible: isActiveAccount,
-        },
-        {
-          href: "/onboarding",
-          label: "How to Use",
-          icon: BookOpen,
-          visible: true,
-        },
-      ],
-    },
-    {
-      heading: "Campaigns & Flows",
-      items: [
-        {
-          href: "/dashboard/tracking",
-          label: "Order Tracking",
-          icon: Truck,
-          visible: isActiveAccount && user.role !== "CLIENT",
-        },
-        {
-          href: "/dashboard/marketing",
-          label: "Broadcasts & Short Links",
-          icon: Megaphone,
-          visible: isActiveAccount && user.role !== "CLIENT",
-        },
-        {
-          href: "/dashboard/templates",
-          label: "Templates & Button Flows",
-          icon: FileText,
-          visible: canManageFlows,
-        },
-        {
-          href: "/dashboard/automations",
-          label: "Auto-Replies Builder",
-          icon: Workflow,
-          visible: canManageFlows,
-        },
-        {
-          href: "/dashboard/ai-training",
-          label: "AI Training Studio",
-          icon: Bot,
-          visible: isActiveAccount && user.role !== "CLIENT",
-          badge: "ACRIO",
-        },
-      ],
-    },
-    {
-      heading: canViewPricing ? "Admin & Costs" : "Administration",
-      items: [
-        {
-          href: "/dashboard/approvals",
-          label: "Team Approvals",
-          icon: UserCheck,
-          visible: canSuperAdmin,
-          badge:
-            pendingApprovalsCount > 0
-              ? String(pendingApprovalsCount)
-              : undefined,
-        },
-        {
-          href: "/dashboard/pricing",
-          label: "Cost Breakdown",
-          icon: IndianRupee,
-          visible: canViewPricing,
-        },
-        {
-          href: "/dashboard/dev",
-          label: "Dev Profit & Ops",
-          icon: HardDrive,
-          visible: isDev,
-        },
-        {
-          href: "/dashboard/claude-usage",
-          label: "Claude Usage & Spend",
-          icon: Cpu,
-          visible: isDev,
-          badge: "USD",
-        },
-        {
-          href: "/dashboard/issues-identifier",
-          label: "Issues Identifier",
-          icon: ShieldAlert,
-          visible: isDev,
-          badge: "ACRIO",
-        },
-        {
-          href: "/dashboard/ai-logs",
-          label: "AI Logs (ai.logs)",
-          icon: FileCode,
-          visible: isDev,
-        },
-        {
-          href: "/setup",
-          label: "Facebook Setup",
-          icon: Settings,
-          visible: isDev,
-        },
-      ],
-    },
-  ];
+  const navSections = useMemo(
+    () => buildNavSections(user, pendingApprovalsCount),
+    [user, pendingApprovalsCount]
+  );
 
   const isNavActive = (href: string) =>
     href === "/dashboard"
@@ -398,27 +229,51 @@ export function AppShell({
       </nav>
 
       <div className="p-2.5 border-t border-neutral-200 shrink-0 bg-white space-y-1.5">
-        {bridgeSummary.loaded && (
-          <div className="px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200/80 flex items-center justify-between text-[10.5px] text-slate-600">
-            <span className="font-medium">Ecosystem Sync</span>
-            <span className="inline-flex items-center gap-1.5 font-mono">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  bridgeSummary.cc3003 ? "bg-emerald-500" : "bg-amber-400"
-                }`}
-                title="Classic Concepts (:3003)"
-              />
-              <span>CC</span>
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  bridgeSummary.ce3002 ? "bg-emerald-500" : "bg-amber-400"
-                }`}
-                title="Classic Edge 53 (:3002)"
-              />
-              <span>CE53</span>
-            </span>
-          </div>
-        )}
+        <div className="px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200/80 flex items-center justify-between text-[10.5px] text-slate-600">
+          <span className="font-medium">Ecosystem Sync</span>
+          <span className="inline-flex items-center gap-1.5 font-mono">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                !bridgeSummary.loaded
+                  ? "bg-slate-300"
+                  : bridgeSummary.cc3003
+                  ? "bg-emerald-500"
+                  : "bg-amber-400"
+              }`}
+              title={
+                bridgeSummary.loaded
+                  ? `Classic Concepts (:3003) ${bridgeSummary.cc3003 ? "online" : "offline"}`
+                  : "Classic Concepts (:3003) standby"
+              }
+            />
+            <span>CC</span>
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                !bridgeSummary.loaded
+                  ? "bg-slate-300"
+                  : bridgeSummary.ce3002
+                  ? "bg-emerald-500"
+                  : "bg-amber-400"
+              }`}
+              title={
+                bridgeSummary.loaded
+                  ? `Classic Edge 53 (:3002) ${bridgeSummary.ce3002 ? "online" : "offline"}`
+                  : "Classic Edge 53 (:3002) standby"
+              }
+            />
+            <span>CE53</span>
+            <button
+              type="button"
+              onClick={() => void checkBridgeHealth(true)}
+              disabled={checkingBridge}
+              className="ml-0.5 p-0.5 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 cursor-pointer disabled:opacity-50"
+              title="Check website bridge status"
+              aria-label="Check website bridge status"
+            >
+              <RefreshCw className={`w-2.5 h-2.5 ${checkingBridge ? "animate-spin" : ""}`} />
+            </button>
+          </span>
+        </div>
         <button
           type="button"
           onClick={handleLogout}

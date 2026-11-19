@@ -28,9 +28,12 @@ export async function fetchInboxThreads(): Promise<ConversationSummary[]> {
 
 export async function fetchConversationDetail(
   conversationId: string,
-  opts?: { prefetch?: boolean }
+  opts?: { prefetch?: boolean; includeDrawer?: boolean }
 ): Promise<ConversationDetailBundle & { teams?: unknown[] }> {
-  const qs = opts?.prefetch ? "?prefetch=1" : "";
+  const params = new URLSearchParams();
+  if (opts?.prefetch) params.set("prefetch", "1");
+  if (opts?.includeDrawer === false) params.set("includeDrawer", "0");
+  const qs = params.toString() ? `?${params.toString()}` : "";
   const res = await fetch(`/api/conversations/${conversationId}${qs}`, {
     cache: "no-store",
   });
@@ -54,7 +57,40 @@ export async function fetchConversationDetail(
     acrio: data.acrio || null,
     customLinks: data.customLinks || [],
     verifiedLocation: data.verifiedLocation,
+    drawerHydrated: data.drawerHydrated !== false,
     teams: Array.isArray(data.teams) ? data.teams : undefined,
+  };
+}
+
+export async function fetchConversationDrawer(conversationId: string): Promise<
+  Pick<
+    ConversationDetailBundle,
+    | "customer"
+    | "orders"
+    | "orderTrackings"
+    | "relations"
+    | "websiteEnquiries"
+    | "customLinks"
+    | "verifiedLocation"
+    | "drawerHydrated"
+  >
+> {
+  const res = await fetch(`/api/conversations/${conversationId}?mode=drawer`, {
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.ok) {
+    throw new Error(data?.error || "Could not load customer details.");
+  }
+  return {
+    customer: data.customer || null,
+    orders: data.orders || [],
+    orderTrackings: data.orderTrackings || [],
+    relations: data.relations || [],
+    websiteEnquiries: data.websiteEnquiries || [],
+    customLinks: data.customLinks || [],
+    verifiedLocation: data.verifiedLocation,
+    drawerHydrated: true,
   };
 }
 
@@ -104,8 +140,23 @@ export function mergeServerDetailWithCached(
     olderPreloaded.length > 0 ? prev.hasOlderMessages : serverBundle.hasOlderMessages;
   const cursor = mergedMessages[0]?.createdAt || serverBundle.oldestMessageCursor || null;
 
+  const keepExistingDrawer =
+    serverBundle.drawerHydrated === false && prev.drawerHydrated !== false;
+
   return {
     ...serverBundle,
+    ...(keepExistingDrawer
+      ? {
+          customer: prev.customer,
+          orders: prev.orders,
+          orderTrackings: prev.orderTrackings,
+          relations: prev.relations,
+          websiteEnquiries: prev.websiteEnquiries,
+          customLinks: prev.customLinks,
+          verifiedLocation: prev.verifiedLocation,
+          drawerHydrated: true,
+        }
+      : {}),
     messages: mergedMessages,
     hasOlderMessages: hasOlder,
     oldestMessageCursor: cursor,
@@ -120,7 +171,10 @@ export async function prefetchConversationDetail(
   await queryClient.prefetchQuery({
     queryKey: inboxKeys.detail(convId),
     queryFn: async () => {
-      const bundle = await fetchConversationDetail(convId, { prefetch: true });
+      const bundle = await fetchConversationDetail(convId, {
+        prefetch: true,
+        includeDrawer: false,
+      });
       return mergeServerDetailWithCached(queryClient, convId, bundle);
     },
     staleTime: 20_000,
@@ -404,17 +458,8 @@ export function attachInboxRealtimeQuerySync(params: {
     subscribeRealtimeEvent("conversation:escalated", handleRealtimeRefresh),
   ];
 
-  const poll = setInterval(() => {
-    void queryClient.invalidateQueries({ queryKey: inboxKeys.threads });
-    const activeId = getSelectedId();
-    if (activeId) {
-      void queryClient.invalidateQueries({ queryKey: inboxKeys.detail(activeId) });
-    }
-  }, 20_000);
-
   return () => {
     unsubs.forEach((fn) => fn());
-    clearInterval(poll);
     if (threadsTimer) clearTimeout(threadsTimer);
   };
 }

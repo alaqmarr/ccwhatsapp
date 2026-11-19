@@ -10,7 +10,7 @@ import type {
   TransactionMode,
 } from "@libsql/client";
 
-const DDL_INVALIDATION_RE = /^\s*(CREATE|ALTER|DROP|DETACH|ATTACH|VACUUM)\b/i;
+const DESTRUCTIVE_DDL_RE = /(?:^|;)\s*(ALTER|DROP|DETACH|ATTACH|VACUUM)\b/i;
 
 function normalizeSqlValue(v: unknown): unknown {
   if (v === undefined || v === null) return null;
@@ -117,15 +117,18 @@ export function createBetterSqliteCompatClient(db: BetterSqlite3.Database): Clie
   const stmtCache = new Map<string, BetterSqlite3.Statement>();
 
   const getPrepared = (sql: string): BetterSqlite3.Statement => {
-    let stmt = stmtCache.get(sql);
-    if (!stmt) {
-      stmt = db.prepare(sql);
-      if (stmtCache.size >= 256) {
-        const firstKey = stmtCache.keys().next().value;
-        if (firstKey) stmtCache.delete(firstKey);
-      }
-      stmtCache.set(sql, stmt);
+    const existing = stmtCache.get(sql);
+    if (existing) {
+      stmtCache.delete(sql);
+      stmtCache.set(sql, existing);
+      return existing;
     }
+    const stmt = db.prepare(sql);
+    if (stmtCache.size >= 512) {
+      const firstKey = stmtCache.keys().next().value;
+      if (firstKey !== undefined) stmtCache.delete(firstKey);
+    }
+    stmtCache.set(sql, stmt);
     return stmt;
   };
 
@@ -149,14 +152,16 @@ export function createBetterSqliteCompatClient(db: BetterSqlite3.Database): Clie
     const trimmed = sql.trim();
     if (!trimmed) return makeEmptyResultSet();
 
-    if (DDL_INVALIDATION_RE.test(trimmed)) {
+    if (DESTRUCTIVE_DDL_RE.test(trimmed)) {
       stmtCache.clear();
     }
 
     // Handle multi-statement scripts cleanly without prepare RangeError
     if (!args && countStatementsOutsideStrings(trimmed) > 1) {
       db.exec(trimmed);
-      stmtCache.clear();
+      if (DESTRUCTIVE_DDL_RE.test(trimmed)) {
+        stmtCache.clear();
+      }
       return makeEmptyResultSet();
     }
 
@@ -265,7 +270,9 @@ export function createBetterSqliteCompatClient(db: BetterSqlite3.Database): Clie
         async executeMultiple(sql: string): Promise<void> {
           if (txClosed) throw new Error("Transaction is closed");
           db.exec(sql);
-          stmtCache.clear();
+          if (DESTRUCTIVE_DDL_RE.test(sql)) {
+            stmtCache.clear();
+          }
         },
         async rollback(): Promise<void> {
           if (!txClosed) {
@@ -298,7 +305,9 @@ export function createBetterSqliteCompatClient(db: BetterSqlite3.Database): Clie
 
     async executeMultiple(sql: string): Promise<void> {
       db.exec(sql);
-      stmtCache.clear();
+      if (DESTRUCTIVE_DDL_RE.test(sql)) {
+        stmtCache.clear();
+      }
     },
 
     async sync(): Promise<Replicated> {

@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
-import { loadContactsPayload } from "@/lib/loaders/crm";
 import { getCurrentUser } from "@/lib/session";
-import { ContactsClient } from "./ContactsClient";
+import ContactsLoading from "./loading";
+import { ContactsDataBoundary } from "./ContactsDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -16,12 +16,9 @@ export default async function ContactsDatabasePage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadContactsPayload(user);
   return (
-    <ContactsClient
-      initialData={
-        initialData as React.ComponentProps<typeof ContactsClient>["initialData"]
-      }
-    />
+    <Suspense fallback={<ContactsLoading />}>
+      <ContactsDataBoundary user={user} />
+    </Suspense>
   );
 }

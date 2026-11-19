@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import {
   appendAiTraceLog,
@@ -8,9 +9,22 @@ import { socketHub } from "@cc/sockets";
 
 export const dynamic = "force-dynamic";
 
+function timingSafeMatch(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const a = Buffer.from(provided, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 function isAuthorizedInternalCaller(req: Request): boolean {
   const key = (req.headers.get("x-cc-bridge-key") || "").trim();
-  if (key && key === resolveEcosystemBridgeKey()) return true;
+  const expectedKey = resolveEcosystemBridgeKey();
+  if (timingSafeMatch(key, expectedKey)) return true;
+
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
 
   const host = (req.headers.get("host") || "").toLowerCase();
   const forwarded = (req.headers.get("x-forwarded-for") || "").toLowerCase();

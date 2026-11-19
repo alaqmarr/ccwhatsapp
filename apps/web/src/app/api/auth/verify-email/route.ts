@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
 import { SESSION_COOKIE_NAME, verifyStaffEmailOtp } from "@cc/auth";
 import { socketHub } from "@cc/sockets";
+import { enforcePublicRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const limited = enforcePublicRateLimit(req, {
+    bucket: "auth-verify-email",
+    maxRequests: 30,
+    windowMs: 60_000,
+  });
+  if (limited) return limited;
+
   const body = await req.json().catch(() => ({}));
   const result = await verifyStaffEmailOtp({
     email: String(body.email || ""),

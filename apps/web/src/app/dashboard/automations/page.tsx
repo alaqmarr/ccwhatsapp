@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
-import { loadAutomationsPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
-import { AutomationsClient } from "./AutomationsClient";
+import AutomationsLoading from "./loading";
+import { AutomationsDataBoundary } from "./AutomationsDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -16,12 +16,9 @@ export default async function AutomationsPage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadAutomationsPayload();
   return (
-    <AutomationsClient
-      initialData={
-        initialData as React.ComponentProps<typeof AutomationsClient>["initialData"]
-      }
-    />
+    <Suspense fallback={<AutomationsLoading />}>
+      <AutomationsDataBoundary />
+    </Suspense>
   );
 }

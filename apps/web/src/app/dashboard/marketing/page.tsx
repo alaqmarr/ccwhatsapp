@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
-import { loadMarketingPayload } from "@/lib/loaders/crm";
 import { getCurrentUser } from "@/lib/session";
-import { MarketingClient } from "./MarketingClient";
+import MarketingLoading from "./loading";
+import { MarketingDataBoundary } from "./MarketingDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -16,12 +16,9 @@ export default async function MarketingAndLinksPage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadMarketingPayload(user);
   return (
-    <MarketingClient
-      initialData={
-        initialData as React.ComponentProps<typeof MarketingClient>["initialData"]
-      }
-    />
+    <Suspense fallback={<MarketingLoading />}>
+      <MarketingDataBoundary user={user} />
+    </Suspense>
   );
 }

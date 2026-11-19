@@ -3,7 +3,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, Copy, Loader2 } from "lucide-react";
 import {
   CardListSkeleton,
   ClassicConceptsWordmark,
@@ -12,41 +11,16 @@ import {
   WHATSAPP_PUBLIC_ORIGIN,
   WhatsAppLogoIcon,
 } from "@cc/ui";
-
-interface SetupStateResponse {
-  hasDevAccount: boolean;
-  allFacebookStepsDone: boolean;
-  facebookConfig: {
-    mode: "SANDBOX_SIMULATOR" | "LIVE_META_CLOUD";
-    businessPortfolioId?: string;
-    verifiedName?: string;
-    metaAppId: string;
-    metaAppSecret: string;
-    wabaId: string;
-    phoneNumberId: string;
-    businessDisplayPhone: string;
-    systemUserAccessToken: string;
-    webhookVerifyToken: string;
-    stepsCompleted: {
-      metaBusinessVerified: boolean;
-      whatsappAppCreated: boolean;
-      phoneRegistered: boolean;
-      webhookSubscribed: boolean;
-      systemTokenSaved: boolean;
-    };
-  };
-  currentUser: { id: string; name: string; role: string } | null;
-  aiConnected?: boolean;
-  aiMaskedKey?: string;
-  aiKeys?: {
-    clientConnected: boolean;
-    clientSource: string;
-    clientMasked: string;
-    adminConnected: boolean;
-    adminSource: string;
-    adminMasked: string;
-  };
-}
+import {
+  DevAccountStepCard,
+  FacebookChecklistStep,
+  WebhookDetailsCard,
+} from "./SetupSteps";
+import type {
+  SetupMode,
+  SetupStateResponse,
+  SetupStepsCompleted,
+} from "./types";
 
 export function SetupClient({
   initialData,
@@ -69,7 +43,7 @@ export function SetupClient({
   const [password, setPassword] = useState("");
 
   // Facebook WhatsApp Business form
-  const [mode, setMode] = useState<"SANDBOX_SIMULATOR" | "LIVE_META_CLOUD">(
+  const [mode, setMode] = useState<SetupMode>(
     initialData?.facebookConfig?.mode || "SANDBOX_SIMULATOR"
   );
   const [businessPortfolioId, setBusinessPortfolioId] = useState(
@@ -98,7 +72,7 @@ export function SetupClient({
   );
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [anthropicAdminApiKey, setAnthropicAdminApiKey] = useState("");
-  const [steps, setSteps] = useState(
+  const [steps, setSteps] = useState<SetupStepsCompleted>(
     initialData?.facebookConfig?.stepsCompleted || {
       metaBusinessVerified: false,
       whatsappAppCreated: false,
@@ -266,7 +240,6 @@ export function SetupClient({
 
   return (
     <div className="min-h-dvh w-full bg-neutral-50 text-neutral-900">
-      {/* Full-Width Top Bar */}
       <header className="w-full bg-white border-b border-neutral-200 px-3.5 sm:px-6 py-3.5 sm:py-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
         <div className="flex flex-wrap items-center gap-2.5 sm:gap-3.5 min-w-0">
           <ClassicConceptsWordmark height={36} variant="light" />
@@ -328,368 +301,56 @@ export function SetupClient({
 
         <form onSubmit={handleSubmit} className="w-full space-y-6">
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-            {/* LEFT COLUMN: Dev Account + Mode + Webhook URLs */}
             <div className="xl:col-span-5 space-y-6">
-              {!state?.hasDevAccount ? (
-                <section className="p-5 rounded-lg bg-white border border-neutral-200 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-neutral-900">
-                      1. Create Developer Account
-                    </h2>
-                    <p className="text-xs text-neutral-500 mt-1">
-                      The Dev account also has full Superadmin permissions to approve
-                      staff, plus access to Meta actual costs and daily Google Drive backups.
-                    </p>
-                  </div>
-
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-neutral-700 mb-1">
-                        Full Name
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-neutral-700 mb-1">
-                        Email Address
-                      </label>
-                      <input
-                        type="email"
-                        required
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-neutral-700 mb-1">
-                        WhatsApp Number
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={whatsappNumber}
-                        onChange={(e) => setWhatsappNumber(e.target.value)}
-                        placeholder="+91 98765 43210"
-                        className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-neutral-700 mb-1">
-                        Password (minimum 6 characters)
-                      </label>
-                      <input
-                        type="password"
-                        required
-                        minLength={6}
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="Enter password"
-                        className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                      />
-                    </div>
-                  </div>
-                </section>
-              ) : (
-                <div className="p-4 rounded-lg bg-white border border-neutral-200 flex items-center gap-2.5 text-xs text-neutral-700">
-                  <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>
-                    Developer account is active.{" "}
-                    {state.currentUser?.role === "DEV"
-                      ? "You can update your Facebook WhatsApp connection below."
-                      : "Sign in as Dev to edit Facebook connection keys."}
-                  </span>
-                </div>
-              )}
-
-              {/* Webhook Details for chat.ccapl.cc */}
-              <section className="p-5 rounded-lg bg-white border border-neutral-200 space-y-4">
-                <div>
-                  <h2 className="text-sm font-semibold text-neutral-900">
-                    Webhook Details for Meta Dashboard
-                  </h2>
-                  <p className="text-xs text-neutral-500 mt-1">
-                    Paste these two values inside developers.facebook.com under
-                    WhatsApp &rarr; Configuration.
-                  </p>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="p-3 rounded-md bg-neutral-50 border border-neutral-200 flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-[11px] text-neutral-500 font-medium">
-                        Callback URL
-                      </div>
-                      <div className="text-xs font-mono text-neutral-900 truncate">
-                        {webhookUrl}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => copyValue("url", webhookUrl)}
-                      className="px-2.5 py-1.5 rounded border border-neutral-300 bg-white hover:bg-neutral-100 text-xs font-medium inline-flex items-center gap-1 shrink-0 cursor-pointer"
-                    >
-                      <Copy className="w-3 h-3" />
-                      <span>{copied === "url" ? "Copied" : "Copy"}</span>
-                    </button>
-                  </div>
-
-                  <div className="p-3 rounded-md bg-neutral-50 border border-neutral-200 flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-[11px] text-neutral-500 font-medium">
-                        Verify Token
-                      </div>
-                      <div className="text-xs font-mono text-neutral-900 truncate">
-                        {webhookVerifyToken}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => copyValue("token", webhookVerifyToken)}
-                      className="px-2.5 py-1.5 rounded border border-neutral-300 bg-white hover:bg-neutral-100 text-xs font-medium inline-flex items-center gap-1 shrink-0 cursor-pointer"
-                    >
-                      <Copy className="w-3 h-3" />
-                      <span>{copied === "token" ? "Copied" : "Copy"}</span>
-                    </button>
-                  </div>
-                </div>
-              </section>
+              <DevAccountStepCard
+                hasDevAccount={Boolean(state?.hasDevAccount)}
+                currentUserRole={state?.currentUser?.role}
+                name={name}
+                email={email}
+                whatsappNumber={whatsappNumber}
+                password={password}
+                onNameChange={setName}
+                onEmailChange={setEmail}
+                onWhatsappNumberChange={setWhatsappNumber}
+                onPasswordChange={setPassword}
+              />
+              <WebhookDetailsCard
+                webhookUrl={webhookUrl}
+                webhookVerifyToken={webhookVerifyToken}
+                copied={copied}
+                onCopy={copyValue}
+              />
             </div>
 
-            {/* RIGHT COLUMN: Facebook Steps Checklist & API Keys */}
-            <section className="xl:col-span-7 p-5 rounded-lg bg-white border border-neutral-200 space-y-5">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 pb-4">
-                <div>
-                  <h2 className="text-sm font-semibold text-neutral-900">
-                    2. Facebook WhatsApp Connection Steps
-                  </h2>
-                  <p className="text-xs text-neutral-500 mt-0.5">
-                    Keep Test Mode on while testing locally, and switch to Live Mode
-                    once your Facebook token is ready.
-                  </p>
-                </div>
-                <div className="inline-flex rounded-md bg-neutral-100 p-1 border border-neutral-200">
-                  <button
-                    type="button"
-                    onClick={() => setMode("SANDBOX_SIMULATOR")}
-                    className={`px-3 py-1.5 rounded text-xs font-medium cursor-pointer ${
-                      mode === "SANDBOX_SIMULATOR"
-                        ? "bg-white text-neutral-900 shadow-2xs"
-                        : "text-neutral-600 hover:text-neutral-900"
-                    }`}
-                  >
-                    Test Mode
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMode("LIVE_META_CLOUD")}
-                    className={`px-3 py-1.5 rounded text-xs font-medium cursor-pointer ${
-                      mode === "LIVE_META_CLOUD"
-                        ? "bg-[#1da851] text-white"
-                        : "text-neutral-600 hover:text-neutral-900"
-                    }`}
-                  >
-                    Live Facebook API
-                  </button>
-                </div>
-              </div>
-
-              {/* 5-Step Checklist */}
-              <div className="space-y-2">
-                <div className="text-xs font-medium text-neutral-700">
-                  Facebook Setup Checklist
-                </div>
-                {[
-                  {
-                    key: "metaBusinessVerified" as const,
-                    title: "1. Verify Classic Concepts Business Account on Facebook",
-                    desc: "Upload GST certificate in business.facebook.com under Business Info.",
-                  },
-                  {
-                    key: "whatsappAppCreated" as const,
-                    title: "2. Create a Business App on developers.facebook.com",
-                    desc: "Add the WhatsApp product inside your Facebook app.",
-                  },
-                  {
-                    key: "phoneRegistered" as const,
-                    title: "3. Connect Official Classic Concepts Phone Number",
-                    desc: "Verify the phone number by SMS or phone call and copy the Phone Number ID.",
-                  },
-                  {
-                    key: "systemTokenSaved" as const,
-                    title: "4. Create a Permanent System User Token",
-                    desc: "In Business Settings -> System Users, generate a permanent token with WhatsApp messaging access.",
-                  },
-                  {
-                    key: "webhookSubscribed" as const,
-                    title: "5. Connect Webhook to chat.ccapl.cc",
-                    desc: "Paste the Callback URL and Verify Token on the left, then turn on the 'messages' toggle.",
-                  },
-                ].map((item) => (
-                  <label
-                    key={item.key}
-                    className="flex items-start gap-3 p-3 rounded-md bg-neutral-50 border border-neutral-200 hover:border-neutral-300 cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={steps[item.key]}
-                      onChange={(e) =>
-                        setSteps((prev) => ({
-                          ...prev,
-                          [item.key]: e.target.checked,
-                        }))
-                      }
-                      className="mt-0.5 w-4 h-4 accent-[#1da851]"
-                    />
-                    <div>
-                      <div className="text-xs font-medium text-neutral-900">
-                        {item.title}
-                      </div>
-                      <div className="text-xs text-neutral-500">{item.desc}</div>
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              {/* Credentials Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Business Portfolio ID
-                  </label>
-                  <input
-                    type="text"
-                    value={businessPortfolioId}
-                    onChange={(e) => setBusinessPortfolioId(e.target.value)}
-                    placeholder="30341529622102835"
-                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Messaging Account ID (WABA)
-                  </label>
-                  <input
-                    type="text"
-                    value={wabaId}
-                    onChange={(e) => setWabaId(e.target.value)}
-                    placeholder="2195463394700930"
-                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Phone Number ID
-                  </label>
-                  <input
-                    type="text"
-                    value={phoneNumberId}
-                    onChange={(e) => setPhoneNumberId(e.target.value)}
-                    placeholder="1456145487577989"
-                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Business WhatsApp Number
-                  </label>
-                  <input
-                    type="text"
-                    value={businessDisplayPhone}
-                    onChange={(e) => setBusinessDisplayPhone(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Facebook App ID
-                  </label>
-                  <input
-                    type="text"
-                    value={metaAppId}
-                    onChange={(e) => setMetaAppId(e.target.value)}
-                    placeholder="Optional when using System Access Token"
-                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Webhook Verify Token
-                  </label>
-                  <input
-                    type="text"
-                    value={webhookVerifyToken}
-                    onChange={(e) => setWebhookVerifyToken(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">
-                    Permanent System Access Token (Never Expires)
-                  </label>
-                  <input
-                    type="password"
-                    value={systemUserAccessToken}
-                    onChange={(e) => setSystemUserAccessToken(e.target.value)}
-                    placeholder="Paste permanent Facebook system access token"
-                    className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                  />
-                </div>
-                <div className="sm:col-span-2 pt-2 border-t border-neutral-100 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-medium text-neutral-700 mb-1">
-                      Client ACRIO Key (claude-haiku-5-5){" "}
-                      {state?.aiKeys?.clientConnected
-                        ? `(Active via ${state.aiKeys.clientSource}: ${state.aiKeys.clientMasked})`
-                        : ""}
-                    </label>
-                    <input
-                      type="password"
-                      value={anthropicApiKey}
-                      onChange={(e) => setAnthropicApiKey(e.target.value)}
-                      placeholder="ANTHROPIC_CLIENT_API_KEY (loaded from .env)"
-                      className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-neutral-700 mb-1">
-                      Admin ACRIO Key (claude-haiku-5-5){" "}
-                      {state?.aiKeys?.adminConnected
-                        ? `(Active via ${state.aiKeys.adminSource}: ${state.aiKeys.adminMasked})`
-                        : ""}
-                    </label>
-                    <input
-                      type="password"
-                      value={anthropicAdminApiKey}
-                      onChange={(e) => setAnthropicAdminApiKey(e.target.value)}
-                      placeholder="ANTHROPIC_ADMIN_API_KEY (loaded from .env)"
-                      className="w-full px-3 py-2 rounded-md border border-neutral-300 text-sm"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-2 flex justify-end">
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-[#1da851] hover:bg-[#178c43] text-white text-sm font-medium cursor-pointer disabled:opacity-50"
-                >
-                  {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-                  <span>
-                    {!state?.hasDevAccount
-                      ? "Create Dev Account & Continue"
-                      : "Save Settings"}
-                  </span>
-                </button>
-              </div>
-            </section>
+            <FacebookChecklistStep
+              hasDevAccount={Boolean(state?.hasDevAccount)}
+              saving={saving}
+              mode={mode}
+              onModeChange={setMode}
+              steps={steps}
+              onToggleStep={(key, checked) =>
+                setSteps((prev) => ({ ...prev, [key]: checked }))
+              }
+              businessPortfolioId={businessPortfolioId}
+              onBusinessPortfolioIdChange={setBusinessPortfolioId}
+              wabaId={wabaId}
+              onWabaIdChange={setWabaId}
+              phoneNumberId={phoneNumberId}
+              onPhoneNumberIdChange={setPhoneNumberId}
+              businessDisplayPhone={businessDisplayPhone}
+              onBusinessDisplayPhoneChange={setBusinessDisplayPhone}
+              metaAppId={metaAppId}
+              onMetaAppIdChange={setMetaAppId}
+              webhookVerifyToken={webhookVerifyToken}
+              onWebhookVerifyTokenChange={setWebhookVerifyToken}
+              systemUserAccessToken={systemUserAccessToken}
+              onSystemUserAccessTokenChange={setSystemUserAccessToken}
+              anthropicApiKey={anthropicApiKey}
+              onAnthropicApiKeyChange={setAnthropicApiKey}
+              anthropicAdminApiKey={anthropicAdminApiKey}
+              onAnthropicAdminApiKeyChange={setAnthropicAdminApiKey}
+              aiKeys={state?.aiKeys}
+            />
           </div>
         </form>
       </div>

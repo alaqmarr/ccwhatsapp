@@ -1,9 +1,17 @@
 import { NextResponse } from "next/server";
 import { SESSION_COOKIE_NAME, loginWithPassword } from "@cc/auth";
+import { enforcePublicRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const limited = enforcePublicRateLimit(req, {
+    bucket: "auth-login",
+    maxRequests: 30,
+    windowMs: 60_000,
+  });
+  if (limited) return limited;
+
   const body = await req.json().catch(() => ({}));
   const result = await loginWithPassword({
     email: String(body.email || ""),

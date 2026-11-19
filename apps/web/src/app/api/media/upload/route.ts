@@ -2,9 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { resolveMonorepoRoot } from "@cc/database";
 import { uploadMediaToMetaCloud, type WhatsAppMediaAttachmentType } from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
+import { resolveMediaUploadPaths } from "@/lib/api/media/storage";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -101,21 +101,22 @@ export async function POST(req: Request) {
     const mediaId = `local_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`;
     const storedFileName = `${mediaId}_${safeName}`;
 
-    const root = resolveMonorepoRoot();
-    const uploadsDir = path.join(/*turbopackIgnore: true*/ root, "data", "uploads");
-    fs.mkdirSync(/*turbopackIgnore: true*/ uploadsDir, { recursive: true });
+    const { uploadsDir, localMetaPath } = resolveMediaUploadPaths(mediaId);
+    await fs.promises.mkdir(/*turbopackIgnore: true*/ uploadsDir, { recursive: true });
 
     const arrayBuf = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuf);
     const binPath = path.join(/*turbopackIgnore: true*/ uploadsDir, storedFileName);
-    fs.writeFileSync(/*turbopackIgnore: true*/ binPath, buffer);
 
-    // Also upload to Meta Cloud API /media when live credentials are configured so Meta can deliver local files
-    const metaUpload = await uploadMediaToMetaCloud({
-      buffer,
-      mimeType,
-      fileName: rawName,
-    }).catch(() => ({ ok: false, waMediaId: undefined, mode: "SANDBOX_SIMULATOR" }));
+    // Write binary and upload to Meta Cloud API concurrently when live credentials are configured
+    const [, metaUpload] = await Promise.all([
+      fs.promises.writeFile(/*turbopackIgnore: true*/ binPath, buffer),
+      uploadMediaToMetaCloud({
+        buffer,
+        mimeType,
+        fileName: rawName,
+      }).catch(() => ({ ok: false, waMediaId: undefined, mode: "SANDBOX_SIMULATOR" })),
+    ]);
 
     const metaRecord = {
       id: mediaId,
@@ -128,8 +129,8 @@ export async function POST(req: Request) {
       uploadedBy: user.name,
       createdAt: new Date().toISOString(),
     };
-    fs.writeFileSync(
-      /*turbopackIgnore: true*/ path.join(/*turbopackIgnore: true*/ uploadsDir, `${mediaId}.json`),
+    await fs.promises.writeFile(
+      /*turbopackIgnore: true*/ localMetaPath,
       JSON.stringify(metaRecord, null, 2),
       "utf8"
     );

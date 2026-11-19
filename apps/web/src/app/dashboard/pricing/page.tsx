@@ -1,8 +1,9 @@
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { canViewCostBreakdown } from "@cc/rbac";
-import { loadCostBreakdownPayload } from "@/lib/loaders/core";
 import { getCurrentUser } from "@/lib/session";
-import { PricingClient } from "./PricingClient";
+import PricingLoading from "./loading";
+import { PricingDataBoundary } from "./PricingDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,9 @@ export default async function CostBreakdownPage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadCostBreakdownPayload(user);
-  return <PricingClient initialData={initialData} />;
+  return (
+    <Suspense fallback={<PricingLoading />}>
+      <PricingDataBoundary user={user} />
+    </Suspense>
+  );
 }

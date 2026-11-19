@@ -1,14 +1,15 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import {
   cleanDisplayProductName,
   ensureDatabasesBootstrapped,
   generateSixCharShortCode,
   getRawLibSqlClient,
   normalizePublicEcosystemUrl,
-  resolveMonorepoRoot,
 } from "@cc/database";
+import {
+  invalidateWhatsAppCacheTags,
+  rememberWhatsAppCache,
+} from "./redis-cache";
 
 export interface CustomAdminLinkItem {
   id: string;
@@ -35,8 +36,13 @@ function mapLinkRow(r: Record<string, unknown>): CustomAdminLinkItem {
     id: String(r.id),
     code: String(r.code),
     title: String(r.title),
-    targetUrl: normalizePublicEcosystemUrl(String(r.target_url || ""), brandHint),
-    linkType: String(r.link_type || "PRODUCT") as CustomAdminLinkItem["linkType"],
+    targetUrl: normalizePublicEcosystemUrl(
+      String(r.target_url || ""),
+      brandHint
+    ),
+    linkType: String(
+      r.link_type || "PRODUCT"
+    ) as CustomAdminLinkItem["linkType"],
     productSlug,
     utmCampaign: r.utm_campaign ? String(r.utm_campaign) : null,
     createdByName: String(r.created_by_name || "Admin"),
@@ -47,12 +53,22 @@ function mapLinkRow(r: Record<string, unknown>): CustomAdminLinkItem {
 }
 
 export async function listCustomAdminLinks(): Promise<CustomAdminLinkItem[]> {
-  await ensureDatabasesBootstrapped();
-  const conv = getRawLibSqlClient("conversations");
-  const res = await conv.execute(
-    `SELECT * FROM custom_links ORDER BY clicks_count DESC, created_at DESC`
+  return rememberWhatsAppCache(
+    "custom-links:all",
+    ["custom-links"],
+    30,
+    async () => {
+      await ensureDatabasesBootstrapped();
+      const conv = getRawLibSqlClient("conversations");
+      const res = await conv.execute(
+        `SELECT id, code, title, target_url, link_type, product_slug, utm_campaign, created_by_name, clicks_count, last_clicked_at, created_at
+         FROM custom_links
+         ORDER BY clicks_count DESC, created_at DESC`
+      );
+      return res.rows.map((r) => mapLinkRow(r as Record<string, unknown>));
+    },
+    { skipClone: true }
   );
-  return res.rows.map((r) => mapLinkRow(r as Record<string, unknown>));
 }
 
 export async function createCustomAdminLink(params: {
@@ -67,7 +83,10 @@ export async function createCustomAdminLink(params: {
   await ensureDatabasesBootstrapped();
   const conv = getRawLibSqlClient("conversations");
 
-  if (!params.targetUrl.trim().startsWith("http") && !params.targetUrl.trim().startsWith("/")) {
+  if (
+    !params.targetUrl.trim().startsWith("http") &&
+    !params.targetUrl.trim().startsWith("/")
+  ) {
     return {
       ok: false,
       error: "Target URL must start with https://, http://, or /.",
@@ -89,7 +108,7 @@ export async function createCustomAdminLink(params: {
       };
     }
     const existing = await conv.execute({
-      sql: `SELECT id FROM custom_links WHERE LOWER(code) = LOWER(?) LIMIT 1`,
+      sql: `SELECT id FROM custom_links WHERE code COLLATE NOCASE = ? LIMIT 1`,
       args: [sanitized],
     });
     if (existing.rows.length > 0) {
@@ -104,7 +123,7 @@ export async function createCustomAdminLink(params: {
     for (let attempt = 0; attempt < 25; attempt++) {
       const candidate = generateSixCharShortCode();
       const existing = await conv.execute({
-        sql: `SELECT id FROM custom_links WHERE LOWER(code) = LOWER(?) LIMIT 1`,
+        sql: `SELECT id FROM custom_links WHERE code COLLATE NOCASE = ? LIMIT 1`,
         args: [candidate],
       });
       if (existing.rows.length === 0) {
@@ -138,9 +157,12 @@ export async function createCustomAdminLink(params: {
   });
 
   const created = await conv.execute({
-    sql: `SELECT * FROM custom_links WHERE id = ? LIMIT 1`,
+    sql: `SELECT id, code, title, target_url, link_type, product_slug, utm_campaign, created_by_name, clicks_count, last_clicked_at, created_at
+          FROM custom_links WHERE id = ? LIMIT 1`,
     args: [id],
   });
+
+  await invalidateWhatsAppCacheTags(["custom-links"]);
 
   return {
     ok: true,
@@ -163,31 +185,39 @@ export async function resolveAndTrackCustomLink(
   }
   if (!decoded) return null;
 
+  const selectCols = `id, code, title, target_url, link_type, product_slug, utm_campaign, created_by_name, clicks_count, last_clicked_at, created_at`;
+
+  // 1. Exact code lookup (uses unique code index)
   let res = await conv.execute({
-    sql: `SELECT * FROM custom_links WHERE code = ? LIMIT 1`,
+    sql: `SELECT ${selectCols} FROM custom_links WHERE code = ? LIMIT 1`,
     args: [decoded],
   });
+
+  // 2. Case-insensitive code lookup (uses COLLATE NOCASE index)
   if (!res.rows[0]) {
     res = await conv.execute({
-      sql: `SELECT * FROM custom_links WHERE LOWER(code) = LOWER(?) LIMIT 1`,
+      sql: `SELECT ${selectCols} FROM custom_links WHERE code COLLATE NOCASE = ? LIMIT 1`,
       args: [decoded],
     });
   }
+
+  // 3. Indexed product_slug lookup (COLLATE NOCASE IN uses index, avoiding full-scan LIKE)
   if (!res.rows[0]) {
-    // Also support resolving by product slug if someone visits ccapl.cc/<product-slug>
     res = await conv.execute({
-      sql: `SELECT * FROM custom_links
-            WHERE LOWER(product_slug) = LOWER(?)
-               OR LOWER(product_slug) = LOWER(?)
-               OR LOWER(product_slug) = LOWER(?)
-               OR LOWER(target_url) LIKE LOWER(?)
+      sql: `SELECT ${selectCols} FROM custom_links
+            WHERE product_slug COLLATE NOCASE IN (?, ?, ?)
             LIMIT 1`,
-      args: [
-        decoded,
-        `cc:product:${decoded}`,
-        `ce53:machine:${decoded}`,
-        `%/${decoded}%`,
-      ],
+      args: [decoded, `cc:product:${decoded}`, `ce53:machine:${decoded}`],
+    });
+  }
+
+  // 4. Fallback URL substring scan only when indexed lookups do not match
+  if (!res.rows[0]) {
+    res = await conv.execute({
+      sql: `SELECT ${selectCols} FROM custom_links
+            WHERE LOWER(target_url) LIKE LOWER(?)
+            LIMIT 1`,
+      args: [`%/${decoded}%`],
     });
   }
 
@@ -208,19 +238,12 @@ export async function resolveAndTrackCustomLink(
   return { ...item, clicksCount: item.clicksCount + 1 };
 }
 
-export function resolveUploadsDirectory(): string {
-  const dir = path.join(resolveMonorepoRoot(), "uploads");
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
-}
-
 export {
   WHATSAPP_REDIS_MAX_BYTES,
   WHATSAPP_CACHE_TAGS,
   type WhatsAppCacheTag,
   type WhatsAppCacheHitTier,
+  type RememberWhatsAppCacheOptions,
   rememberWhatsAppCache,
   rememberWhatsAppCacheWithMeta,
   invalidateWhatsAppCacheTags,

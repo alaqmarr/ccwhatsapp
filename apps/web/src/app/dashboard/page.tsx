@@ -1,8 +1,9 @@
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
-import { loadDashboardPayload } from "@/lib/loaders/core";
 import { getCurrentUser } from "@/lib/session";
-import { DashboardClient } from "./DashboardClient";
+import DashboardLoading from "./loading";
+import { DashboardDataBoundary } from "./DashboardDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,10 @@ export default async function DashboardRootPage() {
   if (!hasPermission(user.role, "inbox:view", user.status)) {
     redirect("/onboarding");
   }
-  const initialData = await loadDashboardPayload(user);
-  return <DashboardClient initialData={initialData} />;
+
+  return (
+    <Suspense fallback={<DashboardLoading />}>
+      <DashboardDataBoundary user={user} />
+    </Suspense>
+  );
 }

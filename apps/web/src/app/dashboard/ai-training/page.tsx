@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
-import { loadAiTrainingPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
-import { AiTrainingClient } from "./AiTrainingClient";
+import AiTrainingLoading from "./loading";
+import { AiTrainingDataBoundary } from "./AiTrainingDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -16,12 +16,9 @@ export default async function AiTrainingPage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadAiTrainingPayload(user);
   return (
-    <AiTrainingClient
-      initialData={
-        initialData as React.ComponentProps<typeof AiTrainingClient>["initialData"]
-      }
-    />
+    <Suspense fallback={<AiTrainingLoading />}>
+      <AiTrainingDataBoundary user={user} />
+    </Suspense>
   );
 }

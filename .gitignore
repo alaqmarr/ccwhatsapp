@@ -61,6 +61,11 @@ Desktop.ini
 .idea/
 *.swp
 *.swo
+*.tmp
+*.bak
 scratch/
 audit-shots/
 local-tests/
+antigravity/
+plan/
+.freebuff/

@@ -6,6 +6,7 @@ import {
 } from "@cc/database";
 import { hasPermission } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
+import { invalidateWhatsAppCacheTags } from "@cc/storage";
 import { loadCompanyDocumentsPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
 
@@ -80,6 +81,7 @@ export async function POST(req: Request) {
     uploadedBy: user.name,
   });
 
+  await invalidateWhatsAppCacheTags(["company-docs"]);
   socketHub.emit("ai:training_updated", { type: "company_document", id: saved.id });
   return NextResponse.json({ ok: true, document: saved });
 }
@@ -101,6 +103,7 @@ export async function DELETE(req: Request) {
   }
   await ensureDatabasesBootstrapped();
   await deleteCompanyDocument(id);
+  await invalidateWhatsAppCacheTags(["company-docs"]);
   socketHub.emit("ai:training_updated", { type: "company_document_deleted", id });
   return NextResponse.json({ ok: true });
 }

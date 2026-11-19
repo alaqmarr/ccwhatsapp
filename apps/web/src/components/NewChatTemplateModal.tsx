@@ -1,32 +1,24 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowRight, FileText, Search, Sparkles, X } from "lucide-react";
+import { ArrowRight, X } from "lucide-react";
 import { WhatsAppLogoIcon } from "@cc/ui";
 import type {
   ApprovedTemplateOption,
   ConversationSummary,
 } from "@/lib/inbox-server-data";
+import {
+  FreeTextMessageSection,
+  NewChatModeSelector,
+  type NewChatModalMode,
+} from "@/components/new-chat/NewChatModeFields";
+import {
+  fillTemplateText,
+  TemplateSelectorSection,
+  varIndices,
+} from "@/components/new-chat/TemplateSelectorSection";
 
-export type NewChatModalMode = "TEMPLATE" | "OUTBOUND" | "INBOUND";
-
-function varIndices(text: string | null | undefined): number[] {
-  if (!text) return [];
-  const found = Array.from(text.matchAll(/\{\{(\d+)\}\}/g)).map((m) =>
-    Number(m[1])
-  );
-  return Array.from(new Set(found)).sort((a, b) => a - b);
-}
-
-function fillTemplateText(
-  text: string,
-  values: Record<number, string>
-): string {
-  return text.replace(/\{\{(\d+)\}\}/g, (_m, n) => {
-    const v = (values[Number(n)] || "").trim();
-    return v || `{{${n}}}`;
-  });
-}
+export type { NewChatModalMode } from "@/components/new-chat/NewChatModeFields";
 
 function phoneMatchKey(raw: string): string {
   const digits = raw.replace(/\D/g, "");
@@ -303,44 +295,7 @@ export function NewChatTemplateModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 text-xs">
-            <button
-              type="button"
-              onClick={() => setMode("TEMPLATE")}
-              className={`py-2 px-2 rounded-md border font-medium cursor-pointer flex items-center justify-center gap-1 ${
-                mode === "TEMPLATE"
-                  ? "bg-[#00a884] text-white border-[#00a884]"
-                  : "bg-white text-neutral-700 border-neutral-300"
-              }`}
-            >
-              <FileText className="w-3.5 h-3.5" />
-              <span>With Template</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("OUTBOUND")}
-              className={`py-2 px-2 rounded-md border font-medium cursor-pointer flex items-center justify-center gap-1 ${
-                mode === "OUTBOUND"
-                  ? "bg-neutral-900 text-white border-neutral-900"
-                  : "bg-white text-neutral-700 border-neutral-300"
-              }`}
-            >
-              <WhatsAppLogoIcon size={12} />
-              <span>Free Message</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("INBOUND")}
-              className={`py-2 px-2 rounded-md border font-medium cursor-pointer flex items-center justify-center gap-1 ${
-                mode === "INBOUND"
-                  ? "bg-indigo-700 text-white border-indigo-700"
-                  : "bg-white text-neutral-700 border-neutral-300"
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Test Inbound</span>
-            </button>
-          </div>
+          <NewChatModeSelector mode={mode} onChange={setMode} />
 
           {error && (
             <div className="px-3 py-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
@@ -402,142 +357,35 @@ export function NewChatTemplateModal({
           )}
 
           {mode === "TEMPLATE" ? (
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-medium text-neutral-700">
-                    Approved WhatsApp Template ({templates.length})
-                  </label>
-                  <div className="relative w-44">
-                    <Search className="w-3 h-3 text-neutral-400 absolute left-2 top-2" />
-                    <input
-                      type="text"
-                      value={tplSearch}
-                      onChange={(e) => setTplSearch(e.target.value)}
-                      placeholder="Filter templates"
-                      className="w-full pl-6 pr-2 py-1 rounded border border-neutral-300 text-[11px]"
-                    />
-                  </div>
-                </div>
-                <select
-                  value={activeTpl?.id || ""}
-                  onChange={(e) => setSelectedTplId(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-2.5 py-2 text-xs bg-white"
-                >
-                  {filteredTemplates.length === 0 ? (
-                    <option value="">No matching approved templates</option>
-                  ) : (
-                    filteredTemplates.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} ({t.category} • {t.language})
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
-
-              {(headerVars.length > 0 || bodyVars.length > 0) && (
-                <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 space-y-2.5">
-                  <div className="text-[11px] font-semibold text-neutral-700">
-                    Template Variable Values
-                  </div>
-                  {headerVars.map((idx) => (
-                    <div key={`h_${idx}`}>
-                      <label className="block text-[11px] text-neutral-600 mb-0.5">
-                        Header {"{{"}
-                        {idx}
-                        {"}}"}
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={headerVals[idx] || ""}
-                        onChange={(e) =>
-                          setHeaderVals((p) => ({ ...p, [idx]: e.target.value }))
-                        }
-                        className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs"
-                      />
-                    </div>
-                  ))}
-                  {bodyVars.map((idx) => {
-                    const spec = activeTpl?.variablesSchema.find(
-                      (v) => v.index === idx
-                    );
-                    return (
-                      <div key={`b_${idx}`}>
-                        <label className="block text-[11px] text-neutral-600 mb-0.5">
-                          {spec?.label || `Variable {{${idx}}}`}
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={bodyVals[idx] || ""}
-                          onChange={(e) =>
-                            setBodyVals((p) => ({
-                              ...p,
-                              [idx]: e.target.value,
-                            }))
-                          }
-                          placeholder={spec?.sampleValue || `Value for {{${idx}}}`}
-                          className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs"
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {activeTpl && (
-                <div className="rounded-lg border border-[#b7ebaf] bg-[#efeae2] p-3 space-y-1.5">
-                  <div className="text-[10.5px] font-semibold text-[#008069] uppercase tracking-wide">
-                    WhatsApp Template Preview
-                  </div>
-                  <div className="rounded-lg bg-[#d9fdd3] px-3 py-2 text-xs text-[#111b21] whitespace-pre-wrap shadow-2xs">
-                    {renderedPreview}
-                  </div>
-                </div>
-              )}
-            </div>
+            <TemplateSelectorSection
+              templates={templates}
+              filteredTemplates={filteredTemplates}
+              activeTpl={activeTpl}
+              tplSearch={tplSearch}
+              onTplSearchChange={setTplSearch}
+              onSelectTemplate={setSelectedTplId}
+              headerVars={headerVars}
+              bodyVars={bodyVars}
+              headerVals={headerVals}
+              bodyVals={bodyVals}
+              onHeaderValChange={(idx, val) =>
+                setHeaderVals((p) => ({ ...p, [idx]: val }))
+              }
+              onBodyValChange={(idx, val) =>
+                setBodyVals((p) => ({ ...p, [idx]: val }))
+              }
+              renderedPreview={renderedPreview}
+            />
           ) : (
-            <div className="space-y-2.5">
-              <div>
-                <label className="block text-xs font-medium text-neutral-700 mb-1">
-                  Business / Category
-                </label>
-                <input
-                  type="text"
-                  value={orgType}
-                  onChange={(e) => setOrgType(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-1.5 text-xs"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-neutral-700 mb-1">
-                  Message Text
-                </label>
-                <textarea
-                  rows={3}
-                  required
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 p-2.5 text-xs"
-                />
-              </div>
-              {mode === "INBOUND" && (
-                <div>
-                  <label className="block text-[11px] font-medium text-neutral-700 mb-1">
-                    Optional: Simulate Quick-Reply Button Payload
-                  </label>
-                  <input
-                    type="text"
-                    value={buttonPayload}
-                    onChange={(e) => setButtonPayload(e.target.value)}
-                    placeholder="e.g. TALK_TO_SALES or TRACK_MY_ORDER"
-                    className="w-full rounded-md border border-neutral-300 px-2.5 py-1.5 text-xs font-mono"
-                  />
-                </div>
-              )}
-            </div>
+            <FreeTextMessageSection
+              mode={mode}
+              orgType={orgType}
+              text={text}
+              buttonPayload={buttonPayload}
+              onOrgTypeChange={setOrgType}
+              onTextChange={setText}
+              onButtonPayloadChange={setButtonPayload}
+            />
           )}
         </div>
 

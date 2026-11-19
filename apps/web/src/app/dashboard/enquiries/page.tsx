@@ -1,8 +1,8 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { loadEnquiriesPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
-import { EnquiriesClient } from "./EnquiriesClient";
+import EnquiriesLoading from "./loading";
+import { EnquiriesDataBoundary } from "./EnquiriesDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -15,12 +15,9 @@ export default async function UnifiedWebsiteEnquiriesPage() {
     redirect("/dashboard/pricing");
   }
 
-  const initialData = await loadEnquiriesPayload({ limit: 300 });
   return (
-    <EnquiriesClient
-      initialData={
-        initialData as React.ComponentProps<typeof EnquiriesClient>["initialData"]
-      }
-    />
+    <Suspense fallback={<EnquiriesLoading />}>
+      <EnquiriesDataBoundary />
+    </Suspense>
   );
 }

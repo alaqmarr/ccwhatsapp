@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { isSuperAdminCapable } from "@cc/rbac";
-import { loadFullStaffAccountsPayload } from "@/lib/loaders/core";
 import { getCurrentUser } from "@/lib/session";
-import { ApprovalsClient } from "./ApprovalsClient";
+import ApprovalsLoading from "./loading";
+import { ApprovalsDataBoundary } from "./ApprovalsDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -16,12 +16,9 @@ export default async function StaffApprovalsPage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadFullStaffAccountsPayload(user);
   return (
-    <ApprovalsClient
-      initialData={
-        initialData as React.ComponentProps<typeof ApprovalsClient>["initialData"]
-      }
-    />
+    <Suspense fallback={<ApprovalsLoading />}>
+      <ApprovalsDataBoundary user={user} />
+    </Suspense>
   );
 }

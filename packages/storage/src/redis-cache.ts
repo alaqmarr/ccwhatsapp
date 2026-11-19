@@ -10,12 +10,15 @@ export const WHATSAPP_CACHE_TAGS = [
   "ce53-machines",
   "customer-history",
   "acrio-replies",
+  "custom-links",
+  "contacts-meta",
+  "company-docs",
 ] as const;
 
 export type WhatsAppCacheTag = (typeof WHATSAPP_CACHE_TAGS)[number];
 
 interface MemoryEntry {
-  json: string;
+  value: unknown;
   bytes: number;
   expiresAt: number;
   tags: WhatsAppCacheTag[];
@@ -25,8 +28,10 @@ interface WhatsAppCacheEngineState {
   redisClient: Redis | null;
   redisInitStarted: boolean;
   redisReady: boolean;
+  redisEverReady: boolean;
   redisConfigured: boolean;
   redisUrl: string;
+  hasExplicitRedisUrl: boolean;
   memoryStore: Map<string, MemoryEntry>;
   memoryUsedBytes: number;
   tagVersions: Record<WhatsAppCacheTag, number>;
@@ -43,12 +48,15 @@ const globalCacheRef = globalThis as unknown as {
 
 function getCacheState(): WhatsAppCacheEngineState {
   if (!globalCacheRef.__ccWhatsAppRedisCache) {
+    const explicitUrl = (process.env.REDIS_URL || "").trim();
     globalCacheRef.__ccWhatsAppRedisCache = {
       redisClient: null,
       redisInitStarted: false,
       redisReady: false,
+      redisEverReady: false,
       redisConfigured: false,
-      redisUrl: process.env.REDIS_URL || "redis://127.0.0.1:6379",
+      redisUrl: explicitUrl || "redis://127.0.0.1:6379",
+      hasExplicitRedisUrl: Boolean(explicitUrl),
       memoryStore: new Map<string, MemoryEntry>(),
       memoryUsedBytes: 0,
       tagVersions: {
@@ -56,6 +64,9 @@ function getCacheState(): WhatsAppCacheEngineState {
         "ce53-machines": 1,
         "customer-history": 1,
         "acrio-replies": 1,
+        "custom-links": 1,
+        "contacts-meta": 1,
+        "company-docs": 1,
       },
       inflight: new Map<string, Promise<unknown>>(),
       hits: 0,
@@ -71,7 +82,10 @@ function initRedisIfNeeded(state: WhatsAppCacheEngineState): void {
   if (state.redisInitStarted) return;
   state.redisInitStarted = true;
 
-  if (process.env.REDIS_DISABLED === "1" || process.env.REDIS_DISABLED === "true") {
+  if (
+    process.env.REDIS_DISABLED === "1" ||
+    process.env.REDIS_DISABLED === "true"
+  ) {
     return;
   }
 
@@ -83,7 +97,12 @@ function initRedisIfNeeded(state: WhatsAppCacheEngineState): void {
       connectTimeout: 450,
       commandTimeout: 800,
       retryStrategy(times) {
-        return Math.min(times * 5000, 30000);
+        // Without an explicit REDIS_URL, stop after the initial probe fails
+        if (!state.hasExplicitRedisUrl && (!state.redisEverReady || times > 2)) {
+          return null;
+        }
+        // Exponential backoff capped at 60s when REDIS_URL is configured
+        return Math.min(1000 * Math.pow(2, Math.min(times - 1, 6)), 60_000);
       },
     });
 
@@ -95,10 +114,15 @@ function initRedisIfNeeded(state: WhatsAppCacheEngineState): void {
     });
     client.on("ready", async () => {
       state.redisReady = true;
+      state.redisEverReady = true;
       if (!state.redisConfigured) {
         state.redisConfigured = true;
         try {
-          await client.config("SET", "maxmemory", String(WHATSAPP_REDIS_MAX_BYTES));
+          await client.config(
+            "SET",
+            "maxmemory",
+            String(WHATSAPP_REDIS_MAX_BYTES)
+          );
           await client.config("SET", "maxmemory-policy", "allkeys-lru");
         } catch {
           // Managed Redis instances may restrict CONFIG SET
@@ -109,25 +133,51 @@ function initRedisIfNeeded(state: WhatsAppCacheEngineState): void {
     state.redisClient = client;
     void client.connect().catch(() => {
       state.redisReady = false;
+      if (!state.hasExplicitRedisUrl && !state.redisEverReady) {
+        try {
+          client.disconnect(false);
+        } catch {
+          // Ignore disconnect cleanup error
+        }
+        state.redisClient = null;
+      }
     });
   } catch {
     state.redisReady = false;
   }
 }
 
-function buildVersionedKey(rawKey: string, tags: WhatsAppCacheTag[], state: WhatsAppCacheEngineState): string {
-  const versionSuffix = tags.map((t) => `${t}:v${state.tagVersions[t] || 1}`).join("|");
+function buildVersionedKey(
+  rawKey: string,
+  tags: WhatsAppCacheTag[],
+  state: WhatsAppCacheEngineState
+): string {
+  const versionSuffix = tags
+    .map((t) => `${t}:v${state.tagVersions[t] || 1}`)
+    .join("|");
   return `ccwa:${rawKey}::${versionSuffix}`;
 }
 
-function writeMemoryLru(
+function cloneCachedValue<T>(value: T): T {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  try {
+    return structuredClone(value);
+  } catch {
+    return value;
+  }
+}
+
+function writeMemoryLru<T>(
   state: WhatsAppCacheEngineState,
   fullKey: string,
-  json: string,
+  value: T,
+  bytes: number,
   ttlSeconds: number,
-  tags: WhatsAppCacheTag[]
+  tags: WhatsAppCacheTag[],
+  skipClone = false
 ): void {
-  const bytes = Buffer.byteLength(json, "utf8");
   if (bytes > WHATSAPP_REDIS_MAX_BYTES * 0.25) return;
 
   const existing = state.memoryStore.get(fullKey);
@@ -148,7 +198,7 @@ function writeMemoryLru(
   }
 
   state.memoryStore.set(fullKey, {
-    json,
+    value: skipClone ? value : cloneCachedValue(value),
     bytes,
     expiresAt: Date.now() + ttlSeconds * 1000,
     tags,
@@ -156,7 +206,11 @@ function writeMemoryLru(
   state.memoryUsedBytes += bytes;
 }
 
-function readMemoryLru<T>(state: WhatsAppCacheEngineState, fullKey: string): T | null {
+function readMemoryLru<T>(
+  state: WhatsAppCacheEngineState,
+  fullKey: string,
+  skipClone = false
+): { value: T } | null {
   const entry = state.memoryStore.get(fullKey);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
@@ -167,31 +221,35 @@ function readMemoryLru<T>(state: WhatsAppCacheEngineState, fullKey: string): T |
   // Promote in Map order for LRU
   state.memoryStore.delete(fullKey);
   state.memoryStore.set(fullKey, entry);
-  try {
-    return JSON.parse(entry.json) as T;
-  } catch {
-    return null;
-  }
+  return {
+    value: skipClone ? (entry.value as T) : cloneCachedValue(entry.value as T),
+  };
 }
 
 export type WhatsAppCacheHitTier = "HIT_MEMORY" | "HIT_REDIS" | "MISS";
+
+export interface RememberWhatsAppCacheOptions {
+  skipClone?: boolean;
+}
 
 export async function rememberWhatsAppCacheWithMeta<T>(
   key: string,
   tags: WhatsAppCacheTag[],
   ttlSeconds: number,
-  fetcher: () => Promise<T>
+  fetcher: () => Promise<T>,
+  options?: RememberWhatsAppCacheOptions
 ): Promise<{ value: T; cacheStatus: WhatsAppCacheHitTier }> {
   const state = getCacheState();
   initRedisIfNeeded(state);
 
+  const skipClone = Boolean(options?.skipClone);
   const fullKey = buildVersionedKey(key, tags, state);
 
-  // 1. Check fast memory tier first
-  const fromMem = readMemoryLru<T>(state, fullKey);
+  // 1. Check fast memory tier first (parsed value retained in memory, no JSON.parse)
+  const fromMem = readMemoryLru<T>(state, fullKey, skipClone);
   if (fromMem !== null) {
     state.hits++;
-    return { value: fromMem, cacheStatus: "HIT_MEMORY" };
+    return { value: fromMem.value, cacheStatus: "HIT_MEMORY" };
   }
 
   // 2. Check Redis if online
@@ -200,7 +258,8 @@ export async function rememberWhatsAppCacheWithMeta<T>(
       const raw = await state.redisClient.get(fullKey);
       if (raw) {
         const parsed = JSON.parse(raw) as T;
-        writeMemoryLru(state, fullKey, raw, ttlSeconds, tags);
+        const bytes = Buffer.byteLength(raw, "utf8");
+        writeMemoryLru(state, fullKey, parsed, bytes, ttlSeconds, tags, skipClone);
         state.hits++;
         return { value: parsed, cacheStatus: "HIT_REDIS" };
       }
@@ -220,8 +279,9 @@ export async function rememberWhatsAppCacheWithMeta<T>(
   const promise = (async () => {
     try {
       const fresh = await fetcher();
-      const json = JSON.stringify(fresh);
-      writeMemoryLru(state, fullKey, json, ttlSeconds, tags);
+      const json = JSON.stringify(fresh) ?? "null";
+      const bytes = Buffer.byteLength(json, "utf8");
+      writeMemoryLru(state, fullKey, fresh, bytes, ttlSeconds, tags, skipClone);
       state.writes++;
       if (tags.includes("cc-products") || tags.includes("ce53-machines")) {
         state.lastSyncedAt = new Date().toISOString();
@@ -249,9 +309,16 @@ export async function rememberWhatsAppCache<T>(
   key: string,
   tags: WhatsAppCacheTag[],
   ttlSeconds: number,
-  fetcher: () => Promise<T>
+  fetcher: () => Promise<T>,
+  options?: RememberWhatsAppCacheOptions
 ): Promise<T> {
-  const res = await rememberWhatsAppCacheWithMeta(key, tags, ttlSeconds, fetcher);
+  const res = await rememberWhatsAppCacheWithMeta(
+    key,
+    tags,
+    ttlSeconds,
+    fetcher,
+    options
+  );
   return res.value;
 }
 

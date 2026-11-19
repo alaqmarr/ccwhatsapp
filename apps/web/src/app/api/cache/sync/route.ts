@@ -10,7 +10,7 @@ import {
 } from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
 import { getWhatsAppCacheSummary } from "@cc/storage";
-import { getCurrentUser } from "../../../../lib/session";
+import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 

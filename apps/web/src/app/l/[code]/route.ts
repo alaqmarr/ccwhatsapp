@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveAndTrackCustomLink } from "@cc/storage";
 import { normalizePublicEcosystemUrl } from "@cc/database";
+import { enforcePublicRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +9,13 @@ export async function GET(
   req: Request,
   context: { params: Promise<{ code: string }> }
 ) {
+  const limited = enforcePublicRateLimit(req, {
+    bucket: "shortlink-resolve",
+    maxRequests: 180,
+    windowMs: 60_000,
+  });
+  if (limited) return limited;
+
   const { code } = await context.params;
   const link = await resolveAndTrackCustomLink(code);
 

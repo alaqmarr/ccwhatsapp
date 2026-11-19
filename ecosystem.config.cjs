@@ -89,6 +89,11 @@ module.exports = {
         SEED_DEMO_DATA: dotEnv.SEED_DEMO_DATA || "0",
         REDIS_URL: redisUrl,
         REDIS_MAXMEMORY_BYTES: String(redisMaxBytes),
+        // Multi-worker PM2 guard: if scaling `instances > 1`, set WORKER_ROLE=web and
+        // DISABLE_IN_PROCESS_WORKERS=1 on web processes and run one dedicated WORKER_ROLE=runner process
+        // so background broadcast, escalation, and job loops run on a single leader worker.
+        WORKER_ROLE: dotEnv.WORKER_ROLE || "all",
+        DISABLE_IN_PROCESS_WORKERS: dotEnv.DISABLE_IN_PROCESS_WORKERS || "0",
       },
     },
   ],

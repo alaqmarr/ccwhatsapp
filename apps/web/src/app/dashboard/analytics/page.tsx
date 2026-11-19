@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
-import { loadAnalyticsPayload } from "@/lib/loaders/analytics";
 import { getCurrentUser } from "@/lib/session";
-import { AnalyticsClient } from "./AnalyticsClient";
+import AnalyticsLoading from "./loading";
+import { AnalyticsDataBoundary } from "./AnalyticsDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -16,15 +16,9 @@ export default async function AnalyticsDashboardPage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadAnalyticsPayload(user, {
-    range: "30d",
-    teamId: "ALL",
-  });
   return (
-    <AnalyticsClient
-      initialData={
-        initialData as React.ComponentProps<typeof AnalyticsClient>["initialData"]
-      }
-    />
+    <Suspense fallback={<AnalyticsLoading />}>
+      <AnalyticsDataBoundary user={user} />
+    </Suspense>
   );
 }

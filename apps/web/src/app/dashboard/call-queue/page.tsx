@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { hasPermission } from "@cc/rbac";
-import { loadCallQueuePayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
-import { CallQueueClient } from "./CallQueueClient";
+import CallQueueLoading from "./loading";
+import { CallQueueDataBoundary } from "./CallQueueDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -16,12 +16,9 @@ export default async function CallQueuePage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadCallQueuePayload(user);
   return (
-    <CallQueueClient
-      initialData={
-        initialData as React.ComponentProps<typeof CallQueueClient>["initialData"]
-      }
-    />
+    <Suspense fallback={<CallQueueLoading />}>
+      <CallQueueDataBoundary user={user} />
+    </Suspense>
   );
 }

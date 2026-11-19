@@ -1,232 +1,47 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
-  ExternalLink,
   FileCode,
   HardDrive,
   IndianRupee,
   Play,
-  Plus,
   RefreshCw,
-  Save,
   ShieldCheck,
 } from "lucide-react";
 import {
-  AccountStatusBadge,
   CardListSkeleton,
   ElementErrorState,
-  MetricStatCard,
   StatCardsSkeleton,
   TableRowsSkeleton,
-  formatDateIst,
-  formatDateTimeIst,
 } from "@cc/ui";
-import type { AccountStatus } from "@cc/rbac";
+import type {
+  BackupLog,
+  DbDiag,
+  DevAnalyticsSlice,
+  DevClientInitialData,
+  DevPricingPayload,
+  StaffMemberRecord,
+} from "./dev-types";
 
-interface CategoryProfitRow {
-  category: string;
-  messageCount: number;
-  unitRateInr: number;
-  totalBilledInr: number;
-  metaUnitRateInr?: number;
-  metaBaseCostInr?: number;
-  metaGstInr?: number;
-  metaWithGstInr?: number;
-  aiBaseCostInr?: number;
-  aiGstInr?: number;
-  aiWithGstInr?: number;
-  actualMetaCostInr?: number;
-  netMarginExGstInr?: number;
-  netMarginInr?: number;
-}
+const DevProfitTab = dynamic(() => import("./DevProfitTab"), {
+  loading: () => <StatCardsSkeleton count={4} />,
+});
 
-interface ProfitLedgerEntry {
-  id: string;
-  customerPhone: string;
-  category: string;
-  clientUnitRateInr: number;
-  deliveryMode?: string;
-  actualMetaUnitCostInr?: number;
-  actualMetaUnitWithGstInr?: number;
-  marginInr?: number;
-  staffName: string;
-  billedAt: string;
-}
+const DevAccountsTab = dynamic(() => import("./DevAccountsTab"), {
+  loading: () => <TableRowsSkeleton rows={4} cols={4} />,
+});
 
-interface AiCostBucketClient {
-  tracesCount: number;
-  billedCalls: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalUsd: number;
-  baseInr: number;
-  gstInr: number;
-  totalWithGstInr: number;
-}
-
-interface DevPricingPayload {
-  ok: boolean;
-  viewMode: "dev_actual_and_margin";
-  rates: {
-    marketingRateInr: number;
-    otherMessagesRateInr: number;
-    actualMetaMarketingRateInr: number;
-    actualMetaUtilityRateInr: number;
-    actualMetaAuthRateInr: number;
-    actualMetaServiceRateInr: number;
-    gstRatePct?: number;
-    usdToInrRate?: number;
-  };
-  totals: {
-    totalMessages: number;
-    liveMessagesCount?: number;
-    liveClientBilledInr?: number;
-    sandboxOrSeedMessagesCount?: number;
-    sandboxOrSeedBilledInr?: number;
-    totalBilledInr: number;
-    clientGstInr?: number;
-    clientTotalInclGstInr?: number;
-    totalMetaBaseInr?: number;
-    totalMetaGstInr?: number;
-    totalMetaWithGstInr?: number;
-    totalActualCostExGstInr?: number;
-    totalActualGstInr?: number;
-    totalActualMetaCostInr: number;
-    totalNetMarginExGstInr?: number;
-    totalNetMarginInr: number;
-    totalEcosystemCostWithGstInr?: number;
-    marginPercentage: number;
-  };
-  aiCosts?: {
-    usdToInrRate: number;
-    gstRatePct: number;
-    whatsappHub: AiCostBucketClient;
-    websitesOnly: AiCostBucketClient;
-    classicConcepts: AiCostBucketClient;
-    classicEdge53: AiCostBucketClient;
-    allEcosystem: AiCostBucketClient;
-  };
-  byCategory: CategoryProfitRow[];
-  recentEntries: ProfitLedgerEntry[];
-}
-
-interface DevAnalyticsSlice {
-  range: string;
-  kpis: {
-    totalConversations: number;
-    inboundMessagesCount: number;
-    outboundMessagesCount: number;
-    freeStaffRepliesCount: number;
-    acrioRepliesCount: number;
-    templateMessagesCount: number;
-    outboundDeliveryRatePct: number;
-    outboundReadRatePct: number;
-    aiTokensIn?: number;
-    aiTokensOut?: number;
-    aiTokensTotal?: number;
-    aiCacheReadTokens?: number;
-    aiLiveCallsCount?: number;
-    clientBilledInr?: number;
-    metaWholesaleBaseInr?: number;
-    metaWholesaleGstInr?: number;
-    metaWholesaleWithGstInr?: number;
-    whatsappAiCostWithGstInr?: number;
-    ecosystemAiCostWithGstInr?: number;
-    actualMetaCostInr?: number;
-    netMarginInr?: number;
-  };
-  aiTokenSummary?: {
-    periodTokensIn: number;
-    periodTokensOut: number;
-    periodTokensTotal: number;
-    periodCacheReadTokens: number;
-    periodCacheWriteTokens?: number;
-    periodLiveAiCalls: number;
-    periodAiCosts?: {
-      whatsappHub: AiCostBucketClient;
-      websitesOnly: AiCostBucketClient;
-      allEcosystem: AiCostBucketClient;
-    };
-    allTimeTokensIn: number;
-    allTimeTokensOut: number;
-    allTimeTokensTotal: number;
-  };
-}
-
-interface StaffMemberRecord {
-  id: string;
-  name: string;
-  email: string;
-  whatsappNumber: string;
-  role: string;
-  status: AccountStatus;
-  createdAt: string;
-}
-
-interface DbDiag {
-  domain: string;
-  fileName: string;
-  description: string;
-  sizeBytes: number;
-  tablesCount: number;
-  totalRows: number;
-}
-
-interface BackupLog {
-  id: string;
-  startedAt: string;
-  completedAt: string;
-  triggerSource: string;
-  status: string;
-  databasesCount: number;
-  totalBytes: number;
-  localFolderPath: string;
-  googleDriveFileId: string | null;
-  googleDriveLink: string | null;
-  detailsMessage: string;
-}
-
-function friendlyCategoryName(cat: string): string {
-  switch (cat) {
-    case "MARKETING":
-      return "Marketing & Offer Templates";
-    case "UTILITY":
-      return "Order & Delivery Templates";
-    case "AUTHENTICATION":
-      return "Verification Code Templates";
-    case "ACRIO":
-      return "ACRIO Automated Replies";
-    default:
-      return cat;
-  }
-}
+const DevBackupsTab = dynamic(() => import("./DevBackupsTab"), {
+  loading: () => <CardListSkeleton rows={4} />,
+});
 
 export function DevClient({
   initialData,
 }: {
-  initialData?: {
-    pricing: DevPricingPayload;
-    analytics: DevAnalyticsSlice | null;
-    devAccounts: StaffMemberRecord[];
-    databases: DbDiag[];
-    backupLogs: BackupLog[];
-    backupConfig?: {
-      enabled: boolean;
-      midnightHourIst: number;
-      midnightMinuteIst: number;
-      googleDriveFolderId: string;
-      googleServiceAccountEmail: string;
-      hasPrivateKey: boolean;
-      googleClientId: string;
-      hasOauthRefreshToken: boolean;
-      retentionDays: number;
-      includeMainWebsiteDb: boolean;
-    };
-  };
+  initialData?: DevClientInitialData;
 }) {
   const [activeTab, setActiveTab] = useState<"profit" | "devs" | "backups">(
     "profit"
@@ -371,10 +186,7 @@ export function DevClient({
         setGstRatePct(String(priceJson.rates.gstRatePct ?? 18));
         setUsdToInrRate(String(priceJson.rates.usdToInrRate ?? 93.4));
 
-        if (anaRes.ok && anaJson.ok) {
-          setAnalytics(anaJson);
-        }
-
+        if (anaRes.ok && anaJson.ok) setAnalytics(anaJson);
         if (staffRes.ok && staffJson.ok) {
           setDevAccounts(
             (staffJson.staff || []).filter(
@@ -382,31 +194,20 @@ export function DevClient({
             )
           );
         }
-
         if (bkpRes.ok && bkpJson.ok) {
           setDatabases(bkpJson.databases || []);
           setBackupLogs(bkpJson.backupLogs || []);
           if (bkpJson.backupConfig) {
             setEnabled(Boolean(bkpJson.backupConfig.enabled));
             setMidnightHourIst(Number(bkpJson.backupConfig.midnightHourIst ?? 0));
-            setMidnightMinuteIst(
-              Number(bkpJson.backupConfig.midnightMinuteIst ?? 0)
-            );
-            setGoogleDriveFolderId(
-              bkpJson.backupConfig.googleDriveFolderId || ""
-            );
-            setGoogleServiceAccountEmail(
-              bkpJson.backupConfig.googleServiceAccountEmail || ""
-            );
+            setMidnightMinuteIst(Number(bkpJson.backupConfig.midnightMinuteIst ?? 0));
+            setGoogleDriveFolderId(bkpJson.backupConfig.googleDriveFolderId || "");
+            setGoogleServiceAccountEmail(bkpJson.backupConfig.googleServiceAccountEmail || "");
             setHasPrivateKey(Boolean(bkpJson.backupConfig.hasPrivateKey));
             setGoogleClientId(bkpJson.backupConfig.googleClientId || "");
-            setHasOauthRefreshToken(
-              Boolean(bkpJson.backupConfig.hasOauthRefreshToken)
-            );
+            setHasOauthRefreshToken(Boolean(bkpJson.backupConfig.hasOauthRefreshToken));
             setRetentionDays(Number(bkpJson.backupConfig.retentionDays ?? 30));
-            setIncludeMainWebsiteDb(
-              Boolean(bkpJson.backupConfig.includeMainWebsiteDb)
-            );
+            setIncludeMainWebsiteDb(Boolean(bkpJson.backupConfig.includeMainWebsiteDb));
           }
         }
       } catch {
@@ -566,7 +367,7 @@ export function DevClient({
         <ElementErrorState
           title="Dev Console Restricted"
           message={loadError}
-          onRetry={() => loadAllDevData(range)}
+          onRetry={() => void loadAllDevData(range)}
           retrying={refreshing}
         />
       </div>
@@ -605,19 +406,17 @@ export function DevClient({
           </Link>
           <button
             type="button"
-            onClick={() => loadAllDevData(range)}
+            onClick={() => void loadAllDevData(range)}
             disabled={refreshing}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-white border border-neutral-300 text-xs font-medium text-neutral-700 hover:bg-neutral-50 cursor-pointer"
           >
-            <RefreshCw
-              className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`}
-            />
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
             <span>Refresh</span>
           </button>
           <button
             type="button"
             disabled={runningBackup}
-            onClick={handleRunBackupNow}
+            onClick={() => void handleRunBackupNow()}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-[#1da851] hover:bg-[#178c43] text-white text-xs font-medium cursor-pointer"
           >
             <Play className="w-3.5 h-3.5" />
@@ -632,7 +431,6 @@ export function DevClient({
         </div>
       )}
 
-      {/* Section Tabs */}
       <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 pb-3">
         <button
           type="button"
@@ -672,850 +470,86 @@ export function DevClient({
         </button>
       </div>
 
-      {/* TAB 1: PROFIT, META WHOLESALE COSTS & ANALYTICS */}
-      {activeTab === "profit" && pricing && (() => {
-        const activeGstPct = pricing.rates.gstRatePct ?? 18;
-        const gstMult = 1 + activeGstPct / 100;
-        const mktWithGst = pricing.rates.actualMetaMarketingRateInr * gstMult;
-        const utilWithGst = pricing.rates.actualMetaUtilityRateInr * gstMult;
-        const netProfit = pricing.totals.totalNetMarginInr;
-        const netProfitPositive = netProfit >= 0;
-        const aiWa = pricing.aiCosts?.whatsappHub;
-        const aiWeb = pricing.aiCosts?.websitesOnly;
-        const aiAll = pricing.aiCosts?.allEcosystem;
-        return (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <MetricStatCard
-              label="Client Billed Total"
-              value={`₹${pricing.totals.totalBilledInr.toFixed(2)}`}
-              subtext={`Live: ₹${(pricing.totals.liveClientBilledInr ?? 0).toFixed(2)} (${pricing.totals.liveMessagesCount ?? 0}) • Sandbox/Seed: ${pricing.totals.sandboxOrSeedMessagesCount ?? 0}`}
-            />
-            <MetricStatCard
-              label={`Actual Cost (incl. ${activeGstPct}% GST)`}
-              value={`₹${pricing.totals.totalActualMetaCostInr.toFixed(2)}`}
-              subtext={`Meta ₹${(pricing.totals.totalMetaWithGstInr ?? 0).toFixed(2)} + WA AI ₹${(aiWa?.totalWithGstInr ?? 0).toFixed(2)} (ex-GST ₹${(pricing.totals.totalActualCostExGstInr ?? 0).toFixed(2)})`}
-            />
-            <MetricStatCard
-              label={`WhatsApp Net Profit (incl. ${activeGstPct}% GST)`}
-              value={`${netProfitPositive ? "+" : "-"}₹${Math.abs(netProfit).toFixed(2)}`}
-              subtext={`Ex-GST: ${(pricing.totals.totalNetMarginExGstInr ?? 0) >= 0 ? "+" : "-"}₹${Math.abs(pricing.totals.totalNetMarginExGstInr ?? 0).toFixed(2)} • Margin ${pricing.totals.marginPercentage}%`}
-            />
-            <MetricStatCard
-              label={`Full Ecosystem AI + Meta (${activeGstPct}% GST)`}
-              value={`₹${(pricing.totals.totalEcosystemCostWithGstInr ?? pricing.totals.totalActualMetaCostInr).toFixed(2)}`}
-              subtext={`WA AI $${(aiWa?.totalUsd ?? 0).toFixed(2)} + Sites AI $${(aiWeb?.totalUsd ?? 0).toFixed(2)} (@ ₹${(pricing.aiCosts?.usdToInrRate ?? 93.4).toFixed(2)}/$)`}
-            />
-          </div>
-
-          {mktWithGst > pricing.rates.marketingRateInr && (
-            <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-900">
-              <strong>Wholesale Margin Alert ({activeGstPct}% GST included):</strong> Meta India Marketing (₹{pricing.rates.actualMetaMarketingRateInr.toFixed(4)} + {activeGstPct}% GST = <strong>₹{mktWithGst.toFixed(4)}</strong>) exceeds your current Client Marketing charge of <strong>₹{pricing.rates.marketingRateInr.toFixed(2)}</strong> by <strong>₹{(mktWithGst - pricing.rates.marketingRateInr).toFixed(4)}/msg</strong> (if GST Input Credit is not reclaimed).
-            </div>
-          )}
-
-          {/* True Claude Haiku Token Spend Breakdown (USD -> INR + GST) */}
-          {aiAll && (
-            <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-sm font-semibold text-neutral-900">
-                    Actual Claude Haiku AI Cost Breakdown (from ai.logs @ ₹{pricing.aiCosts?.usdToInrRate.toFixed(2)}/USD + {activeGstPct}% GST)
-                  </h2>
-                  <p className="text-xs text-neutral-500 mt-0.5">
-                    Includes uncached input ($1/M), 5-min cache write ($1.25/M), cache read ($0.10/M), and output ($5/M) across all traces.
-                  </p>
-                </div>
-                <Link
-                  href="/dashboard/claude-usage"
-                  className="text-xs font-semibold text-indigo-700 hover:underline"
-                >
-                  Compare with Anthropic Live Billing API
-                </Link>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                <div className="p-3.5 rounded-lg bg-indigo-50/70 border border-indigo-200 space-y-1">
-                  <div className="font-semibold text-indigo-950">WhatsApp Hub (ACRIO)</div>
-                  <div className="text-base font-bold text-indigo-950 font-mono">
-                    ₹{(aiWa?.totalWithGstInr ?? 0).toFixed(2)}{" "}
-                    <span className="text-[11px] font-normal text-indigo-800">
-                      (Base ₹{(aiWa?.baseInr ?? 0).toFixed(2)} + GST ₹{(aiWa?.gstInr ?? 0).toFixed(2)} | ${(aiWa?.totalUsd ?? 0).toFixed(4)})
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-indigo-800">
-                    {aiWa?.billedCalls ?? 0} calls • In {(aiWa?.inputTokens ?? 0).toLocaleString("en-IN")} • Cache W {(aiWa?.cacheWriteTokens ?? 0).toLocaleString("en-IN")} • R {(aiWa?.cacheReadTokens ?? 0).toLocaleString("en-IN")} • Out {(aiWa?.outputTokens ?? 0).toLocaleString("en-IN")}
-                  </div>
-                </div>
-                <div className="p-3.5 rounded-lg bg-amber-50/70 border border-amber-200 space-y-1">
-                  <div className="font-semibold text-amber-950">Websites (classicconcepts.in + CE53)</div>
-                  <div className="text-base font-bold text-amber-950 font-mono">
-                    ₹{(aiWeb?.totalWithGstInr ?? 0).toFixed(2)}{" "}
-                    <span className="text-[11px] font-normal text-amber-800">
-                      (Base ₹{(aiWeb?.baseInr ?? 0).toFixed(2)} + GST ₹{(aiWeb?.gstInr ?? 0).toFixed(2)} | ${(aiWeb?.totalUsd ?? 0).toFixed(4)})
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-amber-800">
-                    {aiWeb?.billedCalls ?? 0} calls • In {(aiWeb?.inputTokens ?? 0).toLocaleString("en-IN")} • Cache W {(aiWeb?.cacheWriteTokens ?? 0).toLocaleString("en-IN")} • R {(aiWeb?.cacheReadTokens ?? 0).toLocaleString("en-IN")} • Out {(aiWeb?.outputTokens ?? 0).toLocaleString("en-IN")}
-                  </div>
-                </div>
-                <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-300 space-y-1">
-                  <div className="font-semibold text-slate-900">All Ecosystem AI Total</div>
-                  <div className="text-base font-bold text-slate-900 font-mono">
-                    ₹{aiAll.totalWithGstInr.toFixed(2)}{" "}
-                    <span className="text-[11px] font-normal text-slate-600">
-                      (Base ₹{aiAll.baseInr.toFixed(2)} + GST ₹{aiAll.gstInr.toFixed(2)} | ${aiAll.totalUsd.toFixed(4)})
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-slate-600">
-                    {aiAll.billedCalls} billed calls ({aiAll.tracesCount} traces) • Avg ₹{aiAll.billedCalls > 0 ? (aiAll.totalWithGstInr / aiAll.billedCalls).toFixed(2) : "0.00"}/call incl. GST
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Period Cost & Volume Analytics */}
-          {analytics && (
-            <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-sm font-semibold text-neutral-900">
-                    Period Profit & Traffic Analytics
-                  </h2>
-                  <p className="text-xs text-neutral-500 mt-0.5">
-                    Compare message volume, client billing, actual Meta + WhatsApp AI spend (incl. {activeGstPct}% GST), and net profit by time window.
-                  </p>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {[
-                    { id: "today", label: "Today" },
-                    { id: "7d", label: "7 Days" },
-                    { id: "30d", label: "30 Days" },
-                    { id: "90d", label: "90 Days" },
-                    { id: "all", label: "All Time" },
-                  ].map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setRange(opt.id)}
-                      className={`px-2.5 py-1.5 rounded text-xs font-medium cursor-pointer ${
-                        range === opt.id
-                          ? "bg-slate-900 text-white"
-                          : "bg-neutral-100 text-neutral-700 hover:bg-neutral-200"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 text-xs">
-                <div className="p-3 rounded-lg bg-neutral-50 border border-neutral-200">
-                  <div className="text-neutral-500">Period Client Billed</div>
-                  <div className="text-base font-bold text-neutral-900 mt-1 font-mono">
-                    ₹{(analytics.kpis.clientBilledInr ?? 0).toFixed(2)}
-                  </div>
-                </div>
-                <div className="p-3 rounded-lg bg-neutral-50 border border-neutral-200">
-                  <div className="text-neutral-500">Meta + {activeGstPct}% GST</div>
-                  <div className="text-base font-bold text-neutral-900 mt-1 font-mono">
-                    ₹{(analytics.kpis.metaWholesaleWithGstInr ?? 0).toFixed(2)}
-                  </div>
-                </div>
-                <div className="p-3 rounded-lg bg-indigo-50/60 border border-indigo-200">
-                  <div className="text-indigo-800 font-medium">WA AI + {activeGstPct}% GST</div>
-                  <div className="text-base font-bold text-indigo-950 mt-1 font-mono">
-                    ₹{(analytics.kpis.whatsappAiCostWithGstInr ?? 0).toFixed(2)}
-                  </div>
-                </div>
-                <div className="p-3 rounded-lg bg-amber-50/60 border border-amber-200">
-                  <div className="text-amber-800 font-medium">Sites AI + {activeGstPct}% GST</div>
-                  <div className="text-base font-bold text-amber-950 mt-1 font-mono">
-                    ₹{((analytics.kpis.ecosystemAiCostWithGstInr ?? 0) - (analytics.kpis.whatsappAiCostWithGstInr ?? 0)).toFixed(2)}
-                  </div>
-                </div>
-                <div className={`p-3 rounded-lg border ${(analytics.kpis.netMarginInr ?? 0) >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-rose-50 border-rose-200"}`}>
-                  <div className={`font-medium ${(analytics.kpis.netMarginInr ?? 0) >= 0 ? "text-emerald-800" : "text-rose-800"}`}>Period Net Profit</div>
-                  <div className={`text-base font-bold mt-1 font-mono ${(analytics.kpis.netMarginInr ?? 0) >= 0 ? "text-emerald-900" : "text-rose-900"}`}>
-                    {(analytics.kpis.netMarginInr ?? 0) >= 0 ? "+" : "-"}₹{Math.abs(analytics.kpis.netMarginInr ?? 0).toFixed(2)}
-                  </div>
-                </div>
-                <div className="p-3 rounded-lg bg-indigo-50/40 border border-indigo-200">
-                  <div className="text-indigo-800 font-medium">AI Tokens In / Out</div>
-                  <div className="text-sm font-bold text-indigo-950 mt-1 font-mono">
-                    {(analytics.kpis.aiTokensIn ?? 0).toLocaleString("en-IN")} / {(analytics.kpis.aiTokensOut ?? 0).toLocaleString("en-IN")}
-                  </div>
-                </div>
-                <div className="p-3 rounded-lg bg-neutral-50 border border-neutral-200">
-                  <div className="text-neutral-500">ACRIO Turns</div>
-                  <div className="text-base font-bold text-neutral-900 mt-1 font-mono">
-                    {analytics.kpis.acrioRepliesCount}
-                  </div>
-                </div>
-                <div className="p-3 rounded-lg bg-neutral-50 border border-neutral-200">
-                  <div className="text-neutral-500">Templates / Staff</div>
-                  <div className="text-base font-bold text-neutral-900 mt-1 font-mono">
-                    {analytics.kpis.templateMessagesCount} / {analytics.kpis.freeStaffRepliesCount}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Category Profit Breakdown Table */}
-          <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-3">
-            <h2 className="text-sm font-semibold text-neutral-900">
-              Profit & Margin by Message Category (Meta Rates + Actual AI + {activeGstPct}% GST)
-            </h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs min-w-[740px]">
-                <thead>
-                  <tr className="border-b border-neutral-200 text-neutral-500">
-                    <th className="py-2.5 pr-3 font-medium">Message Type</th>
-                    <th className="py-2.5 px-3 font-medium">Count</th>
-                    <th className="py-2.5 px-3 font-medium">Client Rate</th>
-                    <th className="py-2.5 px-3 font-medium">Client Total</th>
-                    <th className="py-2.5 px-3 font-medium">Base Cost</th>
-                    <th className="py-2.5 px-3 font-medium">{activeGstPct}% GST</th>
-                    <th className="py-2.5 px-3 font-medium">Total Cost Incl. GST</th>
-                    <th className="py-2.5 pl-3 text-right font-medium">Net Profit</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-200">
-                  {pricing.byCategory.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="py-6 text-center text-neutral-400">
-                        No paid messages recorded yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    pricing.byCategory.map((c) => {
-                      const baseCost = (c.metaBaseCostInr ?? 0) + (c.aiBaseCostInr ?? 0);
-                      const gstCost = (c.metaGstInr ?? 0) + (c.aiGstInr ?? 0);
-                      const totalCost = c.actualMetaCostInr ?? 0;
-                      const margin = c.netMarginInr ?? 0;
-                      return (
-                        <tr key={c.category}>
-                          <td className="py-3 pr-3 font-medium text-neutral-900">
-                            {friendlyCategoryName(c.category)}
-                            {c.category === "ACRIO" && (
-                              <span className="block text-[10.5px] font-normal text-indigo-700">
-                                Meta 24h fee ₹0 + Real WhatsApp Claude Haiku tokens
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-3 px-3 text-neutral-700">{c.messageCount}</td>
-                          <td className="py-3 px-3 font-mono">
-                            ₹{c.unitRateInr.toFixed(2)}
-                          </td>
-                          <td className="py-3 px-3 font-mono font-semibold text-neutral-900">
-                            ₹{c.totalBilledInr.toFixed(2)}
-                          </td>
-                          <td className="py-3 px-3 font-mono text-neutral-600">
-                            ₹{baseCost.toFixed(2)}
-                          </td>
-                          <td className="py-3 px-3 font-mono text-neutral-600">
-                            ₹{gstCost.toFixed(2)}
-                          </td>
-                          <td className="py-3 px-3 font-mono font-medium text-neutral-900">
-                            ₹{totalCost.toFixed(2)}
-                          </td>
-                          <td className={`py-3 pl-3 text-right font-mono font-semibold ${margin >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
-                            {margin >= 0 ? "+" : "-"}₹{Math.abs(margin).toFixed(2)}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* DEV Rate Editor */}
-          <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-4">
-            <div>
-              <h2 className="text-sm font-semibold text-neutral-900">
-                Configure Client Rates, Meta India Wholesale Rates, GST &amp; USD/INR
-              </h2>
-              <p className="text-xs text-neutral-500 mt-0.5">
-                Meta India base rates ex-GST (Marketing ₹0.8631, Utility ₹0.1150, Auth ₹0.1150, 24h Service ₹0.00). Enter base rates below and GST ({activeGstPct}%) is calculated automatically.
-              </p>
-            </div>
-
-            <form
-              onSubmit={handleSaveDevRates}
-              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs"
-            >
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Client Marketing (₹)
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={clientMkt}
-                  onChange={(e) => setClientMkt(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Client ACRIO / Utility (₹)
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={clientOther}
-                  onChange={(e) => setClientOther(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Meta Marketing Base (₹)
-                </label>
-                <input
-                  type="number"
-                  step="0.0001"
-                  value={metaMkt}
-                  onChange={(e) => setMetaMkt(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-                <span className="block text-[10.5px] text-neutral-500 mt-0.5 font-mono">
-                  Incl. GST: ₹{mktWithGst.toFixed(4)}
-                </span>
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Meta Utility Base (₹)
-                </label>
-                <input
-                  type="number"
-                  step="0.0001"
-                  value={metaUtil}
-                  onChange={(e) => setMetaUtil(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-                <span className="block text-[10.5px] text-neutral-500 mt-0.5 font-mono">
-                  Incl. GST: ₹{utilWithGst.toFixed(4)}
-                </span>
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Meta Auth Base (₹)
-                </label>
-                <input
-                  type="number"
-                  step="0.0001"
-                  value={metaAuth}
-                  onChange={(e) => setMetaAuth(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-                <span className="block text-[10.5px] text-neutral-500 mt-0.5 font-mono">
-                  Incl. GST: ₹{(pricing.rates.actualMetaAuthRateInr * gstMult).toFixed(4)}
-                </span>
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Meta 24h Service Channel Fee (₹)
-                </label>
-                <input
-                  type="number"
-                  step="0.0001"
-                  value={metaServ}
-                  onChange={(e) => setMetaServ(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-                <span className="block text-[10.5px] text-neutral-500 mt-0.5">
-                  Meta 24h replies = ₹0 (Claude AI billed separately)
-                </span>
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  GST Rate (%)
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={gstRatePct}
-                  onChange={(e) => setGstRatePct(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  USD to INR Rate (₹)
-                </label>
-                <input
-                  type="number"
-                  step="0.05"
-                  value={usdToInrRate}
-                  onChange={(e) => setUsdToInrRate(e.target.value)}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-              </div>
-
-              <div className="sm:col-span-2 lg:col-span-4 flex justify-end pt-1">
-                <button
-                  type="submit"
-                  disabled={savingRates}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-neutral-900 hover:bg-neutral-800 text-white font-medium cursor-pointer"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{savingRates ? "Saving..." : "Save Rates & GST"}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-
-          {/* Per-Message Profit Ledger */}
-          <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-3">
-            <h2 className="text-sm font-semibold text-neutral-900">
-              Recent Per-Message Profit Ledger (Meta Channel Cost Incl. {activeGstPct}% GST)
-            </h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs min-w-[660px]">
-                <thead>
-                  <tr className="border-b border-neutral-200 text-neutral-500">
-                    <th className="py-2 pr-3 font-medium">Date & Time</th>
-                    <th className="py-2 px-3 font-medium">Customer Number</th>
-                    <th className="py-2 px-3 font-medium">Mode</th>
-                    <th className="py-2 px-3 font-medium">Type</th>
-                    <th className="py-2 px-3 font-medium">Sent By</th>
-                    <th className="py-2 px-3 text-right font-medium">Client Charge</th>
-                    <th className="py-2 px-3 text-right font-medium">Meta Cost (+GST)</th>
-                    <th className="py-2 pl-3 text-right font-medium">Net (ex-AI)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-200">
-                  {pricing.recentEntries.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="py-6 text-center text-neutral-400">
-                        No billed messages recorded yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    pricing.recentEntries.map((e) => {
-                      const mode = e.deliveryMode || "LIVE_META_CLOUD";
-                      const margin = e.marginInr ?? 0;
-                      return (
-                        <tr key={e.id}>
-                          <td className="py-2.5 pr-3 text-neutral-500">
-                            {formatDateTimeIst(e.billedAt)}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-neutral-800">
-                            {e.customerPhone}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span
-                              className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                                mode === "LIVE_META_CLOUD"
-                                  ? "bg-emerald-50 text-emerald-800"
-                                  : "bg-neutral-100 text-neutral-600"
-                              }`}
-                            >
-                              {mode === "LIVE_META_CLOUD" ? "LIVE" : mode === "SEED" ? "SEED" : "SANDBOX"}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-3 text-neutral-700">
-                            {friendlyCategoryName(e.category)}
-                          </td>
-                          <td className="py-2.5 px-3 text-neutral-700">{e.staffName}</td>
-                          <td className="py-2.5 px-3 text-right font-mono font-medium">
-                            ₹{e.clientUnitRateInr.toFixed(2)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono text-neutral-600">
-                            ₹{(e.actualMetaUnitWithGstInr ?? e.actualMetaUnitCostInr ?? 0).toFixed(4)}
-                          </td>
-                          <td className={`py-2.5 pl-3 text-right font-mono font-semibold ${margin >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
-                            {margin >= 0 ? "+" : "-"}₹{Math.abs(margin).toFixed(4)}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-        );
-      })()}
-
-      {/* TAB 2: DEV ACCOUNTS (ONLY ONE DEV CAN CREATE ANOTHER DEV) */}
-      {activeTab === "devs" && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          <form
-            onSubmit={handleCreateDevAccount}
-            className="lg:col-span-5 bg-white rounded-lg border border-neutral-200 p-5 space-y-4 text-xs"
-          >
-            <div>
-              <h2 className="text-sm font-semibold text-neutral-900">
-                Create Another Dev Account
-              </h2>
-              <p className="text-neutral-500 mt-0.5 leading-relaxed">
-                Only an active DEV can create or manage another DEV. Dev accounts can view every page and step into any chat directly, and are never placed in automatic chat round-robin.
-              </p>
-            </div>
-
-            {devFormError && (
-              <div className="p-3 rounded-md bg-red-50 border border-red-200 text-red-700">
-                {devFormError}
-              </div>
-            )}
-
-            <div>
-              <label className="block font-medium text-neutral-700 mb-1">
-                Full Name
-              </label>
-              <input
-                type="text"
-                required
-                value={newDevName}
-                onChange={(e) => setNewDevName(e.target.value)}
-                placeholder="Developer Name"
-                className="w-full rounded-md border border-neutral-300 px-3 py-2"
-              />
-            </div>
-
-            <div>
-              <label className="block font-medium text-neutral-700 mb-1">
-                Email Address
-              </label>
-              <input
-                type="email"
-                required
-                value={newDevEmail}
-                onChange={(e) => setNewDevEmail(e.target.value)}
-                placeholder="name@example.com"
-                className="w-full rounded-md border border-neutral-300 px-3 py-2"
-              />
-            </div>
-
-            <div>
-              <label className="block font-medium text-neutral-700 mb-1">
-                WhatsApp Number
-              </label>
-              <input
-                type="tel"
-                required
-                value={newDevPhone}
-                onChange={(e) => setNewDevPhone(e.target.value)}
-                placeholder="+91 98XXXXXXXX"
-                className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-              />
-            </div>
-
-            <div>
-              <label className="block font-medium text-neutral-700 mb-1">
-                Password (min 8 characters)
-              </label>
-              <input
-                type="password"
-                required
-                minLength={8}
-                value={newDevPassword}
-                onChange={(e) => setNewDevPassword(e.target.value)}
-                placeholder="At least 8 characters"
-                className="w-full rounded-md border border-neutral-300 px-3 py-2"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={creatingDev}
-              className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 rounded-md bg-slate-900 hover:bg-slate-800 text-white font-semibold cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>{creatingDev ? "Creating Dev..." : "Create Dev Account"}</span>
-            </button>
-          </form>
-
-          <div className="lg:col-span-7 bg-white rounded-lg border border-neutral-200 p-5 space-y-3 text-xs">
-            <h2 className="text-sm font-semibold text-neutral-900">
-              Existing Dev Accounts ({devAccounts.length})
-            </h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[580px]">
-                <thead>
-                  <tr className="border-b border-neutral-200 text-neutral-500">
-                    <th className="py-2 pr-3 font-medium">Name & Email</th>
-                    <th className="py-2 px-3 font-medium">WhatsApp</th>
-                    <th className="py-2 px-3 font-medium">Status</th>
-                    <th className="py-2 pl-3 text-right font-medium">Created</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-200">
-                  {devAccounts.map((acc) => (
-                    <tr key={acc.id}>
-                      <td className="py-3 pr-3">
-                        <div className="font-semibold text-neutral-900">{acc.name}</div>
-                        <div className="text-neutral-500 font-mono">{acc.email}</div>
-                      </td>
-                      <td className="py-3 px-3 font-mono text-neutral-700">
-                        {acc.whatsappNumber}
-                      </td>
-                      <td className="py-3 px-3">
-                        <AccountStatusBadge status={acc.status} />
-                      </td>
-                      <td className="py-3 pl-3 text-right text-neutral-500">
-                        {formatDateIst(acc.createdAt)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+      {activeTab === "profit" && pricing && (
+        <DevProfitTab
+          pricing={pricing}
+          analytics={analytics}
+          range={range}
+          onRangeChange={setRange}
+          rateForm={{
+            clientMkt,
+            setClientMkt,
+            clientOther,
+            setClientOther,
+            metaMkt,
+            setMetaMkt,
+            metaUtil,
+            setMetaUtil,
+            metaAuth,
+            setMetaAuth,
+            metaServ,
+            setMetaServ,
+            gstRatePct,
+            setGstRatePct,
+            usdToInrRate,
+            setUsdToInrRate,
+            savingRates,
+            onSaveDevRates: (e) => void handleSaveDevRates(e),
+          }}
+        />
       )}
 
-      {/* TAB 3: DAILY BACKUPS & DATABASES */}
+      {activeTab === "devs" && (
+        <DevAccountsTab
+          devAccounts={devAccounts}
+          newDevName={newDevName}
+          setNewDevName={setNewDevName}
+          newDevEmail={newDevEmail}
+          setNewDevEmail={setNewDevEmail}
+          newDevPhone={newDevPhone}
+          setNewDevPhone={setNewDevPhone}
+          newDevPassword={newDevPassword}
+          setNewDevPassword={setNewDevPassword}
+          creatingDev={creatingDev}
+          devFormError={devFormError}
+          onCreateDevAccount={(e) => void handleCreateDevAccount(e)}
+        />
+      )}
+
       {activeTab === "backups" && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          <form
-            onSubmit={handleSaveBackupConfig}
-            className="lg:col-span-7 bg-white rounded-lg border border-neutral-200 p-5 space-y-4 text-xs"
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-neutral-900">
-                Google Drive Daily Backup Schedule
-              </h2>
-              <label className="inline-flex items-center gap-2 font-medium text-neutral-800 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={(e) => setEnabled(e.target.checked)}
-                  className="rounded accent-[#1da851]"
-                />
-                <span>Run every night automatically</span>
-              </label>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Hour (IST, 0 = 12:00 AM)
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={23}
-                  value={midnightHourIst}
-                  onChange={(e) => setMidnightHourIst(Number(e.target.value))}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Minute (IST)
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={59}
-                  value={midnightMinuteIst}
-                  onChange={(e) => setMidnightMinuteIst(Number(e.target.value))}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-700 mb-1">
-                  Keep Local Copies (Days)
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={365}
-                  value={retentionDays}
-                  onChange={(e) => setRetentionDays(Number(e.target.value))}
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block font-medium text-neutral-700 mb-1">
-                Google Drive Folder ID
-              </label>
-              <input
-                type="text"
-                value={googleDriveFolderId}
-                onChange={(e) => setGoogleDriveFolderId(e.target.value)}
-                placeholder="Paste the folder ID from your Google Drive URL"
-                className="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono"
-              />
-            </div>
-
-            <div className="p-3.5 rounded-md bg-neutral-50 border border-neutral-200 space-y-3">
-              <div className="font-medium text-neutral-900">
-                Option 1: Google Service Account
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-600 mb-1">
-                  Service Account Email
-                </label>
-                <input
-                  type="email"
-                  value={googleServiceAccountEmail}
-                  onChange={(e) => setGoogleServiceAccountEmail(e.target.value)}
-                  placeholder="backup@your-project.iam.gserviceaccount.com"
-                  className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-neutral-600 mb-1">
-                  Private Key{" "}
-                  {hasPrivateKey && (
-                    <span className="text-emerald-700">
-                      (Saved • Leave empty to keep current key)
-                    </span>
-                  )}
-                </label>
-                <textarea
-                  rows={2}
-                  value={googlePrivateKey}
-                  onChange={(e) => setGooglePrivateKey(e.target.value)}
-                  placeholder="-----BEGIN PRIVATE KEY-----"
-                  className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 font-mono"
-                />
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-md bg-neutral-50 border border-neutral-200 space-y-3">
-              <div className="font-medium text-neutral-900">
-                Option 2: Personal Google Account Token
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <input
-                  type="text"
-                  value={googleClientId}
-                  onChange={(e) => setGoogleClientId(e.target.value)}
-                  placeholder="Google Client ID"
-                  className="rounded-md border border-neutral-300 bg-white px-3 py-2 font-mono"
-                />
-                <input
-                  type="password"
-                  value={googleClientSecret}
-                  onChange={(e) => setGoogleClientSecret(e.target.value)}
-                  placeholder="Client Secret"
-                  className="rounded-md border border-neutral-300 bg-white px-3 py-2 font-mono"
-                />
-              </div>
-              <input
-                type="password"
-                value={googleOauthRefreshToken}
-                onChange={(e) => setGoogleOauthRefreshToken(e.target.value)}
-                placeholder={
-                  hasOauthRefreshToken
-                    ? "Refresh Token saved (leave empty to keep)"
-                    : "Google Refresh Token"
-                }
-                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 font-mono"
-              />
-            </div>
-
-            <label className="inline-flex items-center gap-2 font-medium text-neutral-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={includeMainWebsiteDb}
-                onChange={(e) => setIncludeMainWebsiteDb(e.target.checked)}
-                className="rounded accent-[#1da851]"
-              />
-              <span>Include main Classic Concepts website database in nightly backup</span>
-            </label>
-
-            <button
-              type="submit"
-              disabled={savingBackup}
-              className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 rounded-md bg-neutral-900 hover:bg-neutral-800 text-white font-medium cursor-pointer"
-            >
-              <Save className="w-4 h-4" />
-              <span>{savingBackup ? "Saving..." : "Save Backup Settings"}</span>
-            </button>
-          </form>
-
-          <div className="lg:col-span-5 space-y-6">
-            <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-3 text-xs">
-              <h2 className="text-sm font-semibold text-neutral-900">
-                Recent Backups
-              </h2>
-              {loading ? (
-                <CardListSkeleton rows={3} />
-              ) : backupLogs.length === 0 ? (
-                <p className="text-neutral-400 py-4 text-center">
-                  No backups run yet. Click &ldquo;Back Up Now&rdquo; at the top right to create one.
-                </p>
-              ) : (
-                <div className="space-y-2.5 max-h-72 overflow-y-auto">
-                  {backupLogs.map((log) => (
-                    <div
-                      key={log.id}
-                      className="p-3 rounded-md border border-neutral-200 bg-neutral-50 space-y-1"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-neutral-900">
-                          {log.databasesCount} databases ({(log.totalBytes / 1024).toFixed(1)} KB)
-                        </span>
-                        <span
-                          className={`text-[11px] font-medium ${
-                            log.status.includes("FAILED")
-                              ? "text-red-700"
-                              : "text-emerald-700"
-                          }`}
-                        >
-                          {log.status === "UPLOADED_TO_GDRIVE"
-                            ? "Uploaded to Drive"
-                            : log.status === "SAVED_LOCAL_SNAPSHOT"
-                            ? "Saved Locally"
-                            : "Failed"}
-                        </span>
-                      </div>
-                      <p className="text-neutral-600">{log.detailsMessage}</p>
-                      <div className="flex items-center justify-between text-[11px] text-neutral-400">
-                        <span>{formatDateTimeIst(log.completedAt)}</span>
-                        {log.googleDriveLink && (
-                          <a
-                            href={log.googleDriveLink}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-neutral-900 font-medium underline"
-                          >
-                            <span>Open in Drive</span>
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="bg-white rounded-lg border border-neutral-200 p-5 space-y-3 text-xs">
-              <h2 className="text-sm font-semibold text-neutral-900">
-                Databases Included in Backup
-              </h2>
-              <div className="divide-y divide-neutral-200">
-                {databases.map((db) => (
-                  <div key={db.domain} className="py-2.5 first:pt-0 last:pb-0">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono font-medium text-neutral-900">
-                        {db.fileName}
-                      </span>
-                      <span className="text-neutral-500">
-                        {db.totalRows} records • {(db.sizeBytes / 1024).toFixed(1)} KB
-                      </span>
-                    </div>
-                    <p className="text-neutral-500 mt-0.5">{db.description}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
+        <DevBackupsTab
+          loading={loading}
+          backupLogs={backupLogs}
+          databases={databases}
+          backupForm={{
+            enabled,
+            setEnabled,
+            midnightHourIst,
+            setMidnightHourIst,
+            midnightMinuteIst,
+            setMidnightMinuteIst,
+            googleDriveFolderId,
+            setGoogleDriveFolderId,
+            googleServiceAccountEmail,
+            setGoogleServiceAccountEmail,
+            googlePrivateKey,
+            setGooglePrivateKey,
+            hasPrivateKey,
+            googleClientId,
+            setGoogleClientId,
+            googleClientSecret,
+            setGoogleClientSecret,
+            googleOauthRefreshToken,
+            setGoogleOauthRefreshToken,
+            hasOauthRefreshToken,
+            retentionDays,
+            setRetentionDays,
+            includeMainWebsiteDb,
+            setIncludeMainWebsiteDb,
+            savingBackup,
+            onSaveBackupConfig: (e) => void handleSaveBackupConfig(e),
+          }}
+        />
       )}
     </div>
   );

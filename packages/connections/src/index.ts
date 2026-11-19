@@ -2,8 +2,20 @@
  * Modular barrel entrypoint for @cc/connections.
  * Core AI & WhatsApp modules live in dedicated *.acrio.ai.ts / *.acrio.ops.ts files.
  */
+export const LOCKED_CLAUDE_MODEL = "claude-haiku-5-5" as const;
+
 export * from "./image-intelligence";
-export * from "./initialise.acrio.ai";
+export {
+  type DetailedClaudeCallResult,
+  parseClaudeJson,
+  callClaudeHaikuMessagesDetailed,
+  callClaudeHaikuMessages,
+  recordAndBroadcastAiLog,
+  mapProductToLogItem,
+  formatWhatsAppOutboundText,
+  sanitizePlainEnglish,
+  stripRepeatedGreeting,
+} from "./initialise.acrio.ai";
 export * from "./whatsapp-cloud.acrio.ai";
 export * from "./helpers.acrio.ai";
 export * from "./interactive.acrio.ai";

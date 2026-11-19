@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
 import { registerStaffAccount } from "@cc/auth";
 import { sendStaffVerificationEmail } from "@cc/connections";
+import { enforcePublicRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const limited = enforcePublicRateLimit(req, {
+    bucket: "auth-register",
+    maxRequests: 20,
+    windowMs: 60_000,
+  });
+  if (limited) return limited;
+
   const body = await req.json().catch(() => ({}));
   const result = await registerStaffAccount({
     name: String(body.name || ""),

@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { isDevRole } from "@cc/rbac";
-import { loadAiLogsPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
-import { AiLogsClient } from "./AiLogsClient";
+import AiLogsLoading from "./loading";
+import { AiLogsDataBoundary } from "./AiLogsDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -13,10 +13,9 @@ export default async function DevAiLogsPage() {
     redirect("/dashboard/inbox");
   }
 
-  const initialData = await loadAiLogsPayload({ limit: 200 });
   return (
-    <AiLogsClient
-      initialData={initialData as React.ComponentProps<typeof AiLogsClient>["initialData"]}
-    />
+    <Suspense fallback={<AiLogsLoading />}>
+      <AiLogsDataBoundary />
+    </Suspense>
   );
 }

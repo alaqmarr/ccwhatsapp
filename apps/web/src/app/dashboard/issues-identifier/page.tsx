@@ -1,9 +1,9 @@
-import type React from "react";
+import React, { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { isDevRole } from "@cc/rbac";
-import { loadIssuesIdentifierPayload } from "@/lib/loaders/operations";
 import { getCurrentUser } from "@/lib/session";
-import { IssuesIdentifierClient } from "./IssuesIdentifierClient";
+import IssuesIdentifierLoading from "./loading";
+import { IssuesIdentifierDataBoundary } from "./IssuesIdentifierDataBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -13,23 +13,9 @@ export default async function DevIssuesIdentifierPage() {
     redirect("/dashboard/inbox");
   }
 
-  let initialData: React.ComponentProps<
-    typeof IssuesIdentifierClient
-  >["initialData"] = null;
-  let initialError = "";
-  try {
-    const payload = await loadIssuesIdentifierPayload(user.name, false);
-    initialData = payload.report as React.ComponentProps<
-      typeof IssuesIdentifierClient
-    >["initialData"];
-  } catch (err: any) {
-    initialError = err?.message || "Failed to run ecosystem issues audit.";
-  }
-
   return (
-    <IssuesIdentifierClient
-      initialData={initialData}
-      initialError={initialError}
-    />
+    <Suspense fallback={<IssuesIdentifierLoading />}>
+      <IssuesIdentifierDataBoundary userName={user.name} />
+    </Suspense>
   );
 }

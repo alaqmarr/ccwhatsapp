@@ -4,6 +4,7 @@ import {
   lookupOrderTracking,
   type OrderTrackingRecord,
 } from "@cc/database";
+import { enforcePublicRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,13 @@ function toPublicTrackingPayload(t: OrderTrackingRecord) {
 }
 
 export async function GET(req: Request) {
+  const limited = enforcePublicRateLimit(req, {
+    bucket: "tracking-lookup",
+    maxRequests: 120,
+    windowMs: 60_000,
+  });
+  if (limited) return limited;
+
   await ensureDatabasesBootstrapped();
   const url = new URL(req.url);
   const orderId = (url.searchParams.get("orderId") || url.searchParams.get("order") || "").trim();
@@ -69,6 +77,13 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const limited = enforcePublicRateLimit(req, {
+    bucket: "tracking-lookup",
+    maxRequests: 120,
+    windowMs: 60_000,
+  });
+  if (limited) return limited;
+
   await ensureDatabasesBootstrapped();
   const body = await req.json().catch(() => ({}));
   const orderId = String(body.orderId || body.order || "").trim();
