@@ -16,6 +16,7 @@ export interface AuthenticatedUser {
   approvedByName: string | null;
   approvedAt: string | null;
   rejectionReason: string | null;
+  assignmentsEnabled: boolean;
   createdAt: string;
 }
 
@@ -63,6 +64,7 @@ export function mapUserRow(r: Record<string, unknown>): AuthenticatedUser {
     approvedByName: r.approved_by_name ? String(r.approved_by_name) : null,
     approvedAt: r.approved_at ? String(r.approved_at) : null,
     rejectionReason: r.rejection_reason ? String(r.rejection_reason) : null,
+    assignmentsEnabled: Number(r.assignments_enabled ?? 1) !== 0,
     createdAt: String(r.created_at),
   };
 }

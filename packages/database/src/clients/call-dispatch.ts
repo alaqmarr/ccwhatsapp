@@ -4,6 +4,7 @@ import {
   listActiveNonClientStaff,
   resolveRequestedOrPreferredStaffForInbound,
 } from "./staff-routing";
+import { pickNextSequentialStaffAtoZ } from "./sequential-assignment";
 
 export type CallQueueAssignmentMode =
   | "AUTO_PERFORMANCE"
@@ -84,7 +85,9 @@ async function ensureCallDispatchTable(): Promise<void> {
 }
 
 export async function computePerformanceRankedStaff(): Promise<RankedStaffCandidate[]> {
-  const staffList = (await listActiveNonClientStaff()).filter((s) => s.role !== "DEV");
+  const staffList = (await listActiveNonClientStaff()).filter(
+    (s) => s.role !== "DEV" && s.assignmentsEnabled
+  );
   if (staffList.length === 0) return [];
   const conv = getRawLibSqlClient("conversations");
   const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString();
@@ -267,25 +270,31 @@ export async function createCallDispatchItem(params: {
   if (mode === "MANUAL" && params.manualStaffId) {
     const staffList = await listActiveNonClientStaff();
     const hit = staffList.find((s) => s.id === params.manualStaffId);
-    if (hit) {
+    if (hit && hit.assignmentsEnabled) {
       assignedStaffId = hit.id;
       assignedStaffName = hit.name;
       assignmentReason = `Manually assigned by ${params.submittedByName}`;
+    } else if (hit && !hit.assignmentsEnabled) {
+      throw new Error(
+        `Assignments and leads are turned off for ${hit.name} in Team Approvals.`
+      );
     }
-  } else if (pref && (mode === "PREFERRED_OR_PAST" || mode === "AUTO_PERFORMANCE" || mode === "AUTO_RANDOM")) {
+  } else if (pref && mode === "PREFERRED_OR_PAST") {
     assignedStaffId = pref.staffId;
     assignedStaffName = pref.staffName;
     assignmentReason = `${pref.reason} (${pref.matchType.replace(/_/g, " ")})`;
-  } else if (mode === "AUTO_RANDOM" && ranked.length > 0) {
-    const pick = ranked[Math.floor(Math.random() * ranked.length)];
-    assignedStaffId = pick.staffId;
-    assignedStaffName = pick.staffName;
-    assignmentReason = `Randomly distributed among ${ranked.length} active team members`;
-  } else if (mode === "AUTO_PERFORMANCE" && ranked.length > 0) {
-    const pick = ranked[0];
-    assignedStaffId = pick.staffId;
-    assignedStaffName = pick.staffName;
-    assignmentReason = `Auto-assigned by performance (score ${pick.performanceScore}, ${pick.resolved30d} resolved, ${pick.openLoad} open)`;
+  } else if ((mode === "AUTO_PERFORMANCE" || mode === "AUTO_RANDOM") && ranked.length > 0) {
+    const seqPick = await pickNextSequentialStaffAtoZ(
+      ranked.map((r) => ({ id: r.staffId, name: r.staffName })),
+      "call_dispatch_queue"
+    );
+    if (seqPick) {
+      assignedStaffId = seqPick.chosen.id;
+      assignedStaffName = seqPick.chosen.name;
+      assignmentReason = `Assigned sequentially A-Z (${seqPick.position} of ${seqPick.total})`;
+    } else {
+      assignmentReason = "Added to open team pickup pool";
+    }
   } else {
     assignmentReason = "Added to open team pickup pool";
   }

@@ -195,13 +195,24 @@ export async function handleAddCollaborator(ctx: ConversationActionContext) {
     );
   }
   let resolvedName = staffName;
-  if (!resolvedName) {
-    const auth = getRawLibSqlClient("core_auth");
-    const u = await auth.execute({
-      sql: `SELECT name FROM users WHERE id = ? LIMIT 1`,
-      args: [staffId],
-    });
-    resolvedName = u.rows[0]?.name ? String(u.rows[0].name) : staffId;
+  const auth = getRawLibSqlClient("core_auth");
+  const u = await auth.execute({
+    sql: `SELECT name, COALESCE(assignments_enabled, 1) AS assignments_enabled FROM users WHERE id = ? LIMIT 1`,
+    args: [staffId],
+  });
+  if (u.rows[0]) {
+    if (!resolvedName) resolvedName = String(u.rows[0].name || staffId);
+    if (Number(u.rows[0].assignments_enabled ?? 1) === 0) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Assignments and leads are turned off for ${resolvedName} in Team Approvals.`,
+        },
+        { status: 400 }
+      );
+    }
+  } else if (!resolvedName) {
+    resolvedName = staffId;
   }
   const collaborators = await addConversationCollaborators({
     conversationId: id,

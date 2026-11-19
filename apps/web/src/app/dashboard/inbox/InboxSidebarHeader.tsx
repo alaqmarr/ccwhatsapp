@@ -16,6 +16,7 @@ import { useInboxStore } from "@/lib/inbox-store";
 export function InboxSidebarHeader({
   waitingThreadsCount,
   acrioThreadsCount,
+  leadAssignedCount,
   refreshingThreads,
   isAdminOrSuperadmin,
   staffList,
@@ -25,6 +26,7 @@ export function InboxSidebarHeader({
 }: {
   waitingThreadsCount: number;
   acrioThreadsCount: number;
+  leadAssignedCount: number;
   refreshingThreads: boolean;
   isAdminOrSuperadmin: boolean;
   staffList: StaffOption[];
@@ -158,6 +160,14 @@ export function InboxSidebarHeader({
             [
               { key: "MINE", label: "Mine" },
               { key: "ACTIVE", label: "Active" },
+              { key: "ALL", label: "All" },
+              {
+                key: "LEAD_ASSIGNED",
+                label:
+                  leadAssignedCount > 0
+                    ? `Lead Assigned (${leadAssignedCount})`
+                    : "Lead Assigned",
+              },
               {
                 key: "WAITING",
                 label:
@@ -171,7 +181,6 @@ export function InboxSidebarHeader({
                   acrioThreadsCount > 0 ? `System (${acrioThreadsCount})` : "System",
               },
               { key: "UNREAD", label: "Unread" },
-              { key: "ALL", label: "All" },
               { key: "RESOLVED", label: "Resolved" },
             ] as const
           ).map((pill) => {

@@ -2,7 +2,15 @@
 
 import React, { useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { AtSign, Check, Clock, PhoneCall, Sparkles } from "lucide-react";
+import {
+  AtSign,
+  Check,
+  Clock,
+  PhoneCall,
+  Pin,
+  Sparkles,
+  UserCheck,
+} from "lucide-react";
 import {
   ElementErrorState,
   WhatsAppLogoIcon,
@@ -224,6 +232,12 @@ export function ThreadListPane({
   serverNowMs,
   threadsError,
   refreshingThreads,
+  isMyLeadsSelected,
+  myLeadsCount,
+  myLeadsPendingCount,
+  myLeadsPreview,
+  myLeadsLatestAt,
+  onSelectMyLeads,
   onRetryRefresh,
   onPrefetch,
   onSelect,
@@ -239,6 +253,12 @@ export function ThreadListPane({
   serverNowMs: number;
   threadsError: string;
   refreshingThreads: boolean;
+  isMyLeadsSelected: boolean;
+  myLeadsCount: number;
+  myLeadsPendingCount: number;
+  myLeadsPreview: string;
+  myLeadsLatestAt: string | null;
+  onSelectMyLeads: () => void;
   onRetryRefresh: () => void;
   onPrefetch: (id: string) => void;
   onSelect: (id: string) => void;
@@ -282,6 +302,58 @@ export function ThreadListPane({
           />
         </div>
       )}
+      <button
+        type="button"
+        onClick={onSelectMyLeads}
+        className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors cursor-pointer border-b border-[#d1d7db] border-l-[3.5px] ${
+          isMyLeadsSelected
+            ? "bg-[#e7fce3]/70 border-l-[#00a884]"
+            : "bg-[#f8fffb] hover:bg-[#eefaf3] border-l-[#00a884]"
+        }`}
+      >
+        <div className="w-11 h-11 rounded-full shrink-0 flex items-center justify-center bg-[#00a884] text-white relative">
+          <UserCheck className="w-5 h-5" />
+          <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-white text-[#008069] border border-[#b7ebaf] flex items-center justify-center ring-1 ring-white">
+            <Pin className="w-2.5 h-2.5" />
+          </span>
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-[14px] font-bold tracking-[-0.015em] text-[#111b21] truncate">
+                MY LEADS
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-[#e7fce3] text-[#008069] text-[9.5px] font-semibold border border-[#b7ebaf] shrink-0">
+                Pinned
+              </span>
+            </div>
+            {myLeadsLatestAt && (
+              <span
+                suppressHydrationWarning
+                className="text-[11px] tabular-nums shrink-0 text-[#008069] font-semibold"
+              >
+                {formatThreadTimeIst(myLeadsLatestAt, nowMs || serverNowMs)}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-2 mt-0.5">
+            <p className="text-[12.5px] leading-snug text-[#54656f] truncate min-w-0">
+              {myLeadsPreview ||
+                (myLeadsCount > 0
+                  ? `${myLeadsCount} assigned ${myLeadsCount === 1 ? "lead" : "leads"} ready`
+                  : "Tap to view your assigned leads")}
+            </p>
+            {(myLeadsPendingCount > 0 || myLeadsCount > 0) && (
+              <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#00a884] text-white text-[10px] font-bold tabular-nums flex items-center justify-center shrink-0">
+                {myLeadsPendingCount > 0 ? myLeadsPendingCount : myLeadsCount}
+              </span>
+            )}
+          </div>
+        </div>
+      </button>
+
       {filteredThreads.length === 0 ? (
         <div className="p-6 text-center text-xs text-[#667781]">
           No chats match this filter.

@@ -162,6 +162,7 @@ export interface StaffOption {
   name: string;
   role: string;
   department: string;
+  assignmentsEnabled?: boolean;
 }
 
 export interface TemplateVariableSpecOption {

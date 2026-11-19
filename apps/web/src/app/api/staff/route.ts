@@ -3,6 +3,7 @@ import {
   createDevAccountByDev,
   deleteStaffAccount,
   reviewStaffAccount,
+  setStaffAssignmentsEnabled,
 } from "@cc/auth";
 import {
   isDevRole,
@@ -64,6 +65,35 @@ export async function POST(req: Request) {
     });
 
     return NextResponse.json({ ok: true, created: created.user });
+  }
+
+  if (body.action === "toggle_assignments") {
+    const enabled = Boolean(body.assignmentsEnabled);
+    const updatedRes = await setStaffAssignmentsEnabled({
+      actor: user,
+      targetUserId: String(body.targetUserId || ""),
+      enabled,
+    });
+    if (!updatedRes.ok) {
+      return NextResponse.json(
+        { ok: false, error: updatedRes.error },
+        { status: 400 }
+      );
+    }
+    socketHub.emit("staff:approval_changed", {
+      targetUserId: updatedRes.updated?.id,
+      status: updatedRes.updated?.status,
+      role: updatedRes.updated?.role,
+      assignmentsEnabled: updatedRes.updated?.assignmentsEnabled,
+      approvedBy: user.name,
+    });
+    return NextResponse.json({
+      ok: true,
+      updated: updatedRes.updated,
+      message: `${
+        enabled ? "Enabled" : "Turned off"
+      } assignments and leads for "${updatedRes.updated?.name || "member"}".`,
+    });
   }
 
   if (body.action === "delete_staff") {

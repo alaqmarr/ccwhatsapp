@@ -13,6 +13,8 @@ import {
 } from "@cc/connections";
 import { claimPendingJobs, completeJob, failJob } from "@cc/queue";
 import { socketHub } from "@cc/sockets";
+import { logConversationAssignment } from "../core/assignment-tracking";
+import { assignLeadFromOwner } from "../owner-desk/lead-assign";
 import { createNotification } from "./notifications";
 import {
   dispatchStaffCustomerReply,
@@ -152,6 +154,9 @@ async function answerAcrioNote(params: {
   for (const act of result.actions || []) {
     try {
       if (act.type === "assign_staff" && act.staffQuery) {
+        const isInternalDeskThread =
+          String(cRow?.smart_category || "") === "Internal Team" ||
+          String(cRow?.assigned_team_name || "") === "Internal Team Desk";
         if (/^(acrio|system|ai)$/i.test(act.staffQuery.trim())) {
           await conv.execute({
             sql: `UPDATE conversations SET status = 'OPEN', assigned_staff_id = 'ACRIO', assigned_staff_name = 'ACRIO', assigned_team_id = NULL, assigned_team_name = 'System (ACRIO)', waiting_since = NULL WHERE id = ?`,
@@ -161,7 +166,38 @@ async function answerAcrioNote(params: {
           socketHub.emit("conversation:assigned", { conversationId: params.conversationId, staffName: "ACRIO" });
         } else {
           const target = resolveStaffMemberByQuery(act.staffQuery, availableStaff);
-          if (target) {
+          if (target && !target.assignmentsEnabled) {
+            executedSummaries.push(
+              `Skipped assigning to ${target.name} (assignments turned off in Team Approvals)`
+            );
+          } else if (target && isInternalDeskThread) {
+            const hubBase =
+              process.env.NEXT_PUBLIC_APP_URL || "https://chat.ccapl.cc";
+            const fwd = await assignLeadFromOwner(
+              {
+                found: true,
+                targetQuery: target.name,
+                generic: false,
+                verb: "assign",
+                leadText: "",
+              },
+              {
+                conversationId: params.conversationId,
+                ownerPhone: params.customerPhone,
+                ownerName: params.author.name,
+                text: params.question,
+                hubBase,
+                logAssignment: logConversationAssignment,
+                targetStaffIdOverride: target.id,
+                isStaffForwarder: true,
+              }
+            );
+            executedSummaries.push(
+              fwd.assignedStaffName
+                ? `Forwarded lead from ${params.author.name} to ${fwd.assignedStaffName}`
+                : fwd.reply
+            );
+          } else if (target) {
             await conv.execute({
               sql: `UPDATE conversations SET status = 'ASSIGNED', assigned_staff_id = ?, assigned_staff_name = ?, assigned_team_id = COALESCE(assigned_team_id, 'team_sales'), assigned_team_name = COALESCE(NULLIF(assigned_team_name, 'System (ACRIO)'), 'Sales Team') WHERE id = ?`,
               args: [target.id, target.name, params.conversationId],
@@ -186,7 +222,11 @@ async function answerAcrioNote(params: {
         }
       } else if (act.type === "add_collaborator" && act.staffQuery) {
         const target = resolveStaffMemberByQuery(act.staffQuery, availableStaff);
-        if (target) {
+        if (target && !target.assignmentsEnabled) {
+          executedSummaries.push(
+            `Skipped co-handler ${target.name} (assignments turned off in Team Approvals)`
+          );
+        } else if (target) {
           await addConversationCollaborators({
             conversationId: params.conversationId,
             members: [{ staffId: target.id, staffName: target.name }],

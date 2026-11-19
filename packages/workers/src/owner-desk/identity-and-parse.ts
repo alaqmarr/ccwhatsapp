@@ -5,10 +5,21 @@ const DEFAULT_OWNER_NUMBERS = ["919849050752", "9618443558"];
 
 export function getOwnerWhatsAppNumbers(): string[] {
   const raw = String(process.env.OWNER_WHATSAPP_NUMBERS || "").trim();
-  const list = raw
+  const fromEnv = raw
     ? raw.split(/[,\s;]+/).map((s) => s.trim()).filter(Boolean)
-    : DEFAULT_OWNER_NUMBERS;
-  return list.length > 0 ? list : DEFAULT_OWNER_NUMBERS;
+    : [];
+  const merged = [...DEFAULT_OWNER_NUMBERS, ...fromEnv];
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const n of merged) {
+    const s = suffix10(n);
+    const key = s || n;
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(n);
+    }
+  }
+  return unique;
 }
 
 export function isOwnerWhatsAppPhone(rawPhone: string): boolean {
@@ -55,21 +66,36 @@ const GENERIC_TARGETS = new Set([
   "anyone from the sales team",
   "someone from sales",
   "all",
+  "next",
+  "auto",
+  "automatically",
+  "in sequence",
+  "sequence",
+  "only",
+  "now",
 ]);
 
-const NAME = String(String.raw`@?[A-Za-z][A-Za-z.'-]{1,24}(?:\s+[A-Za-z][A-Za-z.'-]{1,24})?`);
+const NAME = String(String.raw`@?[A-Za-z][A-Za-z.'-]{1,24}(?:\s+[A-Za-z][A-Za-z.'-]{1,24}){0,2}`);
 const GENERIC_PHRASE = String.raw`(?:any|some)(?:one|body)\s+(?:from|in)\s+(?:the\s+)?sales(?:\s+(?:team|staff))?`;
-const FILLER = String.raw`(?:kar|kardo|karo|kr|kijiye|karna|ji|sir|mam|madam|bhai|please|pls|plz)\b`;
+const FILLER = String.raw`(?:kar|kardo|karo|kr|kijiye|karna|ji|sir|mam|madam|bhai|please|pls|plz|only|now|next|auto|automatically)\b`;
+
+const BARE_ASSIGN_WORD_RE =
+  /^\s*(?:just|please|pls|plz|kindly|auto|only|hey|hi|sir|bro)?[\s,]*(?:(?:please\s+)?(?:refer(?:\s+this\s+message)?(?:\s+by\s+[a-z.\s]{1,30})?\s+(?:and\s+)?take\s+over(?:\s+(?:this|the)\s+(?:lead|chat|enquiry|inquiry))?|(?:assign|allot|transfer|hand\s*over|handover|reassign|forward|fwd)(?:\s+(?:this|it|that|the|a|my|new))?(?:\s+(?:lead|enquiry|inquiry|query|customer|client))?(?:\s+(?:next|auto|automatically|only|now|please|pls|plz|sir|ji|kardo|kar\s*do|karo))*))\s*[.!?,]*\s*$/i;
+
+const TAKEOVER_WITH_NAME_RE = new RegExp(
+  String.raw`^\s*(?:please|pls|plz|kindly|hey|hi|sir)?[\s,]*(${NAME})[\s,]*(?:please|pls|plz|can\s+you|kindly)?\s*(?:take\s*over|handle|follow\s*up)(?:\s+(?:this|the|that)?\s*(?:lead|chat|enquiry|inquiry|client|customer)?)?\s*[.!?,]*\s*$`,
+  "i"
+);
 
 const ASSIGN_SEGMENT_RE = new RegExp(
-  String.raw`^\s*(?:(?:please|pls|plz|kindly|hey|hi|sir)[\s,]+)*` +
+  String.raw`^\s*(?:(?:please|pls|plz|kindly|hey|hi|sir|just|auto)[\s,]+)*` +
     String.raw`(?:(${NAME})\s+ko\s+)?` +
-    String.raw`(assign|allot|forward|fwd|send|pass|give)` +
+    String.raw`(assign|allot|forward|fwd|send|pass|give|transfer|handover|hand\s*over|reassign|refer|share|route)` +
     String.raw`(?:\s+(?:this|it|that|the|a|my))?` +
     String.raw`(?:\s+(?:new\s+)?(?:lead|enquiry|inquiry|query|customer|client|message|msg))?` +
-    String.raw`(?:\s+(?:to|2|ko))?` +
+    String.raw`(?:\s+(?:to|2|ko|with))?` +
     String.raw`(?:\s+(?!${FILLER})(${GENERIC_PHRASE}|${NAME}))?` +
-    String.raw`(?:\s+(?:ji|sir|mam|madam|bhai|please|pls|plz))*` +
+    String.raw`(?:\s+(?:ji|sir|mam|madam|bhai|please|pls|plz|only|now))*` +
     String.raw`(?:\s+(?:kar\s*do|kardo|karo|kr\s*do|kijiye|karna))?` +
     String.raw`\s*[.!]*\s*$`,
   "i"
@@ -84,21 +110,33 @@ function cleanTarget(raw: string | undefined): string {
 }
 
 function matchSegment(segment: string): { target: string; verb: string } | null {
-  const m = ASSIGN_SEGMENT_RE.exec(segment);
+  const cleanSeg = segment.replace(/[\u200B-\u200F\uFEFF]/g, "").trim();
+  const takeover = TAKEOVER_WITH_NAME_RE.exec(cleanSeg);
+  if (takeover?.[1]) {
+    const t = cleanTarget(takeover[1]);
+    if (t) return { target: t, verb: "assign" };
+  }
+  if (BARE_ASSIGN_WORD_RE.test(cleanSeg)) {
+    return { target: "", verb: /\ballot\b/i.test(cleanSeg) ? "allot" : "assign" };
+  }
+  const m = ASSIGN_SEGMENT_RE.exec(cleanSeg);
   if (!m) return null;
   const verb = String(m[2] || "").toLowerCase();
   const target = cleanTarget(m[1] || m[3]);
-  // Only "assign" and "allot" may be used without naming someone. "send it" or "give me" are too common.
-  if (!/^(assign|allot)$/.test(verb)) {
+  // Only strong routing verbs may be used without naming someone. "send it" or "give me" are too common.
+  if (!/^(assign|allot|reassign)$/.test(verb)) {
     if (!target) return null;
-    // "send this to @Rahul" needs a clear pointer to a person. "give me details" must never match.
-    if (!/\b(?:to|2|ko)\b|@/i.test(segment)) return null;
+    // "send/forward/transfer this to @Rahul" needs a clear pointer to a person. "give me details" must never match.
+    if (!/\b(?:to|2|ko|with)\b|@/i.test(cleanSeg)) return null;
   }
   return { target, verb };
 }
 
 export function parseAssignCommand(rawText: string): ParsedAssignCommand {
-  const text = String(rawText || "").replace(/\r/g, "").trim();
+  const text = String(rawText || "")
+    .replace(/\r/g, "")
+    .replace(/[\u200B-\u200F\uFEFF]/g, "")
+    .trim();
   const none: ParsedAssignCommand = { found: false, targetQuery: "", generic: false, verb: "", leadText: text };
   if (!text) return none;
 

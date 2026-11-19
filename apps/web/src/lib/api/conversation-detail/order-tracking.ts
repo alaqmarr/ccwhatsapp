@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { sendWhatsAppCloudMessage } from "@cc/connections";
+import {
+  isWhatsAppServiceWindowOpen,
+  sendWhatsAppCloudMessage,
+} from "@cc/connections";
 import { upsertOrderTracking, type ShipmentStatus } from "@cc/database";
 import { isDevRole } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
@@ -15,6 +18,21 @@ export async function handleOrderTrackingAction(
   action: "save_order_tracking" | "send_order_tracking"
 ) {
   const { id, user, body, conv, cRow, customerPhone, nowMs, nowIso } = ctx;
+
+  if (
+    action === "send_order_tracking" &&
+    !isWhatsAppServiceWindowOpen(cRow.window_expires_at, nowMs)
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        windowClosed: true,
+        error:
+          "24-hour customer service window is closed. Save tracking or send an approved WhatsApp template instead.",
+      },
+      { status: 400 }
+    );
+  }
 
   const upRes = await upsertOrderTracking({
     orderId: String(body.orderId || ""),

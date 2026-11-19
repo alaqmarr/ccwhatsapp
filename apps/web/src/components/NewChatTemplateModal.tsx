@@ -17,6 +17,10 @@ import {
   TemplateSelectorSection,
   varIndices,
 } from "@/components/new-chat/TemplateSelectorSection";
+import {
+  selectClientInitiationTemplates,
+  smartFillTemplateForCustomer,
+} from "@/lib/template-variables";
 
 export type { NewChatModalMode } from "@/components/new-chat/NewChatModeFields";
 
@@ -55,9 +59,11 @@ export function NewChatTemplateModal({
   );
   const [buttonPayload, setButtonPayload] = useState("");
   const [tplSearch, setTplSearch] = useState("");
-  const [selectedTplId, setSelectedTplId] = useState<string>(
-    templates[0]?.id || ""
-  );
+  const defaultReadyTplId =
+    selectClientInitiationTemplates(templates, 1)[0]?.id ||
+    templates[0]?.id ||
+    "";
+  const [selectedTplId, setSelectedTplId] = useState<string>(defaultReadyTplId);
   const [headerVals, setHeaderVals] = useState<Record<number, string>>({});
   const [bodyVals, setBodyVals] = useState<Record<number, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -70,10 +76,10 @@ export function NewChatTemplateModal({
     setName(initialName);
     setError("");
     setButtonPayload("");
-    if (templates.length > 0 && !selectedTplId) {
-      setSelectedTplId(templates[0].id);
+    if (defaultReadyTplId && !selectedTplId) {
+      setSelectedTplId(defaultReadyTplId);
     }
-  }, [open, initialMode, initialPhone, initialName, templates, selectedTplId]);
+  }, [open, initialMode, initialPhone, initialName, defaultReadyTplId, selectedTplId]);
 
   const existingMatch = useMemo(() => {
     const targetKey = phoneMatchKey(phone);
@@ -108,36 +114,39 @@ export function NewChatTemplateModal({
   );
   const bodyVars = useMemo(() => varIndices(activeTpl?.bodyText), [activeTpl]);
 
-  // Pre-fill {{1}} with first name when switching template or entering customer name
+  // Smartly fill template variables from customer name/phone (or "Hey there" when name is unavailable)
   useEffect(() => {
     if (!open || !activeTpl) return;
-    const trimmedName = name.trim();
-    const first =
-      trimmedName && !/^\+?\d/.test(trimmedName)
-        ? trimmedName.split(/[\s(]/)[0]
-        : "";
+    const filled = smartFillTemplateForCustomer(activeTpl, {
+      name,
+      phone,
+      companyName: existingMatch?.customerName || null,
+      city: null,
+      latestOrderNumber: null,
+    });
     setHeaderVals((prev) => {
       const next: Record<number, string> = {};
       for (const idx of varIndices(activeTpl.headerText)) {
-        next[idx] = prev[idx] || first || "";
+        const cur = prev[idx];
+        next[idx] =
+          !cur || cur === "Hey there"
+            ? filled.headerValues[idx] || ""
+            : cur;
       }
       return next;
     });
     setBodyVals((prev) => {
       const next: Record<number, string> = {};
       for (const idx of varIndices(activeTpl.bodyText)) {
-        const spec = activeTpl.variablesSchema.find((v) => v.index === idx);
-        const autoFirst =
-          idx === 1 || spec?.sourceField === "customer.firstName"
-            ? first
-            : spec?.sourceField === "customer.fullName"
-            ? trimmedName
-            : "";
-        next[idx] = prev[idx] || autoFirst || spec?.sampleValue || "";
+        const cur = prev[idx];
+        next[idx] =
+          !cur || cur === "Hey there"
+            ? filled.bodyValues[idx] || ""
+            : cur;
       }
       return next;
     });
-  }, [open, activeTpl, name]);
+  }, [open, activeTpl, name, phone, existingMatch?.customerName]);
 
   const renderedPreview = useMemo(() => {
     if (!activeTpl) return "";

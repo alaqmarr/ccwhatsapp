@@ -25,6 +25,7 @@ import type { CombinedQuickReplyItem } from "./InboxComposer";
 export function ComposerToolbarAndBars({
   composerMode,
   setComposerMode,
+  windowOpen,
   customLinksCount,
   stagedAttachment,
   setStagedAttachment,
@@ -47,6 +48,7 @@ export function ComposerToolbarAndBars({
 }: {
   composerMode: "REPLY" | "TEMPLATE" | "NOTE";
   setComposerMode: (m: "REPLY" | "TEMPLATE" | "NOTE") => void;
+  windowOpen: boolean;
   customLinksCount: number;
   stagedAttachment: StagedComposerAttachment | null;
   setStagedAttachment: (att: StagedComposerAttachment | null) => void;
@@ -71,18 +73,20 @@ export function ComposerToolbarAndBars({
     <>
       <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
         <div className="inline-flex max-w-full overflow-x-auto rounded-lg bg-white p-0.5 border border-[#d1d7db]">
-          <button
-            type="button"
-            onClick={() => setComposerMode("REPLY")}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer ${
-              composerMode === "REPLY"
-                ? "bg-[#00a884] text-white"
-                : "text-[#54656f] hover:text-[#111b21]"
-            }`}
-          >
-            <WhatsAppLogoIcon size={12} />
-            <span>WhatsApp Reply</span>
-          </button>
+          {windowOpen && (
+            <button
+              type="button"
+              onClick={() => setComposerMode("REPLY")}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer ${
+                composerMode === "REPLY"
+                  ? "bg-[#00a884] text-white"
+                  : "text-[#54656f] hover:text-[#111b21]"
+              }`}
+            >
+              <WhatsAppLogoIcon size={12} />
+              <span>WhatsApp Reply</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -115,59 +119,65 @@ export function ComposerToolbarAndBars({
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={onToggleAttachmentPicker}
-            title="Attach & send Image, Video, PDF, CAD/Office file, or Catalog Photo/Brochure"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-semibold cursor-pointer transition ${
-              showAttachmentPicker || stagedAttachment
-                ? "bg-[#00a884] text-white border-[#00a884]"
-                : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
-            }`}
-          >
-            <Paperclip
-              className={`w-3.5 h-3.5 ${
+          {(windowOpen || composerMode === "NOTE") && (
+            <button
+              type="button"
+              onClick={onToggleAttachmentPicker}
+              title="Attach & send Image, Video, PDF, CAD/Office file, or Catalog Photo/Brochure"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-semibold cursor-pointer transition ${
                 showAttachmentPicker || stagedAttachment
-                  ? "text-white"
-                  : "text-[#00a884]"
+                  ? "bg-[#00a884] text-white border-[#00a884]"
+                  : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
               }`}
-            />
-            <span>Attach Media / PDF</span>
-          </button>
+            >
+              <Paperclip
+                className={`w-3.5 h-3.5 ${
+                  showAttachmentPicker || stagedAttachment
+                    ? "text-white"
+                    : "text-[#00a884]"
+                }`}
+              />
+              <span>Attach Media / PDF</span>
+            </button>
+          )}
 
-          <button
-            type="button"
-            onClick={onToggleTrackPopover}
-            title="Create & send a dynamic order tracking button (track.ccapl.cc)"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
-              showTrackPopover
-                ? "bg-[#00a884] text-white border-[#00a884]"
-                : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
-            }`}
-          >
-            <Truck className="w-3.5 h-3.5 text-[#00a884]" />
-            <span>Track Order</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onToggleLocationPopover}
-            title="Share verified factory address, native WhatsApp pin, and Google Maps link"
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
-              showLocationPopover
-                ? "bg-[#00a884] text-white border-[#00a884]"
-                : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
-            }`}
-          >
-            <MapPin
-              className={`w-3.5 h-3.5 ${
-                showLocationPopover ? "text-white" : "text-[#00a884]"
+          {windowOpen && (
+            <button
+              type="button"
+              onClick={onToggleTrackPopover}
+              title="Create & send a dynamic order tracking button (track.ccapl.cc)"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
+                showTrackPopover
+                  ? "bg-[#00a884] text-white border-[#00a884]"
+                  : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
               }`}
-            />
-            <span>Location</span>
-          </button>
+            >
+              <Truck className="w-3.5 h-3.5 text-[#00a884]" />
+              <span>Track Order</span>
+            </button>
+          )}
 
-          {customLinksCount > 0 && (
+          {windowOpen && (
+            <button
+              type="button"
+              onClick={onToggleLocationPopover}
+              title="Share verified factory address, native WhatsApp pin, and Google Maps link"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer transition ${
+                showLocationPopover
+                  ? "bg-[#00a884] text-white border-[#00a884]"
+                  : "bg-white hover:bg-[#e7fce3] border-[#d1d7db] text-[#111b21]"
+              }`}
+            >
+              <MapPin
+                className={`w-3.5 h-3.5 ${
+                  showLocationPopover ? "text-white" : "text-[#00a884]"
+                }`}
+              />
+              <span>Location</span>
+            </button>
+          )}
+
+          {windowOpen && customLinksCount > 0 && (
             <button
               type="button"
               onClick={onToggleShortLinksPicker}
@@ -201,7 +211,7 @@ export function ComposerToolbarAndBars({
             <span>Ask @ACRIO</span>
           </button>
 
-          {composerMode === "REPLY" && (
+          {windowOpen && composerMode === "REPLY" && (
             <div className="inline-flex items-center gap-1">
               <button
                 type="button"

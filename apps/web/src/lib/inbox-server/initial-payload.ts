@@ -73,7 +73,7 @@ export async function getInitialInboxPayload(params: {
       ),
       conv.execute(`SELECT * FROM teams ORDER BY priority_rank ASC, name ASC`),
       auth.execute(
-        `SELECT id, name, role, department
+        `SELECT id, name, role, department, COALESCE(assignments_enabled, 1) AS assignments_enabled
          FROM users
          WHERE status = 'ACTIVE' AND role != 'CLIENT'
          ORDER BY name ASC`
@@ -171,6 +171,7 @@ export async function getInitialInboxPayload(params: {
       name: String(s.name),
       role: String(s.role),
       department: String(s.department || "Operations"),
+      assignmentsEnabled: Number(s.assignments_enabled ?? 1) !== 0,
     }));
 
   const templates: ApprovedTemplateOption[] = templatesRes.rows.map((tpl) => {

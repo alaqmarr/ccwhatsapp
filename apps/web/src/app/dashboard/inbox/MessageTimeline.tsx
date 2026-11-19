@@ -9,17 +9,22 @@ import {
   getIstDateKey,
 } from "@cc/ui";
 import type { NormalizedMessageMedia } from "@/components/MediaAttachmentTools";
+import type { TemplateSendPayload } from "@/components/TemplateSendDialog";
 import type {
+  ApprovedTemplateOption,
   ChatMessage,
   QuotedMessageRef,
   StaffOption,
 } from "@/lib/inbox-server-data";
+import type { TemplateCustomerContext } from "@/lib/template-variables";
 import { AssignmentEventCard } from "./AssignmentEventCard";
 import { ChatMessageBubble } from "./ChatMessageBubble";
+import { EmptyChatStarterTemplates } from "./EmptyChatStarterTemplates";
 import { InternalNoteBubble } from "./InternalNoteBubble";
 
 type TimelineRow =
   | { key: string; kind: "top_notice" }
+  | { key: string; kind: "empty_chat_templates" }
   | { key: string; kind: "load_older" }
   | { key: string; kind: "date_separator"; dateKey: string; label: string }
   | { key: string; kind: "message"; message: ChatMessage }
@@ -51,6 +56,10 @@ export function MessageTimeline({
   onUploadCompanyDocForNote,
   onUseSuggestedReply,
   onReopen,
+  templates,
+  customerContext,
+  onSendReadyTemplate,
+  onOpenTemplateDialog,
   scrollTargetRef,
 }: {
   conversationId: string;
@@ -86,6 +95,10 @@ export function MessageTimeline({
   ) => void;
   onUseSuggestedReply: (reply: string) => void;
   onReopen: () => void;
+  templates: ApprovedTemplateOption[];
+  customerContext: TemplateCustomerContext;
+  onSendReadyTemplate: (payload: TemplateSendPayload) => Promise<{ ok: boolean; error?: string }>;
+  onOpenTemplateDialog: () => void;
   scrollTargetRef?: React.MutableRefObject<((msgId: string) => void) | null>;
 }) {
   const parentRef = useRef<HTMLDivElement | null>(null);
@@ -100,8 +113,19 @@ export function MessageTimeline({
     [todayKey]
   );
 
+  const hasWhatsAppMessages = useMemo(
+    () =>
+      messages.some(
+        (m) => m.direction === "INBOUND" || m.direction === "OUTBOUND"
+      ),
+    [messages]
+  );
+
   const rows = useMemo<TimelineRow[]>(() => {
     const out: TimelineRow[] = [{ key: "top_notice", kind: "top_notice" }];
+    if (!hasWhatsAppMessages && !hasOlderMessages) {
+      out.push({ key: "empty_chat_templates", kind: "empty_chat_templates" });
+    }
     if (hasOlderMessages) {
       out.push({ key: "load_older", kind: "load_older" });
     }
@@ -126,7 +150,7 @@ export function MessageTimeline({
       out.push({ key: "resolved_footer", kind: "resolved_footer" });
     }
     return out;
-  }, [conversationStatus, hasOlderMessages, messages, todayRefMs]);
+  }, [conversationStatus, hasOlderMessages, hasWhatsAppMessages, messages, todayRefMs]);
 
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
@@ -135,6 +159,7 @@ export function MessageTimeline({
       const row = rows[idx];
       if (!row) return 88;
       if (row.kind === "top_notice" || row.kind === "load_older") return 56;
+      if (row.kind === "empty_chat_templates") return 340;
       if (row.kind === "date_separator") return 42;
       if (row.kind === "resolved_footer") return 80;
       if (row.message.messageType === "ASSIGNMENT_EVENT") return 110;
@@ -244,6 +269,15 @@ export function MessageTimeline({
                     member, ACRIO stays paused until assigned back to System.
                   </div>
                 </div>
+              )}
+
+              {row.kind === "empty_chat_templates" && (
+                <EmptyChatStarterTemplates
+                  templates={templates}
+                  customer={customerContext}
+                  onSendTemplate={onSendReadyTemplate}
+                  onOpenAllTemplates={onOpenTemplateDialog}
+                />
               )}
 
               {row.kind === "load_older" && (

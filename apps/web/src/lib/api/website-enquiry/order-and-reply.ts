@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { dispatchSystemEmail, sendWhatsAppCloudMessage } from "@cc/connections";
+import {
+  dispatchSystemEmail,
+  isWhatsAppServiceWindowOpen,
+  sendWhatsAppCloudMessage,
+} from "@cc/connections";
 import {
   getRawLibSqlClient,
   normalizeWhatsAppPhone,
@@ -102,14 +106,27 @@ export async function handleEnquiryReply(body: Record<string, unknown>) {
   const conv = getRawLibSqlClient("conversations");
   if (normalizedPhone) {
     const existingConv = await conv.execute({
-      sql: `SELECT id FROM conversations WHERE customer_phone = ? LIMIT 1`,
+      sql: `SELECT id, window_expires_at FROM conversations WHERE customer_phone = ? LIMIT 1`,
       args: [normalizedPhone],
     });
+    const convWindowExpiresAt = existingConv.rows[0]?.window_expires_at ?? null;
     if (existingConv.rows[0]) {
       conversationId = String(existingConv.rows[0].id);
     }
 
     if (channel === "WHATSAPP" && replyMessage) {
+      if (!isWhatsAppServiceWindowOpen(convWindowExpiresAt)) {
+        return NextResponse.json(
+          {
+            ok: false,
+            whatsappDispatchedByHub: false,
+            windowClosed: true,
+            error:
+              "24-hour customer service window is closed. Send an approved WhatsApp template instead.",
+          },
+          { status: 400 }
+        );
+      }
       const waRes = await sendWhatsAppCloudMessage({
         toPhone: normalizedPhone,
         bodyText: replyMessage,

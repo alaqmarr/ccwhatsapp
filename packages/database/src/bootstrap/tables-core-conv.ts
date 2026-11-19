@@ -22,6 +22,7 @@ export async function createCoreAuthTables(): Promise<void> {
         approved_at TEXT,
         rejection_reason TEXT,
         last_active_at TEXT,
+        assignments_enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       )`,
       `CREATE TABLE IF NOT EXISTS email_verifications (
@@ -61,6 +62,14 @@ export async function createCoreAuthTables(): Promise<void> {
     ],
     "write"
   );
+
+  try {
+    await auth.execute(
+      `ALTER TABLE users ADD COLUMN assignments_enabled INTEGER NOT NULL DEFAULT 1`
+    );
+  } catch {
+    // Column already exists
+  }
 }
 
 export async function createConversationsAndContactsTables(): Promise<void> {
@@ -262,6 +271,28 @@ export async function createConversationsAndContactsTables(): Promise<void> {
     `ALTER TABLE automations ADD COLUMN priority_order INTEGER NOT NULL DEFAULT 10`,
     `ALTER TABLE team_members ADD COLUMN email_alerts_enabled INTEGER NOT NULL DEFAULT 1`,
   ];
+  await conv
+    .execute(
+      `CREATE TABLE IF NOT EXISTS lead_forwards (
+        id TEXT PRIMARY KEY,
+        owner_phone TEXT NOT NULL DEFAULT '',
+        owner_name TEXT NOT NULL DEFAULT '',
+        staff_id TEXT NOT NULL,
+        staff_name TEXT NOT NULL,
+        staff_phone TEXT NOT NULL DEFAULT '',
+        lead_text TEXT NOT NULL,
+        customer_name TEXT NOT NULL DEFAULT '',
+        customer_phone TEXT NOT NULL DEFAULT '',
+        call_queue_id TEXT,
+        assignment_mode TEXT NOT NULL DEFAULT 'NAMED',
+        delivery_status TEXT NOT NULL DEFAULT 'PENDING_WINDOW',
+        delivery_note TEXT NOT NULL DEFAULT '',
+        media_json TEXT NOT NULL DEFAULT '[]',
+        delivered_at TEXT,
+        created_at TEXT NOT NULL
+      )`
+    )
+    .catch(() => {});
   for (const ddl of extraConvColumns) {
     try {
       await conv.execute(ddl);

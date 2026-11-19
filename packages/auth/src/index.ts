@@ -29,6 +29,7 @@ export {
   invalidatePendingApprovalsCache,
   createDevAccountByDev,
   reviewStaffAccount,
+  setStaffAssignmentsEnabled,
   deleteStaffAccount,
   recordOnboardingStep,
 } from "./users-management";

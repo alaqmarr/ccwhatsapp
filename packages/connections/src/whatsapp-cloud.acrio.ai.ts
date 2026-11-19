@@ -7,10 +7,14 @@ export {
   verifyMetaWebhookSignature,
 } from "./whatsapp-cloud/config";
 export {
+  resolveAudioContainerMimeAndExt,
   uploadMediaToMetaCloud,
   prepareInboundMediaForForward,
 } from "./whatsapp-cloud/media";
-export { sendWhatsAppCloudMessage } from "./whatsapp-cloud/messaging";
+export {
+  isWhatsAppServiceWindowOpen,
+  sendWhatsAppCloudMessage,
+} from "./whatsapp-cloud/messaging";
 export {
   validateWhatsAppTemplateRules,
   buildMetaGraphTemplatePayload,

@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import type { AuthenticatedUser } from "@cc/auth";
-import { dispatchSystemEmail, sendWhatsAppCloudMessage } from "@cc/connections";
+import {
+  dispatchSystemEmail,
+  isWhatsAppServiceWindowOpen,
+  sendWhatsAppCloudMessage,
+} from "@cc/connections";
 import {
   getRawLibSqlClient,
   normalizeWhatsAppPhone,
@@ -113,12 +117,13 @@ export async function handleEnquirySendReply(
     }).catch(() => ({ id: null }));
 
     const existingConv = await conv.execute({
-      sql: `SELECT id FROM conversations WHERE customer_phone = ? LIMIT 1`,
+      sql: `SELECT id, window_expires_at FROM conversations WHERE customer_phone = ? LIMIT 1`,
       args: [normalizedPhone],
     });
+    const convWindowExpiresAt = existingConv.rows[0]?.window_expires_at ?? null;
     if (existingConv.rows[0]) {
       conversationId = String(existingConv.rows[0].id);
-    } else {
+    } else if (!wantsWhatsApp) {
       conversationId = `conv_${crypto.randomUUID().slice(0, 8)}`;
       const brandTag =
         brand === "CLASSIC_EDGE_53" ? "Classic Edge 53" : "Classic Concepts";
@@ -145,40 +150,52 @@ export async function handleEnquirySendReply(
     }
 
     if (wantsWhatsApp) {
-      const waRes = await sendWhatsAppCloudMessage({
-        toPhone: normalizedPhone,
-        bodyText: replyMessage,
-      });
-      whatsappDelivered = waRes.ok;
-      if (!waRes.ok) {
-        whatsappError = waRes.error || "WhatsApp send failed";
+      if (!isWhatsAppServiceWindowOpen(convWindowExpiresAt)) {
+        whatsappDelivered = false;
+        whatsappError =
+          "24-hour customer service window is closed (or customer has not messaged on WhatsApp). Send an approved WhatsApp template instead.";
+        if (!wantsEmail) {
+          return NextResponse.json(
+            { ok: false, windowClosed: true, error: whatsappError },
+            { status: 400 }
+          );
+        }
+      } else {
+        const waRes = await sendWhatsAppCloudMessage({
+          toPhone: normalizedPhone,
+          bodyText: replyMessage,
+        });
+        whatsappDelivered = waRes.ok;
+        if (!waRes.ok) {
+          whatsappError = waRes.error || "WhatsApp send failed";
+        }
+        const outMsgId = `msg_${crypto.randomUUID().slice(0, 10)}`;
+        await conv.execute({
+          sql: `INSERT INTO messages (
+            id, conversation_id, wa_message_id, direction, sender_type, sender_name, sender_staff_id,
+            message_type, billing_category, body, delivery_status, created_at
+          ) VALUES (?, ?, ?, 'OUTBOUND', 'STAFF', ?, ?, 'TEXT', 'FREE_CHAT', ?, ?, ?)`,
+          args: [
+            outMsgId,
+            conversationId,
+            waRes.waMessageId,
+            user.name,
+            user.id,
+            replyMessage,
+            waRes.deliveryStatus,
+            nowIso,
+          ],
+        });
+        await conv.execute({
+          sql: `UPDATE conversations
+                SET last_message_preview = ?,
+                    last_message_at = ?,
+                    waiting_since = NULL,
+                    unread_count = 0
+                WHERE id = ?`,
+          args: [`${user.name}: ${replyMessage}`.slice(0, 140), nowIso, conversationId],
+        });
       }
-      const outMsgId = `msg_${crypto.randomUUID().slice(0, 10)}`;
-      await conv.execute({
-        sql: `INSERT INTO messages (
-          id, conversation_id, wa_message_id, direction, sender_type, sender_name, sender_staff_id,
-          message_type, billing_category, body, delivery_status, created_at
-        ) VALUES (?, ?, ?, 'OUTBOUND', 'STAFF', ?, ?, 'TEXT', 'FREE_CHAT', ?, ?, ?)`,
-        args: [
-          outMsgId,
-          conversationId,
-          waRes.waMessageId,
-          user.name,
-          user.id,
-          replyMessage,
-          waRes.deliveryStatus,
-          nowIso,
-        ],
-      });
-      await conv.execute({
-        sql: `UPDATE conversations
-              SET last_message_preview = ?,
-                  last_message_at = ?,
-                  waiting_since = NULL,
-                  unread_count = 0
-              WHERE id = ?`,
-        args: [`${user.name}: ${replyMessage}`.slice(0, 140), nowIso, conversationId],
-      });
     } else if (conversationId) {
       await conv.execute({
         sql: `INSERT INTO messages (

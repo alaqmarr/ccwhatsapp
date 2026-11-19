@@ -7,10 +7,13 @@ import type {
 } from "@/components/MediaAttachmentTools";
 import type { QuotedMessageRef } from "@/lib/inbox-server-data";
 
+export const MY_LEADS_THREAD_ID = "__MY_LEADS__" as const;
+
 export type InboxQuickFilter =
   | "ALL"
   | "MINE"
   | "ACTIVE"
+  | "LEAD_ASSIGNED"
   | "WAITING"
   | "ACRIO"
   | "UNREAD"

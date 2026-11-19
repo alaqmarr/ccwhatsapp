@@ -7,11 +7,8 @@ import {
 } from "@cc/database";
 import { socketHub } from "@cc/sockets";
 import { formatWhatsAppOutboundText } from "@cc/connections/initialise.acrio.ai";
-import {
-  buildMetaInteractivePayload,
-  describeInteractiveAsText,
-  loadMetaWhatsAppSetupConfig,
-} from "./config";
+import { buildMetaInteractivePayload, describeInteractiveAsText, loadMetaWhatsAppSetupConfig } from "./config";
+import { WHATSAPP_SUPPORTED_AUDIO_MIMES } from "./media";
 import type {
   AcrioInteractive,
   OutboundWhatsAppMediaSpec,
@@ -207,6 +204,15 @@ async function postPlainTextFallback(params: {
   return { res, data };
 }
 
+export function isWhatsAppServiceWindowOpen(
+  windowExpiresAt: unknown,
+  nowMs: number = Date.now()
+): boolean {
+  if (!windowExpiresAt) return false;
+  const expMs = new Date(String(windowExpiresAt)).getTime();
+  return Number.isFinite(expMs) && !Number.isNaN(expMs) && expMs > nowMs;
+}
+
 export async function sendWhatsAppCloudMessage(params: {
   toPhone: string;
   bodyText: string;
@@ -264,6 +270,33 @@ export async function sendWhatsAppCloudMessage(params: {
     };
   }
 
+  // Enforce strict 24-hour customer service window check before any non-template message leaves the app.
+  if (!params.templateName) {
+    let windowExpiresAt: unknown = null;
+    try {
+      await ensureDatabasesBootstrapped();
+      const conv = getRawLibSqlClient("conversations");
+      const winRes = await conv.execute({
+        sql: `SELECT window_expires_at FROM conversations WHERE customer_phone = ? LIMIT 1`,
+        args: [normalizedPhone || params.toPhone],
+      });
+      windowExpiresAt = winRes.rows[0]?.window_expires_at ?? null;
+    } catch {
+      windowExpiresAt = null;
+    }
+    if (!isWhatsAppServiceWindowOpen(windowExpiresAt)) {
+      return {
+        ok: false,
+        waMessageId: "",
+        mode: mode === "LIVE_META_CLOUD" ? "LIVE_META_CLOUD" : "SANDBOX_SIMULATOR",
+        deliveryStatus: "FAILED",
+        metaErrorCode: 131047,
+        error:
+          "24-hour customer service window is closed (window_expires_at <= now). Send an approved WhatsApp template instead.",
+      };
+    }
+  }
+
   if (mode === "LIVE_META_CLOUD" && phoneNumberId && accessToken) {
     try {
       const rawReplyWaId = String(params.replyToWaMessageId || "").trim();
@@ -315,11 +348,22 @@ export async function sendWhatsAppCloudMessage(params: {
         !params.templateName &&
         !params.interactive &&
         Boolean(resolvedMediaSpec && (validWaMediaId || hasPublicMediaUrl));
-      const mediaKind = String(resolvedMediaSpec?.type || "IMAGE").toLowerCase() as
+      const rawMediaKind = String(resolvedMediaSpec?.type || "IMAGE").toLowerCase() as
         | "image"
         | "video"
         | "document"
         | "audio";
+      const normalizedMediaMime = String(resolvedMediaSpec?.mimeType || "")
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+      // If an audio container (e.g. audio/webm or audio/wav) is unsupported by Meta's `audio` type, send as `document` instead.
+      const mediaKind: "image" | "video" | "document" | "audio" =
+        rawMediaKind === "audio" &&
+        normalizedMediaMime &&
+        !WHATSAPP_SUPPORTED_AUDIO_MIMES.has(normalizedMediaMime)
+          ? "document"
+          : rawMediaKind;
       const mediaCaption = resolvedMediaSpec?.caption
         ? formatWhatsAppOutboundText(resolvedMediaSpec.caption)
         : formattedBody;
@@ -329,8 +373,11 @@ export async function sendWhatsAppCloudMessage(params: {
       if (mediaKind !== "audio" && mediaCaption) {
         mediaRefObj.caption = mediaCaption.slice(0, 1024);
       }
-      if (mediaKind === "document" && resolvedMediaSpec?.fileName) {
-        mediaRefObj.filename = resolvedMediaSpec.fileName.slice(0, 240);
+      if (mediaKind === "document") {
+        const ext = normalizedMediaMime.split("/")[1] || "ogg";
+        mediaRefObj.filename = (
+          resolvedMediaSpec?.fileName || `voice-note.${ext}`
+        ).slice(0, 240);
       }
 
       const payload = params.templateName
@@ -428,6 +475,33 @@ export async function sendWhatsAppCloudMessage(params: {
       );
 
       let data: any = await res.json().catch(() => ({}));
+      if (!res.ok && hasMediaPayload && mediaKind === "audio" && res.status === 400) {
+        const docExt = normalizedMediaMime.split("/")[1] || "ogg";
+        const docRef: Record<string, unknown> = {
+          ...(validWaMediaId ? { id: validWaMediaId } : { link: mediaUrl }),
+          filename: (resolvedMediaSpec?.fileName || `voice-note.${docExt}`).slice(0, 240),
+        };
+        res = await fetch(
+          `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: recipientDigits,
+              ...contextField,
+              type: "document",
+              document: docRef,
+            }),
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        data = await res.json().catch(() => ({}));
+      }
       if (!res.ok && hasMediaPayload && res.status === 400) {
         const fallbackBody =
           mediaCaption && mediaUrl

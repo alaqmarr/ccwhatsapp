@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { formatWhatsAppOutboundText, sendWhatsAppCloudMessage } from "@cc/connections";
+import {
+  formatWhatsAppOutboundText,
+  isWhatsAppServiceWindowOpen,
+  sendWhatsAppCloudMessage,
+} from "@cc/connections";
 import { getRawLibSqlClient } from "@cc/database";
 import { isDevRole } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
@@ -49,6 +53,17 @@ export async function handleSendMessage(ctx: ConversationActionContext) {
 
   const templateName = body.templateName ? String(body.templateName).trim() : undefined;
   const isTemplate = body.messageType === "TEMPLATE" || Boolean(templateName);
+  if (!isTemplate && !isWhatsAppServiceWindowOpen(cRow.window_expires_at, nowMs)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        windowClosed: true,
+        error:
+          "24-hour customer service window is closed. Choose an approved WhatsApp template instead.",
+      },
+      { status: 400 }
+    );
+  }
   let tplRecord: Record<string, unknown> | null = null;
   if (isTemplate && templateName) {
     const mkt = getRawLibSqlClient("marketing");

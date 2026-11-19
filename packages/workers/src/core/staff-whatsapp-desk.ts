@@ -11,12 +11,14 @@ import {
 } from "@cc/connections";
 import { socketHub } from "@cc/sockets";
 import {
+  assignLeadFromOwner,
   buildOwnerStaffProfile,
   flushPendingLeadForwards,
   handleOwnerDeskMessage,
   handleStaffDeskMessage,
   isOwnerWhatsAppPhone,
   isStaffGreeting,
+  parseAssignCommand,
 } from "@cc/workers/owner-desk";
 import { logConversationAssignment } from "./assignment-tracking";
 
@@ -327,26 +329,53 @@ export async function handleInternalStaffInbound(params: {
     return true;
   }
 
-  // Owner desk: "please assign to @staff", lead forwarding, and the owner's read-only admin commands.
-  if (isOwnerCaller && !params.isButtonClick) {
-    const ownerHandled = await handleOwnerDeskMessage({
-      conversationId: params.conversationId,
-      ownerPhone: params.customerPhone,
-      text: params.workingInboundText,
-      currentWaMessageId: params.waMessageId,
-      replyToWaMessageId: params.replyToWaMessageId,
-      hasAttachment: params.hasAttachment,
-      hubBase,
-      logAssignment: logConversationAssignment,
-      reply: sendStaffReply,
-    }).catch(async (err) => {
-      console.error("[owner-desk] owner command failed:", err);
-      await sendStaffReply(
-        "Sorry sir, something went wrong while handling that. Nothing was lost. Please try again in a moment."
-      ).catch(() => {});
-      return true;
-    });
-    if (ownerHandled) return true;
+  // Owner & Staff-to-Staff lead forwarding: "assign", "assign to @staff", "forward to @staff", swipe-reply takeovers, and owner read-only commands.
+  if (!params.isButtonClick) {
+    if (isOwnerCaller) {
+      const ownerHandled = await handleOwnerDeskMessage({
+        conversationId: params.conversationId,
+        ownerPhone: params.customerPhone,
+        text: params.workingInboundText,
+        currentWaMessageId: params.waMessageId,
+        replyToWaMessageId: params.replyToWaMessageId,
+        hasAttachment: params.hasAttachment,
+        hubBase,
+        logAssignment: logConversationAssignment,
+        reply: sendStaffReply,
+      }).catch(async (err) => {
+        console.error("[owner-desk] owner command failed:", err);
+        await sendStaffReply(
+          "Sorry sir, something went wrong while handling that. Nothing was lost. Please try again in a moment."
+        ).catch(() => {});
+        return true;
+      });
+      if (ownerHandled) return true;
+    } else {
+      const staffAssignCmd = parseAssignCommand(params.workingInboundText);
+      if (staffAssignCmd.found) {
+        const fwdRes = await assignLeadFromOwner(staffAssignCmd, {
+          conversationId: params.conversationId,
+          ownerPhone: params.customerPhone,
+          ownerName: internalStaff.name,
+          text: params.workingInboundText,
+          currentWaMessageId: params.waMessageId,
+          replyToWaMessageId: params.replyToWaMessageId,
+          hubBase,
+          logAssignment: logConversationAssignment,
+          isStaffForwarder: true,
+        }).catch(async (err) => {
+          console.error("[staff-lead-forward] failed:", err);
+          return {
+            handled: true,
+            reply: `Sorry ${internalStaff.firstName}, I could not forward that lead right now. Please try again or use MY LEADS in the hub.`,
+          };
+        });
+        if (fwdRes.handled) {
+          await sendStaffReply(fwdRes.reply);
+          return true;
+        }
+      }
+    }
   }
 
   // Staff desk: "hi" unlocks the chat, "my leads" lists forwarded leads.

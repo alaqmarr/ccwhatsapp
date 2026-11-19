@@ -43,6 +43,7 @@ export interface DeskStaff {
   department: string;
   phone: string;
   suffix: string;
+  assignmentsEnabled: boolean;
 }
 
 export interface WindowState {
@@ -92,4 +93,7 @@ export interface AssignLeadParams {
   replyToWaMessageId?: string;
   hubBase: string;
   logAssignment: LogAssignmentFn;
+  targetStaffIdOverride?: string;
+  itemsOverride?: LeadItem[];
+  isStaffForwarder?: boolean;
 }

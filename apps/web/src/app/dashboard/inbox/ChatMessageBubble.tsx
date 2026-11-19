@@ -285,6 +285,16 @@ export const ChatMessageBubble = React.memo(function ChatMessageBubble({
             />
           )}
         </div>
+        {isOutbound &&
+          m.deliveryStatus === "FAILED" &&
+          Boolean(m.metadata?.errorMessage || m.metadata?.errorCode) && (
+            <div className="mt-1 text-[10.5px] text-red-700 text-right leading-snug break-words">
+              {m.metadata?.errorCode ? `Code ${String(m.metadata.errorCode)}: ` : ""}
+              {String(
+                m.metadata?.errorDetails || m.metadata?.errorMessage || "Delivery failed"
+              )}
+            </div>
+          )}
       </div>
     </div>
   );

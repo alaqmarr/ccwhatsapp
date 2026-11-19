@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import {
   ensureDatabasesBootstrapped,
   getRawLibSqlClient,
+  pickNextSequentialStaffAtoZ,
   resolveRequestedOrPreferredStaffForInbound,
 } from "@cc/database";
 import {
@@ -260,27 +261,18 @@ export async function smartAssignConversation(params: {
   const teamName = String(chosenTeam.name);
   const auth = getRawLibSqlClient("core_auth");
 
-  // Load active chat counts per staff member for smart least-loaded balancing (excluding DEV roles from auto-assign)
-  const [membersRes, loadRes, devUsersRes] = await Promise.all([
+  // Load team members (excluding DEV roles and accounts with assignments turned off)
+  const [membersRes, devUsersRes] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM team_members WHERE team_id = ? AND is_available = 1`,
       args: [teamId],
     }),
-    conv.execute(
-      `SELECT assigned_staff_id, COUNT(*) as open_cnt
-       FROM conversations
-       WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL AND assigned_staff_id != 'ACRIO'
-       GROUP BY assigned_staff_id`
+    auth.execute(
+      `SELECT id FROM users WHERE role = 'DEV' OR COALESCE(assignments_enabled, 1) = 0`
     ),
-    auth.execute(`SELECT id FROM users WHERE role = 'DEV'`),
   ]);
 
   const devUserIds = new Set(devUsersRes.rows.map((u) => String(u.id)));
-
-  const loadMap = new Map<string, number>();
-  for (const r of loadRes.rows) {
-    loadMap.set(String(r.assigned_staff_id), Number(r.open_cnt ?? 0));
-  }
 
   const tierOrder: ("P0" | "P1" | "P2")[] =
     params.preferredTier === "P1"
@@ -292,6 +284,7 @@ export async function smartAssignConversation(params: {
   let chosenMember: Record<string, unknown> | null = null;
   let chosenTier: "P0" | "P1" | "P2" = params.preferredTier || "P0";
   let stickyReasonOverride: string | null = null;
+  let sequentialOrderNote = "";
 
   // Check if customer requested someone specific, has a preferred staff member, or has an existing previous handler
   const stickyMatch = await resolveRequestedOrPreferredStaffForInbound({
@@ -315,17 +308,20 @@ export async function smartAssignConversation(params: {
     );
     if (candidates.length === 0) continue;
 
-    candidates.sort((a, b) => {
-      const loadA = loadMap.get(String(a.staff_id)) ?? 0;
-      const loadB = loadMap.get(String(b.staff_id)) ?? 0;
-      return loadA - loadB;
-    });
-
-    const underCap = candidates.find(
-      (c) => (loadMap.get(String(c.staff_id)) ?? 0) < Number(c.max_active_chats ?? 15)
+    // Assign sequentially in A-to-Z order irrespective of current load, wrapping back to start when complete.
+    const seqPick = await pickNextSequentialStaffAtoZ(
+      candidates.map((m) => ({
+        id: String(m.staff_id),
+        name: String(m.staff_name || m.staff_id || ""),
+        row: m,
+      })),
+      `smart_team_${teamId}_${tier}`
     );
-    chosenMember = underCap || candidates[0];
+    chosenMember = seqPick ? seqPick.chosen.row : candidates[0];
     chosenTier = tier;
+    if (seqPick) {
+      sequentialOrderNote = ` (${seqPick.position} of ${seqPick.total})`;
+    }
     break;
   }
 
@@ -338,26 +334,36 @@ export async function smartAssignConversation(params: {
       (m) => !devUserIds.has(String(m.staff_id))
     );
     if (anyPool.length > 0) {
-      anyPool.sort(
-        (a, b) =>
-          (loadMap.get(String(a.staff_id)) ?? 0) -
-          (loadMap.get(String(b.staff_id)) ?? 0)
+      const seqPick = await pickNextSequentialStaffAtoZ(
+        anyPool.map((m) => ({
+          id: String(m.staff_id),
+          name: String(m.staff_name || m.staff_id || ""),
+          row: m,
+        })),
+        "smart_team_fallback_pool"
       );
-      chosenMember = anyPool[0];
+      chosenMember = seqPick ? seqPick.chosen.row : anyPool[0];
       chosenTier = String(chosenMember.tier || "P0") as "P0" | "P1" | "P2";
     } else {
       const activeUsersRes = await auth.execute(
-        `SELECT id, name FROM users WHERE status = 'ACTIVE' AND role != 'DEV' ORDER BY created_at ASC`
+        `SELECT id, name FROM users
+         WHERE status = 'ACTIVE' AND role != 'DEV' AND COALESCE(assignments_enabled, 1) = 1
+         ORDER BY name ASC`
       );
       if (activeUsersRes.rows.length > 0) {
-        const sortedUsers = [...activeUsersRes.rows].sort(
-          (a, b) =>
-            (loadMap.get(String(a.id)) ?? 0) - (loadMap.get(String(b.id)) ?? 0)
+        const seqPick = await pickNextSequentialStaffAtoZ(
+          activeUsersRes.rows.map((u) => ({
+            id: String(u.id),
+            name: String(u.name || ""),
+          })),
+          "smart_team_fallback_users"
         );
-        chosenMember = {
-          staff_id: String(sortedUsers[0].id),
-          staff_name: String(sortedUsers[0].name),
-        };
+        if (seqPick) {
+          chosenMember = {
+            staff_id: seqPick.chosen.id,
+            staff_name: seqPick.chosen.name,
+          };
+        }
       }
     }
   }
@@ -393,7 +399,7 @@ export async function smartAssignConversation(params: {
   const assignmentReason =
     stickyReasonOverride ||
     params.handoffReasonFromAcrio ||
-    `Smart-assigned to least-loaded ${chosenTier} responder in ${teamName}`;
+    `Assigned in A-Z sequence${sequentialOrderNote} (${chosenTier} in ${teamName})`;
 
   await logConversationAssignment({
     conversationId: params.conversationId,

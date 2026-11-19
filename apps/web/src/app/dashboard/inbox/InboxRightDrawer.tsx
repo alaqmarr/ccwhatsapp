@@ -28,6 +28,7 @@ export function InboxRightDrawer({
   sharedMediaItems,
   staffList,
   nowMs,
+  windowOpen,
   syncingThread,
   detailError,
   isAssignedToCurrentUser,
@@ -52,6 +53,7 @@ export function InboxRightDrawer({
   sharedMediaItems: { msg: ChatMessage; media: NormalizedMessageMedia }[];
   staffList: StaffOption[];
   nowMs: number;
+  windowOpen: boolean;
   syncingThread: boolean;
   detailError: string;
   isAssignedToCurrentUser: boolean;
@@ -184,7 +186,7 @@ export function InboxRightDrawer({
                 <span>Template</span>
               </button>
             )}
-            {detail?.acrio?.suggestedReplies?.[0] && isAssignedToCurrentUser && (
+            {windowOpen && detail?.acrio?.suggestedReplies?.[0] && isAssignedToCurrentUser && (
               <button
                 type="button"
                 onClick={() => onUseAiDraft(detail.acrio!.suggestedReplies[0])}

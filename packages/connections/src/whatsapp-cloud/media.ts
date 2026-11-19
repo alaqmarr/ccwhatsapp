@@ -12,6 +12,94 @@ function buildMinimalPdfBuffer(): Buffer {
   );
 }
 
+export const WHATSAPP_SUPPORTED_AUDIO_MIMES = new Set([
+  "audio/aac",
+  "audio/mp4",
+  "audio/mpeg",
+  "audio/amr",
+  "audio/ogg",
+]);
+
+const AUDIO_EXT_BY_MIME: Record<string, string> = {
+  "audio/ogg": "ogg",
+  "audio/mp4": "m4a",
+  "audio/mpeg": "mp3",
+  "audio/aac": "aac",
+  "audio/amr": "amr",
+  "audio/webm": "webm",
+  "audio/wav": "wav",
+};
+
+/**
+ * Inspects leading container magic bytes + MIME aliases so WhatsApp Cloud `/media`
+ * always receives a canonical MIME type and matching extension (e.g. `audio/ogg` without `; codecs=opus`).
+ */
+export function resolveAudioContainerMimeAndExt(
+  rawMime: string,
+  buffer?: Uint8Array | Buffer
+): { mimeType: string; extension: string; supportsWhatsAppAudioType: boolean } {
+  const base = String(rawMime || "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+
+  let detected = base;
+  if (buffer && buffer.byteLength >= 4) {
+    const b0 = buffer[0];
+    const b1 = buffer[1];
+    const b2 = buffer[2];
+    const b3 = buffer[3];
+    if (b0 === 0x4f && b1 === 0x67 && b2 === 0x67 && b3 === 0x53) {
+      detected = "audio/ogg"; // OggS
+    } else if (
+      buffer.byteLength >= 8 &&
+      buffer[4] === 0x66 &&
+      buffer[5] === 0x74 &&
+      buffer[6] === 0x79 &&
+      buffer[7] === 0x70
+    ) {
+      detected = "audio/mp4"; // ....ftyp (M4A/MP4)
+    } else if (
+      (b0 === 0x49 && b1 === 0x44 && b2 === 0x33) || // ID3
+      (b0 === 0xff && (b1 === 0xfb || b1 === 0xf3 || b1 === 0xf2))
+    ) {
+      detected = "audio/mpeg";
+    } else if (b0 === 0x23 && b1 === 0x21 && b2 === 0x41 && b3 === 0x4d) {
+      detected = "audio/amr"; // #!AM(R)
+    } else if (b0 === 0x1a && b1 === 0x45 && b2 === 0xdf && b3 === 0xa3) {
+      detected = "audio/webm"; // EBML/WebM
+    } else if (
+      buffer.byteLength >= 12 &&
+      b0 === 0x52 &&
+      b1 === 0x49 &&
+      b2 === 0x46 &&
+      b3 === 0x46 &&
+      buffer[8] === 0x57 &&
+      buffer[9] === 0x41 &&
+      buffer[10] === 0x56 &&
+      buffer[11] === 0x45
+    ) {
+      detected = "audio/wav";
+    } else if (b0 === 0xff && (b1 & 0xf6) === 0xf0) {
+      detected = "audio/aac"; // ADTS AAC frame
+    }
+  }
+
+  if (detected === "audio/opus") detected = "audio/ogg";
+  if (detected === "audio/mp3" || detected === "audio/x-mpeg") detected = "audio/mpeg";
+  if (detected === "audio/x-m4a" || detected === "audio/m4a") detected = "audio/mp4";
+  if (detected === "audio/x-aac") detected = "audio/aac";
+  if (detected === "audio/wave" || detected === "audio/x-wav") detected = "audio/wav";
+
+  const finalMime = detected || "audio/ogg";
+  const ext = AUDIO_EXT_BY_MIME[finalMime] || finalMime.split("/")[1] || "bin";
+  return {
+    mimeType: finalMime,
+    extension: ext,
+    supportsWhatsAppAudioType: WHATSAPP_SUPPORTED_AUDIO_MIMES.has(finalMime),
+  };
+}
+
 function buildMinimalMp4Buffer(): Buffer {
   return Buffer.from(
     "00000018667479706d703432000000006d70343269736f6d000000086d646174",
@@ -72,13 +160,32 @@ export async function uploadMediaToMetaCloud(params: {
   }
 
   try {
+    const rawBuf = new Uint8Array(params.buffer);
+    const rawMime = String(params.mimeType || "application/octet-stream")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    const isAudioLike = rawMime.startsWith("audio/");
+    const audioInfo = isAudioLike
+      ? resolveAudioContainerMimeAndExt(rawMime, rawBuf)
+      : null;
+    const uploadMime = audioInfo ? audioInfo.mimeType : rawMime || "application/octet-stream";
+    let uploadName = String(params.fileName || "").trim();
+    if (!uploadName) {
+      uploadName = audioInfo
+        ? `voice-note.${audioInfo.extension}`
+        : `attachment.${uploadMime.split("/")[1] || "bin"}`;
+    } else if (audioInfo && !uploadName.includes(".")) {
+      uploadName = `${uploadName}.${audioInfo.extension}`;
+    }
+
     const form = new FormData();
     form.append("messaging_product", "whatsapp");
-    form.append("type", params.mimeType || "application/octet-stream");
-    const blob = new Blob([new Uint8Array(params.buffer)], {
-      type: params.mimeType || "application/octet-stream",
+    form.append("type", uploadMime);
+    const blob = new Blob([rawBuf], {
+      type: uploadMime,
     });
-    form.append("file", blob, params.fileName || "attachment");
+    form.append("file", blob, uploadName);
 
     const res = await fetch(
       `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/media`,
@@ -123,7 +230,14 @@ export async function prepareInboundMediaForForward(params: {
   mimeType?: string;
   fileName?: string;
   kind?: WhatsAppMediaAttachmentType;
-}): Promise<{ ok: boolean; waMediaId?: string; mimeType?: string; error?: string }> {
+}): Promise<{
+  ok: boolean;
+  waMediaId?: string;
+  mimeType?: string;
+  fileName?: string;
+  supportsWhatsAppAudioType?: boolean;
+  error?: string;
+}> {
   const mediaId = String(params.mediaId || "").trim();
   if (!mediaId) return { ok: false, error: "No media id was saved for this attachment." };
   const baseMime = String(params.mimeType || "").split(";")[0].trim() || "application/octet-stream";
@@ -133,13 +247,28 @@ export async function prepareInboundMediaForForward(params: {
   const live = !useSandbox && String(cfg.mode || "") === "LIVE_META_CLOUD";
   const accessToken = String(cfg.systemUserAccessToken || "").trim();
   if (!live || !accessToken) {
+    const simAudio =
+      params.kind === "AUDIO" || baseMime.startsWith("audio/")
+        ? resolveAudioContainerMimeAndExt(baseMime)
+        : null;
+    const simMime = simAudio ? simAudio.mimeType : baseMime;
+    const simName =
+      params.fileName ||
+      (simAudio ? `voice-note.${simAudio.extension}` : "attachment");
     const sim = await uploadMediaToMetaCloud({
       buffer: new Uint8Array(0),
-      mimeType: baseMime,
-      fileName: params.fileName || "attachment",
+      mimeType: simMime,
+      fileName: simName,
       forceSandbox: true,
     });
-    return { ok: sim.ok, waMediaId: sim.waMediaId, mimeType: baseMime, error: sim.error };
+    return {
+      ok: sim.ok,
+      waMediaId: sim.waMediaId,
+      mimeType: simMime,
+      fileName: simName,
+      supportsWhatsAppAudioType: simAudio ? simAudio.supportsWhatsAppAudioType : true,
+      error: sim.error,
+    };
   }
 
   try {
@@ -157,17 +286,38 @@ export async function prepareInboundMediaForForward(params: {
     });
     if (!cdn.ok) return { ok: false, error: `Could not download the attachment (HTTP ${cdn.status}).` };
     const buffer = new Uint8Array(await cdn.arrayBuffer());
+    if (buffer.byteLength === 0) {
+      return { ok: false, error: "Downloaded attachment was empty." };
+    }
     const maxBytes = params.kind === "DOCUMENT" ? 100 * 1024 * 1024 : 16 * 1024 * 1024;
     if (buffer.byteLength > maxBytes) {
       return { ok: false, error: "The attachment is too large to forward on WhatsApp." };
     }
-    const mime = String(meta.mime_type || baseMime).split(";")[0].trim() || baseMime;
+    const cdnMime = String(cdn.headers.get("content-type") || "").split(";")[0].trim();
+    const rawDetected = String(meta.mime_type || cdnMime || baseMime)
+      .split(";")[0]
+      .trim() || baseMime;
+    const isAudio = params.kind === "AUDIO" || rawDetected.startsWith("audio/");
+    const audioInfo = isAudio ? resolveAudioContainerMimeAndExt(rawDetected, buffer) : null;
+    const finalMime = audioInfo ? audioInfo.mimeType : rawDetected;
+    const finalFileName =
+      params.fileName ||
+      (audioInfo
+        ? `voice-note.${audioInfo.extension}`
+        : `attachment.${finalMime.split("/")[1] || "bin"}`);
     const up = await uploadMediaToMetaCloud({
       buffer,
-      mimeType: mime,
-      fileName: params.fileName || `attachment.${mime.split("/")[1] || "bin"}`,
+      mimeType: finalMime,
+      fileName: finalFileName,
     });
-    return { ok: up.ok, waMediaId: up.waMediaId, mimeType: mime, error: up.error };
+    return {
+      ok: up.ok,
+      waMediaId: up.waMediaId,
+      mimeType: finalMime,
+      fileName: finalFileName,
+      supportsWhatsAppAudioType: audioInfo ? audioInfo.supportsWhatsAppAudioType : true,
+      error: up.error,
+    };
   } catch (err: any) {
     return { ok: false, error: err?.message || "Attachment transfer failed." };
   }

@@ -22,6 +22,7 @@ export interface StaffAccountItem {
   approvedByName: string | null;
   approvedAt: string | null;
   onboardingCompletedAt: string | null;
+  assignmentsEnabled?: boolean;
   createdAt: string;
 }
 
@@ -46,6 +47,7 @@ export function ApprovalsDirectoryTable({
   busyId,
   onRetry,
   onDecision,
+  onToggleAssignments,
   onDeleteMember,
 }: {
   loading: boolean;
@@ -64,6 +66,7 @@ export function ApprovalsDirectoryTable({
     targetUserId: string,
     decision: "APPROVE" | "REJECT" | "SUSPEND"
   ) => void;
+  onToggleAssignments: (acc: StaffAccountItem) => void;
   onDeleteMember: (acc: StaffAccountItem) => void;
 }) {
   return (
@@ -127,6 +130,7 @@ export function ApprovalsDirectoryTable({
                 </th>
                 <th className="py-2.5 px-3 font-medium">Role</th>
                 <th className="py-2.5 px-3 font-medium">Status</th>
+                <th className="py-2.5 px-3 font-medium">Assignments &amp; Leads</th>
                 <th className="py-2.5 px-3 font-medium">Reviewed By</th>
                 <th className="py-2.5 pl-3 text-right font-medium">Actions</th>
               </tr>
@@ -166,6 +170,34 @@ export function ApprovalsDirectoryTable({
                     </td>
                     <td className="py-3 px-3">
                       <AccountStatusBadge status={acc.status} />
+                    </td>
+                    <td className="py-3 px-3">
+                      <button
+                        type="button"
+                        disabled={busyId === acc.id || isProtectedDev}
+                        onClick={() => onToggleAssignments(acc)}
+                        title={
+                          acc.assignmentsEnabled !== false
+                            ? "Receiving chats, auto-assignments, and leads. Click to turn off."
+                            : "Turned off: never receives assignments, auto-assignments, or leads. Click to turn on."
+                        }
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                          acc.assignmentsEnabled !== false
+                            ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
+                            : "bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100"
+                        }`}
+                      >
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            acc.assignmentsEnabled !== false
+                              ? "bg-emerald-500"
+                              : "bg-rose-500"
+                          }`}
+                        />
+                        <span>
+                          {acc.assignmentsEnabled !== false ? "On" : "Off"}
+                        </span>
+                      </button>
                     </td>
                     <td className="py-3 px-3 text-neutral-500">
                       {acc.approvedByName || "Initial Setup"}

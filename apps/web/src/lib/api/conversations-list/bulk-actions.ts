@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import type { AuthenticatedUser } from "@cc/auth";
 import { sendStaffAssignmentEmailNotification } from "@cc/connections";
-import { getRawLibSqlClient } from "@cc/database";
+import {
+  getRawLibSqlClient,
+  isUserAssignmentsEnabled,
+} from "@cc/database";
 import { canAssignToDev } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
 import { closeActiveAssignmentOnResolve } from "@cc/workers";
@@ -66,12 +69,22 @@ export async function handleBulkAssign(
   if (targetStaffId !== "ACRIO") {
     const auth = getRawLibSqlClient("core_auth");
     const uRes = await auth.execute({
-      sql: `SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1`,
+      sql: `SELECT id, name, email, role, COALESCE(assignments_enabled, 1) AS assignments_enabled
+            FROM users WHERE id = ? LIMIT 1`,
       args: [targetStaffId],
     });
     if (uRes.rows[0]) {
       targetStaffName = String(uRes.rows[0].name || targetStaffName);
       targetEmail = String(uRes.rows[0].email || "");
+      if (Number(uRes.rows[0].assignments_enabled ?? 1) === 0) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: `Assignments and leads are turned off for ${targetStaffName} in Team Approvals.`,
+          },
+          { status: 400 }
+        );
+      }
       if (
         String(uRes.rows[0].role) === "DEV" &&
         targetStaffId !== user.id &&
@@ -82,6 +95,11 @@ export async function handleBulkAssign(
           { status: 403 }
         );
       }
+    } else if (!(await isUserAssignmentsEnabled(targetStaffId))) {
+      return NextResponse.json(
+        { ok: false, error: "Assignments and leads are turned off for this account." },
+        { status: 400 }
+      );
     }
   }
 

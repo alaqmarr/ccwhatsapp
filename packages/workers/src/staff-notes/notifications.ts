@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
-import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+  pickNextSequentialStaffAtoZ,
+} from "@cc/database";
 import {
   sendCallbackRequestAlertTemplate,
   sendStaffAlertEmail,
@@ -183,12 +187,17 @@ export async function notifyCallbackRequest(params: {
     if (currentAssignedId) {
       const uRes = await auth
         .execute({
-          sql: `SELECT id, name, email, whatsapp_number, status FROM users WHERE id = ? LIMIT 1`,
+          sql: `SELECT id, name, email, whatsapp_number, status, COALESCE(assignments_enabled, 1) AS assignments_enabled
+                FROM users WHERE id = ? LIMIT 1`,
           args: [currentAssignedId],
         })
         .catch(() => ({ rows: [] as Record<string, unknown>[] }));
       const u = uRes.rows[0];
-      if (u && String(u.status) === "ACTIVE") {
+      if (
+        u &&
+        String(u.status) === "ACTIVE" &&
+        Number(u.assignments_enabled ?? 1) !== 0
+      ) {
         targetStaff = {
           id: String(u.id),
           name: String(u.name || convRes.rows[0]?.assigned_staff_name || "Team Member"),
@@ -198,37 +207,32 @@ export async function notifyCallbackRequest(params: {
       }
     }
 
-    // 2. Otherwise pick ONLY ONE least-loaded available Sales Team responder (never blast the entire team).
+    // 2. Otherwise pick ONLY ONE Sales Team responder in A-to-Z sequence (never blast the entire team).
     if (!targetStaff) {
-      const [members, loadRes, devRes] = await Promise.all([
+      const [members, devRes] = await Promise.all([
         conv.execute(
           `SELECT staff_id, staff_name, staff_email, tier
            FROM team_members
            WHERE team_id = 'team_sales' AND is_available = 1
-           ORDER BY tier ASC, created_at ASC`
+           ORDER BY tier ASC, staff_name ASC`
         ),
-        conv.execute(
-          `SELECT assigned_staff_id, COUNT(*) as open_cnt
-           FROM conversations
-           WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL AND assigned_staff_id != 'ACRIO'
-           GROUP BY assigned_staff_id`
+        auth.execute(
+          `SELECT id FROM users WHERE role = 'DEV' OR COALESCE(assignments_enabled, 1) = 0`
         ),
-        auth.execute(`SELECT id FROM users WHERE role = 'DEV'`),
       ]);
       const devIds = new Set(devRes.rows.map((d) => String(d.id)));
-      const loadMap = new Map<string, number>();
-      for (const lr of loadRes.rows) {
-        loadMap.set(String(lr.assigned_staff_id), Number(lr.open_cnt ?? 0));
-      }
-      const candidates = members.rows
-        .filter((m) => !devIds.has(String(m.staff_id)))
-        .sort((a, b) => {
-          const tA = String(a.tier || "P0");
-          const tB = String(b.tier || "P0");
-          if (tA !== tB) return tA.localeCompare(tB);
-          return (loadMap.get(String(a.staff_id)) ?? 0) - (loadMap.get(String(b.staff_id)) ?? 0);
-        });
-      const chosen = candidates[0] || members.rows[0];
+      const nonDev = members.rows.filter((m) => !devIds.has(String(m.staff_id)));
+      const p0Pool = nonDev.filter((m) => String(m.tier || "P0") === "P0");
+      const activePool = p0Pool.length > 0 ? p0Pool : nonDev.length > 0 ? nonDev : members.rows;
+      const seqPick = await pickNextSequentialStaffAtoZ(
+        activePool.map((m) => ({
+          id: String(m.staff_id),
+          name: String(m.staff_name || m.staff_id || ""),
+          row: m,
+        })),
+        "callback_request_sales"
+      );
+      const chosen = seqPick ? seqPick.chosen.row : activePool[0];
       if (chosen) {
         const sid = String(chosen.staff_id);
         const uRes = await auth

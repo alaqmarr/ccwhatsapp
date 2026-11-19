@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import type { AuthenticatedUser } from "@cc/auth";
-import { sendWhatsAppCloudMessage } from "@cc/connections";
+import {
+  isWhatsAppServiceWindowOpen,
+  sendWhatsAppCloudMessage,
+} from "@cc/connections";
 import { getRawLibSqlClient, upsertSyncedContact } from "@cc/database";
 import { normalizeWhatsAppNumber } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
@@ -93,7 +96,7 @@ export async function handleCreateOrSendConversation(
   }).catch(() => {});
 
   const existingConv = await conv.execute({
-    sql: `SELECT id, status, assigned_staff_id FROM conversations WHERE customer_phone = ? LIMIT 1`,
+    sql: `SELECT id, status, assigned_staff_id, window_expires_at FROM conversations WHERE customer_phone = ? LIMIT 1`,
     args: [phoneCheck.e164],
   });
 
@@ -102,6 +105,22 @@ export async function handleCreateOrSendConversation(
   const prevStaffId = existingConv.rows[0]?.assigned_staff_id
     ? String(existingConv.rows[0].assigned_staff_id)
     : null;
+  const existingWindowExpiresAt = existingConv.rows[0]?.window_expires_at ?? null;
+  if (
+    direction === "OUTBOUND" &&
+    !isTemplate &&
+    (isNew || !isWhatsAppServiceWindowOpen(existingWindowExpiresAt))
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        windowClosed: true,
+        error:
+          "24-hour customer service window is closed or this is a new chat. Choose an approved WhatsApp template instead.",
+      },
+      { status: 400 }
+    );
+  }
   const convId = isNew
     ? `conv_${crypto.randomUUID().slice(0, 8)}`
     : String(existingConv.rows[0].id);

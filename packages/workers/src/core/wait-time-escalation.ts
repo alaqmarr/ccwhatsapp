@@ -1,4 +1,8 @@
-import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  ensureDatabasesBootstrapped,
+  getRawLibSqlClient,
+  pickNextSequentialStaffAtoZ,
+} from "@cc/database";
 import { sendStaffAssignmentEmailNotification } from "@cc/connections";
 import { socketHub } from "@cc/sockets";
 import { logConversationAssignment } from "./assignment-tracking";
@@ -18,7 +22,7 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
 
   // Only escalate unattended initial leads where NO assigned human staff reply has been sent yet in the active ticket.
   // Once a staff member initiates or replies to the client, the chat stays with them forever unless manually reassigned/taken over.
-  const [waitingRes, teamsRes, membersRes, loadRes, devUsersRes] = await Promise.all([
+  const [waitingRes, teamsRes, membersRes, devUsersRes] = await Promise.all([
     conv.execute(
       `SELECT c.id, c.customer_phone, c.customer_name, c.smart_category,
               c.assigned_staff_id, c.assigned_staff_name, c.assigned_team_id, c.assigned_team_name,
@@ -41,13 +45,9 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
     ),
     conv.execute(`SELECT id, name, p0_wait_minutes, p1_wait_minutes FROM teams`),
     conv.execute(`SELECT team_id, staff_id, staff_name, tier FROM team_members WHERE is_available = 1`),
-    conv.execute(
-      `SELECT assigned_staff_id, COUNT(*) as open_cnt
-       FROM conversations
-       WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL AND assigned_staff_id != 'ACRIO'
-       GROUP BY assigned_staff_id`
+    auth.execute(
+      `SELECT id FROM users WHERE role = 'DEV' OR COALESCE(assignments_enabled, 1) = 0`
     ),
-    auth.execute(`SELECT id FROM users WHERE role = 'DEV'`),
   ]);
 
   if (waitingRes.rows.length === 0) return 0;
@@ -61,11 +61,6 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
   const defaultTeam =
     teamMap.get("team_sales") ||
     (teamsRes.rows[0] as Record<string, unknown> | undefined);
-
-  const loadMap = new Map<string, number>();
-  for (const r of loadRes.rows) {
-    loadMap.set(String(r.assigned_staff_id), Number(r.open_cnt ?? 0));
-  }
 
   let escalatedCount = 0;
 
@@ -111,13 +106,15 @@ export async function checkAndEscalateWaitingChats(): Promise<number> {
               !devUserIds.has(String(m.staff_id))
           );
 
-    fallbackMembers.sort((a, b) => {
-      const loadA = loadMap.get(String(a.staff_id)) ?? 0;
-      const loadB = loadMap.get(String(b.staff_id)) ?? 0;
-      return loadA - loadB;
-    });
-
-    const nextResponder = fallbackMembers[0];
+    const seqPick = await pickNextSequentialStaffAtoZ(
+      fallbackMembers.map((m) => ({
+        id: String(m.staff_id),
+        name: String(m.staff_name || m.staff_id || ""),
+        row: m,
+      })),
+      `wait_escalation_${teamId || "default"}_${targetTier}`
+    );
+    const nextResponder = seqPick ? seqPick.chosen.row : fallbackMembers[0];
     const nextStaffId = nextResponder
       ? String(nextResponder.staff_id)
       : row.assigned_staff_id

@@ -8,7 +8,7 @@ import { suffix10, type DeskStaff, type WindowState } from "./types";
 export async function loadDeskStaff(): Promise<DeskStaff[]> {
   const auth = getRawLibSqlClient("core_auth");
   const res = await auth.execute(
-    `SELECT id, name, email, role, department, whatsapp_number
+    `SELECT id, name, email, role, department, whatsapp_number, COALESCE(assignments_enabled, 1) AS assignments_enabled
      FROM users WHERE status = 'ACTIVE' AND role != 'CLIENT' ORDER BY name ASC`
   );
   return res.rows.map((r) => {
@@ -21,6 +21,7 @@ export async function loadDeskStaff(): Promise<DeskStaff[]> {
       department: String(r.department || "Sales & Support"),
       phone,
       suffix: suffix10(phone),
+      assignmentsEnabled: Number(r.assignments_enabled ?? 1) !== 0,
     };
   });
 }

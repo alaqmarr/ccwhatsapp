@@ -11,8 +11,10 @@ import type {
   NormalizedMessageMedia,
   StagedComposerAttachment,
 } from "@/components/MediaAttachmentTools";
+import type { TemplateSendPayload } from "@/components/TemplateSendDialog";
 import type { InboxMobilePane } from "@/lib/inbox-store";
 import type {
+  ApprovedTemplateOption,
   ChatMessage,
   ConversationDetailBundle,
   QuotedMessageRef,
@@ -23,6 +25,8 @@ import { MessageTimeline } from "./MessageTimeline";
 import { InboxComposer, type CombinedQuickReplyItem } from "./InboxComposer";
 import { InboxComposerPopoversSlot } from "./InboxComposerPopoversSlot";
 import type { VerifiedLocationInfo } from "./ComposerPopovers";
+import { MyLeadsChatWindow } from "./MyLeadsChatWindow";
+import type { MyLeadItem } from "@/app/api/leads/mine/route";
 
 export function InboxConversationPane({
   mobilePane,
@@ -34,6 +38,9 @@ export function InboxConversationPane({
   fetchAndCacheDetail,
   messages,
   nowMs,
+  windowOpen,
+  templates,
+  sendTemplateMessage,
   isAcrioHandling,
   hasUnreadOutboundByCustomer,
   summarizingChat,
@@ -111,7 +118,37 @@ export function InboxConversationPane({
   setShowQuickRepliesModal,
   moveDraftToNote,
   handleComposerSubmit,
+  isMyLeadsSelected,
+  myLeads,
+  myLeadsLoading,
+  myLeadsError,
+  isAdminOrSuperadmin,
+  myLeadsScopeAll,
+  currentUserId,
+  onToggleMyLeadsScopeAll,
+  onRefreshMyLeads,
+  onOpenLeadChat,
+  onUpdateLeadStatus,
+  onForwardLead,
 }: {
+  isMyLeadsSelected: boolean;
+  myLeads: MyLeadItem[];
+  myLeadsLoading: boolean;
+  myLeadsError: string;
+  isAdminOrSuperadmin: boolean;
+  myLeadsScopeAll: boolean;
+  currentUserId: string;
+  onToggleMyLeadsScopeAll: (next: boolean) => void;
+  onRefreshMyLeads: () => void;
+  onOpenLeadChat: (conversationId: string) => void;
+  onUpdateLeadStatus: (
+    callQueueId: string,
+    status: "IN_PROGRESS" | "RESOLVED"
+  ) => Promise<void>;
+  onForwardLead: (
+    lead: MyLeadItem,
+    targetStaffId: string
+  ) => Promise<void>;
   mobilePane: InboxMobilePane;
   selectedId: string | null;
   detail: ConversationDetailBundle | null;
@@ -121,6 +158,11 @@ export function InboxConversationPane({
   fetchAndCacheDetail: (convId: string, updateProfileInputs?: boolean) => Promise<void>;
   messages: ChatMessage[];
   nowMs: number;
+  windowOpen: boolean;
+  templates: ApprovedTemplateOption[];
+  sendTemplateMessage: (
+    payload: TemplateSendPayload
+  ) => Promise<{ ok: boolean; error?: string }>;
   isAcrioHandling: boolean;
   hasUnreadOutboundByCustomer: boolean;
   summarizingChat: boolean;
@@ -213,6 +255,26 @@ export function InboxConversationPane({
   handleComposerSubmit: (e: React.FormEvent) => Promise<void>;
 }) {
   const activeConv = detail?.conversation || null;
+
+  if (isMyLeadsSelected) {
+    return (
+      <MyLeadsChatWindow
+        leads={myLeads}
+        loading={myLeadsLoading}
+        error={myLeadsError}
+        isAdminOrSuperadmin={isAdminOrSuperadmin}
+        scopeAll={myLeadsScopeAll}
+        staffList={staffList}
+        currentUserId={currentUserId}
+        onToggleScopeAll={onToggleMyLeadsScopeAll}
+        onRefresh={onRefreshMyLeads}
+        onOpenChat={onOpenLeadChat}
+        onOpenNewChatWithPhone={handleOpenNewChatWithPhone}
+        onUpdateLeadStatus={onUpdateLeadStatus}
+        onForwardLead={onForwardLead}
+      />
+    );
+  }
 
   return (
     <div
@@ -313,11 +375,36 @@ export function InboxConversationPane({
               void handleUploadCompanyDocForNote(noteId, md, file);
             }}
             onUseSuggestedReply={(reply) => {
+              if (!windowOpen) {
+                setComposerMode("TEMPLATE");
+                setTemplateDialogOpen(true);
+                showToast(
+                  "24-hour window is closed. Choose a template or save an internal note."
+                );
+                return;
+              }
               setComposerMode("REPLY");
               setReplyText(reply);
               composerInputRef.current?.focus();
             }}
             onReopen={() => void handleReopen()}
+            templates={templates}
+            customerContext={{
+              name:
+                detail.customer?.name?.trim() ||
+                activeConv.customerName ||
+                activeConv.customerPhone ||
+                "",
+              phone: activeConv.customerPhone || "",
+              companyName: detail.customer?.companyName || null,
+              city: detail.customer?.city || null,
+              latestOrderNumber: detail.orders?.[0]?.orderNumber || null,
+            }}
+            onSendReadyTemplate={sendTemplateMessage}
+            onOpenTemplateDialog={() => {
+              setComposerMode("TEMPLATE");
+              setTemplateDialogOpen(true);
+            }}
             scrollTargetRef={timelineScrollRef}
           />
 
@@ -369,6 +456,7 @@ export function InboxConversationPane({
             isAcrioHandling={isAcrioHandling}
             composerMode={composerMode}
             setComposerMode={setComposerMode}
+            windowOpen={windowOpen}
             replyText={replyText}
             setReplyText={setReplyText}
             replyingTo={replyingTo}

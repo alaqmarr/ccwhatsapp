@@ -60,7 +60,7 @@ export async function handleOwnerDeskMessage(p: {
       Date.now() - new Date(String(lastOut.created_at)).getTime() < 90 * 1000;
     if (!justAcknowledged) {
       await p.reply(
-        "Got it, sir. I am keeping your voice notes, photos and text together for this client. Send the rest, then say *please assign to <name>* or just *please assign*."
+        "Got it, sir. I am keeping your voice notes, photos and text together for this client. Send the rest, then just reply *assign* (or *assign to <name>*)."
       );
     }
     return true;
@@ -74,7 +74,7 @@ export async function handleOwnerDeskMessage(p: {
     !/\?\s*$/.test(text) && (/(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}/.test(text) || text.length >= 120);
   if (looksLikeEnquiry) {
     await p.reply(
-      "Got it, sir. Say *please assign to <name>* or just *please assign* and I will send it to the right person."
+      "Got it, sir. Just reply *assign* (or *assign to <name>*) and I will send it in A-Z sequence."
     );
     return true;
   }

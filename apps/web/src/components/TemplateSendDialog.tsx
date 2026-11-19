@@ -3,14 +3,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowLeft, Check, CheckCircle2, FileText, Loader2, Search, Send, Sparkles, X } from "lucide-react";
 import type { ApprovedTemplateOption } from "@/lib/inbox-server-data";
+import {
+  fillTemplateText,
+  guessTemplateVariableValue,
+  varIndices,
+  type TemplateCustomerContext,
+} from "@/lib/template-variables";
 
-export interface TemplateCustomerContext {
-  name: string;
-  phone: string;
-  companyName: string | null;
-  city: string | null;
-  latestOrderNumber: string | null;
-}
+export type { TemplateCustomerContext };
 
 export interface TemplateSendPayload {
   template: ApprovedTemplateOption;
@@ -27,41 +27,7 @@ const COST: Record<string, string> = {
   AUTHENTICATION: "about ₹0.30",
 };
 
-function varIndices(text: string | null | undefined): number[] {
-  if (!text) return [];
-  const found = Array.from(text.matchAll(/\{\{(\d+)\}\}/g)).map((m) => Number(m[1]));
-  return Array.from(new Set(found)).sort((a, b) => a - b);
-}
-
-function fillText(text: string, values: Record<number, string>): string {
-  return text.replace(/\{\{(\d+)\}\}/g, (_m, n) => {
-    const v = (values[Number(n)] || "").trim();
-    return v || `{{${n}}}`;
-  });
-}
-
-const looksLikePhone = (s: string) => /^\+?\d[\d\s-]{6,}$/.test(s.trim());
-
-/** Works out a first guess for each variable from what we know about the customer. */
-function guessValue(
-  tpl: ApprovedTemplateOption,
-  index: number,
-  ctx: TemplateCustomerContext
-): { value: string; source: string } {
-  const spec = tpl.variablesSchema.find((v) => v.index === index);
-  const name = ctx.name.trim();
-  const nameKnown = Boolean(name) && !looksLikePhone(name);
-  const first = nameKnown ? name.split(/[\s(]/)[0] : "";
-  const src = spec?.sourceField || (index === 1 ? "customer.firstName" : "custom");
-  if (src === "customer.firstName") return first ? { value: first, source: "customer's first name" } : { value: "", source: "" };
-  if (src === "customer.fullName") return nameKnown ? { value: name, source: "customer's name" } : { value: "", source: "" };
-  if (src === "customer.companyName")
-    return ctx.companyName ? { value: ctx.companyName, source: "customer's company on file" } : { value: "", source: "" };
-  if (src === "customer.city") return ctx.city ? { value: ctx.city, source: "customer's city on file" } : { value: "", source: "" };
-  if (src === "order.latestNumber")
-    return ctx.latestOrderNumber ? { value: ctx.latestOrderNumber, source: "customer's latest order" } : { value: "", source: "" };
-  return { value: "", source: "" };
-}
+const fillText = fillTemplateText;
 
 function validateValue(v: string): string | null {
   const t = v.trim();
@@ -132,12 +98,12 @@ export function TemplateSendDialog({
     const h: Record<number, string> = {};
     const src: Record<string, string> = {};
     for (const i of varIndices(t.bodyText)) {
-      const g = guessValue(t, i, customer);
+      const g = guessTemplateVariableValue(t, "BODY", i, customer);
       b[i] = g.value;
       if (g.value) src[`b${i}`] = g.source;
     }
     for (const i of varIndices(t.headerText)) {
-      const g = i === 1 ? guessValue(t, 1, customer) : { value: "", source: "" };
+      const g = guessTemplateVariableValue(t, "HEADER", i, customer);
       h[i] = g.value;
       if (g.value) src[`h${i}`] = g.source;
     }

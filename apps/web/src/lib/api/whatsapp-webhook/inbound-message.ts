@@ -158,8 +158,10 @@ export async function handleInboundMessage(
   const conv = getRawLibSqlClient("conversations");
   const tx = await conv.transaction("write");
   let convId = "";
+  let inboundMsgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
   let isNew = false;
   let prevStatus = "";
+  let prevStaffId: string | null = null;
   let resetToAcrio = false;
   let priorOutboundMarkedRead = 0;
 
@@ -186,7 +188,7 @@ export async function handleInboundMessage(
 
     isNew = existingConv.rows.length === 0;
     prevStatus = existingConv.rows[0] ? String(existingConv.rows[0].status) : "";
-    const prevStaffId = existingConv.rows[0]?.assigned_staff_id
+    prevStaffId = existingConv.rows[0]?.assigned_staff_id
       ? String(existingConv.rows[0].assigned_staff_id)
       : null;
     convId = isNew
@@ -263,7 +265,7 @@ export async function handleInboundMessage(
         billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
       ) VALUES (?, ?, 'INBOUND', 'CUSTOMER', ?, ?, 'FREE_CHAT', ?, ?, ?, 'DELIVERED', ?)`,
       args: [
-        `msg_${crypto.randomUUID().slice(0, 8)}`,
+        inboundMsgId,
         convId,
         contactName,
         parsed.messageType,
@@ -312,7 +314,20 @@ export async function handleInboundMessage(
     });
   }
 
-  socketHub.emit("message:new", { conversationId: convId, customerName: contactName });
+  socketHub.emit("message:new", {
+    conversationId: convId,
+    messageId: inboundMsgId,
+    direction: "INBOUND",
+    customerName: contactName,
+    customerPhone: e164,
+    senderName: contactName,
+    messageType: parsed.messageType,
+    text: String(parsed.textBody || "").slice(0, 220),
+    assignedStaffId:
+      !resetToAcrio && prevStaffId && prevStaffId !== "ACRIO"
+        ? prevStaffId
+        : undefined,
+  });
 
   void processInboundAutomations({
     conversationId: convId,

@@ -108,6 +108,36 @@ export function ApprovalsClient({
     }
   }
 
+  async function handleToggleAssignments(acc: StaffAccountItem) {
+    const nextEnabled = acc.assignmentsEnabled === false;
+    setBusyId(acc.id);
+    setBanner("");
+    setErrorMsg("");
+    try {
+      const res = await fetch("/api/staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "toggle_assignments",
+          targetUserId: acc.id,
+          assignmentsEnabled: nextEnabled,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setBanner(
+          data.message ||
+            `${nextEnabled ? "Turned on" : "Turned off"} assignments and leads for ${acc.name}.`
+        );
+        await loadAccounts();
+      } else {
+        setErrorMsg(data.error || "Could not update assignment setting.");
+      }
+    } finally {
+      setBusyId("");
+    }
+  }
+
   async function handleDeleteMember(acc: StaffAccountItem) {
     const confirmed = window.confirm(
       `Permanently delete "${acc.name}" (${acc.email}) from the workspace? Their sessions and team memberships will be removed.`
@@ -321,6 +351,7 @@ export function ApprovalsClient({
         busyId={busyId}
         onRetry={() => void loadAccounts()}
         onDecision={(id, decision) => void handleDecision(id, decision)}
+        onToggleAssignments={(acc) => void handleToggleAssignments(acc)}
         onDeleteMember={(acc) => void handleDeleteMember(acc)}
       />
     </div>

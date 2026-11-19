@@ -42,24 +42,32 @@ export async function handleCreateCallQueueItem(
       : "AUTO_PERFORMANCE"
   ) as CallQueueAssignmentMode;
 
-  const created = await createCallDispatchItem({
-    customerPhone: rawPhone,
-    customerName: String(body.customerName || "").trim(),
-    source: String(body.source || "Direct Call").trim(),
-    productTopic,
-    notes,
-    recordingUrl,
-    recordingFileName: String(body.recordingFileName || "").trim(),
-    recordingMimeType: String(body.recordingMimeType || "").trim(),
-    attachmentUrl: String(body.attachmentUrl || "").trim(),
-    attachmentName: String(body.attachmentName || "").trim(),
-    assignmentMode,
-    manualStaffId: body.manualStaffId ? String(body.manualStaffId) : undefined,
-    priority:
-      body.priority === "URGENT" || body.priority === "HIGH" ? body.priority : "NORMAL",
-    submittedById: user.id,
-    submittedByName: user.name,
-  });
+  let created;
+  try {
+    created = await createCallDispatchItem({
+      customerPhone: rawPhone,
+      customerName: String(body.customerName || "").trim(),
+      source: String(body.source || "Direct Call").trim(),
+      productTopic,
+      notes,
+      recordingUrl,
+      recordingFileName: String(body.recordingFileName || "").trim(),
+      recordingMimeType: String(body.recordingMimeType || "").trim(),
+      attachmentUrl: String(body.attachmentUrl || "").trim(),
+      attachmentName: String(body.attachmentName || "").trim(),
+      assignmentMode,
+      manualStaffId: body.manualStaffId ? String(body.manualStaffId) : undefined,
+      priority:
+        body.priority === "URGENT" || body.priority === "HIGH" ? body.priority : "NORMAL",
+      submittedById: user.id,
+      submittedByName: user.name,
+    });
+  } catch (err: any) {
+    return NextResponse.json(
+      { ok: false, error: err?.message || "Could not create call queue item." },
+      { status: 400 }
+    );
+  }
 
   if (created.customerPhone && normalizeWhatsAppPhone(created.customerPhone)) {
     await upsertSyncedContact({
@@ -312,6 +320,15 @@ export async function handleCallQueueMiscAction(
     if (!target) {
       return NextResponse.json(
         { ok: false, error: "Select a valid teammate." },
+        { status: 400 }
+      );
+    }
+    if (!target.assignmentsEnabled) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Assignments and leads are turned off for ${target.name} in Team Approvals.`,
+        },
         { status: 400 }
       );
     }

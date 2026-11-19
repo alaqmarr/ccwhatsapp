@@ -104,12 +104,13 @@ export interface ActiveStaffRecord {
   email: string;
   role: string;
   department: string;
+  assignmentsEnabled: boolean;
 }
 
 export async function listActiveNonClientStaff(): Promise<ActiveStaffRecord[]> {
   const auth = getRawLibSqlClient("core_auth");
   const res = await auth.execute(
-    `SELECT id, name, email, role, department
+    `SELECT id, name, email, role, department, COALESCE(assignments_enabled, 1) AS assignments_enabled
      FROM users
      WHERE status = 'ACTIVE' AND role != 'CLIENT'
      ORDER BY name ASC`
@@ -120,7 +121,32 @@ export async function listActiveNonClientStaff(): Promise<ActiveStaffRecord[]> {
     email: String(r.email || "").trim(),
     role: String(r.role || "STAFF"),
     department: String(r.department || "Sales & Support"),
+    assignmentsEnabled: Number(r.assignments_enabled ?? 1) !== 0,
   }));
+}
+
+export async function listAssignableNonClientStaff(): Promise<ActiveStaffRecord[]> {
+  const all = await listActiveNonClientStaff();
+  return all.filter((s) => s.assignmentsEnabled);
+}
+
+export async function isUserAssignmentsEnabled(staffId: string): Promise<boolean> {
+  if (!staffId || staffId === "ACRIO") return true;
+  const auth = getRawLibSqlClient("core_auth");
+  const res = await auth
+    .execute({
+      sql: `SELECT status, role, COALESCE(assignments_enabled, 1) AS assignments_enabled
+            FROM users WHERE id = ? LIMIT 1`,
+      args: [staffId],
+    })
+    .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+  const row = res.rows[0];
+  if (!row) return false;
+  return (
+    String(row.status) === "ACTIVE" &&
+    String(row.role) !== "CLIENT" &&
+    Number(row.assignments_enabled ?? 1) !== 0
+  );
 }
 
 export function resolveStaffMemberByQuery(
@@ -229,7 +255,9 @@ export async function resolveRequestedOrPreferredStaffForInbound(params: {
   matchType: "REQUESTED_BY_CUSTOMER" | "PREFERRED_STAFF" | "PAST_HANDLER";
   reason: string;
 } | null> {
-  const staffList = await listActiveNonClientStaff();
+  const staffList = (await listActiveNonClientStaff()).filter(
+    (s) => s.assignmentsEnabled
+  );
   if (staffList.length === 0) return null;
   const activeById = new Map(staffList.map((s) => [s.id, s]));
 

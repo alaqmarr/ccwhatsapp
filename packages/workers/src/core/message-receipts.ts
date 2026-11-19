@@ -1,4 +1,10 @@
+import crypto from "node:crypto";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
+import {
+  isWhatsAppServiceWindowOpen,
+  prepareInboundMediaForForward,
+  sendWhatsAppCloudMessage,
+} from "@cc/connections";
 import { socketHub } from "@cc/sockets";
 
 // Monotonic WhatsApp receipt progression (SENDING -> SENT -> DELIVERED -> READ)
@@ -54,14 +60,14 @@ export async function applyWhatsAppMessageReceipt(params: {
     const existingRes = await conv.execute(
       waId
         ? {
-            sql: `SELECT id, conversation_id, delivery_status, wa_message_id, metadata_json
+            sql: `SELECT id, conversation_id, direction, message_type, sender_name, delivery_status, wa_message_id, metadata_json
                   FROM messages
                   WHERE wa_message_id = ?
                   LIMIT 1`,
             args: [waId],
           }
         : {
-            sql: `SELECT id, conversation_id, delivery_status, wa_message_id, metadata_json
+            sql: `SELECT id, conversation_id, direction, message_type, sender_name, delivery_status, wa_message_id, metadata_json
                   FROM messages
                   WHERE id = ?
                   LIMIT 1`,
@@ -92,6 +98,19 @@ export async function applyWhatsAppMessageReceipt(params: {
           meta.failedAt = params.timestampIso || new Date().toISOString();
         }
 
+        const shouldRetryAudioAsDocument =
+          nextStatus === "FAILED" &&
+          String(row.direction || "").toUpperCase() === "OUTBOUND" &&
+          String(row.message_type || "").toUpperCase() === "AUDIO" &&
+          !meta.audioFallbackRetried &&
+          ![131047, 131048, 131049, 131026, 131031, 130429, 368].includes(
+            Number(params.errorCode || 0)
+          );
+
+        if (shouldRetryAudioAsDocument) {
+          meta.audioFallbackRetried = true;
+        }
+
         await conv.execute({
           sql: `UPDATE messages SET delivery_status = ?, metadata_json = ? WHERE id = ?`,
           args: [nextStatus, JSON.stringify(meta), resolvedMsgId],
@@ -105,6 +124,107 @@ export async function applyWhatsAppMessageReceipt(params: {
           })
           .catch(() => {});
         updated = true;
+
+        // If Meta asynchronously fails an outbound AUDIO note (e.g. unsupported container/codec), retry once as DOCUMENT inside open 24h window.
+        if (shouldRetryAudioAsDocument && meta.media && typeof meta.media === "object") {
+          const mediaObj = meta.media as Record<string, unknown>;
+          const storedWaMediaId = String(mediaObj.waMediaId || "").trim();
+          const storedInboundId = String(
+            mediaObj.mediaId || mediaObj.media_id || ""
+          ).trim();
+          const convWinRes = await conv
+            .execute({
+              sql: `SELECT customer_phone, window_expires_at FROM conversations WHERE id = ? LIMIT 1`,
+              args: [conversationId],
+            })
+            .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+          const convRow = convWinRes.rows[0];
+          if (
+            convRow?.customer_phone &&
+            isWhatsAppServiceWindowOpen(convRow.window_expires_at)
+          ) {
+            let fallbackWaMediaId =
+              storedWaMediaId && !storedWaMediaId.startsWith("sim_")
+                ? storedWaMediaId
+                : "";
+            let fallbackMime = String(
+              mediaObj.mimeType || mediaObj.mime_type || "audio/ogg"
+            ).trim();
+            let fallbackName = String(mediaObj.filename || "").trim();
+
+            if (!fallbackWaMediaId && storedInboundId) {
+              const prep = await prepareInboundMediaForForward({
+                mediaId: storedInboundId,
+                mimeType: fallbackMime,
+                fileName: fallbackName || undefined,
+                kind: "AUDIO",
+              }).catch(() => ({ ok: false as const }));
+              if (prep.ok && "waMediaId" in prep && prep.waMediaId) {
+                fallbackWaMediaId = prep.waMediaId;
+                fallbackMime = prep.mimeType || fallbackMime;
+                fallbackName = prep.fileName || fallbackName;
+              }
+            }
+
+            if (fallbackWaMediaId) {
+              const ext = fallbackMime.split("/")[1]?.split(";")[0] || "ogg";
+              const docFileName = fallbackName || `voice-note.${ext}`;
+              const retrySend = await sendWhatsAppCloudMessage({
+                toPhone: String(convRow.customer_phone),
+                bodyText: "Voice note attachment",
+                media: {
+                  type: "DOCUMENT",
+                  waMediaId: fallbackWaMediaId,
+                  fileName: docFileName,
+                  mimeType: fallbackMime,
+                },
+                simulateAsyncDelivery: true,
+              }).catch(() => ({
+                ok: false,
+                waMessageId: "",
+                deliveryStatus: "FAILED",
+              }));
+
+              if (retrySend.ok) {
+                const retryId = `msg_auddoc_${crypto.randomUUID().slice(0, 8)}`;
+                const retryIso = new Date().toISOString();
+                await conv
+                  .execute({
+                    sql: `INSERT INTO messages (
+                      id, conversation_id, direction, sender_type, sender_name, message_type,
+                      billing_category, body, metadata_json, wa_message_id, delivery_status, created_at
+                    ) VALUES (?, ?, 'OUTBOUND', 'ACRIO', ?, 'DOCUMENT', 'FREE_CHAT', ?, ?, ?, ?, ?)`,
+                    args: [
+                      retryId,
+                      conversationId,
+                      String(row.sender_name || "ACRIO • Lead Desk"),
+                      `[Voice Note File] ${docFileName}`,
+                      JSON.stringify({
+                        media: {
+                          mediaId: storedInboundId || fallbackWaMediaId,
+                          media_id: storedInboundId || fallbackWaMediaId,
+                          waMediaId: fallbackWaMediaId,
+                          mimeType: fallbackMime,
+                          mime_type: fallbackMime,
+                          filename: docFileName,
+                          downloadUrl: `/api/media/${storedInboundId || fallbackWaMediaId}`,
+                        },
+                      }),
+                      retrySend.waMessageId || "",
+                      retrySend.deliveryStatus || "SENT",
+                      retryIso,
+                    ],
+                  })
+                  .catch(() => {});
+                socketHub.emit("message:new", {
+                  conversationId,
+                  senderName: String(row.sender_name || "ACRIO • Lead Desk"),
+                  text: `[Voice Note File] ${docFileName}`,
+                });
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -15,7 +15,8 @@ import type {
   StaffOption,
   TeamOption,
 } from "@/lib/inbox-server-data";
-import { getDraftKey, useInboxStore } from "@/lib/inbox-store";
+import type { MyLeadItem } from "@/app/api/leads/mine/route";
+import { getDraftKey, MY_LEADS_THREAD_ID, useInboxStore } from "@/lib/inbox-store";
 import { inboxKeys } from "@/lib/inbox-queries";
 import { useInboxRealtimeAndData } from "./useInboxRealtimeAndData";
 import { useInboxComposerHelpers } from "./useInboxComposerHelpers";
@@ -191,6 +192,16 @@ export function InboxClient({
   const isAssignedToCurrentUser = Boolean(
     activeConv && (isOwnerOfActiveChat || isCollaboratorOfActiveChat)
   );
+  const isWindowOpen = Boolean(
+    activeConv?.windowExpiresAt &&
+      new Date(String(activeConv.windowExpiresAt)).getTime() > rt.nowMs
+  );
+
+  useEffect(() => {
+    if (activeConv && !isWindowOpen && composerMode === "REPLY") {
+      setComposerMode("TEMPLATE");
+    }
+  }, [activeConv, isWindowOpen, composerMode, setComposerMode]);
   const hasUnreadOutboundByCustomer = useMemo(
     () =>
       messages.some(
@@ -201,8 +212,14 @@ export function InboxClient({
     [messages]
   );
 
-  function handleSelectConversation(convId: string) {
+  const handleSelectConversation = useCallback((convId: string) => {
     setMobilePane("CHAT");
+    if (convId === MY_LEADS_THREAD_ID) {
+      selectConversationInStore(MY_LEADS_THREAD_ID);
+      rt.selectedIdRef.current = MY_LEADS_THREAD_ID;
+      rt.refreshMyLeads();
+      return;
+    }
     if (convId === selectedId && (detail || rt.syncingThread)) return;
     selectConversationInStore(convId);
     rt.selectedIdRef.current = convId;
@@ -216,7 +233,70 @@ export function InboxClient({
       rt.lastSyncedProfileConvIdRef.current = null;
     }
     void queryClient.invalidateQueries({ queryKey: inboxKeys.detail(convId) });
+  }, [detail, queryClient, rt, selectConversationInStore, selectedId, setMobilePane, syncProfileFields]);
+
+  useEffect(() => {
+    const onOpenChat = (ev: Event) => {
+      const cid = (ev as CustomEvent<{ conversationId?: string }>).detail
+        ?.conversationId;
+      if (cid) handleSelectConversation(cid);
+    };
+    window.addEventListener("cc:open-chat", onOpenChat);
+    return () => window.removeEventListener("cc:open-chat", onOpenChat);
+  }, [handleSelectConversation]);
+
+  async function handleUpdateLeadStatus(
+    callQueueId: string,
+    status: "IN_PROGRESS" | "RESOLVED"
+  ) {
+    const res = await fetch("/api/call-queue", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: callQueueId, status }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      showToast(data?.error || "Could not update lead status.");
+      return;
+    }
+    rt.refreshMyLeads();
+    showToast(status === "RESOLVED" ? "Lead marked as done." : "Lead picked up.");
   }
+
+  async function handleForwardLead(lead: MyLeadItem, targetStaffId: string) {
+    const res = await fetch("/api/leads/forward", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        leadId: lead.id,
+        targetStaffId,
+        conversationId: lead.conversationId || "",
+        customerName: lead.customerName,
+        customerPhone: lead.customerPhone,
+        title: lead.title,
+        body: lead.body,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      showToast(data?.error || "Could not forward lead.");
+      return;
+    }
+    rt.refreshMyLeads();
+    void rt.refreshThreadsSilently();
+    showToast(data.message || `Lead forwarded to ${data.assignedStaffName}.`);
+  }
+
+  const isMyLeadsSelected = selectedId === MY_LEADS_THREAD_ID;
+  const latestMyLead =
+    rt.myLeads.length > 0 ? rt.myLeads[rt.myLeads.length - 1] : null;
+  const myLeadsPreview = latestMyLead
+    ? `${latestMyLead.customerName}: ${latestMyLead.body || latestMyLead.title}`.slice(
+        0,
+        90
+      )
+    : "";
+  const myLeadsLatestAt = latestMyLead ? latestMyLead.createdAt : null;
 
   const handleOpenNewChatWithPhone = useCallback((phone: string) => {
     setSimPhone(phone);
@@ -317,11 +397,15 @@ export function InboxClient({
         mobilePane={mobilePane}
         waitingThreadsCount={rt.waitingThreadsCount}
         acrioThreadsCount={rt.acrioThreadsCount}
+        leadAssignedCount={rt.leadAssignedThreadsCount}
         refreshingThreads={rt.refreshingThreads}
         isAdminOrSuperadmin={isAdminOrSuperadmin}
         staffList={staffList}
         teams={teams}
-        onRefreshThreads={() => void rt.refreshThreadsSilently(true)}
+        onRefreshThreads={() => {
+          rt.refreshMyLeads();
+          void rt.refreshThreadsSilently(true);
+        }}
         onOpenNewChat={() => {
           setSimPhone("");
           setSimName("");
@@ -337,6 +421,12 @@ export function InboxClient({
         nowMs={rt.nowMs}
         serverNowMs={initialData.serverNowMs}
         threadsError={rt.threadsError}
+        isMyLeadsSelected={isMyLeadsSelected}
+        myLeadsCount={rt.myLeadsCount}
+        myLeadsPendingCount={rt.myLeadsPendingCount}
+        myLeadsPreview={myLeadsPreview}
+        myLeadsLatestAt={myLeadsLatestAt}
+        onSelectMyLeads={() => handleSelectConversation(MY_LEADS_THREAD_ID)}
         onPrefetch={rt.prefetchDetail}
         onSelect={handleSelectConversation}
         onToggleBulk={(convId, ev) => {
@@ -358,6 +448,9 @@ export function InboxClient({
         fetchAndCacheDetail={rt.fetchAndCacheDetail}
         messages={messages}
         nowMs={rt.nowMs}
+        windowOpen={isWindowOpen}
+        templates={templates}
+        sendTemplateMessage={msgActions.sendTemplateMessage}
         isAcrioHandling={isAcrioHandling}
         hasUnreadOutboundByCustomer={hasUnreadOutboundByCustomer}
         summarizingChat={wfActions.summarizingChat}
@@ -453,15 +546,29 @@ export function InboxClient({
         setShowQuickRepliesModal={setShowQuickRepliesModal}
         moveDraftToNote={helpers.moveDraftToNote}
         handleComposerSubmit={msgActions.handleComposerSubmit}
+        isMyLeadsSelected={isMyLeadsSelected}
+        myLeads={rt.myLeads}
+        myLeadsLoading={rt.myLeadsLoading}
+        myLeadsError={rt.myLeadsError}
+        isAdminOrSuperadmin={isAdminOrSuperadmin}
+        myLeadsScopeAll={rt.myLeadsScopeAll}
+        currentUserId={initialData.currentUserId}
+        onToggleMyLeadsScopeAll={rt.setMyLeadsScopeAll}
+        onRefreshMyLeads={rt.refreshMyLeads}
+        onOpenLeadChat={handleSelectConversation}
+        onUpdateLeadStatus={handleUpdateLeadStatus}
+        onForwardLead={handleForwardLead}
       />
 
-      <InboxRightDrawer
+      {!isMyLeadsSelected && (
+        <InboxRightDrawer
         selectedId={selectedId}
         detail={detail}
         internalNotes={internalNotes}
         sharedMediaItems={sharedMediaItems}
         staffList={staffList}
         nowMs={rt.nowMs}
+        windowOpen={isWindowOpen}
         syncingThread={rt.syncingThread}
         detailError={rt.detailError}
         isAssignedToCurrentUser={isAssignedToCurrentUser}
@@ -488,9 +595,10 @@ export function InboxClient({
           helpers.openTrackPopoverForOrder(prefill)
         }
         onSaveQuickNote={wfActions.handleQuickNoteSave}
-        onOpenNewChatWithPhone={handleOpenNewChatWithPhone}
-        onOpenMediaPreview={(media) => setPreviewMedia(media)}
-      />
+          onOpenNewChatWithPhone={handleOpenNewChatWithPhone}
+          onOpenMediaPreview={(media) => setPreviewMedia(media)}
+        />
+      )}
 
       <InboxModalsHost
         detail={detail}

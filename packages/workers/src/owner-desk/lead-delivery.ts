@@ -48,21 +48,69 @@ const LEAD_ROW_SQL = `SELECT body, message_type, metadata_json, direction, creat
  * (within 30 minutes, with no gap longer than 10 minutes) belongs to this lead. The command message itself is included
  * when it carries a file, so "image + caption + please assign" works.
  */
+function extractLeadItemsFromForwardedRow(fw: Record<string, unknown>): LeadItem[] {
+  const at = new Date(String(fw.created_at || "")).getTime() || Date.now();
+  const out: LeadItem[] = [];
+  const rawLeadText = String(fw.lead_text || "").trim();
+  const cPhone = String(fw.customer_phone || "").trim();
+  const cName = String(fw.customer_name || "").trim();
+  const combinedParts = [
+    cName ? `Customer: ${cName}` : "",
+    cPhone && !rawLeadText.includes(cPhone) ? `Phone: ${cPhone}` : "",
+    rawLeadText && rawLeadText !== "(attachments only)" ? rawLeadText : "",
+  ].filter(Boolean);
+  if (combinedParts.length > 0) {
+    out.push({ kind: "TEXT", text: combinedParts.join("\n"), at });
+  }
+  const mediaItems = parseMediaJson(fw.media_json);
+  for (const m of mediaItems) {
+    out.push({ ...m, at });
+  }
+  return out;
+}
+
 export async function collectLeadItems(p: {
   conversationId: string;
   ownerPhone: string;
   replyToWaMessageId?: string;
+  isStaffForwarder?: boolean;
 }): Promise<LeadItem[]> {
   const conv = getRawLibSqlClient("conversations");
+  const senderSuffix = suffix10(p.ownerPhone);
 
   if (p.replyToWaMessageId) {
     const q = await conv
       .execute({ sql: `${LEAD_ROW_SQL} WHERE wa_message_id = ? LIMIT 1`, args: [p.replyToWaMessageId] })
       .catch(() => ({ rows: [] as Record<string, unknown>[] }));
     const row = q.rows[0];
-    if (row && String(row.direction) === "INBOUND") {
-      const item = rowToLeadItem(row);
-      if (item) return [item];
+    if (row) {
+      if (String(row.direction) === "INBOUND") {
+        const item = rowToLeadItem(row);
+        if (item) return [item];
+      } else {
+        // Staff member swipe-replied on an ACRIO Lead Desk outbound bubble to forward that lead to another teammate!
+        const rawBody = String(row.body || "");
+        const phoneHit = rawBody.match(/(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}/)?.[0] || "";
+        const phoneSfx = suffix10(phoneHit);
+        const fwRes = await conv
+          .execute(`SELECT * FROM lead_forwards ORDER BY created_at DESC LIMIT 60`)
+          .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+        const matchedFw = fwRes.rows.find((f) => {
+          const sameRecipient = senderSuffix && suffix10(String(f.staff_phone || "")) === senderSuffix;
+          const sameCust = phoneSfx && suffix10(String(f.customer_phone || "")) === phoneSfx;
+          if (sameCust && (!senderSuffix || sameRecipient)) return true;
+          return false;
+        }) || fwRes.rows.find((f) => senderSuffix && suffix10(String(f.staff_phone || "")) === senderSuffix);
+
+        if (matchedFw) {
+          const itemsFromFw = extractLeadItemsFromForwardedRow(
+            matchedFw as Record<string, unknown>
+          );
+          if (itemsFromFw.length > 0) return itemsFromFw;
+        }
+        const fallbackItem = rowToLeadItem(row);
+        if (fallbackItem) return [fallbackItem];
+      }
     }
   }
 
@@ -73,8 +121,20 @@ export async function collectLeadItems(p: {
     })
     .catch(() => ({ rows: [] as Record<string, unknown>[] }));
   const sinceForward = lastFwd.rows[0] ? String(lastFwd.rows[0].created_at) : "";
-  const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-  const floor = sinceForward > thirtyMinAgo ? sinceForward : thirtyMinAgo;
+  const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+  let latestReceived: Record<string, unknown> | undefined;
+  if (p.isStaffForwarder && senderSuffix.length >= 10) {
+    const fwRes = await conv
+      .execute(`SELECT * FROM lead_forwards ORDER BY created_at DESC LIMIT 40`)
+      .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+    latestReceived = fwRes.rows.find(
+      (f) =>
+        suffix10(String(f.staff_phone || "")) === senderSuffix &&
+        String(f.created_at || "") >= twelveHoursAgo
+    ) as Record<string, unknown> | undefined;
+  }
+  const sinceReceived = latestReceived ? String(latestReceived.created_at || "") : "";
+  const floor = [sinceForward, sinceReceived, twelveHoursAgo].sort().pop() || twelveHoursAgo;
 
   const recent = await conv.execute({
     sql: `${LEAD_ROW_SQL} WHERE conversation_id = ? AND direction = 'INBOUND' AND created_at > ?
@@ -91,7 +151,27 @@ export async function collectLeadItems(p: {
     kept.push(item);
     if (kept.length >= 12) break;
   }
-  return kept.reverse();
+  if (kept.length > 0) return kept.reverse();
+
+  // If a staff member forwarded a lead they received on Lead Desk without swipe-replying, recover their latest assigned lead.
+  if (senderSuffix.length >= 10) {
+    let fallbackFw = latestReceived;
+    if (!fallbackFw && !p.isStaffForwarder) {
+      const fwRes = await conv
+        .execute(`SELECT * FROM lead_forwards ORDER BY created_at DESC LIMIT 40`)
+        .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+      fallbackFw = fwRes.rows.find(
+        (f) =>
+          suffix10(String(f.staff_phone || "")) === senderSuffix &&
+          String(f.created_at || "") >= twelveHoursAgo
+      ) as Record<string, unknown> | undefined;
+    }
+    if (fallbackFw) {
+      return extractLeadItemsFromForwardedRow(fallbackFw);
+    }
+  }
+
+  return [];
 }
 
 export function describeAttachments(items: LeadItem[]): string {
@@ -151,23 +231,32 @@ async function recordDeskMessage(
   body: string,
   waMessageId: string,
   status: string,
-  attachment?: { kind: LeadItemKind; mediaId?: string; mimeType?: string; fileName?: string; caption?: string }
+  attachment?: {
+    kind: LeadItemKind;
+    mediaId?: string;
+    waMediaId?: string;
+    mimeType?: string;
+    fileName?: string;
+    caption?: string;
+  }
 ) {
   const conv = getRawLibSqlClient("conversations");
   const nowIso = new Date().toISOString();
   const type = attachment && attachment.kind !== "TEXT" ? attachment.kind : "TEXT";
+  const displayMediaId = attachment?.mediaId || attachment?.waMediaId;
   const meta =
-    attachment && attachment.kind !== "TEXT" && attachment.mediaId
+    attachment && attachment.kind !== "TEXT" && displayMediaId
       ? {
           media: {
-            mediaId: attachment.mediaId,
-            media_id: attachment.mediaId,
+            mediaId: displayMediaId,
+            media_id: displayMediaId,
+            ...(attachment.waMediaId ? { waMediaId: attachment.waMediaId } : {}),
             mimeType: attachment.mimeType || "",
             mime_type: attachment.mimeType || "",
             filename: attachment.fileName,
             caption: attachment.caption,
-            downloadUrl: `/api/media/${attachment.mediaId}`,
-            download_url: `/api/media/${attachment.mediaId}`,
+            downloadUrl: `/api/media/${displayMediaId}`,
+            download_url: `/api/media/${displayMediaId}`,
           },
         }
       : {};
@@ -236,15 +325,20 @@ async function sendLeadAttachments(
       failed.push(`${label}${prep.error ? ` (${prep.error})` : ""}`);
       continue;
     }
-    const caption = it.kind === "AUDIO" ? "" : it.text || `From ${ownerName}: ${label}`;
+    const sendAsDocFallback =
+      it.kind === "AUDIO" && prep.supportsWhatsAppAudioType === false;
+    const outboundKind: LeadItemKind = sendAsDocFallback ? "DOCUMENT" : it.kind;
+    const resolvedFileName = it.fileName || prep.fileName;
+    const caption =
+      outboundKind === "AUDIO" ? "" : it.text || `From ${ownerName}: ${label}`;
     const res = await sendWhatsAppCloudMessage({
       toPhone: staffPhone,
       bodyText: caption || label,
       media: {
-        type: it.kind,
+        type: outboundKind,
         waMediaId: prep.waMediaId,
         caption: caption || undefined,
-        fileName: it.fileName,
+        fileName: resolvedFileName,
         mimeType: prep.mimeType,
       },
       simulateAsyncDelivery: true,
@@ -259,7 +353,14 @@ async function sendLeadAttachments(
       caption || `[${KIND_LABEL[it.kind][0]}]`,
       res.waMessageId || "",
       res.deliveryStatus || "SENT",
-      { kind: it.kind, mediaId: it.mediaId, mimeType: prep.mimeType, fileName: it.fileName, caption: caption || undefined }
+      {
+        kind: outboundKind,
+        mediaId: it.mediaId,
+        waMediaId: prep.waMediaId,
+        mimeType: prep.mimeType,
+        fileName: resolvedFileName,
+        caption: caption || undefined,
+      }
     );
   }
   return { sent, failed };

@@ -264,6 +264,52 @@ export async function reviewStaffAccount(params: {
   return { ok: true, updated: updated ?? undefined };
 }
 
+export async function setStaffAssignmentsEnabled(params: {
+  actor: AuthenticatedUser;
+  targetUserId: string;
+  enabled: boolean;
+}): Promise<{ ok: boolean; updated?: AuthenticatedUser; error?: string }> {
+  if (!isSuperAdminCapable(params.actor.role)) {
+    return {
+      ok: false,
+      error: "Only SUPERADMIN or DEV accounts can change assignment settings.",
+    };
+  }
+
+  const target = await getUserById(params.targetUserId);
+  if (!target) {
+    return { ok: false, error: "Staff account not found." };
+  }
+
+  if (target.role === "DEV" && params.actor.role !== "DEV") {
+    return {
+      ok: false,
+      error: "Only a DEV account can modify assignment settings for another DEV account.",
+    };
+  }
+
+  const auth = getRawLibSqlClient("core_auth");
+  const conv = getRawLibSqlClient("conversations");
+  const flag = params.enabled ? 1 : 0;
+
+  await auth.execute({
+    sql: `UPDATE users SET assignments_enabled = ? WHERE id = ?`,
+    args: [flag, target.id],
+  });
+
+  await conv
+    .execute({
+      sql: `UPDATE team_members SET is_available = ? WHERE staff_id = ?`,
+      args: [flag, target.id],
+    })
+    .catch(() => {});
+
+  invalidatePendingApprovalsCache();
+  invalidateSetupStatusCache();
+  const updated = await getUserById(target.id);
+  return { ok: true, updated: updated ?? undefined };
+}
+
 export async function deleteStaffAccount(params: {
   actor: AuthenticatedUser;
   targetUserId: string;

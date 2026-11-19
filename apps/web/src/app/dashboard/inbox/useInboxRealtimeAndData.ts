@@ -10,7 +10,8 @@ import type {
   TeamOption,
 } from "@/lib/inbox-server-data";
 import { subscribeRealtimeEvent } from "@/lib/realtime-client";
-import { useInboxStore } from "@/lib/inbox-store";
+import { MY_LEADS_THREAD_ID, useInboxStore } from "@/lib/inbox-store";
+import type { MyLeadItem } from "@/app/api/leads/mine/route";
 import {
   appendOptimisticMessageToCache,
   attachInboxRealtimeQuerySync,
@@ -94,9 +95,46 @@ export function useInboxRealtimeAndData({
       : "Could not refresh chats list right now."
     : "";
 
+  const [myLeadsScopeAll, setMyLeadsScopeAll] = useState(false);
+
+  const myLeadsQuery = useQuery<{
+    leads: MyLeadItem[];
+    summary: { total: number; pendingCount: number };
+  }>({
+    queryKey: ["inbox", "my-leads", myLeadsScopeAll ? "all" : "mine"],
+    queryFn: async () => {
+      const url = myLeadsScopeAll
+        ? "/api/leads/mine?scope=all"
+        : "/api/leads/mine";
+      const res = await fetch(url, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "Could not load your assigned leads.");
+      }
+      return {
+        leads: (data.leads || []) as MyLeadItem[],
+        summary: {
+          total: Number(data.summary?.total || 0),
+          pendingCount: Number(data.summary?.pendingCount || 0),
+        },
+      };
+    },
+    staleTime: 10_000,
+    refetchInterval: 45_000,
+    refetchIntervalInBackground: false,
+  });
+
+  const myLeads = myLeadsQuery.data?.leads ?? [];
+  const myLeadsLoading = myLeadsQuery.isFetching;
+  const myLeadsError = myLeadsQuery.isError
+    ? myLeadsQuery.error instanceof Error
+      ? myLeadsQuery.error.message
+      : "Could not load leads right now."
+    : "";
+
   const detailQuery = useQuery<ConversationDetailBundle>({
     queryKey: inboxKeys.detail(selectedId || "__none__"),
-    enabled: Boolean(selectedId),
+    enabled: Boolean(selectedId) && selectedId !== MY_LEADS_THREAD_ID,
     staleTime: 8_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
@@ -193,6 +231,14 @@ export function useInboxRealtimeAndData({
     void loadSignals();
     const unsubCb = subscribeRealtimeEvent("callback:new", loadSignals);
     const unsubMention = subscribeRealtimeEvent("staff:mention", loadSignals);
+    const reloadMyLeads = () => {
+      void queryClient.invalidateQueries({ queryKey: ["inbox", "my-leads"] });
+    };
+    const unsubAssign = subscribeRealtimeEvent(
+      "conversation:assigned",
+      reloadMyLeads
+    );
+    const unsubCq = subscribeRealtimeEvent("call_queue:updated", reloadMyLeads);
     const onFocus = () => {
       if (document.visibilityState === "visible") {
         void loadSignals();
@@ -204,10 +250,12 @@ export function useInboxRealtimeAndData({
       cancelled = true;
       unsubCb();
       unsubMention();
+      unsubAssign();
+      unsubCq();
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -413,7 +461,13 @@ export function useInboxRealtimeAndData({
 
   const prefetchDetail = useCallback(
     (convId: string) => {
-      if (!convId || convId === selectedIdRef.current) return;
+      if (
+        !convId ||
+        convId === MY_LEADS_THREAD_ID ||
+        convId === selectedIdRef.current
+      ) {
+        return;
+      }
       void prefetchConversationDetail(queryClient, convId);
     },
     [queryClient]
@@ -482,6 +536,17 @@ export function useInboxRealtimeAndData({
     [threads]
   );
 
+  const leadAssignedThreadsCount = useMemo(
+    () =>
+      threads.filter(
+        (t) =>
+          t.status !== "RESOLVED" &&
+          Boolean(t.assignedStaffId) &&
+          t.assignedStaffId !== "ACRIO"
+      ).length,
+    [threads]
+  );
+
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
       const isMine =
@@ -496,6 +561,14 @@ export function useInboxRealtimeAndData({
         if (!isMine) return false;
       } else if (quickFilter === "ACTIVE") {
         if (t.status === "RESOLVED") return false;
+      } else if (quickFilter === "LEAD_ASSIGNED") {
+        if (
+          t.status === "RESOLVED" ||
+          !t.assignedStaffId ||
+          t.assignedStaffId === "ACRIO"
+        ) {
+          return false;
+        }
       } else if (quickFilter === "WAITING") {
         if (t.status === "RESOLVED" || !t.waitingSince) return false;
       } else if (quickFilter === "ACRIO") {
@@ -551,6 +624,16 @@ export function useInboxRealtimeAndData({
     markPendingCallbackDone,
     waitingThreadsCount,
     acrioThreadsCount,
+    leadAssignedThreadsCount,
+    myLeads,
+    myLeadsLoading,
+    myLeadsError,
+    myLeadsCount: myLeadsQuery.data?.summary.total ?? myLeads.length,
+    myLeadsPendingCount: myLeadsQuery.data?.summary.pendingCount ?? 0,
+    myLeadsScopeAll,
+    setMyLeadsScopeAll,
+    refreshMyLeads: () =>
+      void queryClient.refetchQueries({ queryKey: ["inbox", "my-leads"] }),
     filteredThreads,
     selectedIdRef,
     optimisticSeqRef,

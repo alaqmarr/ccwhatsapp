@@ -272,6 +272,19 @@ export function useInboxMessagingActions(p: UseInboxMessagingActionsParams) {
       return;
     }
 
+    const windowOpen = Boolean(
+      activeConv?.windowExpiresAt &&
+        new Date(String(activeConv.windowExpiresAt)).getTime() > Date.now()
+    );
+    if (p.composerMode === "REPLY" && !windowOpen) {
+      p.setComposerMode("TEMPLATE");
+      p.setTemplateDialogOpen(true);
+      p.showToast(
+        "24-hour window is closed. Choose an approved template or switch to Internal Note."
+      );
+      return;
+    }
+
     if (p.composerMode !== "NOTE" && hasTeamMention(p.replyText, p.staffList)) {
       const asNote = window.confirm(
         "This message has an @mention, so it looks meant for your team. Sent as a reply, the CUSTOMER would see it on WhatsApp.\n\nPress OK to switch to a private note (then press Save Note).\nPress Cancel to go back and edit it."

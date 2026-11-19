@@ -3,6 +3,7 @@ import {
   createCallDispatchItem,
   getRawLibSqlClient,
   normalizeWhatsAppPhone,
+  pickNextSequentialStaffAtoZ,
   resolveStaffMemberByQuery,
   upsertSyncedContact,
 } from "@cc/database";
@@ -24,7 +25,6 @@ import {
 } from "./lead-delivery";
 import {
   suffix10,
-  todayStartIso,
   type AssignLeadParams,
   type DeskStaff,
   type ParsedAssignCommand,
@@ -37,33 +37,20 @@ async function pickGenericStaff(
   ownerSuffix: string
 ): Promise<{ staff: DeskStaff; why: string } | null> {
   const conv = getRawLibSqlClient("conversations");
-  const [poolRes, loadRes, leadRes] = await Promise.all([
-    conv
-      .execute(
-        `SELECT DISTINCT staff_id FROM team_members
-         WHERE is_available = 1
-           AND (team_id = 'team_sales' OR team_id IN (SELECT id FROM teams WHERE LOWER(name) LIKE '%sales%'))`
-      )
-      .catch(() => ({ rows: [] as Record<string, unknown>[] })),
-    conv.execute(
-      `SELECT assigned_staff_id AS sid, COUNT(*) AS c FROM conversations
-       WHERE status != 'RESOLVED' AND assigned_staff_id IS NOT NULL AND assigned_staff_id != 'ACRIO'
-       GROUP BY assigned_staff_id`
-    ),
-    conv
-      .execute({
-        sql: `SELECT staff_id AS sid, COUNT(*) AS c FROM lead_forwards WHERE created_at >= ? GROUP BY staff_id`,
-        args: [todayStartIso()],
-      })
-      .catch(() => ({ rows: [] as Record<string, unknown>[] })),
-  ]);
+  const poolRes = await conv
+    .execute(
+      `SELECT DISTINCT staff_id FROM team_members
+       WHERE is_available = 1
+         AND (team_id = 'team_sales' OR team_id IN (SELECT id FROM teams WHERE LOWER(name) LIKE '%sales%'))`
+    )
+    .catch(() => ({ rows: [] as Record<string, unknown>[] }));
   const salesIds = new Set(poolRes.rows.map((r) => String(r.staff_id)));
-  const load = new Map<string, number>();
-  for (const r of loadRes.rows) load.set(String(r.sid), Number(r.c ?? 0));
-  const leadsToday = new Map<string, number>();
-  for (const r of leadRes.rows) leadsToday.set(String(r.sid), Number(r.c ?? 0));
 
-  const eligible = (s: DeskStaff) => s.role !== "DEV" && s.suffix !== ownerSuffix && Boolean(s.phone);
+  const eligible = (s: DeskStaff) =>
+    s.role !== "DEV" &&
+    s.assignmentsEnabled &&
+    s.suffix !== ownerSuffix &&
+    Boolean(s.phone);
   let pool = all.filter((s) => eligible(s) && salesIds.has(s.id));
   let fromSales = true;
   if (pool.length === 0) {
@@ -72,37 +59,41 @@ async function pickGenericStaff(
   }
   if (pool.length === 0) return null;
 
-  const scored = pool
-    .map((s) => ({
-      s,
-      open: windowFor(windows, s).open ? 0 : 1,
-      load: (load.get(s.id) ?? 0) + (leadsToday.get(s.id) ?? 0),
-      tie: Math.random(),
-    }))
-    .sort((a, b) => a.open - b.open || a.load - b.load || a.tie - b.tie);
-  const best = scored[0];
-  const openNow = best.open === 0;
-  const why = `${fromSales ? "from the Sales Team" : "from the active team"}, ${
-    openNow ? "chat unlocked" : "chat locked"
-  }, ${best.load} current ${best.load === 1 ? "chat or lead" : "chats and leads"}`;
-  return { staff: best.s, why };
+  // Strict A-to-Z sequential rotation irrespective of current load, wrapping around after the last member.
+  const seqPick = await pickNextSequentialStaffAtoZ(pool, "owner_lead_assign");
+  if (!seqPick) return null;
+  const openNow = windowFor(windows, seqPick.chosen).open;
+  const why = `${fromSales ? "from the Sales Team" : "from the active team"} in A-Z order (${
+    seqPick.position
+  } of ${seqPick.total}), ${openNow ? "chat unlocked" : "chat locked"}`;
+  return { staff: seqPick.chosen, why };
 }
 
 export async function assignLeadFromOwner(
   parsed: ParsedAssignCommand,
   p: AssignLeadParams
-): Promise<{ handled: boolean; reply: string }> {
+): Promise<{
+  handled: boolean;
+  reply: string;
+  assignedStaffId?: string;
+  assignedStaffName?: string;
+}> {
   await ensureLeadForwardsTable();
   const conv = getRawLibSqlClient("conversations");
   const ownerSuffix = suffix10(p.ownerPhone);
   const ownerE164 = normalizeWhatsAppPhone(p.ownerPhone) || p.ownerPhone;
+  const callerTag = p.isStaffForwarder ? p.ownerName.split(/\s+/)[0] || p.ownerName : "sir";
 
-  // 1. Gather everything the owner sent for this client: text, voice notes, photos, videos, files.
-  let items = await collectLeadItems({
-    conversationId: p.conversationId,
-    ownerPhone: p.ownerPhone,
-    replyToWaMessageId: p.replyToWaMessageId,
-  });
+  // 1. Gather everything the sender shared for this client: text, voice notes, photos, videos, files.
+  let items =
+    p.itemsOverride && p.itemsOverride.length > 0
+      ? [...p.itemsOverride]
+      : await collectLeadItems({
+          conversationId: p.conversationId,
+          ownerPhone: p.ownerPhone,
+          replyToWaMessageId: p.replyToWaMessageId,
+          isStaffForwarder: p.isStaffForwarder,
+        });
   if (items.length === 0 && parsed.leadText.trim()) {
     // Fallback for a message that is not yet in the chat log.
     const typed = parsed.leadText
@@ -123,7 +114,7 @@ export async function assignLeadFromOwner(
     return {
       handled: true,
       reply:
-        "Sir, I could not find an enquiry to assign. Please paste or forward the enquiry first (text, voice note, photo or file), then say *please assign to <name>* (or just *please assign*). You can also swipe-reply on the enquiry and type the command.",
+        `Could not find an enquiry to assign, ${callerTag}. Please paste, forward, or swipe-reply on a lead first (text, voice note, photo or file), then reply *assign* (or *assign to <name>*).`,
     };
   }
 
@@ -134,24 +125,38 @@ export async function assignLeadFromOwner(
   let chosen: DeskStaff | null = null;
   let mode: "NAMED" | "AUTO_SALES" = "NAMED";
   let whyAuto = "";
-  if (parsed.targetQuery) {
+  if (p.targetStaffIdOverride) {
+    chosen = allStaff.find((s) => s.id === p.targetStaffIdOverride) || null;
+    if (!chosen || !chosen.assignmentsEnabled) {
+      return {
+        handled: true,
+        reply: `Assignments and leads are turned off for that account right now in Team Approvals.`,
+      };
+    }
+  } else if (parsed.targetQuery) {
     const hit = resolveStaffMemberByQuery(parsed.targetQuery, allStaff);
     chosen = hit ? allStaff.find((s) => s.id === hit.id) || null : null;
+    if (chosen && !chosen.assignmentsEnabled) {
+      return {
+        handled: true,
+        reply: `Assignments and leads are turned off for *${chosen.name}* in Team Approvals right now, so nothing was assigned. Reply *assign* to route in sequence to an available teammate.`,
+      };
+    }
     if (!chosen) {
-      if (!/^(assign|allot)$/.test(parsed.verb)) {
+      if (!/^(assign|allot|reassign)$/.test(parsed.verb)) {
         // "send this to <something that is not a staff name>" is not an assignment command.
         return { handled: false, reply: "" };
       }
       const names = allStaff
-        .filter((s) => s.role !== "DEV" && s.suffix !== ownerSuffix)
+        .filter((s) => s.role !== "DEV" && s.assignmentsEnabled && s.suffix !== ownerSuffix)
         .slice(0, 12)
         .map((s) => s.name.split(/\s+/)[0])
         .join(", ");
       return {
         handled: true,
-        reply: `Sir, I could not find a staff member called *${parsed.targetQuery}*. Nothing was assigned.\n\nActive staff: ${
+        reply: `Could not find a staff member called *${parsed.targetQuery}*, ${callerTag}. Nothing was assigned.\n\nActive staff: ${
           names || "none found"
-        }.\n\nTry again with a first name, or say *please assign* and I will pick someone from the Sales Team.`,
+        }.\n\nTry again with a first name, or say *assign* and I will pick the next person in A-Z sequence.`,
       };
     }
   } else {
@@ -161,7 +166,7 @@ export async function assignLeadFromOwner(
       return {
         handled: true,
         reply:
-          "Sir, I could not find any active staff member with a WhatsApp number saved, so nothing was assigned. Please check the team list in the hub.",
+          `Could not find any active staff member with assignments turned on and a WhatsApp number saved, ${callerTag}. Please check Team Approvals in the hub.`,
       };
     }
     chosen = pick.staff;
@@ -379,9 +384,9 @@ export async function assignLeadFromOwner(
   }).catch(() => {});
   socketHub.emit("call_queue:updated", { id: callQueueId, action: "created" });
 
-  // 6. Confirmation back to the owner.
+  // 6. Confirmation back to the forwarder.
   const lines: string[] = [];
-  lines.push(`Done, sir. Lead assigned to *${chosen.name}*${chosen.department ? ` (${chosen.department})` : ""}.`);
+  lines.push(`Done, ${callerTag}. Lead assigned to *${chosen.name}*${chosen.department ? ` (${chosen.department})` : ""}.`);
   if (mode === "AUTO_SALES") lines.push(`I picked ${staffFirst} ${whyAuto}.`);
   lines.push("");
   const packed = [leadText ? "the written enquiry" : "", attachmentSummary].filter(Boolean).join(" + ");
@@ -398,12 +403,17 @@ export async function assignLeadFromOwner(
     );
   } else if (deliveryStatus === "NO_WHATSAPP") {
     lines.push(
-      `${staffFirst} has no WhatsApp number saved, so I could not message them. The lead is saved in the Call Queue: ${p.hubBase}/dashboard/call-queue`
+      `${staffFirst} has no WhatsApp number saved, so I could not message them. The lead is saved in the Call Queue & MY LEADS: ${p.hubBase}/dashboard/call-queue`
     );
   } else {
-    lines.push(`I could not reach ${staffFirst} on WhatsApp. The lead is saved in the Call Queue: ${p.hubBase}/dashboard/call-queue`);
+    lines.push(`I could not reach ${staffFirst} on WhatsApp. The lead is saved in the Call Queue & MY LEADS: ${p.hubBase}/dashboard/call-queue`);
   }
   if (hints.phone) lines.push(`Customer number found in the text: ${hints.phone}.`);
   if (reassignedFrom) lines.push(`This customer's open chat was moved from ${reassignedFrom} to ${staffFirst}.`);
-  return { handled: true, reply: lines.join("\n") };
+  return {
+    handled: true,
+    reply: lines.join("\n"),
+    assignedStaffId: chosen.id,
+    assignedStaffName: chosen.name,
+  };
 }
