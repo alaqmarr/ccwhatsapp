@@ -6,7 +6,14 @@ export const LOCKED_CLAUDE_MODEL = "claude-haiku-5-5" as const;
 
 export * from "./image-intelligence";
 export {
+  type AnthropicCacheControl,
+  type AnthropicSystemTextBlock,
+  type ClaudeMessageInput,
+  type ClaudeMessagesCallParams,
   type DetailedClaudeCallResult,
+  buildOrderedClaudeSystemBlocks,
+  buildCacheAwareClaudeMessages,
+  buildClaudeMessagesRequestBody,
   parseClaudeJson,
   callClaudeHaikuMessagesDetailed,
   callClaudeHaikuMessages,

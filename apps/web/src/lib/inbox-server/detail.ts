@@ -2,6 +2,7 @@ import {
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
   getVerifiedLiveBrandAndTeamInfo,
+  listCustomerSharedMediaForCustomer,
   listOrderTrackings,
   parseConversationCollaborators,
 } from "@cc/database";
@@ -40,6 +41,7 @@ export async function getConversationDetailServer(
     customLinks,
     orderTrackings,
     liveBrandInfo,
+    sharedMediaVault,
   ] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM (
@@ -66,6 +68,7 @@ export async function getConversationDetailServer(
     listCustomAdminLinks(),
     listOrderTrackings({ customerPhone }).catch(() => []),
     getVerifiedLiveBrandAndTeamInfo().catch(() => null),
+    listCustomerSharedMediaForCustomer({ customerPhone, conversationId }).catch(() => []),
     markRead && Number(cRow.unread_count ?? 0) > 0
       ? conv.execute({
           sql: `UPDATE conversations SET unread_count = 0 WHERE id = ?`,
@@ -229,6 +232,7 @@ export async function getConversationDetailServer(
     websiteEnquiries,
     acrio,
     customLinks,
+    sharedMediaVault,
     drawerHydrated: true,
     verifiedLocation: {
       placeName:

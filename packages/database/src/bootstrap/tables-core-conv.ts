@@ -252,6 +252,31 @@ export async function createConversationsAndContactsTables(): Promise<void> {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS customer_shared_media (
+        id TEXT PRIMARY KEY,
+        customer_phone TEXT NOT NULL,
+        conversation_id TEXT,
+        message_id TEXT,
+        wa_media_id TEXT,
+        local_media_id TEXT,
+        item_kind TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        caption TEXT NOT NULL DEFAULT '',
+        mime_type TEXT NOT NULL DEFAULT '',
+        file_size_bytes INTEGER,
+        latitude REAL,
+        longitude REAL,
+        location_address TEXT NOT NULL DEFAULT '',
+        maps_url TEXT NOT NULL DEFAULT '',
+        source_type TEXT NOT NULL DEFAULT 'CLIENT_DIRECT',
+        source_label TEXT NOT NULL DEFAULT '',
+        received_via_phone TEXT NOT NULL DEFAULT '',
+        received_via_name TEXT NOT NULL DEFAULT '',
+        assigned_staff_id TEXT,
+        assigned_staff_name TEXT,
+        lead_context TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      )`,
     ],
     "write"
   );

@@ -10,7 +10,7 @@ import {
   matchesIfNoneMatch,
 } from "./etag";
 
-const MAX_DISK_CACHE_BYTES = 15 * 1024 * 1024;
+const MAX_DISK_CACHE_BYTES = 64 * 1024 * 1024;
 const PRIVATE_CACHE_CONTROL = "private, max-age=86400, stale-while-revalidate=3600";
 
 export function resolveMediaUploadPaths(mediaId: string): {
@@ -103,6 +103,7 @@ async function persistMediaToDisk(params: {
             storedFileName,
             mimeType: contentType,
             sizeBytes: buf.length,
+            protectedFromPurge: true,
             createdAt: new Date().toISOString(),
           },
           null,

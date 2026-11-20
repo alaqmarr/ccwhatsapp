@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { resolveMonorepoRoot } from "@cc/database";
 import { loadMetaWhatsAppSetupConfig } from "./config";
 import type { WhatsAppMediaAttachmentType } from "./types";
 
@@ -220,9 +223,230 @@ export async function uploadMediaToMetaCloud(params: {
   }
 }
 
+const VAULT_MAX_PERSIST_BYTES = 64 * 1024 * 1024;
+
+function resolveVaultUploadPaths(mediaId: string): {
+  uploadsDir: string;
+  localMetaPath: string;
+} {
+  const dataDir = process.env.DATABASE_DATA_DIR?.trim();
+  const uploadsDir = dataDir
+    ? path.join(path.resolve(dataDir), "uploads")
+    : path.join(resolveMonorepoRoot(), "data", "uploads");
+  const safeId = String(mediaId || "").replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const localMetaPath = path.join(uploadsDir, `${safeId}.json`);
+  return { uploadsDir, localMetaPath };
+}
+
+async function readLocalCachedMedia(mediaId: string): Promise<{
+  buffer: Uint8Array;
+  fileName: string;
+  mimeType: string;
+} | null> {
+  if (!mediaId) return null;
+  try {
+    const { uploadsDir, localMetaPath } = resolveVaultUploadPaths(mediaId);
+    const metaRaw = await fs.readFile(localMetaPath, "utf8");
+    const meta = JSON.parse(metaRaw) as {
+      fileName?: string;
+      storedFileName?: string;
+      mimeType?: string;
+    };
+    if (!meta.storedFileName) return null;
+    const buf = await fs.readFile(path.join(uploadsDir, meta.storedFileName));
+    if (buf.byteLength === 0) return null;
+    return {
+      buffer: new Uint8Array(buf),
+      fileName: meta.fileName || mediaId,
+      mimeType: meta.mimeType || "application/octet-stream",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeLocalCachedMedia(params: {
+  mediaId: string;
+  fileName: string;
+  mimeType: string;
+  buffer: Uint8Array;
+  customerPhone?: string;
+  sourceLabel?: string;
+}): Promise<void> {
+  if (
+    !params.mediaId ||
+    params.buffer.byteLength === 0 ||
+    params.buffer.byteLength > VAULT_MAX_PERSIST_BYTES
+  ) {
+    return;
+  }
+  try {
+    const { uploadsDir, localMetaPath } = resolveVaultUploadPaths(params.mediaId);
+    await fs.mkdir(uploadsDir, { recursive: true });
+    let existingMeta: Record<string, unknown> = {};
+    try {
+      existingMeta = JSON.parse(await fs.readFile(localMetaPath, "utf8"));
+    } catch {
+      existingMeta = {};
+    }
+    const cleanName = (params.fileName || params.mediaId)
+      .replace(/[^a-zA-Z0-9._-]+/g, "_")
+      .slice(0, 120);
+    const storedFileName = String(
+      existingMeta.storedFileName || `${params.mediaId}_${cleanName}`
+    );
+    await Promise.all([
+      fs.writeFile(path.join(uploadsDir, storedFileName), params.buffer),
+      fs.writeFile(
+        localMetaPath,
+        JSON.stringify(
+          {
+            ...existingMeta,
+            id: params.mediaId,
+            fileName:
+              params.fileName || String(existingMeta.fileName || cleanName),
+            storedFileName,
+            mimeType:
+              params.mimeType ||
+              String(existingMeta.mimeType || "application/octet-stream"),
+            sizeBytes: params.buffer.byteLength,
+            customerPhone:
+              params.customerPhone || existingMeta.customerPhone || undefined,
+            sourceLabel:
+              params.sourceLabel || existingMeta.sourceLabel || undefined,
+            protectedFromPurge: true,
+            createdAt: String(
+              existingMeta.createdAt || new Date().toISOString()
+            ),
+          },
+          null,
+          2
+        ),
+        "utf8"
+      ),
+    ]);
+  } catch {
+    // Non-blocking vault write
+  }
+}
+
+export async function downloadAndPersistMetaMediaToDisk(params: {
+  mediaId: string;
+  customerPhone?: string;
+  fileName?: string;
+  mimeType?: string;
+  sourceLabel?: string;
+}): Promise<{
+  ok: boolean;
+  cachedLocally: boolean;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}> {
+  const mediaId = String(params.mediaId || "").trim();
+  if (!mediaId) return { ok: false, cachedLocally: false };
+
+  const existing = await readLocalCachedMedia(mediaId);
+  if (existing) {
+    if (params.customerPhone || params.sourceLabel) {
+      await writeLocalCachedMedia({
+        mediaId,
+        fileName: params.fileName || existing.fileName,
+        mimeType: params.mimeType || existing.mimeType,
+        buffer: existing.buffer,
+        customerPhone: params.customerPhone,
+        sourceLabel: params.sourceLabel,
+      });
+    }
+    return {
+      ok: true,
+      cachedLocally: true,
+      fileName: existing.fileName,
+      mimeType: existing.mimeType,
+      sizeBytes: existing.buffer.byteLength,
+    };
+  }
+
+  if (
+    mediaId.startsWith("local_") ||
+    mediaId.startsWith("sim_") ||
+    mediaId.startsWith("mock_") ||
+    mediaId.startsWith("pdf_")
+  ) {
+    return { ok: true, cachedLocally: false };
+  }
+
+  const cfg = await loadMetaWhatsAppSetupConfig();
+  const mode =
+    process.env.WHATSAPP_FORCE_SANDBOX_FOR_TESTS === "1"
+      ? "SANDBOX_SIMULATOR"
+      : String(cfg.mode || "SANDBOX_SIMULATOR");
+  const accessToken = String(cfg.systemUserAccessToken || "").trim();
+  if (mode !== "LIVE_META_CLOUD" || !accessToken) {
+    return { ok: true, cachedLocally: false };
+  }
+
+  try {
+    const metaRes = await fetch(
+      `https://graph.facebook.com/v21.0/${encodeURIComponent(mediaId)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "User-Agent": "ccwhatsapp/1.0",
+        },
+        signal: AbortSignal.timeout(15000),
+      }
+    );
+    const meta: any = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok || !meta?.url) return { ok: false, cachedLocally: false };
+
+    const cdn = await fetch(String(meta.url), {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "User-Agent": "ccwhatsapp/1.0",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!cdn.ok) return { ok: false, cachedLocally: false };
+    const buffer = new Uint8Array(await cdn.arrayBuffer());
+    if (buffer.byteLength === 0 || buffer.byteLength > VAULT_MAX_PERSIST_BYTES) {
+      return { ok: false, cachedLocally: false };
+    }
+    const cdnMime = String(cdn.headers.get("content-type") || "")
+      .split(";")[0]
+      .trim();
+    const finalMime = String(
+      meta.mime_type || cdnMime || params.mimeType || "application/octet-stream"
+    )
+      .split(";")[0]
+      .trim();
+    const ext = finalMime.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "bin";
+    const finalFileName = String(params.fileName || `${mediaId}.${ext}`).trim();
+
+    await writeLocalCachedMedia({
+      mediaId,
+      fileName: finalFileName,
+      mimeType: finalMime,
+      buffer,
+      customerPhone: params.customerPhone,
+      sourceLabel: params.sourceLabel,
+    });
+    return {
+      ok: true,
+      cachedLocally: true,
+      fileName: finalFileName,
+      mimeType: finalMime,
+      sizeBytes: buffer.byteLength,
+    };
+  } catch {
+    return { ok: false, cachedLocally: false };
+  }
+}
+
 /**
  * Takes a media file that someone SENT to the business number (identified by the inbound media id), downloads it from
- * Meta, and uploads it again under the business number so it can be forwarded to a teammate.
+ * Meta (or reads from local permanent vault storage if already cached), and uploads it again under the business
+ * number so it can be forwarded to a teammate.
  * In sandbox mode no network call is made and a simulated id is returned.
  */
 export async function prepareInboundMediaForForward(params: {
@@ -246,7 +470,7 @@ export async function prepareInboundMediaForForward(params: {
   const useSandbox = process.env.WHATSAPP_FORCE_SANDBOX_FOR_TESTS === "1";
   const live = !useSandbox && String(cfg.mode || "") === "LIVE_META_CLOUD";
   const accessToken = String(cfg.systemUserAccessToken || "").trim();
-  if (!live || !accessToken) {
+  if (!live || !accessToken || mediaId.startsWith("sim_")) {
     const simAudio =
       params.kind === "AUDIO" || baseMime.startsWith("audio/")
         ? resolveAudioContainerMimeAndExt(baseMime)
@@ -272,31 +496,38 @@ export async function prepareInboundMediaForForward(params: {
   }
 
   try {
-    const metaRes = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(mediaId)}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(15000),
-    });
-    const meta: any = await metaRes.json().catch(() => ({}));
-    if (!metaRes.ok || !meta?.url) {
-      return { ok: false, error: `Could not find the attachment on WhatsApp (HTTP ${metaRes.status}). It may be older than 30 days.` };
+    let buffer: Uint8Array | null = null;
+    let rawDetected = baseMime;
+    const cached = await readLocalCachedMedia(mediaId);
+    if (cached) {
+      buffer = cached.buffer;
+      rawDetected = cached.mimeType || baseMime;
+    } else {
+      const metaRes = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(mediaId)}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      const meta: any = await metaRes.json().catch(() => ({}));
+      if (!metaRes.ok || !meta?.url) {
+        return { ok: false, error: `Could not find the attachment on WhatsApp (HTTP ${metaRes.status}). It may be older than 30 days.` };
+      }
+      const cdn = await fetch(String(meta.url), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!cdn.ok) return { ok: false, error: `Could not download the attachment (HTTP ${cdn.status}).` };
+      buffer = new Uint8Array(await cdn.arrayBuffer());
+      const cdnMime = String(cdn.headers.get("content-type") || "").split(";")[0].trim();
+      rawDetected = String(meta.mime_type || cdnMime || baseMime).split(";")[0].trim() || baseMime;
     }
-    const cdn = await fetch(String(meta.url), {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!cdn.ok) return { ok: false, error: `Could not download the attachment (HTTP ${cdn.status}).` };
-    const buffer = new Uint8Array(await cdn.arrayBuffer());
-    if (buffer.byteLength === 0) {
+
+    if (!buffer || buffer.byteLength === 0) {
       return { ok: false, error: "Downloaded attachment was empty." };
     }
     const maxBytes = params.kind === "DOCUMENT" ? 100 * 1024 * 1024 : 16 * 1024 * 1024;
     if (buffer.byteLength > maxBytes) {
       return { ok: false, error: "The attachment is too large to forward on WhatsApp." };
     }
-    const cdnMime = String(cdn.headers.get("content-type") || "").split(";")[0].trim();
-    const rawDetected = String(meta.mime_type || cdnMime || baseMime)
-      .split(";")[0]
-      .trim() || baseMime;
     const isAudio = params.kind === "AUDIO" || rawDetected.startsWith("audio/");
     const audioInfo = isAudio ? resolveAudioContainerMimeAndExt(rawDetected, buffer) : null;
     const finalMime = audioInfo ? audioInfo.mimeType : rawDetected;
@@ -305,6 +536,14 @@ export async function prepareInboundMediaForForward(params: {
       (audioInfo
         ? `voice-note.${audioInfo.extension}`
         : `attachment.${finalMime.split("/")[1] || "bin"}`);
+    if (!cached) {
+      void writeLocalCachedMedia({
+        mediaId,
+        fileName: finalFileName,
+        mimeType: finalMime,
+        buffer,
+      });
+    }
     const up = await uploadMediaToMetaCloud({
       buffer,
       mimeType: finalMime,

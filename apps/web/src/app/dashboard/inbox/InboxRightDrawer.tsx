@@ -7,6 +7,7 @@ import type { NormalizedMessageMedia } from "@/components/MediaAttachmentTools";
 import type {
   ChatMessage,
   ConversationDetailBundle,
+  CustomerSharedMediaRecord,
   StaffOption,
 } from "@/lib/inbox-server-data";
 import { useInboxStore } from "@/lib/inbox-store";
@@ -25,7 +26,7 @@ export function InboxRightDrawer({
   selectedId,
   detail,
   internalNotes,
-  sharedMediaItems,
+  unifiedSharedMedia,
   staffList,
   nowMs,
   windowOpen,
@@ -50,7 +51,7 @@ export function InboxRightDrawer({
   selectedId: string | null;
   detail: ConversationDetailBundle | null;
   internalNotes: ChatMessage[];
-  sharedMediaItems: { msg: ChatMessage; media: NormalizedMessageMedia }[];
+  unifiedSharedMedia: CustomerSharedMediaRecord[];
   staffList: StaffOption[];
   nowMs: number;
   windowOpen: boolean;
@@ -227,7 +228,7 @@ export function InboxRightDrawer({
             { key: "PROFILE", label: "Details" },
             { key: "ORDERS", label: `Orders (${detail?.orders.length || 0})` },
             { key: "NOTES", label: `Notes (${internalNotes.length})` },
-            { key: "MEDIA", label: `Media (${sharedMediaItems.length})` },
+            { key: "MEDIA", label: `Media (${unifiedSharedMedia.length})` },
             { key: "HISTORY", label: "Logs" },
           ] as const
         ).map((tb) => (
@@ -267,6 +268,9 @@ export function InboxRightDrawer({
           <RightDrawerProfileTab
             detail={detail}
             staffList={staffList}
+            unifiedMedia={unifiedSharedMedia}
+            onOpenMediaTab={() => setRightTab("MEDIA")}
+            onOpenPreview={onOpenMediaPreview}
             onSaveProfile={onSaveProfile}
             onAddCollaborator={onAddCollaborator}
             onRemoveCollaborator={onRemoveCollaborator}
@@ -288,8 +292,10 @@ export function InboxRightDrawer({
           />
         ) : rightTab === "MEDIA" ? (
           <RightDrawerMediaTab
-            sharedMediaItems={sharedMediaItems}
+            items={unifiedSharedMedia}
+            customerPhone={detail.conversation.customerPhone}
             onOpenPreview={onOpenMediaPreview}
+            onCopyToast={onCopyToast}
           />
         ) : (
           <RightDrawerHistoryTab detail={detail} nowMs={nowMs} />

@@ -52,17 +52,22 @@ export interface WindowState {
   conversationId: string | null;
 }
 
-export type LeadItemKind = "TEXT" | "IMAGE" | "AUDIO" | "VIDEO" | "DOCUMENT";
+export type LeadItemKind = "TEXT" | "IMAGE" | "AUDIO" | "VIDEO" | "DOCUMENT" | "LOCATION";
 
-/** One thing the owner sent for a lead: a written message, a voice note, a photo, a video or a file. */
+/** One thing the owner sent for a lead: a written message, voice note, photo, video, file, or location. */
 export interface LeadItem {
   kind: LeadItemKind;
-  /** Written words only (message text, or the caption of a file). Never a bare "[Image]" placeholder. */
+  /** Written words only (message text, or the caption of a file/location). Never a bare "[Image]" placeholder. */
   text: string;
   /** WhatsApp media id of the file the owner sent. */
   mediaId?: string;
   mimeType?: string;
   fileName?: string;
+  latitude?: number;
+  longitude?: number;
+  locationName?: string;
+  locationAddress?: string;
+  mapsUrl?: string;
   at: number;
 }
 

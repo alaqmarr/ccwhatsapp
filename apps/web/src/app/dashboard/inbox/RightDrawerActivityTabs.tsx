@@ -3,11 +3,14 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import {
+  Copy,
+  Download,
   ExternalLink,
   FileAudio,
   FileText,
   Image as ImageIcon,
   Lock,
+  MapPin,
   Plus,
   Sparkles,
   Truck,
@@ -24,6 +27,7 @@ import { MentionTextarea } from "@/components/MentionTextarea";
 import type {
   ChatMessage,
   ConversationDetailBundle,
+  CustomerSharedMediaRecord,
   StaffOption,
 } from "@/lib/inbox-server-data";
 import {
@@ -31,6 +35,7 @@ import {
   formatDateTimeShort,
   formatResponseSpeed,
   formatWaitingDuration,
+  vaultItemToPreviewMedia,
 } from "./inbox-helpers";
 
 export function RightDrawerOrdersTab({
@@ -279,59 +284,217 @@ export function RightDrawerNotesTab({
   );
 }
 
+type MediaVaultFilter = "ALL" | "VISUAL" | "LOCATION" | "DOCUMENT" | "AUDIO";
+
 export function RightDrawerMediaTab({
-  sharedMediaItems,
+  items,
+  customerPhone,
   onOpenPreview,
+  onCopyToast,
 }: {
-  sharedMediaItems: { msg: ChatMessage; media: NormalizedMessageMedia }[];
+  items: CustomerSharedMediaRecord[];
+  customerPhone?: string;
   onOpenPreview: (media: NormalizedMessageMedia) => void;
+  onCopyToast?: (msg: string) => void;
 }) {
+  const [filter, setFilter] = useState<MediaVaultFilter>("ALL");
+
+  const visualCount = items.filter(
+    (i) => i.itemKind === "IMAGE" || i.itemKind === "VIDEO"
+  ).length;
+  const locationCount = items.filter((i) => i.itemKind === "LOCATION").length;
+  const docCount = items.filter((i) => i.itemKind === "DOCUMENT").length;
+  const audioCount = items.filter((i) => i.itemKind === "AUDIO").length;
+
+  const visibleItems = items.filter((i) => {
+    if (filter === "ALL") return true;
+    if (filter === "VISUAL")
+      return i.itemKind === "IMAGE" || i.itemKind === "VIDEO";
+    return i.itemKind === filter;
+  });
+
   return (
     <div className="space-y-3">
-      <h4 className="text-xs font-semibold text-neutral-800">
-        Shared Files &amp; Media ({sharedMediaItems.length})
-      </h4>
-      {sharedMediaItems.length === 0 ? (
+      <div className="space-y-0.5">
+        <h4 className="text-xs font-semibold text-neutral-900">
+          Client Shared Media &amp; Locations ({items.length})
+        </h4>
+        {customerPhone && (
+          <p className="text-[10.5px] text-neutral-500">
+            Saved permanently for {customerPhone} across owner &amp; staff chats.
+          </p>
+        )}
+      </div>
+
+      {items.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          {(
+            [
+              { key: "ALL", label: `All (${items.length})` },
+              { key: "VISUAL", label: `Photos/Video (${visualCount})`, count: visualCount },
+              { key: "LOCATION", label: `Locations (${locationCount})`, count: locationCount },
+              { key: "DOCUMENT", label: `Files (${docCount})`, count: docCount },
+              { key: "AUDIO", label: `Voice (${audioCount})`, count: audioCount },
+            ] as const
+          )
+            .filter((pill) => pill.key === "ALL" || pill.count > 0)
+            .map((pill) => (
+              <button
+                key={pill.key}
+                type="button"
+                onClick={() => setFilter(pill.key)}
+                className={`px-2 py-0.5 rounded-full text-[10.5px] font-medium cursor-pointer transition-colors ${
+                  filter === pill.key
+                    ? "bg-[#e7fce3] text-[#008069] border border-[#00a884]/40"
+                    : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200 border border-transparent"
+                }`}
+              >
+                {pill.label}
+              </button>
+            ))}
+        </div>
+      )}
+
+      {visibleItems.length === 0 ? (
         <p className="text-xs text-neutral-500 py-4 text-center">
-          No images, PDFs, videos, or audio files shared in this chat yet.
+          No locations, photos, PDFs, videos, or voice notes saved for this client yet.
         </p>
       ) : (
         <div className="space-y-2">
-          {[...sharedMediaItems].reverse().map(({ msg, media }) => (
-            <div
-              key={`med_${msg.id}`}
-              className="p-2.5 rounded-lg border border-neutral-200 bg-neutral-50 flex items-center justify-between gap-2.5"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-8 h-8 rounded bg-white border border-neutral-200 flex items-center justify-center shrink-0 text-[#008069]">
-                  {media.mediaType === "IMAGE" ? (
-                    <ImageIcon className="w-4 h-4" />
-                  ) : media.mediaType === "VIDEO" ? (
-                    <Video className="w-4 h-4" />
-                  ) : media.mediaType === "AUDIO" ? (
-                    <FileAudio className="w-4 h-4" />
+          {visibleItems.map((item) => {
+            const previewMedia = vaultItemToPreviewMedia(item);
+            const contextNote =
+              item.caption || item.leadContext || "";
+            return (
+              <div
+                key={item.id}
+                className="p-2.5 rounded-lg border border-neutral-200 bg-neutral-50/70 space-y-1.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2 min-w-0 flex-1">
+                    {item.itemKind === "IMAGE" && item.mediaUrl ? (
+                      <button
+                        type="button"
+                        onClick={() => previewMedia && onOpenPreview(previewMedia)}
+                        className="w-11 h-11 rounded border border-neutral-200 bg-white overflow-hidden shrink-0 cursor-pointer hover:ring-2 hover:ring-[#00a884]"
+                        title="Open image preview"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={item.mediaUrl}
+                          alt={item.title}
+                          loading="lazy"
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                    ) : (
+                      <div
+                        className={`w-9 h-9 rounded border flex items-center justify-center shrink-0 ${
+                          item.itemKind === "LOCATION"
+                            ? "bg-emerald-50 border-emerald-200 text-[#008069]"
+                            : "bg-white border-neutral-200 text-[#008069]"
+                        }`}
+                      >
+                        {item.itemKind === "LOCATION" ? (
+                          <MapPin className="w-4 h-4" />
+                        ) : item.itemKind === "IMAGE" ? (
+                          <ImageIcon className="w-4 h-4" />
+                        ) : item.itemKind === "VIDEO" ? (
+                          <Video className="w-4 h-4" />
+                        ) : item.itemKind === "AUDIO" ? (
+                          <FileAudio className="w-4 h-4" />
+                        ) : (
+                          <FileText className="w-4 h-4" />
+                        )}
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-semibold text-neutral-900 truncate">
+                        {item.title}
+                      </div>
+                      <div className="text-[10.5px] text-neutral-500 flex flex-wrap items-center gap-1">
+                        <span className="font-medium text-[#008069]">
+                          {item.sourceLabel}
+                        </span>
+                        <span>• {formatDateShortIst(item.createdAt)}</span>
+                      </div>
+                      {item.itemKind === "LOCATION" && item.locationAddress && (
+                        <div className="text-[11px] text-neutral-600 mt-0.5 line-clamp-2">
+                          {item.locationAddress}
+                        </div>
+                      )}
+                      {item.itemKind === "LOCATION" &&
+                        item.latitude !== null &&
+                        item.longitude !== null && (
+                          <div className="text-[10px] font-mono text-neutral-400">
+                            {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+
+                  {item.itemKind === "LOCATION" ? (
+                    <div className="flex items-center gap-1 shrink-0">
+                      {item.mapsUrl && (
+                        <a
+                          href={item.mapsUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-emerald-300 hover:bg-emerald-50 text-[11px] font-semibold text-[#008069]"
+                        >
+                          <span>Maps</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                      {item.mapsUrl && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void navigator.clipboard?.writeText(item.mapsUrl);
+                            onCopyToast?.("Copied Google Maps link.");
+                          }}
+                          title="Copy location link"
+                          className="p-1 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-600 cursor-pointer"
+                        >
+                          <Copy className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   ) : (
-                    <FileText className="w-4 h-4" />
+                    <div className="flex items-center gap-1 shrink-0">
+                      {previewMedia && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenPreview(previewMedia)}
+                          className="px-2 py-1 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-[11px] font-semibold text-neutral-800 cursor-pointer"
+                        >
+                          Open
+                        </button>
+                      )}
+                      {item.downloadUrl && (
+                        <a
+                          href={item.downloadUrl}
+                          download={item.title}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Download file"
+                          className="p-1 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-600"
+                        >
+                          <Download className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
                   )}
                 </div>
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-neutral-900 truncate">
-                    {media.fileName || media.mediaType}
+
+                {contextNote && (
+                  <div className="text-[11px] text-neutral-700 bg-white rounded px-2 py-1 border border-neutral-200/80 line-clamp-3">
+                    {contextNote}
                   </div>
-                  <div className="text-[10.5px] text-neutral-500">
-                    {msg.senderName} • {formatDateShortIst(msg.createdAt)}
-                  </div>
-                </div>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={() => onOpenPreview(media)}
-                className="px-2.5 py-1 rounded bg-white border border-neutral-300 hover:bg-neutral-100 text-[11px] font-semibold text-neutral-800 cursor-pointer shrink-0"
-              >
-                Open
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

@@ -12,6 +12,23 @@ import {
 } from "./image-intelligence";
 
 export const LOCKED_CLAUDE_MODEL = "claude-haiku-5-5" as const;
+const MIN_CACHEABLE_STATIC_CHARS = 1500;
+
+export interface AnthropicCacheControl {
+  type: "ephemeral";
+  ttl?: "5m" | "1h";
+}
+
+export interface AnthropicSystemTextBlock {
+  type: "text";
+  text: string;
+  cache_control?: AnthropicCacheControl;
+}
+
+export interface ClaudeMessageInput {
+  role: "user" | "assistant";
+  content: string | AnthropicContentBlock[];
+}
 
 export interface DetailedClaudeCallResult {
   ok: boolean;
@@ -21,6 +38,179 @@ export interface DetailedClaudeCallResult {
   effort: string;
   usage: AiTokenUsage | null;
   error: string | null;
+}
+
+/**
+ * Orders system blocks according to Anthropic Prompt Caching best practices:
+ * static instructions and reference data first with cache_control, followed by
+ * any dynamic per-request instructions without cache_control so the cached prefix stays stable.
+ */
+export function buildOrderedClaudeSystemBlocks(params: {
+  system: string | AnthropicSystemTextBlock[];
+  dynamicSystem?: string;
+  cacheSystem?: boolean;
+  cacheTtl?: "5m" | "1h";
+}): AnthropicSystemTextBlock[] {
+  const blocks: AnthropicSystemTextBlock[] = [];
+  const cacheControl: AnthropicCacheControl = params.cacheTtl
+    ? { type: "ephemeral", ttl: params.cacheTtl }
+    : { type: "ephemeral" };
+
+  if (Array.isArray(params.system)) {
+    for (const blk of params.system) {
+      const clean = String(blk?.text || "").trim();
+      if (!clean) continue;
+      blocks.push(
+        blk.cache_control
+          ? { type: "text", text: clean, cache_control: blk.cache_control }
+          : { type: "text", text: clean }
+      );
+    }
+  } else {
+    const cleanStatic = String(params.system || "").trim();
+    if (cleanStatic) {
+      const shouldCache =
+        params.cacheSystem === true ||
+        (params.cacheSystem !== false && cleanStatic.length >= MIN_CACHEABLE_STATIC_CHARS);
+      blocks.push(
+        shouldCache
+          ? { type: "text", text: cleanStatic, cache_control: cacheControl }
+          : { type: "text", text: cleanStatic }
+      );
+    }
+  }
+
+  const cleanDynamic = String(params.dynamicSystem || "").trim();
+  if (cleanDynamic) {
+    blocks.push({ type: "text", text: cleanDynamic });
+  }
+
+  return blocks;
+}
+
+/**
+ * Adds a cache breakpoint on the last completed history message (before the current user turn)
+ * when multi-turn RAG/retrieval context is appended to the final turn. That way earlier DB turns
+ * stay byte-identical and reuse the cached prefix across customer replies.
+ */
+export function buildCacheAwareClaudeMessages(params: {
+  messages: ClaudeMessageInput[];
+  cacheLastCompletedTurn?: boolean;
+  cacheTtl?: "5m" | "1h";
+}): ClaudeMessageInput[] {
+  const cloned: ClaudeMessageInput[] = params.messages.map((m) => ({
+    role: m.role,
+    content: Array.isArray(m.content) ? m.content.map((b) => ({ ...b })) : m.content,
+  }));
+
+  if (!params.cacheLastCompletedTurn || cloned.length < 3) {
+    return cloned;
+  }
+
+  const targetIdx = cloned.length - 2;
+  const target = cloned[targetIdx];
+  if (!target) return cloned;
+
+  const historyCharLength = cloned
+    .slice(0, targetIdx + 1)
+    .reduce((acc, m) => {
+      if (typeof m.content === "string") return acc + m.content.length;
+      if (Array.isArray(m.content)) {
+        return (
+          acc +
+          m.content.reduce(
+            (sum, b) => sum + (b.type === "text" ? String((b as any).text || "").length : 400),
+            0
+          )
+        );
+      }
+      return acc;
+    }, 0);
+
+  if (historyCharLength < 400) {
+    return cloned;
+  }
+
+  const cacheControl: AnthropicCacheControl = params.cacheTtl
+    ? { type: "ephemeral", ttl: params.cacheTtl }
+    : { type: "ephemeral" };
+
+  if (typeof target.content === "string") {
+    target.content = [
+      {
+        type: "text",
+        text: target.content,
+        cache_control: cacheControl,
+      } as AnthropicContentBlock,
+    ];
+  } else if (Array.isArray(target.content) && target.content.length > 0) {
+    const lastBlk = target.content[target.content.length - 1] as AnthropicContentBlock & {
+      cache_control?: AnthropicCacheControl;
+    };
+    lastBlk.cache_control = cacheControl;
+  }
+
+  return cloned;
+}
+
+export function buildClaudeMessagesRequestBody(params: {
+  system: string | AnthropicSystemTextBlock[];
+  dynamicSystem?: string;
+  cacheSystem?: boolean;
+  cacheTtl?: "5m" | "1h";
+  automaticCaching?: boolean;
+  cacheLastCompletedTurn?: boolean;
+  messages: ClaudeMessageInput[];
+  maxTokens?: number;
+  temperature?: number;
+  effort?: "low" | "medium" | "high";
+  includeLegacyTemp?: boolean;
+  overrideDisableThinking?: boolean;
+}): Record<string, unknown> {
+  const effort = params.effort || "medium";
+  const requestedMax = params.maxTokens ?? 4096;
+  const isExplicitLegacyTemp =
+    Boolean(params.includeLegacyTemp) && typeof params.temperature === "number";
+  const resolvedMaxTokens = params.overrideDisableThinking
+    ? Math.min(requestedMax, 2048)
+    : isExplicitLegacyTemp && typeof params.maxTokens === "number"
+    ? requestedMax
+    : Math.max(requestedMax, 4096);
+  const systemBlocks = buildOrderedClaudeSystemBlocks({
+    system: params.system,
+    dynamicSystem: params.dynamicSystem,
+    cacheSystem: params.cacheSystem,
+    cacheTtl: params.cacheTtl,
+  });
+  const preparedMessages = buildCacheAwareClaudeMessages({
+    messages: params.messages,
+    cacheLastCompletedTurn: params.cacheLastCompletedTurn,
+    cacheTtl: params.cacheTtl,
+  });
+
+  const bodyObj: Record<string, unknown> = {
+    model: LOCKED_CLAUDE_MODEL,
+    max_tokens: resolvedMaxTokens,
+    system: systemBlocks,
+    messages: preparedMessages,
+  };
+
+  if (params.automaticCaching) {
+    bodyObj.cache_control = params.cacheTtl
+      ? { type: "ephemeral", ttl: params.cacheTtl }
+      : { type: "ephemeral" };
+  }
+
+  if (params.overrideDisableThinking) {
+    // Fast non-thinking fallback so thinking token budget never truncates JSON output
+  } else if (isExplicitLegacyTemp) {
+    bodyObj.temperature = params.temperature;
+  } else {
+    bodyObj.thinking = { type: "adaptive" };
+    bodyObj.output_config = { effort };
+  }
+
+  return bodyObj;
 }
 
 export function parseClaudeJson<T = any>(raw: string | null | undefined): T | null {
@@ -120,18 +310,24 @@ export function parseClaudeJson<T = any>(raw: string | null | undefined): T | nu
   return null;
 }
 
-export async function callClaudeHaikuMessagesDetailed(params: {
+export interface ClaudeMessagesCallParams {
   apiKey: string;
-  system: string;
-  messages: {
-    role: "user" | "assistant";
-    content: string | AnthropicContentBlock[];
-  }[];
+  system: string | AnthropicSystemTextBlock[];
+  dynamicSystem?: string;
+  cacheSystem?: boolean;
+  cacheTtl?: "5m" | "1h";
+  automaticCaching?: boolean;
+  cacheLastCompletedTurn?: boolean;
+  messages: ClaudeMessageInput[];
   maxTokens?: number;
   temperature?: number;
   effort?: "low" | "medium" | "high";
   timeoutMs?: number;
-}): Promise<DetailedClaudeCallResult> {
+}
+
+export async function callClaudeHaikuMessagesDetailed(
+  params: ClaudeMessagesCallParams
+): Promise<DetailedClaudeCallResult> {
   const started = Date.now();
   const effort = params.effort || "medium";
   if (!params.apiKey) {
@@ -150,34 +346,20 @@ export async function callClaudeHaikuMessagesDetailed(params: {
     includeLegacyTemp: boolean,
     overrideDisableThinking = false
   ) => {
-    const requestedMax = params.maxTokens ?? 4096;
-    const isExplicitLegacyTemp =
-      includeLegacyTemp && typeof params.temperature === "number";
-    const resolvedMaxTokens = overrideDisableThinking
-      ? Math.min(requestedMax, 2048)
-      : isExplicitLegacyTemp && typeof params.maxTokens === "number"
-      ? requestedMax
-      : Math.max(requestedMax, 4096);
-    const bodyObj: Record<string, unknown> = {
-      model: LOCKED_CLAUDE_MODEL,
-      max_tokens: resolvedMaxTokens,
-      system: [
-        {
-          type: "text",
-          text: params.system,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
+    const bodyObj = buildClaudeMessagesRequestBody({
+      system: params.system,
+      dynamicSystem: params.dynamicSystem,
+      cacheSystem: params.cacheSystem,
+      cacheTtl: params.cacheTtl,
+      automaticCaching: params.automaticCaching,
+      cacheLastCompletedTurn: params.cacheLastCompletedTurn,
       messages: params.messages,
-    };
-    if (overrideDisableThinking) {
-      // Fast non-thinking fallback so thinking token budget never truncates JSON output
-    } else if (includeLegacyTemp && typeof params.temperature === "number") {
-      bodyObj.temperature = params.temperature;
-    } else {
-      bodyObj.thinking = { type: "adaptive" };
-      bodyObj.output_config = { effort };
-    }
+      maxTokens: params.maxTokens,
+      temperature: params.temperature,
+      effort: params.effort,
+      includeLegacyTemp,
+      overrideDisableThinking,
+    });
     return fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -291,18 +473,9 @@ export async function callClaudeHaikuMessagesDetailed(params: {
   }
 }
 
-export async function callClaudeHaikuMessages(params: {
-  apiKey: string;
-  system: string;
-  messages: {
-    role: "user" | "assistant";
-    content: string | AnthropicContentBlock[];
-  }[];
-  maxTokens?: number;
-  temperature?: number;
-  effort?: "low" | "medium" | "high";
-  timeoutMs?: number;
-}): Promise<string | null> {
+export async function callClaudeHaikuMessages(
+  params: ClaudeMessagesCallParams
+): Promise<string | null> {
   const res = await callClaudeHaikuMessagesDetailed(params);
   return res.text;
 }

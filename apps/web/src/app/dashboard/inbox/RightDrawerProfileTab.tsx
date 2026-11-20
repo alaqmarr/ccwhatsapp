@@ -1,8 +1,14 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { UserPlus, X } from "lucide-react";
-import type { ConversationDetailBundle, StaffOption } from "@/lib/inbox-server-data";
+import { ArrowRight, ExternalLink, MapPin, Paperclip, UserPlus, X } from "lucide-react";
+import type { NormalizedMessageMedia } from "@/components/MediaAttachmentTools";
+import type {
+  ConversationDetailBundle,
+  CustomerSharedMediaRecord,
+  StaffOption,
+} from "@/lib/inbox-server-data";
+import { vaultItemToPreviewMedia } from "./inbox-helpers";
 
 export interface SaveCustomerProfilePayload {
   name: string;
@@ -31,12 +37,18 @@ const PRESET_CUSTOMER_TAGS = [
 export function RightDrawerProfileTab({
   detail,
   staffList,
+  unifiedMedia = [],
+  onOpenMediaTab,
+  onOpenPreview,
   onSaveProfile,
   onAddCollaborator,
   onRemoveCollaborator,
 }: {
   detail: ConversationDetailBundle;
   staffList: StaffOption[];
+  unifiedMedia?: CustomerSharedMediaRecord[];
+  onOpenMediaTab?: () => void;
+  onOpenPreview?: (media: NormalizedMessageMedia) => void;
   onSaveProfile: (payload: SaveCustomerProfilePayload) => Promise<void>;
   onAddCollaborator: (staffId: string) => Promise<void>;
   onRemoveCollaborator: (staffId: string) => Promise<void>;
@@ -107,8 +119,129 @@ export function RightDrawerProfileTab({
     }
   }
 
+  const latestContext =
+    unifiedMedia.find((item) => item.leadContext)?.leadContext ||
+    unifiedMedia.find((item) => item.caption)?.caption ||
+    detail.assignments?.[0]?.reason ||
+    detail.relations?.[0]?.summary ||
+    "";
+  const latestSourceLabel =
+    unifiedMedia[0]?.sourceLabel ||
+    (detail.assignments?.[0]?.assignedByName
+      ? `Assigned by ${detail.assignments[0].assignedByName}`
+      : "");
+  const visualMediaCount = unifiedMedia.filter(
+    (i) => i.itemKind === "IMAGE" || i.itemKind === "VIDEO"
+  ).length;
+  const locationCount = unifiedMedia.filter(
+    (i) => i.itemKind === "LOCATION"
+  ).length;
+  const docAudioCount = unifiedMedia.filter(
+    (i) => i.itemKind === "DOCUMENT" || i.itemKind === "AUDIO"
+  ).length;
+  const previewVisuals = unifiedMedia
+    .filter((i) => i.itemKind === "IMAGE" && i.mediaUrl)
+    .slice(0, 3);
+  const previewLocations = unifiedMedia
+    .filter((i) => i.itemKind === "LOCATION" && i.mapsUrl)
+    .slice(0, 2);
+
   return (
     <div className="space-y-4">
+      {(unifiedMedia.length > 0 || latestContext) && (
+        <div className="p-2.5 rounded-lg bg-emerald-50/70 border border-emerald-200 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-950">
+              <Paperclip className="w-3.5 h-3.5 text-[#008069]" />
+              <span>Shared with us &amp; Context</span>
+            </span>
+            {onOpenMediaTab && (
+              <button
+                type="button"
+                onClick={onOpenMediaTab}
+                className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-[#008069] hover:underline cursor-pointer shrink-0"
+              >
+                <span>Media ({unifiedMedia.length})</span>
+                <ArrowRight className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          {unifiedMedia.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 text-[10.5px]">
+              {visualMediaCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded bg-white border border-emerald-200 font-semibold text-emerald-900 tabular-nums">
+                  {visualMediaCount} photo{visualMediaCount === 1 ? "" : "s"}/video
+                </span>
+              )}
+              {locationCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded bg-white border border-emerald-200 font-semibold text-emerald-900 tabular-nums">
+                  {locationCount} location{locationCount === 1 ? "" : "s"}
+                </span>
+              )}
+              {docAudioCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded bg-white border border-emerald-200 font-semibold text-emerald-900 tabular-nums">
+                  {docAudioCount} file{docAudioCount === 1 ? "" : "s"}/voice
+                </span>
+              )}
+              {latestSourceLabel && (
+                <span className="px-1.5 py-0.5 rounded bg-white/80 text-slate-700 font-medium truncate max-w-full">
+                  {latestSourceLabel}
+                </span>
+              )}
+            </div>
+          )}
+
+          {latestContext && (
+            <p className="text-[11px] text-slate-700 leading-snug line-clamp-3 bg-white/80 rounded px-2 py-1.5 border border-emerald-100">
+              {latestContext}
+            </p>
+          )}
+
+          {(previewVisuals.length > 0 || previewLocations.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {previewVisuals.map((item) => {
+                const preview = vaultItemToPreviewMedia(item);
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() =>
+                      preview && onOpenPreview
+                        ? onOpenPreview(preview)
+                        : onOpenMediaTab?.()
+                    }
+                    title={`${item.title} (${item.sourceLabel})`}
+                    className="w-10 h-10 rounded border border-emerald-200 overflow-hidden bg-white cursor-pointer hover:ring-2 hover:ring-[#00a884] shrink-0"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={item.mediaUrl!}
+                      alt={item.title}
+                      loading="lazy"
+                      className="w-full h-full object-cover"
+                    />
+                  </button>
+                );
+              })}
+              {previewLocations.map((loc) => (
+                <a
+                  key={loc.id}
+                  href={loc.mapsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-emerald-200 hover:bg-emerald-100/60 text-[10.5px] font-medium text-[#008069] max-w-[165px]"
+                >
+                  <MapPin className="w-3 h-3 shrink-0" />
+                  <span className="truncate">{loc.title}</span>
+                  <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="p-2.5 rounded-lg bg-violet-50/70 border border-violet-200 space-y-2">
         <div className="flex items-center justify-between text-[11px] font-semibold text-violet-950">
           <span className="inline-flex items-center gap-1">

@@ -66,7 +66,7 @@ export async function processInboundAutomations(
   const debounceDisabled = process.env.ACRIO_DISABLE_DEBOUNCE === "1";
   const isShortFragmentOrMedia =
     Boolean(params.attachment) ||
-    /^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note|sticker|message)\b/i.test(
+    /^\[(?:image|photo|video|document|pdf|file|audio|voice\s*note|sticker|location|message)\b/i.test(
       params.inboundText.trim()
     ) ||
     params.inboundText.trim().split(/\s+/).filter(Boolean).length <= 4;

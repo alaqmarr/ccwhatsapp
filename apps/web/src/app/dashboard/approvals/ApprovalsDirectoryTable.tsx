@@ -178,8 +178,8 @@ export function ApprovalsDirectoryTable({
                         onClick={() => onToggleAssignments(acc)}
                         title={
                           acc.assignmentsEnabled !== false
-                            ? "Receiving chats, auto-assignments, and leads. Click to turn off."
-                            : "Turned off: never receives assignments, auto-assignments, or leads. Click to turn on."
+                            ? "Receiving generic 'assign' and A-Z auto leads. Click to turn off."
+                            : "Skipped by generic 'assign' and auto leads (still receives explicit named assigns). Click to turn on."
                         }
                         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                           acc.assignmentsEnabled !== false

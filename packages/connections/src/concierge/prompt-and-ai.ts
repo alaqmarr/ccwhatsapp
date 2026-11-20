@@ -270,6 +270,8 @@ ${rawText}`;
       effort: turnEffort,
       timeoutMs: 26000,
       system: buildConciergeSystemPrompt(completeDatabaseDirectory),
+      cacheSystem: true,
+      cacheLastCompletedTurn: claudeMessages.length >= 3,
       messages: claudeMessages,
     });
 
@@ -277,7 +279,7 @@ ${rawText}`;
     if (aiCall.ok && aiCall.text) {
       addStep(
         `Called Anthropic claude-haiku-5-5 (effort=${turnEffort})`,
-        `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms (keySource=${keySource}, in=${aiCall.usage?.inputTokens ?? 0}, think=${aiCall.usage?.thinkingTokens ?? 0}, out=${aiCall.usage?.outputTokens ?? 0})`
+        `HTTP ${aiCall.statusCode} in ${aiCall.durationMs}ms (keySource=${keySource}, in=${aiCall.usage?.inputTokens ?? 0}, cacheRead=${aiCall.usage?.cacheReadInputTokens ?? 0}, cacheWrite=${aiCall.usage?.cacheCreationInputTokens ?? 0}, think=${aiCall.usage?.thinkingTokens ?? 0}, out=${aiCall.usage?.outputTokens ?? 0})`
       );
       const parsed =
         parseClaudeJson<any>(aiCall.text) ??

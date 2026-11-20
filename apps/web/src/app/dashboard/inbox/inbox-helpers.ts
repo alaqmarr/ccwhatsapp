@@ -3,7 +3,15 @@ import {
   formatThreadTimeIst,
   TRACKING_PUBLIC_ORIGIN,
 } from "@cc/ui";
-import type { ChatMessage, QuotedMessageRef } from "@/lib/inbox-server-data";
+import {
+  extractMessageMedia,
+  type NormalizedMessageMedia,
+} from "@/components/MediaAttachmentTools";
+import type {
+  ChatMessage,
+  CustomerSharedMediaRecord,
+  QuotedMessageRef,
+} from "@/lib/inbox-server-data";
 
 /** Toast text after saving a note: says who was pinged and whether ACRIO is answering. */
 export function describeNoteResult(data: {
@@ -256,4 +264,126 @@ export function getInitials(name: string): string {
   if (parts.length === 0) return "CC";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+}
+
+export function vaultItemToPreviewMedia(
+  item: CustomerSharedMediaRecord
+): NormalizedMessageMedia | null {
+  if (item.itemKind === "LOCATION" || !item.mediaUrl) return null;
+  return {
+    mediaType: item.itemKind,
+    url: item.mediaUrl,
+    downloadUrl: item.downloadUrl || item.mediaUrl,
+    fileName: item.title || item.itemKind.toLowerCase(),
+    mimeType: item.mimeType || "",
+    sizeBytes: item.fileSizeBytes ?? null,
+    productName: null,
+    variantName: null,
+  };
+}
+
+export function mergeChatAndVaultSharedMedia(
+  messages: ChatMessage[],
+  vaultItems: CustomerSharedMediaRecord[] | undefined,
+  customerPhone: string
+): CustomerSharedMediaRecord[] {
+  const byKey = new Map<string, CustomerSharedMediaRecord>();
+  const dedupKey = (rec: CustomerSharedMediaRecord) => {
+    if (rec.waMediaId) return `wa:${rec.waMediaId}`;
+    if (rec.localMediaId) return `loc:${rec.localMediaId}`;
+    if (rec.mediaUrl && rec.mediaUrl.startsWith("/api/media/")) {
+      return `url:${rec.mediaUrl.split("?")[0]}`;
+    }
+    if (rec.itemKind === "LOCATION" && rec.mapsUrl) return `map:${rec.mapsUrl}`;
+    if (rec.messageId) return `msg:${rec.messageId}:${rec.itemKind}`;
+    return `id:${rec.id}`;
+  };
+
+  for (const v of vaultItems || []) {
+    byKey.set(dedupKey(v), v);
+  }
+
+  for (const m of messages) {
+    if (m.messageType === "INTERNAL_NOTE") continue;
+    const isOutbound = m.direction === "OUTBOUND";
+    const sourceType = isOutbound ? "STAFF_SHARED" : "CLIENT_DIRECT";
+    const sourceLabel = isOutbound
+      ? `Sent by ${m.senderName || "Staff"}`
+      : `Sent by ${m.senderName || "Client"}`;
+
+    const med = extractMessageMedia(m);
+    if (med) {
+      const extractedId = med.url.startsWith("/api/media/")
+        ? decodeURIComponent(med.url.replace("/api/media/", "").split("?")[0])
+        : null;
+      const rec: CustomerSharedMediaRecord = {
+        id: `live_med_${m.id}`,
+        customerPhone,
+        conversationId: null,
+        messageId: m.id,
+        waMediaId: extractedId,
+        localMediaId: extractedId,
+        mediaUrl: med.url,
+        downloadUrl: med.downloadUrl,
+        itemKind: med.mediaType,
+        title: med.fileName,
+        caption: /^\[(?:image|video|document|audio|voice note)\]$/i.test(m.body.trim())
+          ? ""
+          : m.body.trim(),
+        mimeType: med.mimeType,
+        fileSizeBytes: med.sizeBytes,
+        latitude: null,
+        longitude: null,
+        locationAddress: "",
+        mapsUrl: "",
+        sourceType,
+        sourceLabel,
+        receivedViaPhone: "",
+        receivedViaName: m.senderName || "",
+        assignedStaffId: null,
+        assignedStaffName: null,
+        leadContext: "",
+        createdAt: m.createdAt,
+      };
+      const k = dedupKey(rec);
+      if (!byKey.has(k)) byKey.set(k, rec);
+    }
+
+    const pin = extractLocationPin(m);
+    if (pin) {
+      const rec: CustomerSharedMediaRecord = {
+        id: `live_loc_${m.id}`,
+        customerPhone,
+        conversationId: null,
+        messageId: m.id,
+        waMediaId: null,
+        localMediaId: null,
+        mediaUrl: null,
+        downloadUrl: null,
+        itemKind: "LOCATION",
+        title: pin.name,
+        caption: pin.address,
+        mimeType: "",
+        fileSizeBytes: null,
+        latitude: pin.latitude,
+        longitude: pin.longitude,
+        locationAddress: pin.address,
+        mapsUrl: pin.mapsUrl,
+        sourceType,
+        sourceLabel,
+        receivedViaPhone: "",
+        receivedViaName: m.senderName || "",
+        assignedStaffId: null,
+        assignedStaffName: null,
+        leadContext: "",
+        createdAt: m.createdAt,
+      };
+      const k = dedupKey(rec);
+      if (!byKey.has(k)) byKey.set(k, rec);
+    }
+  }
+
+  return Array.from(byKey.values()).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
 }

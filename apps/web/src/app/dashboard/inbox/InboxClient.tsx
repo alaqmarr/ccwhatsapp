@@ -3,19 +3,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import {
-  extractMessageMedia,
   type NormalizedMessageMedia,
 } from "@/components/MediaAttachmentTools";
 import type { NewChatModalMode } from "@/components/NewChatTemplateModal";
 import type {
   ApprovedTemplateOption,
-  ChatMessage,
   ConversationDetailBundle,
   InitialInboxPayload,
   QuickReplyItem,
   StaffOption,
   TeamOption,
 } from "@/lib/inbox-server-data";
+import { mergeChatAndVaultSharedMedia } from "./inbox-helpers";
 import type { MyLeadItem } from "@/app/api/leads/mine/route";
 import { getDraftKey, MY_LEADS_THREAD_ID, useInboxStore } from "@/lib/inbox-store";
 import { inboxKeys } from "@/lib/inbox-queries";
@@ -212,17 +211,14 @@ export function InboxClient({
     () => messages.filter((m) => m.messageType === "INTERNAL_NOTE"),
     [messages]
   );
-  const sharedMediaItems = useMemo(
+  const unifiedSharedMedia = useMemo(
     () =>
-      messages
-        .map((m) => ({ msg: m, media: extractMessageMedia(m) }))
-        .filter(
-          (
-            item
-          ): item is { msg: ChatMessage; media: NormalizedMessageMedia } =>
-            Boolean(item.media)
-        ),
-    [messages]
+      mergeChatAndVaultSharedMedia(
+        messages,
+        detail?.sharedMediaVault,
+        activeConv?.customerPhone || ""
+      ),
+    [messages, detail?.sharedMediaVault, activeConv?.customerPhone]
   );
 
   const isAcrioHandling = activeConv?.assignedStaffId === "ACRIO";
@@ -613,7 +609,7 @@ export function InboxClient({
         selectedId={selectedId}
         detail={detail}
         internalNotes={internalNotes}
-        sharedMediaItems={sharedMediaItems}
+        unifiedSharedMedia={unifiedSharedMedia}
         staffList={staffList}
         nowMs={rt.nowMs}
         windowOpen={isWindowOpen}

@@ -121,30 +121,30 @@ export async function draftMetaCompliantTemplateWithAi(params: {
         maxTokens: 2048,
         effort: "medium",
         timeoutMs: 24000,
-        system: `You design executive, high-converting, Meta WhatsApp Cloud API compliant templates for ${brandName}.
+        system: `You design executive, high-converting, Meta WhatsApp Cloud API compliant templates for Classic Concepts & Classic Edge 53 using the Brand Name, Brand Prefix, and Category provided in the user turn.
 
 STRICT TEMPLATE DESIGN & META APPROVAL RULES:
 1. TAILOR DIRECTLY TO THE ADMIN'S GOAL:
    - Write the exact message the admin asked for! Never fall back to generic "Explore our product range" copy if the admin asked for something specific (such as introducing our new official WhatsApp number, an event invite, dispatch update, etc.).
 2. SHORT, MEANINGFUL TEMPLATE NAME (CRITICAL):
-   - "name" MUST be a short 2 to 4 word descriptive identifier in lowercase_snake_case prefixed with "${brandPrefix}_" (for example: "${brandPrefix}_official_whatsapp_intro" or "${brandPrefix}_podium_festival_offer").
-   - NEVER copy the admin's prompt sentence into "name" (NEVER output "${brandPrefix}_create_a_message...").
+   - "name" MUST be a short 2 to 4 word descriptive identifier in lowercase_snake_case prefixed with "<Brand Prefix>_" (for example: "cc_official_whatsapp_intro" or "ce53_podium_festival_offer").
+   - NEVER copy the admin's prompt sentence into "name" (NEVER output "<prefix>_create_a_message...").
 3. EXECUTIVE WHATSAPP FORMATTING & META VARIABLE RULES:
    - Body text MUST NOT start or end with a {{variable}} and MUST NOT place {{1}} {{2}} side by side.
    - Number variables sequentially starting at {{1}} (usually {{1}} = Customer First Name).
    - Format the body cleanly for WhatsApp mobile screens using *single-asterisk bold* for key highlights, clean paragraph breaks, and bullet points (•) where helpful. Keep body under 480 characters.
    - Plain, warm, everyday English. Zero em-dashes, zero double-hyphens, zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
 4. FOOTER & QUICK REPLY BUTTONS:
-   - For MARKETING: footerText MUST include opt-out ("${brandName} • Reply STOP to opt out"). For UTILITY: "${brandName}".
+   - For MARKETING: footerText MUST include opt-out ("<Brand Name> • Reply STOP to opt out"). For UTILITY: "<Brand Name>".
    - Include 2 or 3 relevant QUICK_REPLY buttons (<= 22 chars each) that match the message topic, each mapped to a deterministic flowAction ("AUTO_REPLY", "ASSIGN_TEAM", "SEND_ORDER_TRACKING", or "OPT_OUT_DND").
 
 Return ONLY valid JSON:
 {
-  "name": "${brandPrefix}_short_topic_slug",
-  "category": "${category}",
+  "name": "<brandPrefix>_short_topic_slug",
+  "category": "MARKETING | UTILITY",
   "headerText": "Clean Title <= 55 chars (no variables, no emojis)",
   "bodyText": "Hello {{1}},\\n\\nClean WhatsApp-formatted body tailored to the prompt...",
-  "footerText": "${category === "MARKETING" ? `${brandName} • Reply STOP to opt out` : brandName}",
+  "footerText": "<Brand Name> • Reply STOP to opt out (or <Brand Name> for UTILITY)",
   "variablesSchema": [
     { "index": 1, "label": "Customer First Name", "sourceField": "customer.firstName", "sampleValue": "Rahul" }
   ],
@@ -171,7 +171,7 @@ Return ONLY valid JSON:
         messages: [
           {
             role: "user",
-            content: `Admin Prompt: ${cleanPrompt}\nCategory: ${category}\nBrand: ${brandName}${
+            content: `Admin Prompt: ${cleanPrompt}\nCategory: ${category}\nBrand Name: ${brandName}\nBrand Prefix: ${brandPrefix}${
               topLink ? `\nOptional catalog shortlink (include ONLY if relevant to the prompt): ${topLink}` : "\nDo NOT insert random product catalog links unless requested."
             }`,
           },

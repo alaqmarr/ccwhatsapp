@@ -56,6 +56,7 @@ export async function fetchConversationDetail(
     websiteEnquiries: data.websiteEnquiries || [],
     acrio: data.acrio || null,
     customLinks: data.customLinks || [],
+    sharedMediaVault: data.sharedMediaVault || [],
     verifiedLocation: data.verifiedLocation,
     drawerHydrated: data.drawerHydrated !== false,
     teams: Array.isArray(data.teams) ? data.teams : undefined,
@@ -71,6 +72,7 @@ export async function fetchConversationDrawer(conversationId: string): Promise<
     | "relations"
     | "websiteEnquiries"
     | "customLinks"
+    | "sharedMediaVault"
     | "verifiedLocation"
     | "drawerHydrated"
   >
@@ -89,6 +91,7 @@ export async function fetchConversationDrawer(conversationId: string): Promise<
     relations: data.relations || [],
     websiteEnquiries: data.websiteEnquiries || [],
     customLinks: data.customLinks || [],
+    sharedMediaVault: data.sharedMediaVault || [],
     verifiedLocation: data.verifiedLocation,
     drawerHydrated: true,
   };
@@ -153,6 +156,7 @@ export function mergeServerDetailWithCached(
           relations: prev.relations,
           websiteEnquiries: prev.websiteEnquiries,
           customLinks: prev.customLinks,
+          sharedMediaVault: prev.sharedMediaVault,
           verifiedLocation: prev.verifiedLocation,
           drawerHydrated: true,
         }

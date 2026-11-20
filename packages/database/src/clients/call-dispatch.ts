@@ -270,14 +270,10 @@ export async function createCallDispatchItem(params: {
   if (mode === "MANUAL" && params.manualStaffId) {
     const staffList = await listActiveNonClientStaff();
     const hit = staffList.find((s) => s.id === params.manualStaffId);
-    if (hit && hit.assignmentsEnabled) {
+    if (hit) {
       assignedStaffId = hit.id;
       assignedStaffName = hit.name;
       assignmentReason = `Manually assigned by ${params.submittedByName}`;
-    } else if (hit && !hit.assignmentsEnabled) {
-      throw new Error(
-        `Assignments and leads are turned off for ${hit.name} in Team Approvals.`
-      );
     }
   } else if (pref && mode === "PREFERRED_OR_PAST") {
     assignedStaffId = pref.staffId;

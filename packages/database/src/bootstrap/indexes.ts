@@ -45,6 +45,9 @@ export async function ensureAllDatabaseIndexes(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS idx_call_queue_status ON call_dispatch_queue (status, assigned_staff_id, created_at DESC)`,
       `CREATE INDEX IF NOT EXISTS idx_custom_links_code_nocase ON custom_links (code COLLATE NOCASE)`,
       `CREATE INDEX IF NOT EXISTS idx_custom_links_slug ON custom_links (product_slug COLLATE NOCASE)`,
+      `CREATE INDEX IF NOT EXISTS idx_csm_phone_created ON customer_shared_media (customer_phone, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_csm_conv_created ON customer_shared_media (conversation_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_csm_wa_media ON customer_shared_media (wa_media_id)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_wa_id_unique ON messages (wa_message_id) WHERE wa_message_id IS NOT NULL AND TRIM(wa_message_id) != ''`,
     ]),
     applyIndexesSafely(contacts, [

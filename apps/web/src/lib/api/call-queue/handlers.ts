@@ -323,15 +323,6 @@ export async function handleCallQueueMiscAction(
         { status: 400 }
       );
     }
-    if (!target.assignmentsEnabled) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: `Assignments and leads are turned off for ${target.name} in Team Approvals.`,
-        },
-        { status: 400 }
-      );
-    }
     const updated = await updateCallDispatchItem({
       id,
       action: "reassign",

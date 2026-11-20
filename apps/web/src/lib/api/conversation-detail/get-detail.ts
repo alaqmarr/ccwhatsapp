@@ -3,6 +3,7 @@ import {
   fetchWebsiteEnquiriesForCustomer,
   getRawLibSqlClient,
   getVerifiedLiveBrandAndTeamInfo,
+  listCustomerSharedMediaForCustomer,
   listOrderTrackings,
   parseConversationCollaborators,
 } from "@cc/database";
@@ -35,32 +36,43 @@ function mapMessageRows(rows: Record<string, unknown>[]) {
   });
 }
 
-async function loadConversationDrawerData(customerPhone: string) {
+async function loadConversationDrawerData(
+  customerPhone: string,
+  conversationId: string
+) {
   const crm = getRawLibSqlClient("crm_orders");
-  const [custRes, ordersRes, relationsRes, customLinks, orderTrackings, liveBrandInfo] =
-    await Promise.all([
-      crm.execute({
-        sql: `SELECT id, phone, name, email, company_name, organization_type, city, gst_number,
-                     acrio_segment, lifetime_value_inr, total_orders_count, notes,
-                     preferred_staff_id, preferred_staff_name, tags_json
-              FROM customers WHERE phone = ? LIMIT 1`,
-        args: [customerPhone],
-      }),
-      crm.execute({
-        sql: `SELECT id, order_number, items_summary, quantity, total_amount_inr,
-                     payment_status, fulfillment_status, invoice_url, ordered_at
-              FROM customer_orders WHERE customer_phone = ? ORDER BY ordered_at DESC`,
-        args: [customerPhone],
-      }),
-      crm.execute({
-        sql: `SELECT id, relation_type, summary, handled_by, occurred_at
-              FROM customer_relations WHERE customer_phone = ? ORDER BY occurred_at DESC`,
-        args: [customerPhone],
-      }),
-      listCustomAdminLinks(),
-      listOrderTrackings({ customerPhone }).catch(() => []),
-      getVerifiedLiveBrandAndTeamInfo().catch(() => null),
-    ]);
+  const [
+    custRes,
+    ordersRes,
+    relationsRes,
+    customLinks,
+    orderTrackings,
+    liveBrandInfo,
+    sharedMediaVault,
+  ] = await Promise.all([
+    crm.execute({
+      sql: `SELECT id, phone, name, email, company_name, organization_type, city, gst_number,
+                   acrio_segment, lifetime_value_inr, total_orders_count, notes,
+                   preferred_staff_id, preferred_staff_name, tags_json
+            FROM customers WHERE phone = ? LIMIT 1`,
+      args: [customerPhone],
+    }),
+    crm.execute({
+      sql: `SELECT id, order_number, items_summary, quantity, total_amount_inr,
+                   payment_status, fulfillment_status, invoice_url, ordered_at
+            FROM customer_orders WHERE customer_phone = ? ORDER BY ordered_at DESC`,
+      args: [customerPhone],
+    }),
+    crm.execute({
+      sql: `SELECT id, relation_type, summary, handled_by, occurred_at
+            FROM customer_relations WHERE customer_phone = ? ORDER BY occurred_at DESC`,
+      args: [customerPhone],
+    }),
+    listCustomAdminLinks(),
+    listOrderTrackings({ customerPhone }).catch(() => []),
+    getVerifiedLiveBrandAndTeamInfo().catch(() => null),
+    listCustomerSharedMediaForCustomer({ customerPhone, conversationId }).catch(() => []),
+  ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
   const lookupKey = customerRow?.email ? String(customerRow.email) : customerPhone;
@@ -127,6 +139,7 @@ async function loadConversationDrawerData(customerPhone: string) {
     relations,
     websiteEnquiries,
     customLinks,
+    sharedMediaVault,
     verifiedLocation: {
       placeName:
         liveBrandInfo?.placeName || "Classic Concepts Acrylic Private Limited",
@@ -197,7 +210,7 @@ export async function handleGetConversationDetail(req: Request, id: string) {
   const customerPhone = String(cRow.customer_phone);
 
   if (modeParam === "drawer") {
-    const drawer = await loadConversationDrawerData(customerPhone);
+    const drawer = await loadConversationDrawerData(customerPhone, id);
     return NextResponse.json({
       ok: true,
       drawerHydrated: true,
@@ -230,7 +243,7 @@ export async function handleGetConversationDetail(req: Request, id: string) {
        FROM teams
        ORDER BY priority_rank ASC, name ASC`
     ),
-    includeDrawer ? loadConversationDrawerData(customerPhone) : Promise.resolve(null),
+    includeDrawer ? loadConversationDrawerData(customerPhone, id) : Promise.resolve(null),
     shouldClearUnread
       ? conv.execute({
           sql: `UPDATE conversations SET unread_count = 0 WHERE id = ?`,
@@ -322,6 +335,7 @@ export async function handleGetConversationDetail(req: Request, id: string) {
     websiteEnquiries: drawerData?.websiteEnquiries ?? [],
     acrio: null,
     customLinks: drawerData?.customLinks ?? [],
+    sharedMediaVault: drawerData?.sharedMediaVault ?? [],
     verifiedLocation: drawerData?.verifiedLocation,
   });
 }

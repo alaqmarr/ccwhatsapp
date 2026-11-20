@@ -201,9 +201,11 @@ export function parseAssignCommand(rawText: string): ParsedAssignCommand {
 
 export function extractCustomerHints(text: string, excludeSuffixes: string[]): { name: string; phone: string } {
   let phone = "";
-  const phoneRe = /(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}/g;
-  for (const m of text.matchAll(phoneRe)) {
-    const s = suffix10(m[0]);
+  // Ignore GPS URLs / map links and enforce non-digit/non-decimal boundaries so coordinates or IDs never match as phone numbers
+  const strippedForPhone = String(text || "").replace(/https?:\/\/\S+/gi, " ");
+  const phoneRe = /(?<![.\d])(?:\+?91[\s-]?)?([6-9]\d{4}[\s-]?\d{5})(?!\d)/g;
+  for (const m of strippedForPhone.matchAll(phoneRe)) {
+    const s = suffix10(m[1] || m[0]);
     if (s.length === 10 && !excludeSuffixes.includes(s)) {
       phone = `+91${s}`;
       break;
@@ -219,7 +221,7 @@ export function extractCustomerHints(text: string, excludeSuffixes: string[]): {
   return { name, phone };
 }
 
-export const MEDIA_PLACEHOLDER_RE = /^\[(?:image|document|video|voice note|audio|message)[^\]]*\](?:\s+.*)?$/i;
+export const MEDIA_PLACEHOLDER_RE = /^\[(?:image|document|video|voice note|audio|location|message)[^\]]*\](?:\s+.*)?$/i;
 
 export const KIND_LABEL: Record<LeadItemKind, [string, string]> = {
   TEXT: ["message", "messages"],
@@ -227,4 +229,5 @@ export const KIND_LABEL: Record<LeadItemKind, [string, string]> = {
   AUDIO: ["voice note", "voice notes"],
   VIDEO: ["video", "videos"],
   DOCUMENT: ["document", "documents"],
+  LOCATION: ["location", "locations"],
 };

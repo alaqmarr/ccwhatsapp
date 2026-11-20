@@ -1,13 +1,20 @@
 import crypto from "node:crypto";
 import {
   createCallDispatchItem,
+  extractGoogleMapsLinksFromText,
   getRawLibSqlClient,
   normalizeWhatsAppPhone,
   pickNextSequentialStaffAtoZ,
+  recordCustomerSharedMediaBatch,
+  resolveInternalStaffCallerByPhone,
   resolveStaffMemberByQuery,
   upsertSyncedContact,
+  type UpsertCustomerSharedMediaInput,
 } from "@cc/database";
-import { sendStaffClientAssignmentTemplate } from "@cc/connections";
+import {
+  downloadAndPersistMetaMediaToDisk,
+  sendStaffClientAssignmentTemplate,
+} from "@cc/connections";
 import { socketHub } from "@cc/sockets";
 import { createNotification } from "@cc/workers/staff-notes";
 import {
@@ -127,28 +134,22 @@ export async function assignLeadFromOwner(
   let whyAuto = "";
   if (p.targetStaffIdOverride) {
     chosen = allStaff.find((s) => s.id === p.targetStaffIdOverride) || null;
-    if (!chosen || !chosen.assignmentsEnabled) {
+    if (!chosen) {
       return {
         handled: true,
-        reply: `Assignments and leads are turned off for that account right now in Team Approvals.`,
+        reply: `Could not find that staff account in active team members.`,
       };
     }
   } else if (parsed.targetQuery) {
     const hit = resolveStaffMemberByQuery(parsed.targetQuery, allStaff);
     chosen = hit ? allStaff.find((s) => s.id === hit.id) || null : null;
-    if (chosen && !chosen.assignmentsEnabled) {
-      return {
-        handled: true,
-        reply: `Assignments and leads are turned off for *${chosen.name}* in Team Approvals right now, so nothing was assigned. Reply *assign* to route in sequence to an available teammate.`,
-      };
-    }
     if (!chosen) {
       if (!/^(assign|allot|reassign)$/.test(parsed.verb)) {
         // "send this to <something that is not a staff name>" is not an assignment command.
         return { handled: false, reply: "" };
       }
       const names = allStaff
-        .filter((s) => s.role !== "DEV" && s.assignmentsEnabled && s.suffix !== ownerSuffix)
+        .filter((s) => s.role !== "DEV" && s.suffix !== ownerSuffix)
         .slice(0, 12)
         .map((s) => s.name.split(/\s+/)[0])
         .join(", ");
@@ -181,6 +182,8 @@ export async function assignLeadFromOwner(
   const nowIso = new Date().toISOString();
   const leadId = `lead_${crypto.randomUUID().slice(0, 10)}`;
   const staffFirst = chosen.name.split(/\s+/)[0] || chosen.name;
+  const matchedForwarder = await resolveInternalStaffCallerByPhone(ownerE164).catch(() => null);
+  const forwarderName = matchedForwarder?.name || p.ownerName;
 
   // 3. Save the lead in the Call Queue so it also shows in the hub.
   let callQueueId: string | null = null;
@@ -189,12 +192,12 @@ export async function assignLeadFromOwner(
     const item = await createCallDispatchItem({
       customerPhone: hints.phone,
       customerName: hints.name,
-      source: `Owner WhatsApp (${p.ownerName})`,
+      source: `Owner WhatsApp (${forwarderName})`,
       productTopic: (leadText || `Attachments only (${attachmentSummary})`).replace(/\s+/g, " ").slice(0, 80),
       notes: [
         leadText,
         ...mediaItems.map((i) => i.text).filter(Boolean).map((c) => `(File caption: ${c})`),
-        attachmentSummary ? `(Attachments: ${attachmentSummary}. Open the owner chat in the hub to view them.)` : "",
+        attachmentSummary ? `(Attachments saved to Client Panel: ${attachmentSummary}.)` : "",
       ]
         .filter(Boolean)
         .join("\n"),
@@ -202,7 +205,7 @@ export async function assignLeadFromOwner(
       manualStaffId: chosen.id,
       priority: "HIGH",
       submittedById: p.ownerPhone,
-      submittedByName: p.ownerName,
+      submittedByName: forwarderName,
     });
     callQueueId = item.id;
     callQueueConversationId = item.conversationId || null;
@@ -210,14 +213,14 @@ export async function assignLeadFromOwner(
     console.warn("[owner-desk] call queue save failed:", err);
   }
 
-  // 4. If the customer already has an open chat, move it to the chosen staff member.
+  // 4. Route/create the client conversation for hints.phone AND permanently tag all shared media & locations to hints.phone.
   let reassignedFrom = "";
   if (hints.phone) {
     await upsertSyncedContact({
       phone: hints.phone,
       name: hints.name || undefined,
       source: "MANUAL",
-      notes: `Lead from ${p.ownerName}: ${leadText.slice(0, 300)}`,
+      notes: `Lead from ${forwarderName}: ${leadText.slice(0, 300)}`,
       preferredStaffId: chosen.id,
       preferredStaffName: chosen.name,
       lastContactedAt: nowIso,
@@ -231,7 +234,60 @@ export async function assignLeadFromOwner(
       })
       .catch(() => ({ rows: [] as Record<string, unknown>[] }));
     const ex = existing.rows[0];
-    if (ex && String(ex.status) !== "RESOLVED" && String(ex.assigned_staff_id || "") !== chosen.id) {
+    let clientConvId = ex ? String(ex.id) : "";
+
+    if (!ex) {
+      clientConvId = `conv_${crypto.randomUUID().slice(0, 8)}`;
+      const crm = getRawLibSqlClient("crm_orders");
+      const custRes = await crm
+        .execute({
+          sql: `SELECT id FROM customers WHERE phone = ? LIMIT 1`,
+          args: [hints.phone],
+        })
+        .catch(() => ({ rows: [] as Record<string, unknown>[] }));
+      const custId = custRes.rows[0]?.id ? String(custRes.rows[0].id) : null;
+      await conv
+        .execute({
+          sql: `INSERT INTO conversations (
+            id, customer_phone, customer_name, customer_id, status, priority, smart_category,
+            assigned_staff_id, assigned_staff_name, assigned_team_id, assigned_team_name,
+            escalation_level, waiting_since, unread_count, last_message_preview, last_message_at, created_at
+          ) VALUES (?, ?, ?, ?, 'ASSIGNED', 'HIGH', 'General Enquiry', ?, ?, 'team_sales', 'Sales Team', 'P0', NULL, 0, ?, ?, ?)`,
+          args: [
+            clientConvId,
+            hints.phone,
+            hints.name || hints.phone,
+            custId,
+            chosen.id,
+            chosen.name,
+            (leadText || attachmentSummary || `Lead forwarded by ${forwarderName}`).slice(0, 140),
+            nowIso,
+            nowIso,
+          ],
+        })
+        .catch((err) => {
+          console.warn("[owner-desk] client conversation insert failed:", err);
+        });
+      await p
+        .logAssignment({
+          conversationId: clientConvId,
+          customerPhone: hints.phone,
+          customerName: hints.name || hints.phone,
+          fromStaffId: null,
+          fromStaffName: null,
+          fromTeamName: null,
+          toStaffId: chosen.id,
+          toStaffName: chosen.name,
+          toTeamId: "team_sales",
+          toTeamName: "Sales Team",
+          escalationLevel: "P0",
+          assignmentSource: "MANUAL_ASSIGN",
+          assignedByName: forwarderName,
+          reason: `Lead forwarded by ${forwarderName} on WhatsApp`,
+          assignedAt: nowIso,
+        })
+        .catch(() => {});
+    } else if (String(ex.status) !== "RESOLVED" && String(ex.assigned_staff_id || "") !== chosen.id) {
       const prevId = ex.assigned_staff_id ? String(ex.assigned_staff_id) : "";
       const prevName = ex.assigned_staff_name ? String(ex.assigned_staff_name) : "";
       await conv.execute({
@@ -243,11 +299,11 @@ export async function assignLeadFromOwner(
                     THEN 'Sales Team' ELSE assigned_team_name END,
                   escalation_level = 'P0', waiting_since = NULL
               WHERE id = ?`,
-        args: [chosen.id, chosen.name, String(ex.id)],
+        args: [chosen.id, chosen.name, clientConvId],
       });
       await p
         .logAssignment({
-          conversationId: String(ex.id),
+          conversationId: clientConvId,
           customerPhone: hints.phone,
           customerName: String(ex.customer_name || hints.name || ""),
           fromStaffId: prevId || null,
@@ -259,22 +315,9 @@ export async function assignLeadFromOwner(
           toTeamName: "Sales Team",
           escalationLevel: "P0",
           assignmentSource: "MANUAL_ASSIGN",
-          assignedByName: p.ownerName,
-          reason: `Assigned by ${p.ownerName} on WhatsApp (lead forwarding)`,
+          assignedByName: forwarderName,
+          reason: `Assigned by ${forwarderName} on WhatsApp (lead forwarding)`,
           assignedAt: nowIso,
-        })
-        .catch(() => {});
-      await conv
-        .execute({
-          sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, delivery_status, created_at)
-                VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
-          args: [
-            `msg_lead_note_${crypto.randomUUID().slice(0, 8)}`,
-            String(ex.id),
-            p.ownerName,
-            `${p.ownerName} assigned this chat to ${chosen.name} on WhatsApp.`,
-            nowIso,
-          ],
         })
         .catch(() => {});
       if (prevId && prevId !== "ACRIO" && prevId !== chosen.id) {
@@ -282,20 +325,128 @@ export async function assignLeadFromOwner(
         await createNotification({
           staffId: prevId,
           type: "MENTION",
-          conversationId: String(ex.id),
+          conversationId: clientConvId,
           messageId: leadId,
-          fromName: p.ownerName,
+          fromName: forwarderName,
           customerName: String(ex.customer_name || hints.phone),
-          text: `${p.ownerName} moved this chat to ${chosen.name}. You no longer need to follow it up.`,
+          text: `${forwarderName} moved this chat to ${chosen.name}. You no longer need to follow it up.`,
         }).catch(() => {});
       }
       socketHub.emit("conversation:assigned", {
-        conversationId: String(ex.id),
+        conversationId: clientConvId,
         staffId: chosen.id,
         staffName: chosen.name,
         teamName: "Sales Team",
         escalationLevel: "P0",
       });
+    }
+
+    if (clientConvId) {
+      callQueueConversationId = clientConvId;
+      if (callQueueId) {
+        await conv
+          .execute({
+            sql: `UPDATE call_dispatch_queue SET conversation_id = COALESCE(conversation_id, ?) WHERE id = ?`,
+            args: [clientConvId, callQueueId],
+          })
+          .catch(() => {});
+      }
+      const noteLines = [
+        `${forwarderName} assigned this lead to ${chosen.name} on WhatsApp.`,
+        leadText ? `Context: ${leadText.slice(0, 500)}` : "",
+        attachmentSummary
+          ? `Shared items saved to Client Panel (${attachmentSummary}).`
+          : "",
+      ].filter(Boolean);
+      await conv
+        .execute({
+          sql: `INSERT INTO messages (id, conversation_id, direction, sender_type, sender_name, message_type, billing_category, body, delivery_status, created_at)
+                VALUES (?, ?, 'INTERNAL', 'STAFF_NOTE', ?, 'INTERNAL_NOTE', 'INTERNAL', ?, 'SAVED', ?)`,
+          args: [
+            `msg_lead_note_${crypto.randomUUID().slice(0, 8)}`,
+            clientConvId,
+            forwarderName,
+            noteLines.join("\n"),
+            nowIso,
+          ],
+        })
+        .catch(() => {});
+    }
+
+    // Tag EVERY photo, video, file, voice note, and location to hints.phone in customer_shared_media + disk vault
+    const leadContextSnippet = leadText.slice(0, 600);
+    const vaultBatch: UpsertCustomerSharedMediaInput[] = [];
+    for (const m of mediaItems) {
+      if (m.kind === "LOCATION") {
+        vaultBatch.push({
+          customerPhone: hints.phone,
+          conversationId: clientConvId || null,
+          itemKind: "LOCATION",
+          title: m.locationName || "Shared Location",
+          caption: m.text || "",
+          latitude: m.latitude ?? null,
+          longitude: m.longitude ?? null,
+          locationAddress: m.locationAddress || "",
+          mapsUrl: m.mapsUrl || "",
+          sourceType: "OWNER_FORWARD",
+          sourceLabel: `Forwarded by ${forwarderName}`,
+          receivedViaPhone: ownerE164,
+          receivedViaName: forwarderName,
+          assignedStaffId: chosen.id,
+          assignedStaffName: chosen.name,
+          leadContext: leadContextSnippet,
+          createdAt: new Date(m.at || Date.now()).toISOString(),
+        });
+      } else if (m.kind !== "TEXT" && m.mediaId) {
+        vaultBatch.push({
+          customerPhone: hints.phone,
+          conversationId: clientConvId || null,
+          waMediaId: m.mediaId,
+          localMediaId: m.mediaId,
+          itemKind: m.kind,
+          title: m.fileName || m.kind,
+          caption: m.text || "",
+          mimeType: m.mimeType || "",
+          sourceType: "OWNER_FORWARD",
+          sourceLabel: `Forwarded by ${forwarderName}`,
+          receivedViaPhone: ownerE164,
+          receivedViaName: forwarderName,
+          assignedStaffId: chosen.id,
+          assignedStaffName: chosen.name,
+          leadContext: leadContextSnippet,
+          createdAt: new Date(m.at || Date.now()).toISOString(),
+        });
+        void downloadAndPersistMetaMediaToDisk({
+          mediaId: m.mediaId,
+          customerPhone: hints.phone,
+          fileName: m.fileName,
+          mimeType: m.mimeType,
+          sourceLabel: `Forwarded by ${forwarderName}`,
+        }).catch(() => {});
+      }
+    }
+    for (const link of extractGoogleMapsLinksFromText(leadText)) {
+      vaultBatch.push({
+        customerPhone: hints.phone,
+        conversationId: clientConvId || null,
+        itemKind: "LOCATION",
+        title: "Shared Map Link",
+        caption: "",
+        latitude: link.latitude,
+        longitude: link.longitude,
+        mapsUrl: link.mapsUrl,
+        sourceType: "OWNER_FORWARD",
+        sourceLabel: `Forwarded by ${forwarderName}`,
+        receivedViaPhone: ownerE164,
+        receivedViaName: forwarderName,
+        assignedStaffId: chosen.id,
+        assignedStaffName: chosen.name,
+        leadContext: leadContextSnippet,
+        createdAt: nowIso,
+      });
+    }
+    if (vaultBatch.length > 0) {
+      await recordCustomerSharedMediaBatch(vaultBatch).catch(() => {});
     }
   }
 

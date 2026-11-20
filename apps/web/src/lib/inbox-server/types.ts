@@ -1,9 +1,12 @@
 import type {
   ConversationCollaborator,
+  CustomerSharedMediaRecord,
   OrderTrackingRecord,
 } from "@cc/database";
 import type { UserRole } from "@cc/rbac";
 import type { InboxQuickFilter } from "../inbox-filter-helpers";
+
+export type { CustomerSharedMediaRecord };
 
 export interface ConversationSummary {
   id: string;
@@ -238,6 +241,7 @@ export interface ConversationDetailBundle {
   websiteEnquiries: WebsiteEnquiry[];
   acrio: AcrioCopilot | null;
   customLinks: CustomLinkItem[];
+  sharedMediaVault?: CustomerSharedMediaRecord[];
   verifiedLocation?: VerifiedCompanyLocation;
   drawerHydrated?: boolean;
 }

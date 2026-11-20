@@ -70,7 +70,6 @@ export function MyLeadsChatWindow({
   const forwardableStaff = staffList.filter(
     (s) =>
       s.role !== "DEV" &&
-      s.assignmentsEnabled !== false &&
       s.id !== currentUserId
   );
 

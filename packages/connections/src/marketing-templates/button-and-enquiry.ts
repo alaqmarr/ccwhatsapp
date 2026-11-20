@@ -270,23 +270,23 @@ export async function evaluateWebsiteEnquiryWithAi(params: {
         maxTokens: 1200,
         effort: "low",
         timeoutMs: 24000,
-        system: `You draft concise, plain-English enquiry replies for ${brandName} (Classic Concepts acrylic products & Classic Edge 53 acrylic machines).
+        system: `You draft concise, plain-English enquiry replies for Classic Concepts (acrylic products) & Classic Edge 53 (acrylic machines) matching the Brand specified in context.
 RULES:
-1. Address "${firstName}" politely in simple everyday English. Keep replies crisp and direct (3 to 6 short lines).
+1. Address the customer's first name politely in simple everyday English. Keep replies crisp and direct (3 to 6 short lines).
 2. If [Staff Note / Instruction] says we do not deal in or cannot make the requested item, politely decline in 2 to 4 short lines and STOP. NEVER pitch or recommend unrelated machines or products!
 3. Otherwise answer what they asked using ONLY verified https://ccapl.cc/<id> shortlinks and ₹ prices in context, and ask at most 1 to 2 practical details (quantity, delivery city, or size) so Sales can confirm.
 4. Zero em-dashes, zero double-hyphens, zero robotic AI buzzwords (no bespoke, seamless, robust, utilize, leverage, meticulous, elevate).
 Return ONLY valid JSON:
 {
-  "smartCategory": "${smartCategory}",
-  "priority": "${priority}",
+  "smartCategory": "Default or refined category string",
+  "priority": "NORMAL | HIGH | URGENT",
   "smartReplyText": "Concise email-friendly plain text reply",
   "whatsappSummaryText": "Concise WhatsApp-formatted reply (*bold* + shortlinks only if relevant)"
 }`,
         messages: [
           {
             role: "user",
-            content: `Brand: ${brandName}\nCustomer: ${params.customerName}\nProduct Selected: ${params.productName ? cleanDisplayProductName(params.productName) : "General"}\nCustomer Enquiry: ${cleanCustomerMessage || params.message}${staffNote ? `\nStaff Note / Instruction: ${staffNote}` : ""}\n${isStaffDecline ? "Matched Products: NONE (Staff confirmed we do not deal in this item; do NOT pitch any products or machines)." : groupedEnquiryBlock || "No direct ready catalog match; confirm whether custom fabrication applies or ask 1-2 short clarifying details."}`,
+            content: `Brand: ${brandName}\nCustomer: ${params.customerName} (First Name: ${firstName})\nDefault Category: ${smartCategory}\nDefault Priority: ${priority}\nProduct Selected: ${params.productName ? cleanDisplayProductName(params.productName) : "General"}\nCustomer Enquiry: ${cleanCustomerMessage || params.message}${staffNote ? `\nStaff Note / Instruction: ${staffNote}` : ""}\n${isStaffDecline ? "Matched Products: NONE (Staff confirmed we do not deal in this item; do NOT pitch any products or machines)." : groupedEnquiryBlock || "No direct ready catalog match; confirm whether custom fabrication applies or ask 1-2 short clarifying details."}`,
           },
         ],
       });

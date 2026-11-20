@@ -18,6 +18,7 @@ export * from "./clients/company-docs";
 export * from "./clients/ecosystem-docs";
 export * from "./clients/call-dispatch";
 export * from "./clients/sequential-assignment";
+export * from "./clients/customer-media-vault";
 
 export {
   authDb,

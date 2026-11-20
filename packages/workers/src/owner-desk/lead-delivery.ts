@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
-import { getRawLibSqlClient, normalizeWhatsAppPhone } from "@cc/database";
+import {
+  extractGoogleMapsLinksFromText,
+  getRawLibSqlClient,
+  normalizeWhatsAppPhone,
+} from "@cc/database";
 import { prepareInboundMediaForForward, sendWhatsAppCloudMessage } from "@cc/connections";
 import { socketHub } from "@cc/sockets";
 import { ensureLeadForwardsTable } from "./desk-data";
@@ -9,7 +13,13 @@ import { fmtTime, ownerDisplayName, suffix10, type LeadItem, type LeadItemKind }
 function rowToLeadItem(r: Record<string, unknown>): LeadItem | null {
   const rawKind = String(r.message_type || "TEXT").toUpperCase();
   const kind: LeadItemKind =
-    rawKind === "IMAGE" || rawKind === "AUDIO" || rawKind === "VIDEO" || rawKind === "DOCUMENT" ? rawKind : "TEXT";
+    rawKind === "IMAGE" ||
+    rawKind === "AUDIO" ||
+    rawKind === "VIDEO" ||
+    rawKind === "DOCUMENT" ||
+    rawKind === "LOCATION"
+      ? rawKind
+      : "TEXT";
 
   let meta: Record<string, unknown> = {};
   try {
@@ -19,6 +29,9 @@ function rowToLeadItem(r: Record<string, unknown>): LeadItem | null {
   }
   const media = (meta.media && typeof meta.media === "object" ? meta.media : {}) as Record<string, unknown>;
   const mediaId = String(media.mediaId || media.media_id || meta.mediaId || meta.media_id || "").trim();
+  const pin = (meta.locationPin && typeof meta.locationPin === "object"
+    ? meta.locationPin
+    : null) as Record<string, unknown> | null;
 
   let text = String(r.body || "").trim();
   // The owner's command line ("please assign to ...") is not part of the enquiry.
@@ -27,8 +40,42 @@ function rowToLeadItem(r: Record<string, unknown>): LeadItem | null {
   if (kind !== "TEXT" && MEDIA_PLACEHOLDER_RE.test(text)) text = "";
 
   const at = new Date(String(r.created_at)).getTime() || Date.now();
+  if (kind === "LOCATION" && pin) {
+    const lat = Number(pin.latitude);
+    const lng = Number(pin.longitude);
+    const locationName = String(pin.name || "Shared Location").trim();
+    const locationAddress = String(pin.address || "").trim();
+    const mapsUrl = String(
+      pin.mapsUrl || (Number.isFinite(lat) && Number.isFinite(lng) ? `https://maps.google.com/?q=${lat},${lng}` : "")
+    ).trim();
+    return {
+      kind: "LOCATION",
+      text,
+      latitude: Number.isFinite(lat) ? lat : undefined,
+      longitude: Number.isFinite(lng) ? lng : undefined,
+      locationName,
+      locationAddress,
+      mapsUrl: mapsUrl || undefined,
+      at,
+    };
+  }
   if (kind === "TEXT") {
-    return text ? { kind, text, at } : null;
+    if (!text) return null;
+    const mapLinks = extractGoogleMapsLinksFromText(text);
+    const textWithoutMaps = text.replace(/https?:\/\/(?:maps\.google\.com|www\.google\.com\/maps|maps\.app\.goo\.gl|goo\.gl\/maps)[^\s<>)"']+/gi, "").trim();
+    if (mapLinks.length > 0 && !textWithoutMaps) {
+      const first = mapLinks[0];
+      return {
+        kind: "LOCATION",
+        text: "",
+        latitude: first.latitude ?? undefined,
+        longitude: first.longitude ?? undefined,
+        locationName: "Shared Map Link",
+        mapsUrl: first.mapsUrl,
+        at,
+      };
+    }
+    return { kind, text, at };
   }
   return {
     kind,
@@ -138,7 +185,7 @@ export async function collectLeadItems(p: {
 
   const recent = await conv.execute({
     sql: `${LEAD_ROW_SQL} WHERE conversation_id = ? AND direction = 'INBOUND' AND created_at > ?
-          ORDER BY created_at DESC LIMIT 25`,
+          ORDER BY created_at DESC LIMIT 80`,
     args: [p.conversationId, floor],
   });
 
@@ -147,9 +194,9 @@ export async function collectLeadItems(p: {
     const item = rowToLeadItem(r);
     if (!item) continue;
     const prev = kept[kept.length - 1];
-    if (prev && prev.at - item.at > 10 * 60 * 1000) break;
+    if (prev && prev.at - item.at > 15 * 60 * 1000) break;
     kept.push(item);
-    if (kept.length >= 12) break;
+    if (kept.length >= 60) break;
   }
   if (kept.length > 0) return kept.reverse();
 
@@ -315,6 +362,44 @@ async function sendLeadAttachments(
     const n = (seen.get(it.kind) || 0) + 1;
     seen.set(it.kind, n);
     const label = `${KIND_LABEL[it.kind][0]} ${n}`;
+
+    if (it.kind === "LOCATION") {
+      const hasCoords =
+        typeof it.latitude === "number" &&
+        Number.isFinite(it.latitude) &&
+        typeof it.longitude === "number" &&
+        Number.isFinite(it.longitude);
+      const locTitle = it.locationName || `Client Location ${n}`;
+      const locLine = [locTitle, it.locationAddress, it.mapsUrl].filter(Boolean).join("\n");
+      const res = await sendWhatsAppCloudMessage({
+        toPhone: staffPhone,
+        bodyText: locLine || `From ${ownerName}: ${label}`,
+        ...(hasCoords
+          ? {
+              location: {
+                latitude: it.latitude!,
+                longitude: it.longitude!,
+                name: locTitle,
+                address: it.locationAddress || "",
+              },
+            }
+          : {}),
+        simulateAsyncDelivery: true,
+      }).catch(() => ({ ok: false, waMessageId: "", deliveryStatus: "FAILED", error: "send failed" }));
+      if (!res.ok) {
+        failed.push(`${label} (${res.error || "WhatsApp could not deliver location"})`);
+        continue;
+      }
+      sent += 1;
+      await recordDeskMessage(
+        conversationId,
+        locLine || `[Location] ${locTitle}`,
+        res.waMessageId || "",
+        res.deliveryStatus || "SENT"
+      );
+      continue;
+    }
+
     const prep = await prepareInboundMediaForForward({
       mediaId: it.mediaId || "",
       mimeType: it.mimeType,
@@ -327,7 +412,7 @@ async function sendLeadAttachments(
     }
     const sendAsDocFallback =
       it.kind === "AUDIO" && prep.supportsWhatsAppAudioType === false;
-    const outboundKind: LeadItemKind = sendAsDocFallback ? "DOCUMENT" : it.kind;
+    const outboundKind: Exclude<LeadItemKind, "TEXT" | "LOCATION"> = sendAsDocFallback ? "DOCUMENT" : it.kind;
     const resolvedFileName = it.fileName || prep.fileName;
     const caption =
       outboundKind === "AUDIO" ? "" : it.text || `From ${ownerName}: ${label}`;

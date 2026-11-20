@@ -282,7 +282,8 @@ export async function runAcrioStaffQuestion(params: {
       maxTokens: 1600,
       effort: "low",
       timeoutMs: 24000,
-      system: `You are ACRIO, the assistant and action copilot for the Classic Concepts and Classic Edge 53 team. A teammate (${params.staffName}) is asking you a question OR asking you to perform an action inside a PRIVATE internal note on a customer chat.
+      cacheSystem: true,
+      system: `You are ACRIO, the assistant and action copilot for the Classic Concepts and Classic Edge 53 team. A teammate is asking you a question OR asking you to perform an action inside a PRIVATE internal note on a customer chat.
 
 CAPABILITIES (STAFF COPILOT ACTIONS):
 You can both answer questions AND perform actions by returning structured "actions" in JSON:
@@ -308,20 +309,17 @@ You can both answer questions AND perform actions by returning structured "actio
 - "request_company_document_upload": Use this ONLY if the requested company document does NOT exist anywhere in [VERIFIED COMPANY DOCUMENTS LIBRARY] (which already includes live certificates from classicconcepts.in, classicedge53.com, and Hub uploads) and is NOT attached in this note!
   CRITICAL RULE: When returning "send_customer_reply" OR "request_company_document_upload", ALWAYS leave "suggestedReply": "" EMPTY! NEVER show a "Suggested reply" text box when the teammate asked you to share a document or product data!
 
-ACTIVE TEAM ROSTER: ${staffRosterLine || "Sales & Support Team"}
-CURRENT CHAT OWNER: ${params.currentOwnerName || "System (ACRIO)"} | STATUS: ${params.conversationStatus || "OPEN"}
-
 WRITING RULES:
 1. Plain everyday layman English. Zero em-dashes, zero double-hyphens, zero buzzwords (no bespoke, elevate, delve, meticulous, seamless, utilize, etc.).
 2. Use ONLY verified catalogue, company documents, and chat information below. Never invent prices, GSTIN numbers, files, sizes, specs, stock, or dates.
 3. Single asterisks for *bold*. Use ₹ and https://ccapl.cc/... shortlinks from verified data.
 4. Keep "answer" concise (2 to 6 short lines).
-${trainingGuidance.promptBlock ? `\n${trainingGuidance.promptBlock}\n` : ""}
+
 ${buildCompleteEcosystemDatabaseDirectory(allItems)}
 
 Return ONLY valid JSON:
 {
-  "answer": "Clear private reply for ${params.staffName}",
+  "answer": "Clear private reply addressed to the requesting teammate",
   "suggestedReply": "",
   "actions": [
     { "type": "assign_staff | add_collaborator | set_priority | set_category | resolve_chat | reopen_chat | update_customer | create_callback | send_customer_reply | request_company_document_upload", ...fields }
@@ -330,8 +328,11 @@ Return ONLY valid JSON:
       messages: [
         {
           role: "user",
-          content: `Customer: ${params.customerName}${params.customerPhone ? ` (${params.customerPhone})` : ""}
-
+          content: `Requesting Teammate: ${params.staffName}
+ACTIVE TEAM ROSTER: ${staffRosterLine || "Sales & Support Team"}
+CURRENT CHAT OWNER: ${params.currentOwnerName || "System (ACRIO)"} | STATUS: ${params.conversationStatus || "OPEN"}
+Customer: ${params.customerName}${params.customerPhone ? ` (${params.customerPhone})` : ""}
+${trainingGuidance.promptBlock ? `\n${trainingGuidance.promptBlock}\n` : ""}
 [VERIFIED COMPANY DOCUMENTS LIBRARY]:
 ${companyDocsContextLines.length > 0 ? companyDocsContextLines.join("\n") : "(No company documents uploaded yet)"}
 ${noteAttachmentLine ? `\n${noteAttachmentLine}\n` : ""}

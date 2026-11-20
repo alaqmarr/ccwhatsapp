@@ -141,12 +141,55 @@ export async function runAcrioStaffWhatsAppAssistant(params: {
         .join("\n")
     : "";
 
-  const history = params.recentMessages.slice(-10).map((m) => ({
+  const rawHistory = params.recentMessages.slice(-10).map((m) => ({
     role: (m.direction === "OUTBOUND" ? "assistant" : "user") as
       | "user"
       | "assistant",
     content: String(m.body || "").slice(0, 600),
   }));
+  const trimmedHistory =
+    rawHistory.length > 0 &&
+    rawHistory[rawHistory.length - 1].role === "user" &&
+    rawHistory[rawHistory.length - 1].content.trim() === cleanText
+      ? rawHistory.slice(0, -1)
+      : rawHistory;
+  const normalizedHistory: { role: "user" | "assistant"; content: string }[] = [];
+  for (const msg of trimmedHistory) {
+    const body = msg.content.trim();
+    if (!body) continue;
+    const prev = normalizedHistory[normalizedHistory.length - 1];
+    if (prev && prev.role === msg.role) {
+      prev.content = `${prev.content}\n${body}`;
+    } else {
+      normalizedHistory.push({ role: msg.role, content: body });
+    }
+  }
+  while (normalizedHistory.length > 0 && normalizedHistory[0].role !== "user") {
+    normalizedHistory.shift();
+  }
+  const staffDynamicContext = [
+    `Internal Colleague: ${params.staff.name} (First Name: ${params.staff.firstName} | Position: ${params.staff.position} | Role: ${params.staff.role} | Dept: ${params.staff.department})`,
+    `Hub Inbox URL: ${hubBase}/dashboard/inbox`,
+    trainingGuidance.promptBlock ? `[AI Training Guidance]:\n${trainingGuidance.promptBlock}` : "",
+    productContext ? `[Matching Catalog Products]:\n${productContext}` : "",
+    deepSpec?.promptCatalogContext ? `[Deep Product Specs]:\n${deepSpec.promptCatalogContext}` : "",
+    liveContext ? `[Live Company, Team & CRM Context]:\n${liveContext}` : "",
+    `Staff Question:\n${cleanText}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const staffMessages: { role: "user" | "assistant"; content: string }[] =
+    normalizedHistory.length > 0 &&
+    normalizedHistory[normalizedHistory.length - 1].role === "user"
+      ? [
+          ...normalizedHistory.slice(0, -1),
+          {
+            role: "user",
+            content: `${normalizedHistory[normalizedHistory.length - 1].content}\n\n${staffDynamicContext}`,
+          },
+        ]
+      : [...normalizedHistory, { role: "user", content: staffDynamicContext }];
 
   if (apiKey) {
     try {
@@ -155,21 +198,16 @@ export async function runAcrioStaffWhatsAppAssistant(params: {
         maxTokens: 1200,
         effort: "medium",
         timeoutMs: 18000,
+        cacheLastCompletedTurn: staffMessages.length >= 3,
         system: `You are ACRIO speaking privately on WhatsApp with an INTERNAL team member at Classic Concepts & Classic Edge 53.
-Team member speaking: ${params.staff.name} (${params.staff.position} | Role: ${params.staff.role} | Dept: ${params.staff.department}).
 
 TONE & PERSONALIZATION RULES:
-- Greet and address ${params.staff.firstName} warmly like an internal colleague and personal assistant (NOT as an external customer!).
+- Greet and address the internal teammate by first name warmly like an internal colleague and personal assistant (NOT as an external customer!).
 - Never pitch consumer sales prompts like "Would you like us to call you back?" or "Thank you for enquiring with Classic Concepts".
 - Give exact MRP prices, product codes/SKUs, specs, and shortlinks concisely for staff quoting.
-- Also remind them when relevant that they can text quick commands here: "my chats", "callbacks", "stats", or "check <customer phone>", or open the Hub: ${hubBase}/dashboard/inbox.
-- Plain everyday layman English, single asterisks *bold* for WhatsApp, zero em-dashes, zero double-hyphens, zero AI buzzwords.
-
-${trainingGuidance.promptBlock ? `[AI Training Guidance]:\n${trainingGuidance.promptBlock}\n\n` : ""}${productContext ? `[Matching Catalog Products]:\n${productContext}\n\n` : ""}${deepSpec?.promptCatalogContext ? `[Deep Product Specs]:\n${deepSpec.promptCatalogContext}\n\n` : ""}${liveContext ? `[Live Company, Team & CRM Context]:\n${liveContext}\n` : ""}`,
-        messages: [
-          ...history.slice(0, -1),
-          { role: "user", content: cleanText },
-        ],
+- Also remind them when relevant that they can text quick commands here: "my chats", "callbacks", "stats", or "check <customer phone>", or open the Hub Inbox URL provided in context.
+- Plain everyday layman English, single asterisks *bold* for WhatsApp, zero em-dashes, zero double-hyphens, zero AI buzzwords.`,
+        messages: staffMessages,
       });
       if (aiRes.ok && aiRes.text?.trim()) {
         return {

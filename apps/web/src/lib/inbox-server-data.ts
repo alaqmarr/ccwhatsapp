@@ -16,6 +16,7 @@ export type {
   CustomLinkItem,
   VerifiedCompanyLocation,
   ConversationDetailBundle,
+  CustomerSharedMediaRecord,
   QuickReplyItem,
   InitialInboxPayload,
 } from "./inbox-server/types";

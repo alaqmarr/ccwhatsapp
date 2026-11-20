@@ -166,11 +166,7 @@ async function answerAcrioNote(params: {
           socketHub.emit("conversation:assigned", { conversationId: params.conversationId, staffName: "ACRIO" });
         } else {
           const target = resolveStaffMemberByQuery(act.staffQuery, availableStaff);
-          if (target && !target.assignmentsEnabled) {
-            executedSummaries.push(
-              `Skipped assigning to ${target.name} (assignments turned off in Team Approvals)`
-            );
-          } else if (target && isInternalDeskThread) {
+          if (target && isInternalDeskThread) {
             const hubBase =
               process.env.NEXT_PUBLIC_APP_URL || "https://chat.ccapl.cc";
             const fwd = await assignLeadFromOwner(
@@ -222,11 +218,7 @@ async function answerAcrioNote(params: {
         }
       } else if (act.type === "add_collaborator" && act.staffQuery) {
         const target = resolveStaffMemberByQuery(act.staffQuery, availableStaff);
-        if (target && !target.assignmentsEnabled) {
-          executedSummaries.push(
-            `Skipped co-handler ${target.name} (assignments turned off in Team Approvals)`
-          );
-        } else if (target) {
+        if (target) {
           await addConversationCollaborators({
             conversationId: params.conversationId,
             members: [{ staffId: target.id, staffName: target.name }],

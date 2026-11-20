@@ -45,7 +45,7 @@ export async function handleOwnerDeskMessage(p: {
   // 1b. A voice note, photo, video or file (with or without a caption) is part of an enquiry that is still being
   // sent. Keep it with the lead, never run the AI on it, and only acknowledge once so a burst of 3 files is not 3 replies.
   const isMediaDrop =
-    Boolean(p.hasAttachment) || /^\[(?:image|document|video|voice note|audio)[^\]]*\]/im.test(text);
+    Boolean(p.hasAttachment) || /^\[(?:image|document|video|voice note|audio|location)[^\]]*\]/im.test(text);
   if (isMediaDrop) {
     const recent = await getRawLibSqlClient("conversations")
       .execute({
@@ -56,11 +56,11 @@ export async function handleOwnerDeskMessage(p: {
     const lastOut = recent.rows[0];
     const justAcknowledged =
       Boolean(lastOut) &&
-      /keeping your voice notes/.test(String(lastOut.body || "")) &&
+      /keeping your (?:voice notes|locations)/.test(String(lastOut.body || "")) &&
       Date.now() - new Date(String(lastOut.created_at)).getTime() < 90 * 1000;
     if (!justAcknowledged) {
       await p.reply(
-        "Got it, sir. I am keeping your voice notes, photos and text together for this client. Send the rest, then just reply *assign* (or *assign to <name>*)."
+        "Got it, sir. I am keeping your locations, photos, files, voice notes and text together for this client. Send the rest, then just reply *assign* (or *assign to <name>*)."
       );
     }
     return true;

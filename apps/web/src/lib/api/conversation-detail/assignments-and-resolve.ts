@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { sendStaffAssignmentEmailNotification } from "@cc/connections";
 import {
   getRawLibSqlClient,
-  isUserAssignmentsEnabled,
 } from "@cc/database";
 import { canAssignToDev } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
@@ -93,22 +92,13 @@ export async function handleAssignStaff(ctx: ConversationActionContext) {
   if (staffId && staffId !== "ACRIO") {
     const auth = getRawLibSqlClient("core_auth");
     const targetUserRes = await auth.execute({
-      sql: `SELECT id, name, role, status, COALESCE(assignments_enabled, 1) AS assignments_enabled
+      sql: `SELECT id, name, role, status
             FROM users WHERE id = ? LIMIT 1`,
       args: [staffId],
     });
     const targetUser = targetUserRes.rows[0] as Record<string, unknown> | undefined;
     if (targetUser) {
       staffName = String(targetUser.name || staffName);
-      if (Number(targetUser.assignments_enabled ?? 1) === 0) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: `Assignments and leads are turned off for ${staffName} in Team Approvals.`,
-          },
-          { status: 400 }
-        );
-      }
       if (
         String(targetUser.role) === "DEV" &&
         staffId !== user.id &&
@@ -122,14 +112,6 @@ export async function handleAssignStaff(ctx: ConversationActionContext) {
           { status: 403 }
         );
       }
-    } else if (!(await isUserAssignmentsEnabled(staffId))) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "Assignments and leads are turned off for this account.",
-        },
-        { status: 400 }
-      );
     }
   }
 

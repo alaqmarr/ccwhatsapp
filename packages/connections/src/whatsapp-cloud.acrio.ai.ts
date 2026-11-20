@@ -7,6 +7,7 @@ export {
   verifyMetaWebhookSignature,
 } from "./whatsapp-cloud/config";
 export {
+  downloadAndPersistMetaMediaToDisk,
   resolveAudioContainerMimeAndExt,
   uploadMediaToMetaCloud,
   prepareInboundMediaForForward,

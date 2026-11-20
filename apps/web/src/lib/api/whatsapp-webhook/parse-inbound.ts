@@ -7,10 +7,19 @@ export interface InboundMediaMeta {
   isSticker?: boolean;
 }
 
+export interface InboundLocationPin {
+  latitude: number;
+  longitude: number;
+  name: string;
+  address: string;
+  mapsUrl: string;
+}
+
 export function parseInboundMessageContent(msg: any): {
   rawType: string;
-  messageType: "TEXT" | "IMAGE" | "DOCUMENT" | "VIDEO" | "AUDIO";
+  messageType: "TEXT" | "IMAGE" | "DOCUMENT" | "VIDEO" | "AUDIO" | "LOCATION";
   mediaMeta: InboundMediaMeta | null;
+  locationPin: InboundLocationPin | null;
   isUnsupportedMessage: boolean;
   isButtonClick: boolean;
   buttonText: string;
@@ -18,8 +27,9 @@ export function parseInboundMessageContent(msg: any): {
   textBody: string;
 } {
   const rawType = String(msg?.type || "").toLowerCase();
-  let messageType: "TEXT" | "IMAGE" | "DOCUMENT" | "VIDEO" | "AUDIO" = "TEXT";
+  let messageType: "TEXT" | "IMAGE" | "DOCUMENT" | "VIDEO" | "AUDIO" | "LOCATION" = "TEXT";
   let mediaMeta: InboundMediaMeta | null = null;
+  let locationPin: InboundLocationPin | null = null;
   let isUnsupportedMessage = false;
 
   if ((rawType === "image" || Boolean(msg?.image)) && msg?.image) {
@@ -67,6 +77,26 @@ export function parseInboundMessageContent(msg: any): {
       sha256: m.sha256 ? String(m.sha256) : undefined,
       isSticker: true,
     };
+  } else if ((rawType === "location" || Boolean(msg?.location)) && msg?.location) {
+    const loc = msg.location;
+    const lat = Number(loc.latitude);
+    const lng = Number(loc.longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      messageType = "LOCATION";
+      const name = String(loc.name || "").trim() || "Shared Location";
+      const address = String(loc.address || "").trim();
+      const mapsUrl =
+        String(loc.url || "").trim() || `https://maps.google.com/?q=${lat},${lng}`;
+      locationPin = {
+        latitude: lat,
+        longitude: lng,
+        name,
+        address,
+        mapsUrl,
+      };
+    } else {
+      isUnsupportedMessage = true;
+    }
   } else if (
     rawType === "unsupported" ||
     rawType === "order" ||
@@ -106,6 +136,14 @@ export function parseInboundMessageContent(msg: any): {
     textBody = mediaMeta?.caption || "[Video]";
   } else if (messageType === "AUDIO") {
     textBody = msg?.audio?.voice ? "[Voice Note]" : "[Audio]";
+  } else if (messageType === "LOCATION" && locationPin) {
+    textBody = [
+      locationPin.name !== "Shared Location" ? `[Location] ${locationPin.name}` : "[Location]",
+      locationPin.address,
+      locationPin.mapsUrl,
+    ]
+      .filter(Boolean)
+      .join("\n");
   } else if (
     rawType === "contacts" &&
     Array.isArray(msg?.contacts) &&
@@ -134,6 +172,7 @@ export function parseInboundMessageContent(msg: any): {
     rawType,
     messageType,
     mediaMeta,
+    locationPin,
     isUnsupportedMessage,
     isButtonClick,
     buttonText: String(buttonText || ""),

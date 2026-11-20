@@ -1,9 +1,17 @@
 import crypto from "node:crypto";
-import { getRawLibSqlClient, upsertSyncedContact } from "@cc/database";
+import { downloadAndPersistMetaMediaToDisk } from "@cc/connections";
+import {
+  extractGoogleMapsLinksFromText,
+  getRawLibSqlClient,
+  resolveInternalStaffCallerByPhone,
+  upsertCustomerSharedMedia,
+  upsertSyncedContact,
+} from "@cc/database";
 import { socketHub } from "@cc/sockets";
 import { invalidateWhatsAppCacheTags } from "@cc/storage";
 import {
   claimInboundWaMessageId,
+  isOwnerWhatsAppPhone,
   logConversationAssignment,
   processInboundAutomations,
 } from "@cc/workers";
@@ -109,6 +117,8 @@ function buildInboundMessageMeta(
     if (m.caption) metaObj.caption = m.caption;
     if (m.sha256) metaObj.sha256 = m.sha256;
     if (m.isSticker) metaObj.isSticker = true;
+  } else if (parsed.locationPin) {
+    metaObj.locationPin = parsed.locationPin;
   } else if (parsed.isUnsupportedMessage) {
     metaObj.unsupportedAttachment = true;
     metaObj.rawWaType = parsed.rawType || "unsupported";
@@ -312,6 +322,77 @@ export async function handleInboundMessage(
       status: "READ",
       markAllOutboundRead: true,
     });
+  }
+
+  // Always cache inbound WhatsApp media to durable local vault storage, and tag direct client shares by customer phone
+  const staffMatch = await resolveInternalStaffCallerByPhone(e164).catch(() => null);
+  const isInternalCaller = isOwnerWhatsAppPhone(e164) || Boolean(staffMatch);
+  if (parsed.mediaMeta?.mediaId) {
+    void downloadAndPersistMetaMediaToDisk({
+      mediaId: parsed.mediaMeta.mediaId,
+      customerPhone: isInternalCaller ? undefined : e164,
+      fileName: parsed.mediaMeta.filename,
+      mimeType: parsed.mediaMeta.mimeType,
+      sourceLabel: isInternalCaller ? `Owner/Staff (${staffMatch?.name || contactName})` : `Client (${contactName})`,
+    }).catch(() => {});
+  }
+  if (!isInternalCaller) {
+    if (parsed.mediaMeta?.mediaId && (parsed.messageType === "IMAGE" || parsed.messageType === "VIDEO" || parsed.messageType === "DOCUMENT" || parsed.messageType === "AUDIO")) {
+      void upsertCustomerSharedMedia({
+        customerPhone: e164,
+        conversationId: convId,
+        messageId: inboundMsgId,
+        waMediaId: parsed.mediaMeta.mediaId,
+        localMediaId: parsed.mediaMeta.mediaId,
+        itemKind: parsed.messageType,
+        title: parsed.mediaMeta.filename || parsed.messageType,
+        caption: parsed.mediaMeta.caption || "",
+        mimeType: parsed.mediaMeta.mimeType,
+        sourceType: "CLIENT_DIRECT",
+        sourceLabel: `Sent by ${contactName}`,
+        receivedViaPhone: e164,
+        receivedViaName: contactName,
+        createdAt: msgTimestampIso,
+      }).catch(() => {});
+    }
+    if (parsed.locationPin) {
+      void upsertCustomerSharedMedia({
+        customerPhone: e164,
+        conversationId: convId,
+        messageId: inboundMsgId,
+        itemKind: "LOCATION",
+        title: parsed.locationPin.name,
+        caption: parsed.locationPin.address,
+        latitude: parsed.locationPin.latitude,
+        longitude: parsed.locationPin.longitude,
+        locationAddress: parsed.locationPin.address,
+        mapsUrl: parsed.locationPin.mapsUrl,
+        sourceType: "CLIENT_DIRECT",
+        sourceLabel: `Location sent by ${contactName}`,
+        receivedViaPhone: e164,
+        receivedViaName: contactName,
+        createdAt: msgTimestampIso,
+      }).catch(() => {});
+    } else {
+      for (const link of extractGoogleMapsLinksFromText(parsed.textBody)) {
+        void upsertCustomerSharedMedia({
+          customerPhone: e164,
+          conversationId: convId,
+          messageId: inboundMsgId,
+          itemKind: "LOCATION",
+          title: "Shared Map Link",
+          caption: parsed.textBody.slice(0, 240),
+          latitude: link.latitude,
+          longitude: link.longitude,
+          mapsUrl: link.mapsUrl,
+          sourceType: "CLIENT_DIRECT",
+          sourceLabel: `Map link sent by ${contactName}`,
+          receivedViaPhone: e164,
+          receivedViaName: contactName,
+          createdAt: msgTimestampIso,
+        }).catch(() => {});
+      }
+    }
   }
 
   socketHub.emit("message:new", {

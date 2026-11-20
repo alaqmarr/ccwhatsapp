@@ -5,7 +5,7 @@ import {
   isWhatsAppServiceWindowOpen,
   sendWhatsAppCloudMessage,
 } from "@cc/connections";
-import { getRawLibSqlClient } from "@cc/database";
+import { getRawLibSqlClient, upsertCustomerSharedMedia } from "@cc/database";
 import { isDevRole } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
 import {
@@ -361,6 +361,49 @@ export async function handleSendMessage(ctx: ConversationActionContext) {
     senderName: user.name,
     text,
   });
+
+  if (String(cRow.smart_category || "") !== "Internal Team") {
+    if (attachment && !isTemplate) {
+      void upsertCustomerSharedMedia({
+        customerPhone,
+        conversationId: id,
+        messageId: msgId,
+        waMediaId: attachment.waMediaId || null,
+        localMediaId: attachment.mediaId || attachment.waMediaId || null,
+        itemKind: attachment.mediaType,
+        title: attachment.fileName || attachment.productName || attachment.mediaType,
+        caption: rawText,
+        mimeType: attachment.mimeType || "",
+        fileSizeBytes: attachment.sizeBytes ?? null,
+        sourceType: "STAFF_SHARED",
+        sourceLabel: `Shared by ${user.name}`,
+        receivedViaName: user.name,
+        assignedStaffId: user.id,
+        assignedStaffName: user.name,
+        createdAt: nowIso,
+      }).catch(() => {});
+    }
+    if (locationPin) {
+      void upsertCustomerSharedMedia({
+        customerPhone,
+        conversationId: id,
+        messageId: pinMsgId || msgId,
+        itemKind: "LOCATION",
+        title: locationPin.name,
+        caption: rawText,
+        latitude: locationPin.latitude,
+        longitude: locationPin.longitude,
+        locationAddress: locationPin.address,
+        mapsUrl: locationPin.mapsUrl,
+        sourceType: "STAFF_SHARED",
+        sourceLabel: `Location shared by ${user.name}`,
+        receivedViaName: user.name,
+        assignedStaffId: user.id,
+        assignedStaffName: user.name,
+        createdAt: nowIso,
+      }).catch(() => {});
+    }
+  }
   return NextResponse.json({
     ok: sendRes.ok,
     messageId: msgId,
