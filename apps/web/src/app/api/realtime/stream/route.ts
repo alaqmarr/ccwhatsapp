@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { socketHub } from "@cc/sockets";
 import { ensureBackgroundWorkersRunning } from "@cc/workers";
+import { getServerReleaseVersion } from "@/lib/app-version";
 import { getCurrentUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -71,6 +72,7 @@ export async function GET(req: Request) {
       send({
         type: "connected",
         timestamp: new Date().toISOString(),
+        buildId: getServerReleaseVersion(),
         connectedClients: socketHub.getConnectedCount() + 1,
       });
 

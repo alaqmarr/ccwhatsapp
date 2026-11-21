@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AppUpdateBanner } from "@/components/AppUpdateBanner";
 import { QueryProvider } from "@/components/QueryProvider";
 import "./globals.css";
 
@@ -38,7 +39,10 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen w-full font-sans antialiased bg-slate-50 text-slate-900">
-        <QueryProvider>{children}</QueryProvider>
+        <QueryProvider>
+          <AppUpdateBanner />
+          {children}
+        </QueryProvider>
       </body>
     </html>
   );
