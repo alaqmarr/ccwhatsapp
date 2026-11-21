@@ -3,13 +3,14 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Loader2, ShieldCheck } from "lucide-react";
-import { ClassicConceptsWordmark } from "@cc/ui";
+import { Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
+import { AuthPortalShell } from "@/components/auth/AuthPortalShell";
 
 export function LoginClient() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -44,119 +45,112 @@ export function LoginClient() {
   }
 
   return (
-    <div className="min-h-dvh w-full bg-neutral-50 flex flex-col">
-      <header className="w-full bg-white border-b border-neutral-200 px-3.5 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
-          <ClassicConceptsWordmark height={34} variant="light" />
-          <div className="hidden sm:block h-6 w-px bg-neutral-200" />
-          <div className="hidden sm:flex items-center gap-2 min-w-0">
-            <div className="w-7 h-7 rounded-full bg-slate-900 text-white flex items-center justify-center shrink-0">
-              <ShieldCheck className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="font-display text-sm font-bold tracking-tight text-slate-900 truncate">
-                Internal Staff & Order Portal
-              </div>
-              <div className="font-mono text-[11px] text-slate-500 truncate">
-                classicconcepts.in • classicedge53.com
-              </div>
-            </div>
-          </div>
-        </div>
-        <span className="text-xs text-slate-500 hidden sm:inline font-medium">
-          Authorized Classic Concepts Staff Only
-        </span>
-      </header>
-
-      <div className="flex-1 w-full flex items-center justify-center p-3.5 sm:p-6">
-        <div className="w-full max-w-md bg-white rounded-xl border border-neutral-200 p-4 sm:p-7 space-y-5 shadow-xs">
-          <div>
-            <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-              Staff Portal Sign In
-            </h1>
-            <p className="text-[13.5px] leading-relaxed text-slate-500 mt-1">
-              Sign in with your approved Classic Concepts staff email and password to access internal customer enquiries and orders.
-            </p>
-          </div>
-
-          {error && (
-            <div className="p-3 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1.5">
-                Email Address
-              </label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@classicconcepts.in"
-                className="w-full px-3.5 py-2 rounded-md border border-neutral-300 text-sm focus:outline-none focus:border-neutral-900"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1.5">
-                Password
-              </label>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-3.5 py-2 rounded-md border border-neutral-300 text-sm focus:outline-none focus:border-neutral-900"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2.5 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-sm font-medium flex items-center justify-center gap-2 cursor-pointer"
-            >
-              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-              <span>Sign in to Classic Concepts Portal</span>
-            </button>
-          </form>
-
-          <div className="pt-4 border-t border-neutral-200 text-xs text-neutral-600 flex items-center justify-between">
-            <span>New Classic Concepts team member?</span>
-            <Link
-              href="/register"
-              className="font-medium text-neutral-900 underline"
-            >
-              Register staff account
-            </Link>
-          </div>
-
-          <div className="pt-3 border-t border-neutral-100 text-[11px] leading-relaxed text-neutral-500">
-            Internal employee CRM and order portal operated by{" "}
-            <a
-              href="https://classicconcepts.in"
-              className="underline text-neutral-700"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Classic Concepts (classicconcepts.in)
-            </a>{" "}
-            and{" "}
-            <a
-              href="https://classicedge53.com"
-              className="underline text-neutral-700"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Classic Edge 53 (classicedge53.com)
-            </a>
-            . Authorized internal staff access only. Independent business software; not affiliated with or endorsed by consumer messaging platforms.
-          </div>
-        </div>
+    <AuthPortalShell
+      mode="login"
+      overviewTitle="Handle client enquiries, quotes, and orders from one place"
+      overviewSubtitle="Sign in to view live WhatsApp conversations, assigned leads, shared customer media, and order tracking across Classic Concepts and Classic Edge 53."
+    >
+      <div className="space-y-1">
+        <h2 className="font-display text-xl font-bold tracking-tight text-slate-900">
+          Welcome back
+        </h2>
+        <p className="text-xs leading-relaxed text-slate-500">
+          Enter your work email and password to open your desk.
+        </p>
       </div>
-    </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs font-medium text-red-700"
+        >
+          {error}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label
+            htmlFor="login-email"
+            className="block text-xs font-semibold text-slate-700 mb-1.5"
+          >
+            Work Email Address
+          </label>
+          <div className="relative">
+            <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              id="login-email"
+              type="email"
+              required
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@classicconcepts.in"
+              className="w-full pl-9 pr-3.5 py-2.5 rounded-lg border border-neutral-300 bg-white text-sm text-slate-900 focus:outline-none focus:border-[#00a884]"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label
+            htmlFor="login-password"
+            className="block text-xs font-semibold text-slate-700 mb-1.5"
+          >
+            Password
+          </label>
+          <div className="relative">
+            <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              id="login-password"
+              type={showPassword ? "text" : "password"}
+              required
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter your password"
+              className="w-full pl-9 pr-10 py-2.5 rounded-lg border border-neutral-300 bg-white text-sm text-slate-900 focus:outline-none focus:border-[#00a884]"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((prev) => !prev)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              className="p-1.5 rounded text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
+            >
+              {showPassword ? (
+                <EyeOff className="w-4 h-4" />
+              ) : (
+                <Eye className="w-4 h-4" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full py-2.5 rounded-lg bg-[#00a884] hover:bg-[#008f6f] text-white text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 shadow-2xs"
+        >
+          {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+          <span>{loading ? "Signing in..." : "Sign In to Staff Desk"}</span>
+        </button>
+      </form>
+
+      <div className="rounded-lg bg-neutral-50 border border-neutral-200 px-3.5 py-2.5 text-xs text-slate-600 space-y-1">
+        <div className="font-semibold text-slate-800">Waiting for manager approval?</div>
+        <p className="text-[11.5px] leading-relaxed text-slate-500">
+          You can still sign in here anytime to view your approval status and setup guide.
+        </p>
+      </div>
+
+      <div className="pt-3 border-t border-neutral-200 text-xs text-slate-600 flex items-center justify-between gap-2">
+        <span>Need a new staff account?</span>
+        <Link
+          href="/register"
+          className="font-semibold text-[#008069] hover:underline"
+        >
+          Create staff account
+        </Link>
+      </div>
+    </AuthPortalShell>
   );
 }
