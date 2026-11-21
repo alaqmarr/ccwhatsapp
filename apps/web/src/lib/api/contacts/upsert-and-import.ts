@@ -108,6 +108,13 @@ export async function handleBulkImport(
   const defaultGroupId = String(body.groupId || "").trim();
   const defaultTag = String(body.defaultTag || "").trim();
   const sourceLabel = String(body.sourceLabel || "CSV / Bulk Paste Import").trim();
+  const defaultPreferredStaffId = String(body.defaultPreferredStaffId || "").trim();
+  const preferredStaffMode =
+    String(body.preferredStaffMode || "").trim() === "override" ? "override" : "fallback";
+  const rawStaffMappings =
+    body.staffMappings && typeof body.staffMappings === "object" && !Array.isArray(body.staffMappings)
+      ? (body.staffMappings as Record<string, unknown>)
+      : {};
 
   if (!rawText) {
     return NextResponse.json(
@@ -125,6 +132,23 @@ export async function handleBulkImport(
   }
 
   const staffRoster = await listActiveNonClientStaff();
+  const defaultStaff = defaultPreferredStaffId
+    ? staffRoster.find((s) => s.id === defaultPreferredStaffId) ||
+      resolveStaffMemberByQuery(defaultPreferredStaffId, staffRoster)
+    : null;
+  const normalizedMappings = new Map<string, (typeof staffRoster)[number]>();
+  for (const [rawKey, targetId] of Object.entries(rawStaffMappings)) {
+    const cleanKey = sanitizeCsvText(rawKey, 80).toLowerCase();
+    const cleanTargetId = String(targetId || "").trim();
+    if (!cleanKey || !cleanTargetId) continue;
+    const mapped =
+      staffRoster.find((s) => s.id === cleanTargetId) ||
+      resolveStaffMemberByQuery(cleanTargetId, staffRoster);
+    if (mapped) {
+      normalizedMappings.set(cleanKey, mapped);
+    }
+  }
+
   const contactsDb = getRawLibSqlClient("contacts");
 
   const validPhones = parsed.rows.map((r) => r.phone);
@@ -140,6 +164,8 @@ export async function handleBulkImport(
       state: string;
       gstNumber: string;
       stage: string;
+      preferredStaffId: string;
+      preferredStaffName: string;
       notes: string;
       tags: string[];
       groups: string[];
@@ -151,7 +177,7 @@ export async function handleBulkImport(
     const chunk = validPhones.slice(i, i + 400);
     const placeholders = chunk.map(() => "?").join(",");
     const res = await contactsDb.execute({
-      sql: `SELECT phone, name, email, company_name, designation, organization_type, city, state, gst_number, stage, notes, tags_json, groups_json, last_contacted_at
+      sql: `SELECT phone, name, email, company_name, designation, organization_type, city, state, gst_number, stage, preferred_staff_id, preferred_staff_name, notes, tags_json, groups_json, last_contacted_at
             FROM contacts
             WHERE phone IN (${placeholders})`,
       args: chunk,
@@ -167,6 +193,8 @@ export async function handleBulkImport(
         state: String(row.state || ""),
         gstNumber: String(row.gst_number || ""),
         stage: String(row.stage || ""),
+        preferredStaffId: String(row.preferred_staff_id || ""),
+        preferredStaffName: String(row.preferred_staff_name || ""),
         notes: String(row.notes || ""),
         tags: parseJsonArray(row.tags_json),
         groups: parseJsonArray(row.groups_json),
@@ -178,6 +206,7 @@ export async function handleBulkImport(
   let importedCount = 0;
   let updatedCount = 0;
   let skippedCount = parsed.skippedRowCount;
+  let preferredStaffAssignedCount = 0;
 
   for (const row of parsed.rows) {
     const prev = existingByPhone.get(row.phone);
@@ -190,9 +219,22 @@ export async function handleBulkImport(
     const mergedNotes = mergeUniqueNotes(prev?.notes || "", row.notesLines);
     const mergedStage = pickHigherFunnelStage(prev?.stage, row.stage);
 
-    const matchedPrefStaff = row.preferredStaffQuery
+    const csvQueryKey = row.preferredStaffQuery.trim().toLowerCase();
+    const mappedCsvStaff = csvQueryKey ? normalizedMappings.get(csvQueryKey) || null : null;
+    const autoMatchedCsvStaff = row.preferredStaffQuery
       ? resolveStaffMemberByQuery(row.preferredStaffQuery, staffRoster)
       : null;
+
+    let chosenStaff: (typeof staffRoster)[number] | null = null;
+    if (preferredStaffMode === "override" && defaultStaff) {
+      chosenStaff = defaultStaff;
+    } else if (mappedCsvStaff) {
+      chosenStaff = mappedCsvStaff;
+    } else if (autoMatchedCsvStaff) {
+      chosenStaff = autoMatchedCsvStaff;
+    } else if (defaultStaff && !prev?.preferredStaffId) {
+      chosenStaff = defaultStaff;
+    }
 
     const existingRealName =
       prev?.name && prev.name !== row.phone ? prev.name : "";
@@ -219,10 +261,12 @@ export async function handleBulkImport(
       organizationType: row.organizationType || undefined,
       stage: mergedStage,
       acrioSegment: row.acrioSegment,
-      preferredStaffId: matchedPrefStaff ? matchedPrefStaff.id : undefined,
-      preferredStaffName: matchedPrefStaff
-        ? matchedPrefStaff.name
-        : row.preferredStaffQuery || undefined,
+      preferredStaffId: chosenStaff ? chosenStaff.id : undefined,
+      preferredStaffName: chosenStaff
+        ? chosenStaff.name
+        : !prev?.preferredStaffId && row.preferredStaffQuery
+        ? row.preferredStaffQuery
+        : undefined,
       notes: mergedNotes || undefined,
       optInMarketing: row.optInMarketing,
       tags: mergedTags,
@@ -234,6 +278,7 @@ export async function handleBulkImport(
     if (upRes.ok) {
       if (upRes.isNew) importedCount++;
       else updatedCount++;
+      if (chosenStaff) preferredStaffAssignedCount++;
     } else {
       skippedCount++;
     }
@@ -259,6 +304,7 @@ export async function handleBulkImport(
     importedCount,
     updatedCount,
     skippedCount,
+    preferredStaffAssignedCount,
     multiNumberRowCount: parsed.multiNumberRowCount,
     headerSectionsDetected: parsed.headerSectionsDetected,
   });

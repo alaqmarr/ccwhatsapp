@@ -1,21 +1,30 @@
 "use client";
 
-import React, { useState } from "react";
-import { X } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { UserCheck, X } from "lucide-react";
 import type { ContactGroupItem } from "@/app/dashboard/contacts/types";
+import {
+  inspectCsvStaffValues,
+  suggestStaffFromFileName,
+} from "@/lib/contacts/csv-core";
 
 export function CsvImportModal({
   groups,
+  staffList,
   onClose,
   onBulkImport,
 }: {
   groups: ContactGroupItem[];
+  staffList: Array<{ id: string; name: string; role: string; email?: string }>;
   onClose: () => void;
   onBulkImport: (input: {
     csvText: string;
     groupId: string;
     defaultTag: string;
     sourceLabel: string;
+    defaultPreferredStaffId?: string;
+    preferredStaffMode?: "fallback" | "override";
+    staffMappings?: Record<string, string>;
   }) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const [csvText, setCsvText] = useState<string>("");
@@ -24,13 +33,35 @@ export function CsvImportModal({
   const [importSourceLabel, setImportSourceLabel] = useState<string>(
     "CSV / Sheet Upload"
   );
+  const [preferredStaffId, setPreferredStaffId] = useState<string>("");
+  const [staffSelectionManuallyChanged, setStaffSelectionManuallyChanged] =
+    useState<boolean>(false);
+  const [suggestedFromFile, setSuggestedFromFile] = useState<boolean>(false);
+  const [preferredStaffMode, setPreferredStaffMode] = useState<
+    "fallback" | "override"
+  >("fallback");
+  const [staffMappings, setStaffMappings] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState<boolean>(false);
   const [importError, setImportError] = useState<string>("");
+
+  const staffInspection = useMemo(
+    () => inspectCsvStaffValues(csvText, staffList),
+    [csvText, staffList]
+  );
 
   function handleCsvFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     setImportSourceLabel(`CSV File: ${file.name}`);
+
+    if (!staffSelectionManuallyChanged) {
+      const guessed = suggestStaffFromFileName(file.name, staffList);
+      if (guessed) {
+        setPreferredStaffId(guessed.id);
+        setSuggestedFromFile(true);
+      }
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
       setCsvText(String(reader.result || ""));
@@ -58,11 +89,19 @@ export function CsvImportModal({
     setImporting(true);
     setImportError("");
     try {
+      const cleanedMappings: Record<string, string> = {};
+      for (const [k, v] of Object.entries(staffMappings)) {
+        if (k.trim() && v.trim()) cleanedMappings[k] = v.trim();
+      }
       const result = await onBulkImport({
         csvText,
         groupId: importGroupId,
         defaultTag: importDefaultTag,
         sourceLabel: importSourceLabel,
+        defaultPreferredStaffId: preferredStaffId || undefined,
+        preferredStaffMode: preferredStaffId ? preferredStaffMode : "fallback",
+        staffMappings:
+          Object.keys(cleanedMappings).length > 0 ? cleanedMappings : undefined,
       });
       if (!result.ok) {
         setImportError(result.error || "Import failed.");
@@ -77,13 +116,13 @@ export function CsvImportModal({
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div className="bg-white rounded-t-2xl sm:rounded-2xl border border-neutral-200 w-full sm:max-w-2xl max-h-[92dvh] overflow-y-auto shadow-xl">
-        <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-neutral-200 flex items-center justify-between gap-2">
+        <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-neutral-200 flex items-center justify-between gap-2 sticky top-0 bg-white z-10">
           <div className="min-w-0">
             <h2 className="font-display text-base sm:text-lg font-bold text-slate-900">
               Bulk Import Contacts (CSV or Copy-Paste from Excel)
             </h2>
             <p className="text-xs text-slate-500">
-              Supports standard exports and old CRM multi-section sheets (Customer Name, Number, Manage By / Emp Name, Location, Requirment, Lead Source, Call Status, Cust Voice). Multiple numbers per contact are split and linked automatically, and duplicate numbers merge without losing notes.
+              Supports standard exports and old CRM sheets (Customer Name, Number, Manage By / Emp Name, Location, Requirment, Lead Source, Call Status, Cust Voice). Choose Preferred Staff below if staff names in the sheet are missing or incomplete.
             </p>
           </div>
           <button
@@ -124,6 +163,130 @@ export function CsvImportModal({
                 />
               </label>
             </div>
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-neutral-50 border border-neutral-200 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+                <UserCheck className="w-3.5 h-3.5 text-[#00a884]" />
+                <span>Preferred Staff for Imported Contacts (Sticky Routing)</span>
+              </label>
+              {suggestedFromFile && preferredStaffId && (
+                <span className="text-[11px] font-medium text-[#008f6f] bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                  Pre-selected from file name
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <select
+                  value={preferredStaffId}
+                  onChange={(e) => {
+                    setPreferredStaffId(e.target.value);
+                    setStaffSelectionManuallyChanged(true);
+                    setSuggestedFromFile(false);
+                  }}
+                  aria-label="Preferred Staff for Imported Contacts"
+                  className="w-full px-3 py-2 rounded-lg border border-neutral-300 text-xs bg-white text-slate-900"
+                >
+                  <option value="">No default staff (match CSV column only)</option>
+                  {staffList.map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.name} ({st.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <select
+                  value={preferredStaffMode}
+                  disabled={!preferredStaffId}
+                  onChange={(e) =>
+                    setPreferredStaffMode(
+                      e.target.value === "override" ? "override" : "fallback"
+                    )
+                  }
+                  aria-label="Preferred Staff Application Mode"
+                  className="w-full px-3 py-2 rounded-lg border border-neutral-300 text-xs bg-white text-slate-900 disabled:bg-neutral-100 disabled:text-slate-400"
+                >
+                  <option value="fallback">
+                    Fill blank / unmatched rows (keep matched CSV staff)
+                  </option>
+                  <option value="override">
+                    Assign this staff to ALL rows in this CSV
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            {staffInspection.totalDataRows > 0 && (
+              <div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 border-t border-neutral-200/80">
+                <span>
+                  Checked <strong>{staffInspection.totalDataRows}</strong> rows
+                </span>
+                <span>
+                  Matched staff in CSV: <strong>{staffInspection.matchedRows}</strong>
+                </span>
+                <span>
+                  Missing / blank staff:{" "}
+                  <strong>{staffInspection.blankStaffRows}</strong>
+                </span>
+                {staffInspection.unmatchedGroups.length > 0 && (
+                  <span className="text-amber-700 font-medium">
+                    Unrecognized staff names:{" "}
+                    {staffInspection.unmatchedGroups.length}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {preferredStaffMode === "fallback" &&
+              staffInspection.unmatchedGroups.length > 0 && (
+                <div className="space-y-2 pt-2 border-t border-neutral-200">
+                  <div className="text-[11px] font-semibold text-slate-700">
+                    Map unrecognized staff names from CSV (optional):
+                  </div>
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                    {staffInspection.unmatchedGroups.slice(0, 12).map((item) => (
+                      <div
+                        key={item.rawName}
+                        className="flex flex-wrap items-center justify-between gap-2 bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5"
+                      >
+                        <span className="text-xs text-slate-800 truncate max-w-[220px]">
+                          <strong>{item.rawName}</strong>{" "}
+                          <span className="text-slate-500">
+                            ({item.rowCount}{" "}
+                            {item.rowCount === 1 ? "row" : "rows"})
+                          </span>
+                        </span>
+                        <select
+                          value={staffMappings[item.rawName] || ""}
+                          onChange={(e) =>
+                            setStaffMappings((prev) => ({
+                              ...prev,
+                              [item.rawName]: e.target.value,
+                            }))
+                          }
+                          className="px-2 py-1 rounded-md border border-neutral-300 text-xs bg-white text-slate-800 min-w-[180px]"
+                        >
+                          <option value="">
+                            {preferredStaffId
+                              ? "Use default staff above"
+                              : "Leave unmatched"}
+                          </option>
+                          {staffList.map((st) => (
+                            <option key={st.id} value={st.id}>
+                              {st.name} ({st.role})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
           </div>
 
           <div>

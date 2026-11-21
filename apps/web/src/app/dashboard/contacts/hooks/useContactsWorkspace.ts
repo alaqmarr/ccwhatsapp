@@ -321,6 +321,9 @@ export function useContactsWorkspace(initialData?: ContactsPayload) {
       groupId: string;
       defaultTag: string;
       sourceLabel: string;
+      defaultPreferredStaffId?: string;
+      preferredStaffMode?: "fallback" | "override";
+      staffMappings?: Record<string, string>;
     }): Promise<{ ok: boolean; error?: string }> => {
       const res = await fetch("/api/contacts", {
         method: "POST",
@@ -336,10 +339,14 @@ export function useContactsWorkspace(initialData?: ContactsPayload) {
       }
       const multiMsg =
         Number(json.multiNumberRowCount || 0) > 0
-          ? ` (${json.multiNumberRowCount} multi-number contacts linked)`
+          ? `, ${json.multiNumberRowCount} multi-number contacts linked`
+          : "";
+      const staffMsg =
+        Number(json.preferredStaffAssignedCount || 0) > 0
+          ? `, ${json.preferredStaffAssignedCount} tagged to preferred staff`
           : "";
       showNotice(
-        `Import complete: ${json.importedCount} added, ${json.updatedCount} updated, ${json.skippedCount} skipped${multiMsg}.`
+        `Import complete: ${json.importedCount} added, ${json.updatedCount} updated, ${json.skippedCount} skipped${multiMsg}${staffMsg}.`
       );
       await loadContacts(true);
       return { ok: true };

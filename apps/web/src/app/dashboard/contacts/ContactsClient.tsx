@@ -192,6 +192,7 @@ export function ContactsClient({
       {showImportModal && (
         <CsvImportModal
           groups={ws.data?.groups ?? []}
+          staffList={ws.data?.staffList ?? []}
           onClose={() => setShowImportModal(false)}
           onBulkImport={ws.handleBulkImport}
         />

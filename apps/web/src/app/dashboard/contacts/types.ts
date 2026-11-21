@@ -115,7 +115,7 @@ export interface ContactsPayload {
     importedByName: string;
     createdAt: string;
   }>;
-  staffList?: Array<{ id: string; name: string; role: string }>;
+  staffList?: Array<{ id: string; name: string; role: string; email?: string }>;
   contacts: ContactItem[];
 }
 
