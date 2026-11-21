@@ -334,8 +334,12 @@ export function useContactsWorkspace(initialData?: ContactsPayload) {
       if (!res.ok || !json.ok) {
         return { ok: false, error: json.error || "Import failed." };
       }
+      const multiMsg =
+        Number(json.multiNumberRowCount || 0) > 0
+          ? ` (${json.multiNumberRowCount} multi-number contacts linked)`
+          : "";
       showNotice(
-        `Import complete: ${json.importedCount} added, ${json.updatedCount} updated, ${json.skippedCount} skipped.`
+        `Import complete: ${json.importedCount} added, ${json.updatedCount} updated, ${json.skippedCount} skipped${multiMsg}.`
       );
       await loadContacts(true);
       return { ok: true };
@@ -350,11 +354,32 @@ export function useContactsWorkspace(initialData?: ContactsPayload) {
         ? data.contacts.filter((c) => selectedIds.includes(c.id))
         : data.contacts;
 
-    const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const cleanCell = (v: unknown) =>
+      String(v ?? "")
+        .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\uFFFD]/g, "")
+        .replace(/\r?\n/g, " | ")
+        .trim();
+    const esc = (v: unknown) => {
+      const s = cleanCell(v);
+      const safe =
+        s && (/^[=@\t\r]/.test(s) || (/^[+\-]/.test(s) && !/^\+\d[\d\s()-]{6,}$/.test(s)))
+          ? `'${s}`
+          : s;
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
+    const extractAltPhones = (notes: string, ownPhone: string) => {
+      const found = Array.from(
+        notes.matchAll(/(?:Alternate number\(s\)[^:]*:|Linked to primary number)\s*([^\n|]+)/gi)
+      )
+        .flatMap((m) => m[1].match(/\+?\d[\d]{9,14}/g) || [])
+        .filter((p) => p !== ownPhone);
+      return Array.from(new Set(found)).join(" | ");
+    };
     const lines = [
       [
         "Name",
         "Phone",
+        "Alternate Phones",
         "Company",
         "Designation",
         "Organization Type",
@@ -376,6 +401,7 @@ export function useContactsWorkspace(initialData?: ContactsPayload) {
         [
           esc(c.name),
           esc(c.phone),
+          esc(extractAltPhones(c.notes || "", c.phone)),
           esc(c.companyName),
           esc(c.designation),
           esc(c.organizationType),
@@ -396,7 +422,7 @@ export function useContactsWorkspace(initialData?: ContactsPayload) {
       ),
     ];
 
-    const blob = new Blob([lines.join("\n")], {
+    const blob = new Blob([`\uFEFF${lines.join("\n")}`], {
       type: "text/csv;charset=utf-8;",
     });
     const url = URL.createObjectURL(blob);

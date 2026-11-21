@@ -83,7 +83,7 @@ export function CsvImportModal({
               Bulk Import Contacts (CSV or Copy-Paste from Excel)
             </h2>
             <p className="text-xs text-slate-500">
-              10-digit Indian mobile numbers are formatted to +91 automatically, and duplicate phone numbers are merged cleanly.
+              Supports standard exports and old CRM multi-section sheets (Customer Name, Number, Manage By / Emp Name, Location, Requirment, Lead Source, Call Status, Cust Voice). Multiple numbers per contact are split and linked automatically, and duplicate numbers merge without losing notes.
             </p>
           </div>
           <button
