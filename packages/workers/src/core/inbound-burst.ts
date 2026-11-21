@@ -173,7 +173,7 @@ export async function loadPendingInboundBurst(
       });
     } else if (
       rowMeta.unsupportedAttachment ||
-      /^\[unsupported\b[^\]]*\]$/i.test(t)
+      /^\[(?:unsupported|view-once|edited\s+message|whatsapp\s+poll|disappearing\s+message|empty\s+whatsapp\s+message)\b[^\]]*\]$/i.test(t)
     ) {
       burstAttachments.unreadable++;
       burstAttachments.nonImageItems.push({
@@ -192,7 +192,7 @@ export async function loadPendingInboundBurst(
       allLines.push(t);
     }
     const isBarePlaceholder =
-      /^\[(?:image|photo|picture|sticker|document|pdf|file|video|audio|voice\s*note|message|media|attachment|unsupported(?:\s+attachment)?)\b[^\]]*\]$/i.test(
+      /^\[(?:image|photo|picture|sticker|document|pdf|file|video|audio|voice\s*note|message|media|attachment|unsupported(?:\s+attachment)?|view-once[^[\]]*|edited\s+message[^[\]]*|whatsapp\s+poll|disappearing\s+message|empty\s+whatsapp\s+message|reaction\s+removed)\b[^\]]*\]$/i.test(
         t
       );
     if (!isBarePlaceholder && textLines[textLines.length - 1] !== t) {

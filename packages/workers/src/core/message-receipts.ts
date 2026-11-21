@@ -295,6 +295,7 @@ export async function applyWhatsAppMessageReceipt(params: {
       status: nextStatus,
       errorCode: params.errorCode ? String(params.errorCode) : null,
       errorMessage: params.errorMessage ? String(params.errorMessage) : null,
+      errorDetails: params.errorDetails ? String(params.errorDetails) : null,
     });
   }
 

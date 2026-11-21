@@ -102,18 +102,25 @@ export function useInboxMediaAndTemplateActions(
           templateName: payload.template.name,
           billingCategory: payload.template.category,
           languageCode: payload.template.language,
+          ...(payload.headerMediaUrl ? { headerMediaUrl: payload.headerMediaUrl } : {}),
           ...(components.length > 0 ? { templateComponents: components } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
+        const failErr = data.error || "The template could not be sent.";
         p.patchOptimisticMessage(chatId, tempId, {
           id: data.messageId || tempId,
           deliveryStatus: "FAILED",
+          metadata: {
+            errorCode: data.metaErrorCode ?? null,
+            errorMessage: failErr,
+          },
         });
+        p.showToast(failErr);
         return {
           ok: false,
-          error: data.error || "The template could not be sent.",
+          error: failErr,
         };
       }
       p.patchOptimisticMessage(chatId, tempId, {
@@ -125,7 +132,10 @@ export function useInboxMediaAndTemplateActions(
       p.scheduleThreadsRefresh(150);
       return { ok: true };
     } catch {
-      p.patchOptimisticMessage(chatId, tempId, { deliveryStatus: "FAILED" });
+      p.patchOptimisticMessage(chatId, tempId, {
+        deliveryStatus: "FAILED",
+        metadata: { errorMessage: "Network error. The template was not sent." },
+      });
       return { ok: false, error: "Network error. The template was not sent." };
     }
   }

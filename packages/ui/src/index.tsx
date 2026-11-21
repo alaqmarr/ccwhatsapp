@@ -18,6 +18,11 @@ export {
 } from "./helpers";
 
 export {
+  type FriendlyWhatsAppError,
+  explainMetaWhatsAppError,
+} from "./whatsapp-error-help";
+
+export {
   WhatsAppLogoIcon,
   ClassicConceptsMark,
   ClassicConceptsWordmark,

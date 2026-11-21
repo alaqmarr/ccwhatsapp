@@ -11,6 +11,7 @@ import {
 import {
   WhatsAppFormattedText,
   WhatsAppMessageTicks,
+  explainMetaWhatsAppError,
   formatTimeIst,
   stripWhatsAppFormatting,
 } from "@cc/ui";
@@ -222,6 +223,25 @@ export const ChatMessageBubble = React.memo(function ChatMessageBubble({
               </button>
             </div>
           </div>
+        ) : !isOutbound &&
+          (Boolean(m.metadata?.unsupportedAttachment) ||
+            /^\[(?:Unsupported Attachment|Message|Empty WhatsApp Message)\]$/i.test(
+              String(m.body || "").trim()
+            )) ? (
+          <div className="my-0.5 rounded-md border border-amber-200 bg-amber-50/75 px-2.5 py-2 text-[12.5px] text-amber-950 space-y-0.5">
+            <div className="font-semibold text-[12px]">
+              {String(m.body || "").trim() === "[Message]"
+                ? "WhatsApp item had no readable text"
+                : String(m.body || "").replace(/^\[|\]$/g, "")}
+            </div>
+            <div className="text-[11.5px] text-amber-900/90 leading-snug">
+              {m.metadata?.unsupportedReason
+                ? String(m.metadata.unsupportedReason)
+                : String(m.body || "").trim() === "[Message]"
+                ? "Customer sent a reaction, poll, view-once item, or special WhatsApp element that could not be shown as text."
+                : "WhatsApp did not deliver this attachment format (for example view-once media, a poll, or an edited message). Ask the customer to resend as a regular photo, PDF, or text message."}
+            </div>
+          </div>
         ) : (
           <WhatsAppFormattedText
             text={m.body}
@@ -287,14 +307,31 @@ export const ChatMessageBubble = React.memo(function ChatMessageBubble({
         </div>
         {isOutbound &&
           m.deliveryStatus === "FAILED" &&
-          Boolean(m.metadata?.errorMessage || m.metadata?.errorCode) && (
-            <div className="mt-1 text-[10.5px] text-red-700 text-right leading-snug break-words">
-              {m.metadata?.errorCode ? `Code ${String(m.metadata.errorCode)}: ` : ""}
-              {String(
-                m.metadata?.errorDetails || m.metadata?.errorMessage || "Delivery failed"
-              )}
-            </div>
-          )}
+          Boolean(m.metadata?.errorMessage || m.metadata?.errorCode) &&
+          (() => {
+            const explained = explainMetaWhatsAppError(
+              m.metadata?.errorCode as string | number | undefined,
+              m.metadata?.errorMessage ? String(m.metadata.errorMessage) : null,
+              m.metadata?.errorDetails ? String(m.metadata.errorDetails) : null
+            );
+            return (
+              <div className="mt-1.5 rounded-md bg-red-50/90 border border-red-200 px-2 py-1.5 text-[11px] text-red-900 leading-snug break-words text-left">
+                <div className="font-semibold">
+                  {explained.summary}
+                  {explained.code ? (
+                    <span className="ml-1 font-normal text-red-700">
+                      (Code {explained.code})
+                    </span>
+                  ) : null}
+                </div>
+                {explained.suggestion && (
+                  <div className="text-[10.5px] text-red-800 mt-0.5">
+                    Next step: {explained.suggestion}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
       </div>
     </div>
   );

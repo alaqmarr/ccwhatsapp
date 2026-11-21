@@ -183,6 +183,7 @@ export interface ApprovedTemplateOption {
   language: string;
   headerText: string | null;
   headerType: string;
+  headerMediaUrl?: string | null;
   bodyText: string;
   footerText: string | null;
   ctaUrl: string | null;

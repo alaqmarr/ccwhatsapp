@@ -84,10 +84,14 @@ export async function getInitialInboxPayload(params: {
          ORDER BY name ASC`
       ),
       mkt.execute(
-        `SELECT id, name, category, language, header_text, header_type, body_text, footer_text, cta_url, buttons_json, variables_schema_json
+        `SELECT id, name, category, language, header_text, header_type, header_media_url, body_text, footer_text, cta_url, buttons_json, variables_schema_json
          FROM templates
          WHERE approval_status = 'APPROVED'
-         ORDER BY category ASC, name ASC`
+         ORDER BY
+           CASE WHEN category = 'UTILITY' THEN 0
+                WHEN category = 'MARKETING' THEN 1
+                ELSE 2 END,
+           name ASC`
       ),
       conv
         .execute({
@@ -211,6 +215,8 @@ export async function getInitialInboxPayload(params: {
     } catch {
       variablesSchema = [];
     }
+    const rawHdrMedia = tpl.header_media_url ? String(tpl.header_media_url).trim() : "";
+    const validHdrMediaUrl = /^https?:\/\//i.test(rawHdrMedia) ? rawHdrMedia : null;
     return {
       id: String(tpl.id),
       name: String(tpl.name),
@@ -218,6 +224,7 @@ export async function getInitialInboxPayload(params: {
       language: String(tpl.language || "en"),
       headerText: tpl.header_text ? String(tpl.header_text) : null,
       headerType: String(tpl.header_type || "NONE"),
+      headerMediaUrl: validHdrMediaUrl,
       bodyText: String(tpl.body_text || ""),
       footerText: tpl.footer_text ? String(tpl.footer_text) : null,
       ctaUrl: tpl.cta_url ? String(tpl.cta_url) : null,

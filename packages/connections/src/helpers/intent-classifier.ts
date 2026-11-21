@@ -120,7 +120,11 @@ export function stripBurstMediaPlaceholders(rawText: string): {
       videos++;
     } else if (/^\[(?:audio|voice\s*note)\b[^\]]*\]$/i.test(line)) {
       audios++;
-    } else if (/^\[(?:message|media|attachment|unsupported)\b[^\]]*\]$/i.test(line)) {
+    } else if (
+      /^\[(?:message|media|attachment|unsupported|view-once|edited\s+message|whatsapp\s+poll|disappearing\s+message|empty\s+whatsapp\s+message|reaction\s+removed)\b[^\]]*\]$/i.test(
+        line
+      )
+    ) {
       unreadable++;
     } else {
       const strippedInline = line

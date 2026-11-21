@@ -122,6 +122,14 @@ function buildInboundMessageMeta(
   } else if (parsed.isUnsupportedMessage) {
     metaObj.unsupportedAttachment = true;
     metaObj.rawWaType = parsed.rawType || "unsupported";
+    if (parsed.unsupportedReason) {
+      metaObj.unsupportedReason = parsed.unsupportedReason;
+    }
+  } else if (parsed.reactionEmoji !== undefined) {
+    metaObj.reaction = {
+      emoji: parsed.reactionEmoji,
+      messageId: parsed.reactionTargetWaId || null,
+    };
   }
 
   return metaObj;
@@ -156,7 +164,7 @@ export async function handleInboundMessage(
   ).toISOString();
 
   const parsed = parseInboundMessageContent(msg);
-  const contextWaId = String(msg?.context?.id || "").trim();
+  const contextWaId = String(msg?.context?.id || parsed.reactionTargetWaId || "").trim();
 
   const custId = await ensureInboundCustomerAndContact({
     e164,
@@ -409,6 +417,11 @@ export async function handleInboundMessage(
         ? prevStaffId
         : undefined,
   });
+
+  // Emoji reactions and WhatsApp system notices should stay visible in chat without triggering bot/AI replies
+  if (parsed.rawType === "reaction" || parsed.rawType === "system") {
+    return;
+  }
 
   void processInboundAutomations({
     conversationId: convId,

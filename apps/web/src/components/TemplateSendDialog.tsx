@@ -6,6 +6,7 @@ import type { ApprovedTemplateOption } from "@/lib/inbox-server-data";
 import {
   fillTemplateText,
   guessTemplateVariableValue,
+  isInternalStaffAlertTemplate,
   varIndices,
   type TemplateCustomerContext,
 } from "@/lib/template-variables";
@@ -16,6 +17,7 @@ export interface TemplateSendPayload {
   template: ApprovedTemplateOption;
   bodyValues: string[];
   headerValues: string[];
+  headerMediaUrl?: string;
   renderedText: string;
 }
 
@@ -59,6 +61,7 @@ export function TemplateSendDialog({
   const [tpl, setTpl] = useState<ApprovedTemplateOption | null>(null);
   const [bodyVals, setBodyVals] = useState<Record<number, string>>({});
   const [headerVals, setHeaderVals] = useState<Record<number, string>>({});
+  const [headerMediaUrl, setHeaderMediaUrl] = useState("");
   const [autoSrc, setAutoSrc] = useState<Record<string, string>>({});
   const [confirmed, setConfirmed] = useState(false);
   const [sending, setSending] = useState(false);
@@ -73,6 +76,7 @@ export function TemplateSendDialog({
       setTpl(null);
       setBodyVals({});
       setHeaderVals({});
+      setHeaderMediaUrl("");
       setAutoSrc({});
       setConfirmed(false);
       setSending(false);
@@ -82,15 +86,30 @@ export function TemplateSendDialog({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return templates.filter((t) => {
-      if (cat !== "ALL" && t.category !== cat) return false;
-      if (!q) return true;
-      return `${t.name} ${t.bodyText} ${t.headerText || ""}`.toLowerCase().includes(q);
-    });
+    const catRank = (c: string) =>
+      c === "UTILITY" ? 0 : c === "MARKETING" ? 1 : 2;
+    return templates
+      .filter((t) => {
+        if (cat !== "ALL" && t.category !== cat) return false;
+        if (!q) return true;
+        return `${t.name} ${t.bodyText} ${t.headerText || ""}`.toLowerCase().includes(q);
+      })
+      .sort((a, b) => {
+        const intA = isInternalStaffAlertTemplate(a) ? 1 : 0;
+        const intB = isInternalStaffAlertTemplate(b) ? 1 : 0;
+        if (intA !== intB) return intA - intB;
+        const rankDiff = catRank(a.category) - catRank(b.category);
+        if (rankDiff !== 0) return rankDiff;
+        return a.name.localeCompare(b.name);
+      });
   }, [templates, query, cat]);
 
   const bodyIdx = useMemo(() => varIndices(tpl?.bodyText), [tpl]);
   const headerIdx = useMemo(() => varIndices(tpl?.headerText), [tpl]);
+  const needsHeaderMediaUrl =
+    tpl?.headerType === "IMAGE" ||
+    tpl?.headerType === "VIDEO" ||
+    tpl?.headerType === "DOCUMENT";
 
   function choose(t: ApprovedTemplateOption) {
     setTpl(t);
@@ -107,12 +126,26 @@ export function TemplateSendDialog({
       h[i] = g.value;
       if (g.value) src[`h${i}`] = g.source;
     }
+    const existingHdrMedia =
+      t.headerMediaUrl && /^https?:\/\//i.test(t.headerMediaUrl)
+        ? t.headerMediaUrl
+        : "";
+    const needsHdrMedia =
+      t.headerType === "IMAGE" ||
+      t.headerType === "VIDEO" ||
+      t.headerType === "DOCUMENT";
     setBodyVals(b);
     setHeaderVals(h);
+    setHeaderMediaUrl(existingHdrMedia);
     setAutoSrc(src);
     setConfirmed(false);
     setError("");
-    setStep(varIndices(t.bodyText).length + varIndices(t.headerText).length > 0 ? "FILL" : "REVIEW");
+    setStep(
+      varIndices(t.bodyText).length + varIndices(t.headerText).length > 0 ||
+        (needsHdrMedia && !existingHdrMedia)
+        ? "FILL"
+        : "REVIEW"
+    );
   }
 
   const allErrors = useMemo(() => {
@@ -125,8 +158,14 @@ export function TemplateSendDialog({
       const e = validateValue(headerVals[i] || "");
       if (e) errs.push(`Header {{${i}}}: ${e}`);
     }
+    if (needsHeaderMediaUrl) {
+      const trimmedUrl = headerMediaUrl.trim();
+      if (!/^https?:\/\//i.test(trimmedUrl) || /localhost|127\.0\.0\.1/i.test(trimmedUrl)) {
+        errs.push(`Header ${tpl?.headerType?.toLowerCase()} needs a valid public HTTPS link`);
+      }
+    }
     return errs;
-  }, [bodyIdx, headerIdx, bodyVals, headerVals]);
+  }, [bodyIdx, headerIdx, bodyVals, headerVals, needsHeaderMediaUrl, headerMediaUrl, tpl]);
 
   const renderedHeader = tpl?.headerText ? fillText(tpl.headerText, headerVals) : "";
   const renderedBody = tpl ? fillText(tpl.bodyText, bodyVals) : "";
@@ -140,6 +179,9 @@ export function TemplateSendDialog({
       template: tpl,
       bodyValues: bodyIdx.map((i) => (bodyVals[i] || "").trim()),
       headerValues: headerIdx.map((i) => (headerVals[i] || "").trim()),
+      ...(needsHeaderMediaUrl && headerMediaUrl.trim()
+        ? { headerMediaUrl: headerMediaUrl.trim() }
+        : {}),
       renderedText,
     });
     setSending(false);
@@ -183,7 +225,11 @@ export function TemplateSendDialog({
                 onClick={() => {
                   setError("");
                   setConfirmed(false);
-                  setStep(step === "REVIEW" && (bodyIdx.length || headerIdx.length) ? "FILL" : "PICK");
+                  setStep(
+                    step === "REVIEW" && (bodyIdx.length || headerIdx.length || needsHeaderMediaUrl)
+                      ? "FILL"
+                      : "PICK"
+                  );
                 }}
                 className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 cursor-pointer"
                 aria-label="Back"
@@ -261,6 +307,7 @@ export function TemplateSendDialog({
                 <div className="grid sm:grid-cols-2 gap-2.5">
                   {filtered.map((t) => {
                     const n = varIndices(t.bodyText).length + varIndices(t.headerText).length;
+                    const isInternalAlert = isInternalStaffAlertTemplate(t);
                     return (
                       <button
                         key={t.id}
@@ -270,13 +317,20 @@ export function TemplateSendDialog({
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm font-semibold text-slate-900 truncate">{t.name}</span>
-                          <span
-                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
-                              t.category === "MARKETING" ? "bg-amber-100 text-amber-800" : "bg-sky-100 text-sky-800"
-                            }`}
-                          >
-                            {t.category === "AUTHENTICATION" ? "Auth" : t.category}
-                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {isInternalAlert && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-neutral-100 text-neutral-600">
+                                Team Alert
+                              </span>
+                            )}
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                t.category === "MARKETING" ? "bg-amber-100 text-amber-800" : "bg-sky-100 text-sky-800"
+                              }`}
+                            >
+                              {t.category === "AUTHENTICATION" ? "Auth" : t.category}
+                            </span>
+                          </div>
                         </div>
                         <p className="text-xs text-slate-600 line-clamp-3 whitespace-pre-wrap">{t.bodyText}</p>
                         <p className="text-[10.5px] text-slate-400">
@@ -300,6 +354,23 @@ export function TemplateSendDialog({
                     <strong className="text-rose-600">Required</strong> needs you.
                   </span>
                 </p>
+                {needsHeaderMediaUrl && (
+                  <label className="block space-y-1">
+                    <span className="flex items-center justify-between text-xs font-medium text-slate-700">
+                      <span>Header {tpl.headerType.toLowerCase()} public HTTPS link</span>
+                      {!/^https?:\/\//i.test(headerMediaUrl.trim()) && (
+                        <span className="text-[10.5px] text-rose-600 font-semibold">Required</span>
+                      )}
+                    </span>
+                    <input
+                      type="url"
+                      value={headerMediaUrl}
+                      onChange={(e) => setHeaderMediaUrl(e.target.value)}
+                      placeholder={`https://... (${tpl.headerType.toLowerCase()} URL for WhatsApp header)`}
+                      className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:border-[#00a884]"
+                    />
+                  </label>
+                )}
                 {[
                   ...headerIdx.map((i) => ({ key: `h${i}`, idx: i, kind: "Header" as const })),
                   ...bodyIdx.map((i) => ({ key: `b${i}`, idx: i, kind: "Body" as const })),
@@ -363,6 +434,14 @@ export function TemplateSendDialog({
                     <Row key={r.k} label={r.k} value={(r.v || "").trim()} />
                   ))}
                 </div>
+                {tpl.category === "MARKETING" && (
+                  <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-700 mt-0.5" />
+                    <span>
+                      WhatsApp may block Marketing templates on customers who recently received promotional messages (Code 131049). Prefer a <strong>Utility</strong> template for follow-ups when available.
+                    </span>
+                  </p>
+                )}
                 {allErrors.length > 0 && (
                   <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 flex gap-1.5">
                     <AlertTriangle className="w-4 h-4 shrink-0" /> Some values need fixing: {allErrors.join("; ")}

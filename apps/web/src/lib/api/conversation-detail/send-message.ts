@@ -8,6 +8,7 @@ import {
 import { getRawLibSqlClient, upsertCustomerSharedMedia } from "@cc/database";
 import { isDevRole } from "@cc/rbac";
 import { socketHub } from "@cc/sockets";
+import { explainMetaWhatsAppError } from "@cc/ui";
 import {
   logConversationAssignment,
   recordAssignedFirstResponse,
@@ -68,7 +69,7 @@ export async function handleSendMessage(ctx: ConversationActionContext) {
   if (isTemplate && templateName) {
     const mkt = getRawLibSqlClient("marketing");
     const tplCheck = await mkt.execute({
-      sql: `SELECT approval_status, language, header_type, header_media_url, variables_schema_json FROM templates WHERE name = ? LIMIT 1`,
+      sql: `SELECT approval_status, language, header_type, header_media_url, header_location_json, buttons_json, variables_schema_json FROM templates WHERE name = ? LIMIT 1`,
       args: [templateName],
     });
     if (tplCheck.rows[0]) {
@@ -110,18 +111,14 @@ export async function handleSendMessage(ctx: ConversationActionContext) {
         }
       : null;
 
-  const metadataJson = buildOutboundMetadataJson({
-    replyMeta,
-    ctaButtonMeta,
-    locationPin,
-    attachment,
-    rawText,
-  });
-
-  const { templateComponents, languageCode } = resolveOutboundTemplateComponents(
-    body,
-    tplRecord
-  );
+  const { templateComponents, languageCode, headerMediaError } =
+    resolveOutboundTemplateComponents(body, tplRecord);
+  if (isTemplate && headerMediaError) {
+    return NextResponse.json(
+      { ok: false, error: headerMediaError },
+      { status: 400 }
+    );
+  }
 
   // Send location pin sequentially before follow-up text so messages arrive in order
   const pinSend =
@@ -167,6 +164,24 @@ export async function handleSendMessage(ctx: ConversationActionContext) {
       : undefined,
     simulateAsyncDelivery: true,
     forceSandbox: Boolean(body.forceSandbox),
+  });
+
+  const friendlySendError = !sendRes.ok
+    ? explainMetaWhatsAppError(sendRes.metaErrorCode, sendRes.error)
+    : null;
+  const metadataJson = buildOutboundMetadataJson({
+    replyMeta,
+    ctaButtonMeta,
+    locationPin,
+    attachment,
+    rawText,
+    deliveryError: !sendRes.ok
+      ? {
+          code: sendRes.metaErrorCode ?? null,
+          message: friendlySendError?.summary || sendRes.error || "Message failed to send.",
+          details: friendlySendError?.suggestion || sendRes.error || null,
+        }
+      : null,
   });
 
   let pinMsgId: string | null = null;
@@ -413,6 +428,7 @@ export async function handleSendMessage(ctx: ConversationActionContext) {
     mode: sendRes.mode,
     billed: sendRes.ok && isTemplate,
     replyTo: replyMeta,
-    error: sendRes.error,
+    metaErrorCode: sendRes.metaErrorCode ?? null,
+    error: friendlySendError ? friendlySendError.summary : sendRes.error,
   });
 }

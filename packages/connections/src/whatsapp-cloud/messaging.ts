@@ -555,6 +555,16 @@ export async function sendWhatsAppCloudMessage(params: {
       }
       if (!res.ok) {
         const metaCode = Number(data?.error?.code || 0) || undefined;
+        const metaDetail = String(
+          data?.error?.error_user_msg ||
+            data?.error?.error_data?.details ||
+            ""
+        ).trim();
+        const rawErr = String(data?.error?.message || `Meta HTTP ${res.status}`).trim();
+        const combinedErr =
+          metaDetail && !rawErr.includes(metaDetail)
+            ? `${rawErr} (${metaDetail})`
+            : rawErr;
         const isSpamOrRate =
           res.status === 429 ||
           [4, 368, 80007, 130429, 131048, 131049, 131056, 131031].includes(
@@ -565,7 +575,7 @@ export async function sendWhatsAppCloudMessage(params: {
           waMessageId: "",
           mode: "LIVE_META_CLOUD",
           deliveryStatus: "FAILED",
-          error: data?.error?.message || `Meta HTTP ${res.status}`,
+          error: combinedErr,
           metaErrorCode: metaCode,
           isRateOrSpamBlock: isSpamOrRate,
         };

@@ -294,9 +294,11 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
 
         const headerType = headerComp?.format ? String(headerComp.format).toUpperCase() : "NONE";
         const headerText = headerComp?.text ? String(headerComp.text) : null;
-        const headerMediaUrl = headerComp?.example?.header_handle?.[0]
-          ? String(headerComp.example.header_handle[0])
-          : null;
+        const rawHandle = headerComp?.example?.header_handle?.[0]
+          ? String(headerComp.example.header_handle[0]).trim()
+          : "";
+        // Meta returns opaque "4::..." upload handles alongside CDN URLs; only store real HTTP(S) URLs for message sends
+        const headerMediaUrl = /^https?:\/\//i.test(rawHandle) ? rawHandle : null;
         const footerText = footerComp?.text ? String(footerComp.text) : null;
         const category = String(item.category || "MARKETING").toUpperCase();
         const language = String(item.language || "en");

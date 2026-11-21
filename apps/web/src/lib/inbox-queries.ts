@@ -402,6 +402,9 @@ export function attachInboxRealtimeQuerySync(params: {
     const targetMsgId = payload.messageId ? String(payload.messageId) : null;
     const targetWaMsgId = payload.waMessageId ? String(payload.waMessageId) : null;
     const markAllRead = Boolean(payload.markAllOutboundRead);
+    const errCode = payload.errorCode ? String(payload.errorCode) : null;
+    const errMessage = payload.errorMessage ? String(payload.errorMessage) : null;
+    const errDetails = payload.errorDetails ? String(payload.errorDetails) : null;
 
     if (!targetConvId || !nextStatus) return;
 
@@ -428,7 +431,16 @@ export function attachInboxRealtimeQuerySync(params: {
             (targetWaMsgId && m.waMessageId === targetWaMsgId)
           ) {
             changed = true;
-            return { ...m, deliveryStatus: nextStatus };
+            const nextMeta =
+              nextStatus === "FAILED" && (errCode || errMessage || errDetails)
+                ? {
+                    ...(m.metadata || {}),
+                    ...(errCode ? { errorCode: errCode } : {}),
+                    ...(errMessage ? { errorMessage: errMessage } : {}),
+                    ...(errDetails ? { errorDetails: errDetails } : {}),
+                  }
+                : m.metadata;
+            return { ...m, deliveryStatus: nextStatus, metadata: nextMeta };
           }
           return m;
         });
