@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   describeAttachmentType,
   type PreSendFileConfirmationTarget,
@@ -14,6 +14,7 @@ import type {
 } from "@/lib/inbox-server-data";
 import type { InboxComposerMode } from "@/lib/inbox-store";
 import type { VerifiedLocationInfo } from "./ComposerPopovers";
+import type { MessagePolishModalState } from "./MessagePolishModal";
 import {
   describeNoteResult,
   shouldRouteTextAsInternalNote,
@@ -82,6 +83,9 @@ export function useInboxMessagingActions(p: UseInboxMessagingActionsParams) {
   const [acrioActionBusyId, setAcrioActionBusyId] = useState<string | null>(
     null
   );
+  const [pendingPolish, setPendingPolish] =
+    useState<MessagePolishModalState | null>(null);
+  const polishAbortRef = useRef<AbortController | null>(null);
 
   const mediaAndTemplate = useInboxMediaAndTemplateActions({
     selectedId: p.selectedId,
@@ -336,7 +340,87 @@ export function useInboxMessagingActions(p: UseInboxMessagingActionsParams) {
       return;
     }
 
+    const trimmedDraft = p.replyText.trim();
+    const isUrlOnly = /^https?:\/\/\S+$/i.test(trimmedDraft);
+    if (trimmedDraft.length > 0 && !isUrlOnly) {
+      const convId = p.selectedId;
+      const recipientName =
+        p.detail.customer?.name ||
+        activeConv?.customerName ||
+        activeConv?.customerPhone ||
+        "Customer";
+
+      polishAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      polishAbortRef.current = ctrl;
+
+      setPendingPolish({
+        convId,
+        recipientName,
+        originalText: trimmedDraft,
+        enhancedText: trimmedDraft,
+        loading: true,
+        changed: false,
+      });
+
+      try {
+        const res = await fetch(`/api/conversations/${convId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "polish_message",
+            text: trimmedDraft,
+          }),
+          signal: ctrl.signal,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!ctrl.signal.aborted) {
+          const nextEnhanced =
+            typeof data?.enhancedText === "string" && data.enhancedText.trim()
+              ? data.enhancedText.trim()
+              : trimmedDraft;
+          setPendingPolish((prev) =>
+            prev && prev.convId === convId && prev.originalText === trimmedDraft
+              ? {
+                  ...prev,
+                  enhancedText: nextEnhanced,
+                  changed: Boolean(data?.changed ?? nextEnhanced !== trimmedDraft),
+                  loading: false,
+                }
+              : prev
+          );
+        }
+      } catch {
+        if (!ctrl.signal.aborted) {
+          setPendingPolish((prev) =>
+            prev && prev.convId === convId && prev.originalText === trimmedDraft
+              ? { ...prev, enhancedText: trimmedDraft, changed: false, loading: false }
+              : prev
+          );
+        }
+      }
+      return;
+    }
+
     await executeComposerSend();
+  }
+
+  function handleCancelPolish() {
+    polishAbortRef.current?.abort();
+    polishAbortRef.current = null;
+    setPendingPolish(null);
+  }
+
+  async function handleSendPolishedChoice(chosenText: string) {
+    const cleanChoice = chosenText.trim();
+    polishAbortRef.current?.abort();
+    polishAbortRef.current = null;
+    setPendingPolish(null);
+    if (!cleanChoice) return;
+    await executeComposerSend({
+      overrideCaption: cleanChoice,
+      modeOverride: "REPLY",
+    });
   }
 
   async function handleSimulateCustomerRead() {
@@ -530,6 +614,9 @@ export function useInboxMessagingActions(p: UseInboxMessagingActionsParams) {
   return {
     ...mediaAndTemplate,
     acrioActionBusyId,
+    pendingPolish,
+    handleCancelPolish,
+    handleSendPolishedChoice,
     executeComposerSend,
     handleComposerSubmit,
     handleSimulateCustomerRead,

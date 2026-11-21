@@ -670,6 +670,9 @@ export function InboxClient({
         setPendingSendConfirm={setPendingSendConfirm}
         stagedAttachment={stagedAttachment}
         replyText={replyText}
+        pendingPolish={msgActions.pendingPolish}
+        onSendPolishedChoice={msgActions.handleSendPolishedChoice}
+        onCancelPolish={msgActions.handleCancelPolish}
         executeComposerSend={msgActions.executeComposerSend}
         showAssignModal={showAssignModal}
         setShowAssignModal={setShowAssignModal}

@@ -164,15 +164,19 @@ export function buildClaudeMessagesRequestBody(params: {
   maxTokens?: number;
   temperature?: number;
   effort?: "low" | "medium" | "high";
+  disableThinking?: boolean;
   includeLegacyTemp?: boolean;
   overrideDisableThinking?: boolean;
 }): Record<string, unknown> {
   const effort = params.effort || "medium";
+  const skipThinking = Boolean(params.overrideDisableThinking || params.disableThinking);
   const requestedMax = params.maxTokens ?? 4096;
   const isExplicitLegacyTemp =
     Boolean(params.includeLegacyTemp) && typeof params.temperature === "number";
-  const resolvedMaxTokens = params.overrideDisableThinking
-    ? Math.min(requestedMax, 2048)
+  const resolvedMaxTokens = skipThinking
+    ? typeof params.maxTokens === "number"
+      ? params.maxTokens
+      : 2048
     : isExplicitLegacyTemp && typeof params.maxTokens === "number"
     ? requestedMax
     : Math.max(requestedMax, 4096);
@@ -201,8 +205,8 @@ export function buildClaudeMessagesRequestBody(params: {
       : { type: "ephemeral" };
   }
 
-  if (params.overrideDisableThinking) {
-    // Fast non-thinking fallback so thinking token budget never truncates JSON output
+  if (skipThinking) {
+    // Fast non-thinking mode so short tasks avoid thinking latency and thinking tokens
   } else if (isExplicitLegacyTemp) {
     bodyObj.temperature = params.temperature;
   } else {
@@ -322,6 +326,7 @@ export interface ClaudeMessagesCallParams {
   maxTokens?: number;
   temperature?: number;
   effort?: "low" | "medium" | "high";
+  disableThinking?: boolean;
   timeoutMs?: number;
 }
 
@@ -357,6 +362,7 @@ export async function callClaudeHaikuMessagesDetailed(
       maxTokens: params.maxTokens,
       temperature: params.temperature,
       effort: params.effort,
+      disableThinking: params.disableThinking,
       includeLegacyTemp,
       overrideDisableThinking,
     });
@@ -403,10 +409,11 @@ export async function callClaudeHaikuMessagesDetailed(
 
     let extracted = res.ok ? extractTextFromJson(json) : "";
     if (
-      !res.ok ||
-      !extracted ||
-      json?.stop_reason === "max_tokens" ||
-      (extracted.includes("{") && !extracted.trim().endsWith("}"))
+      !params.disableThinking &&
+      (!res.ok ||
+        !extracted ||
+        json?.stop_reason === "max_tokens" ||
+        (extracted.includes("{") && !extracted.trim().endsWith("}")))
     ) {
       const retryRes = await sendPayload(false, true).catch(() => null);
       if (retryRes && retryRes.ok) {

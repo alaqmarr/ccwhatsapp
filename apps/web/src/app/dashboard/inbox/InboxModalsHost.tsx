@@ -19,6 +19,12 @@ import type {
   TeamOption,
 } from "@/lib/inbox-server-data";
 import { CANNED_QUICK_REPLIES } from "./inbox-helpers";
+import type { MessagePolishModalState } from "./MessagePolishModal";
+
+const MessagePolishModal = dynamic(
+  () => import("./MessagePolishModal").then((m) => m.MessagePolishModal),
+  { ssr: false }
+);
 
 const MediaPreviewLightbox = dynamic(
   () =>
@@ -74,6 +80,9 @@ export function InboxModalsHost({
   setPendingSendConfirm,
   stagedAttachment,
   replyText,
+  pendingPolish,
+  onSendPolishedChoice,
+  onCancelPolish,
   executeComposerSend,
   showAssignModal,
   setShowAssignModal,
@@ -121,6 +130,9 @@ export function InboxModalsHost({
   setPendingSendConfirm: (t: PreSendFileConfirmationTarget | null) => void;
   stagedAttachment: StagedComposerAttachment | null;
   replyText: string;
+  pendingPolish: MessagePolishModalState | null;
+  onSendPolishedChoice: (chosenText: string) => Promise<void>;
+  onCancelPolish: () => void;
   executeComposerSend: (opts?: {
     overrideAttachment?: StagedComposerAttachment | null;
     overrideCaption?: string;
@@ -189,6 +201,14 @@ export function InboxModalsHost({
         <MediaPreviewLightbox
           media={previewMedia}
           onClose={() => setPreviewMedia(null)}
+        />
+      )}
+
+      {pendingPolish && (
+        <MessagePolishModal
+          state={pendingPolish}
+          onSendChosen={(txt) => void onSendPolishedChoice(txt)}
+          onCancel={onCancelPolish}
         />
       )}
 

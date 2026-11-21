@@ -29,6 +29,7 @@ import {
   handleUpdateCustomerProfile,
 } from "@/lib/api/conversation-detail/customer-crm";
 import { handleOrderTrackingAction } from "@/lib/api/conversation-detail/order-tracking";
+import { handlePolishOutboundMessage } from "@/lib/api/conversation-detail/polish-message";
 import type { ConversationActionContext } from "@/lib/api/conversation-detail/shared";
 
 export const dynamic = "force-dynamic";
@@ -91,6 +92,8 @@ export async function POST(
   };
 
   switch (action) {
+    case "polish_message":
+      return handlePolishOutboundMessage(ctx);
     case "send_message":
       return handleSendMessage(ctx);
     case "simulate_customer_read":
