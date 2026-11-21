@@ -7,8 +7,12 @@ export {
   verifyMetaWebhookSignature,
 } from "./whatsapp-cloud/config";
 export {
+  WHATSAPP_RELIABLE_NATIVE_AUDIO_MIMES,
+  WHATSAPP_SUPPORTED_AUDIO_MIMES,
+  detectCanonicalFileMimeAndExt,
   downloadAndPersistMetaMediaToDisk,
   resolveAudioContainerMimeAndExt,
+  tryTranscodeAudioToOgg,
   uploadMediaToMetaCloud,
   prepareInboundMediaForForward,
 } from "./whatsapp-cloud/media";

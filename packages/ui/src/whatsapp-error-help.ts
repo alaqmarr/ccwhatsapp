@@ -67,6 +67,16 @@ export function explainMetaWhatsAppError(
       isMarketingFrequencyCap: false,
     };
   }
+  if (code === "131053" || /media upload error|on processing it is of type/i.test(combinedRaw)) {
+    return {
+      code: code || "131053",
+      summary:
+        "WhatsApp could not process this media file format as an inline voice note, photo, or video.",
+      suggestion:
+        "Send it as a regular File / Document attachment, or re-save the audio as MP3 or OGG.",
+      isMarketingFrequencyCap: false,
+    };
+  }
   if (code === "132000") {
     return {
       code,

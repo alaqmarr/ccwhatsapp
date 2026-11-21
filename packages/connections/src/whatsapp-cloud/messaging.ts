@@ -8,7 +8,7 @@ import {
 import { socketHub } from "@cc/sockets";
 import { formatWhatsAppOutboundText } from "@cc/connections/initialise.acrio.ai";
 import { buildMetaInteractivePayload, describeInteractiveAsText, loadMetaWhatsAppSetupConfig } from "./config";
-import { WHATSAPP_SUPPORTED_AUDIO_MIMES } from "./media";
+import { WHATSAPP_RELIABLE_NATIVE_AUDIO_MIMES } from "./media";
 import type {
   AcrioInteractive,
   OutboundWhatsAppMediaSpec,
@@ -357,11 +357,10 @@ export async function sendWhatsAppCloudMessage(params: {
         .split(";")[0]
         .trim()
         .toLowerCase();
-      // If an audio container (e.g. audio/webm or audio/wav) is unsupported by Meta's `audio` type, send as `document` instead.
+      // If an audio container (e.g. .m4a audio/mp4, audio/webm, audio/wav) is unreliable for Meta's `audio` type (Code 131053), send as `document` instead.
       const mediaKind: "image" | "video" | "document" | "audio" =
         rawMediaKind === "audio" &&
-        normalizedMediaMime &&
-        !WHATSAPP_SUPPORTED_AUDIO_MIMES.has(normalizedMediaMime)
+        (!normalizedMediaMime || !WHATSAPP_RELIABLE_NATIVE_AUDIO_MIMES.has(normalizedMediaMime))
           ? "document"
           : rawMediaKind;
       const mediaCaption = resolvedMediaSpec?.caption

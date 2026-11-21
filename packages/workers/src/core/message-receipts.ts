@@ -188,6 +188,8 @@ export async function applyWhatsAppMessageReceipt(params: {
               if (retrySend.ok) {
                 const retryId = `msg_auddoc_${crypto.randomUUID().slice(0, 8)}`;
                 const retryIso = new Date().toISOString();
+                const docBody = `[Voice Note File] ${docFileName}`;
+                const docStatus = retrySend.deliveryStatus || "SENT";
                 await conv
                   .execute({
                     sql: `INSERT INTO messages (
@@ -198,7 +200,7 @@ export async function applyWhatsAppMessageReceipt(params: {
                       retryId,
                       conversationId,
                       String(row.sender_name || "ACRIO • Lead Desk"),
-                      `[Voice Note File] ${docFileName}`,
+                      docBody,
                       JSON.stringify({
                         media: {
                           mediaId: storedInboundId || fallbackWaMediaId,
@@ -211,15 +213,24 @@ export async function applyWhatsAppMessageReceipt(params: {
                         },
                       }),
                       retrySend.waMessageId || "",
-                      retrySend.deliveryStatus || "SENT",
+                      docStatus,
                       retryIso,
                     ],
+                  })
+                  .catch(() => {});
+                await conv
+                  .execute({
+                    sql: `UPDATE conversations
+                          SET last_message_preview = ?,
+                              last_message_status = ?
+                          WHERE id = ? AND last_message_direction = 'OUTBOUND'`,
+                    args: [docBody.slice(0, 140), docStatus, conversationId],
                   })
                   .catch(() => {});
                 socketHub.emit("message:new", {
                   conversationId,
                   senderName: String(row.sender_name || "ACRIO • Lead Desk"),
-                  text: `[Voice Note File] ${docFileName}`,
+                  text: docBody,
                 });
               }
             }

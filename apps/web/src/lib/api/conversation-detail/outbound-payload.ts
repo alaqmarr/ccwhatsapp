@@ -1,3 +1,4 @@
+import { resolveAudioContainerMimeAndExt } from "@cc/connections";
 import type { getRawLibSqlClient } from "@cc/database";
 
 export type DbClient = ReturnType<typeof getRawLibSqlClient>;
@@ -9,17 +10,26 @@ export function parseOutboundAttachment(body: Record<string, unknown>) {
       : null;
   if (!rawAtt || !String(rawAtt.url || "").trim()) return null;
 
+  let mediaType = (["IMAGE", "VIDEO", "DOCUMENT", "AUDIO"].includes(
+    String(rawAtt.mediaType || "").toUpperCase()
+  )
+    ? String(rawAtt.mediaType).toUpperCase()
+    : "DOCUMENT") as "IMAGE" | "VIDEO" | "DOCUMENT" | "AUDIO";
+  const mimeType = rawAtt.mimeType ? String(rawAtt.mimeType).trim() : undefined;
+  if (mediaType === "AUDIO") {
+    const audioInfo = resolveAudioContainerMimeAndExt(mimeType || "");
+    if (!audioInfo.supportsWhatsAppAudioType) {
+      mediaType = "DOCUMENT";
+    }
+  }
+
   return {
     mediaId: rawAtt.mediaId ? String(rawAtt.mediaId).trim() : undefined,
     waMediaId: rawAtt.waMediaId ? String(rawAtt.waMediaId).trim() : undefined,
-    mediaType: (["IMAGE", "VIDEO", "DOCUMENT", "AUDIO"].includes(
-      String(rawAtt.mediaType || "").toUpperCase()
-    )
-      ? String(rawAtt.mediaType).toUpperCase()
-      : "DOCUMENT") as "IMAGE" | "VIDEO" | "DOCUMENT" | "AUDIO",
+    mediaType,
     url: String(rawAtt.url).trim(),
     fileName: rawAtt.fileName ? String(rawAtt.fileName).trim() : undefined,
-    mimeType: rawAtt.mimeType ? String(rawAtt.mimeType).trim() : undefined,
+    mimeType,
     sizeBytes: typeof rawAtt.sizeBytes === "number" ? rawAtt.sizeBytes : undefined,
     productName: rawAtt.productName ? String(rawAtt.productName).trim() : undefined,
     variantName: rawAtt.variantName ? String(rawAtt.variantName).trim() : undefined,

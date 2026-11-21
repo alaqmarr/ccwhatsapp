@@ -1,9 +1,14 @@
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { resolveMonorepoRoot } from "@cc/database";
 import { loadMetaWhatsAppSetupConfig } from "./config";
 import type { WhatsAppMediaAttachmentType } from "./types";
+
+const execFileAsync = promisify(execFile);
 
 const SAMPLE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
@@ -23,6 +28,19 @@ export const WHATSAPP_SUPPORTED_AUDIO_MIMES = new Set([
   "audio/ogg",
 ]);
 
+/**
+ * Audio containers Meta reliably delivers via `type: "audio"` without throwing async
+ * Code 131053 ("on processing it is of type application/octet-stream").
+ * Notably `audio/mp4` (.m4a) is excluded because Meta's media processor routinely
+ * classifies M4A containers as octet-stream unless transcoded to OGG/Opus.
+ */
+export const WHATSAPP_RELIABLE_NATIVE_AUDIO_MIMES = new Set([
+  "audio/ogg",
+  "audio/mpeg",
+  "audio/amr",
+  "audio/aac",
+]);
+
 const AUDIO_EXT_BY_MIME: Record<string, string> = {
   "audio/ogg": "ogg",
   "audio/mp4": "m4a",
@@ -32,6 +50,91 @@ const AUDIO_EXT_BY_MIME: Record<string, string> = {
   "audio/webm": "webm",
   "audio/wav": "wav",
 };
+
+const EXT_BY_CANONICAL_MIME: Record<string, string> = {
+  ...AUDIO_EXT_BY_MIME,
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "application/pdf": "pdf",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+};
+
+/**
+ * Detects canonical MIME type from container magic bytes across images, PDFs, video, and audio
+ * so mismatched browser file extensions or `application/octet-stream` headers never trigger Code 131053.
+ */
+export function detectCanonicalFileMimeAndExt(
+  rawMime: string,
+  fileName: string,
+  buffer?: Uint8Array | Buffer
+): { mimeType: string; extension: string } {
+  const base = String(rawMime || "application/octet-stream")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  const extLower = path.extname(String(fileName || "")).toLowerCase().replace(/^\./, "");
+
+  if (buffer && buffer.byteLength >= 4) {
+    const b0 = buffer[0];
+    const b1 = buffer[1];
+    const b2 = buffer[2];
+    const b3 = buffer[3];
+
+    if (b0 === 0xff && b1 === 0xd8 && b2 === 0xff) {
+      return { mimeType: "image/jpeg", extension: "jpg" };
+    }
+    if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4e && b3 === 0x47) {
+      return { mimeType: "image/png", extension: "png" };
+    }
+    if (b0 === 0x47 && b1 === 0x49 && b2 === 0x46 && b3 === 0x38) {
+      return { mimeType: "image/gif", extension: "gif" };
+    }
+    if (b0 === 0x25 && b1 === 0x50 && b2 === 0x44 && b3 === 0x46) {
+      return { mimeType: "application/pdf", extension: "pdf" };
+    }
+    if (
+      buffer.byteLength >= 12 &&
+      b0 === 0x52 &&
+      b1 === 0x49 &&
+      b2 === 0x46 &&
+      b3 === 0x46 &&
+      buffer[8] === 0x57 &&
+      buffer[9] === 0x45 &&
+      buffer[10] === 0x42 &&
+      buffer[11] === 0x50
+    ) {
+      return { mimeType: "image/webp", extension: "webp" };
+    }
+  }
+
+  if (base.startsWith("audio/") || ["m4a", "mp3", "ogg", "opus", "aac", "amr", "wav"].includes(extLower)) {
+    const audioInfo = resolveAudioContainerMimeAndExt(base, buffer);
+    return { mimeType: audioInfo.mimeType, extension: audioInfo.extension };
+  }
+
+  if (
+    buffer &&
+    buffer.byteLength >= 8 &&
+    buffer[4] === 0x66 &&
+    buffer[5] === 0x74 &&
+    buffer[6] === 0x79 &&
+    buffer[7] === 0x70
+  ) {
+    if (extLower === "m4a") {
+      return { mimeType: "audio/mp4", extension: "m4a" };
+    }
+    return { mimeType: "video/mp4", extension: extLower === "mov" ? "mov" : "mp4" };
+  }
+
+  return {
+    mimeType: base || "application/octet-stream",
+    extension: EXT_BY_CANONICAL_MIME[base] || extLower || base.split("/")[1] || "bin",
+  };
+}
 
 /**
  * Inspects leading container magic bytes + MIME aliases so WhatsApp Cloud `/media`
@@ -47,6 +150,7 @@ export function resolveAudioContainerMimeAndExt(
     .toLowerCase();
 
   let detected = base;
+  let verifiedAudioMagic = false;
   if (buffer && buffer.byteLength >= 4) {
     const b0 = buffer[0];
     const b1 = buffer[1];
@@ -54,6 +158,7 @@ export function resolveAudioContainerMimeAndExt(
     const b3 = buffer[3];
     if (b0 === 0x4f && b1 === 0x67 && b2 === 0x67 && b3 === 0x53) {
       detected = "audio/ogg"; // OggS
+      verifiedAudioMagic = true;
     } else if (
       buffer.byteLength >= 8 &&
       buffer[4] === 0x66 &&
@@ -62,15 +167,19 @@ export function resolveAudioContainerMimeAndExt(
       buffer[7] === 0x70
     ) {
       detected = "audio/mp4"; // ....ftyp (M4A/MP4)
+      verifiedAudioMagic = true;
     } else if (
       (b0 === 0x49 && b1 === 0x44 && b2 === 0x33) || // ID3
       (b0 === 0xff && (b1 === 0xfb || b1 === 0xf3 || b1 === 0xf2))
     ) {
       detected = "audio/mpeg";
+      verifiedAudioMagic = true;
     } else if (b0 === 0x23 && b1 === 0x21 && b2 === 0x41 && b3 === 0x4d) {
       detected = "audio/amr"; // #!AM(R)
+      verifiedAudioMagic = true;
     } else if (b0 === 0x1a && b1 === 0x45 && b2 === 0xdf && b3 === 0xa3) {
       detected = "audio/webm"; // EBML/WebM
+      verifiedAudioMagic = true;
     } else if (
       buffer.byteLength >= 12 &&
       b0 === 0x52 &&
@@ -83,8 +192,10 @@ export function resolveAudioContainerMimeAndExt(
       buffer[11] === 0x45
     ) {
       detected = "audio/wav";
+      verifiedAudioMagic = true;
     } else if (b0 === 0xff && (b1 & 0xf6) === 0xf0) {
       detected = "audio/aac"; // ADTS AAC frame
+      verifiedAudioMagic = true;
     }
   }
 
@@ -96,11 +207,66 @@ export function resolveAudioContainerMimeAndExt(
 
   const finalMime = detected || "audio/ogg";
   const ext = AUDIO_EXT_BY_MIME[finalMime] || finalMime.split("/")[1] || "bin";
+  const hasBufferToVerify = Boolean(buffer && buffer.byteLength > 0);
+  const supportsWhatsAppAudioType =
+    WHATSAPP_RELIABLE_NATIVE_AUDIO_MIMES.has(finalMime) &&
+    (!hasBufferToVerify || verifiedAudioMagic);
+
   return {
     mimeType: finalMime,
     extension: ext,
-    supportsWhatsAppAudioType: WHATSAPP_SUPPORTED_AUDIO_MIMES.has(finalMime),
+    supportsWhatsAppAudioType,
   };
+}
+
+let cachedFfmpegBinary: string | null | undefined;
+async function resolveFfmpegBinary(): Promise<string | null> {
+  if (cachedFfmpegBinary !== undefined) return cachedFfmpegBinary;
+  const candidate = String(process.env.FFMPEG_PATH || "ffmpeg").trim();
+  try {
+    await execFileAsync(candidate, ["-version"], { timeout: 2500 });
+    cachedFfmpegBinary = candidate;
+  } catch {
+    cachedFfmpegBinary = null;
+  }
+  return cachedFfmpegBinary;
+}
+
+/**
+ * Optionally transcodes non-native audio (e.g. .m4a, .webm, .wav) to OGG/Opus when ffmpeg is available
+ * on the server host, preventing Meta Code 131053 rejections. Falls back cleanly to null if unavailable.
+ */
+export async function tryTranscodeAudioToOgg(
+  buffer: Uint8Array | Buffer,
+  inputExt = "m4a"
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (!buffer || buffer.byteLength === 0) return null;
+  const bin = await resolveFfmpegBinary();
+  if (!bin) return null;
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ccwa-aud-"));
+  const safeExt = (inputExt || "m4a").replace(/[^a-z0-9]/gi, "") || "m4a";
+  const inPath = path.join(tmpDir, `input.${safeExt}`);
+  const outPath = path.join(tmpDir, "output.ogg");
+  try {
+    await fs.writeFile(inPath, buffer);
+    await execFileAsync(
+      bin,
+      ["-y", "-i", inPath, "-vn", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", outPath],
+      { timeout: 10_000 }
+    );
+    const outBuf = await fs.readFile(outPath);
+    if (outBuf.byteLength >= 4 && outBuf[0] === 0x4f && outBuf[1] === 0x67 && outBuf[2] === 0x67 && outBuf[3] === 0x53) {
+      const ab = new ArrayBuffer(outBuf.byteLength);
+      new Uint8Array(ab).set(outBuf);
+      return new Uint8Array(ab);
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function buildMinimalMp4Buffer(): Buffer {
@@ -163,23 +329,48 @@ export async function uploadMediaToMetaCloud(params: {
   }
 
   try {
-    const rawBuf = new Uint8Array(params.buffer);
-    const rawMime = String(params.mimeType || "application/octet-stream")
-      .split(";")[0]
-      .trim()
-      .toLowerCase();
-    const isAudioLike = rawMime.startsWith("audio/");
-    const audioInfo = isAudioLike
-      ? resolveAudioContainerMimeAndExt(rawMime, rawBuf)
+    let rawBuf: Uint8Array<ArrayBuffer> = new Uint8Array(
+      params.buffer.byteLength
+    );
+    rawBuf.set(
+      params.buffer instanceof Uint8Array
+        ? params.buffer
+        : new Uint8Array(params.buffer)
+    );
+    const detected = detectCanonicalFileMimeAndExt(
+      params.mimeType,
+      params.fileName,
+      rawBuf
+    );
+    let uploadMime = detected.mimeType || "application/octet-stream";
+    let audioInfo = uploadMime.startsWith("audio/")
+      ? resolveAudioContainerMimeAndExt(uploadMime, rawBuf)
       : null;
-    const uploadMime = audioInfo ? audioInfo.mimeType : rawMime || "application/octet-stream";
+
+    if (audioInfo && !audioInfo.supportsWhatsAppAudioType && rawBuf.byteLength > 0) {
+      const transcoded = await tryTranscodeAudioToOgg(rawBuf, audioInfo.extension);
+      if (transcoded) {
+        rawBuf = transcoded;
+        uploadMime = "audio/ogg";
+        audioInfo = resolveAudioContainerMimeAndExt("audio/ogg", rawBuf);
+      }
+    } else if (audioInfo) {
+      uploadMime = audioInfo.mimeType;
+    }
+
     let uploadName = String(params.fileName || "").trim();
+    const expectedExt = audioInfo ? audioInfo.extension : detected.extension;
     if (!uploadName) {
       uploadName = audioInfo
-        ? `voice-note.${audioInfo.extension}`
-        : `attachment.${uploadMime.split("/")[1] || "bin"}`;
-    } else if (audioInfo && !uploadName.includes(".")) {
-      uploadName = `${uploadName}.${audioInfo.extension}`;
+        ? `voice-note.${expectedExt}`
+        : `attachment.${expectedExt || "bin"}`;
+    } else if (expectedExt && !uploadName.includes(".")) {
+      uploadName = `${uploadName}.${expectedExt}`;
+    } else if (
+      audioInfo?.mimeType === "audio/ogg" &&
+      !/\.(?:ogg|opus)$/i.test(uploadName)
+    ) {
+      uploadName = `${uploadName.replace(/\.[^.]+$/, "")}.ogg`;
     }
 
     const form = new FormData();
@@ -528,14 +719,36 @@ export async function prepareInboundMediaForForward(params: {
     if (buffer.byteLength > maxBytes) {
       return { ok: false, error: "The attachment is too large to forward on WhatsApp." };
     }
-    const isAudio = params.kind === "AUDIO" || rawDetected.startsWith("audio/");
-    const audioInfo = isAudio ? resolveAudioContainerMimeAndExt(rawDetected, buffer) : null;
-    const finalMime = audioInfo ? audioInfo.mimeType : rawDetected;
+    const canonical = detectCanonicalFileMimeAndExt(
+      rawDetected,
+      params.fileName || "",
+      buffer
+    );
+    const isAudio =
+      params.kind === "AUDIO" || canonical.mimeType.startsWith("audio/");
+    let audioInfo = isAudio
+      ? resolveAudioContainerMimeAndExt(canonical.mimeType, buffer)
+      : null;
+    let finalMime = audioInfo ? audioInfo.mimeType : canonical.mimeType;
+    let finalExt = audioInfo ? audioInfo.extension : canonical.extension;
+
+    if (audioInfo && !audioInfo.supportsWhatsAppAudioType) {
+      const transcoded = await tryTranscodeAudioToOgg(buffer, audioInfo.extension);
+      if (transcoded) {
+        buffer = transcoded;
+        finalMime = "audio/ogg";
+        finalExt = "ogg";
+        audioInfo = resolveAudioContainerMimeAndExt("audio/ogg", buffer);
+      }
+    }
+
     const finalFileName =
-      params.fileName ||
-      (audioInfo
-        ? `voice-note.${audioInfo.extension}`
-        : `attachment.${finalMime.split("/")[1] || "bin"}`);
+      audioInfo?.mimeType === "audio/ogg" && params.fileName
+        ? `${params.fileName.replace(/\.[^.]+$/, "")}.ogg`
+        : params.fileName ||
+          (audioInfo
+            ? `voice-note.${finalExt}`
+            : `attachment.${finalExt || "bin"}`);
     if (!cached) {
       void writeLocalCachedMedia({
         mediaId,

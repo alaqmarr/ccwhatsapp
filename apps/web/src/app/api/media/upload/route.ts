@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { uploadMediaToMetaCloud, type WhatsAppMediaAttachmentType } from "@cc/connections";
+import {
+  detectCanonicalFileMimeAndExt,
+  uploadMediaToMetaCloud,
+  type WhatsAppMediaAttachmentType,
+} from "@cc/connections";
 import { hasPermission } from "@cc/rbac";
 import { resolveMediaUploadPaths } from "@/lib/api/media/storage";
 import { getCurrentUser } from "@/lib/session";
@@ -50,7 +54,12 @@ function inferMimeType(rawMime: string, fileName: string): string {
     ".webm": "video/webm",
     ".mp3": "audio/mpeg",
     ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
     ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".amr": "audio/amr",
+    ".m4v": "video/mp4",
     ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xls": "application/vnd.ms-excel",
@@ -96,8 +105,7 @@ export async function POST(req: Request) {
         ? (file as File).name.trim()
         : "attachment";
     const safeName = rawName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 140) || "attachment";
-    const mimeType = inferMimeType(file.type, rawName);
-    const mediaType = classifyMediaType(mimeType, rawName);
+    const rawMime = inferMimeType(file.type, rawName);
     const mediaId = `local_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`;
     const storedFileName = `${mediaId}_${safeName}`;
 
@@ -106,6 +114,12 @@ export async function POST(req: Request) {
 
     const arrayBuf = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuf);
+    const detected = detectCanonicalFileMimeAndExt(rawMime, rawName, buffer);
+    const mimeType =
+      detected.mimeType && detected.mimeType !== "application/octet-stream"
+        ? detected.mimeType
+        : rawMime;
+    const mediaType = classifyMediaType(mimeType, rawName);
     const binPath = path.join(/*turbopackIgnore: true*/ uploadsDir, storedFileName);
 
     // Write binary and upload to Meta Cloud API concurrently when live credentials are configured
