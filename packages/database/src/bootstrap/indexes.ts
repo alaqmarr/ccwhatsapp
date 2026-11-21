@@ -38,6 +38,9 @@ export async function ensureAllDatabaseIndexes(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS idx_conv_resolved ON conversations (status, resolved_at DESC)`,
       `CREATE INDEX IF NOT EXISTS idx_msg_conv_created ON messages (conversation_id, created_at ASC)`,
       `CREATE INDEX IF NOT EXISTS idx_msg_conv_dir_created ON messages (conversation_id, direction, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_msg_conv_sender_created ON messages (conversation_id, sender_type, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_msg_tpl_name_created ON messages (template_name, created_at DESC) WHERE template_name IS NOT NULL AND template_name != ''`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_window_exp ON conversations (status, window_expires_at)`,
       `CREATE INDEX IF NOT EXISTS idx_msg_wa_id ON messages (wa_message_id)`,
       `CREATE INDEX IF NOT EXISTS idx_msg_created_dir ON messages (created_at DESC, direction)`,
       `CREATE INDEX IF NOT EXISTS idx_quick_replies_staff ON staff_quick_replies (staff_id, is_shared)`,
@@ -54,6 +57,8 @@ export async function ensureAllDatabaseIndexes(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS idx_contacts_stage ON contacts (stage, opt_in_marketing)`,
       `CREATE INDEX IF NOT EXISTS idx_contacts_updated ON contacts (updated_at DESC)`,
       `CREATE INDEX IF NOT EXISTS idx_contacts_city ON contacts (city)`,
+      `CREATE INDEX IF NOT EXISTS idx_contacts_pref_staff ON contacts (preferred_staff_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_contacts_source_stage ON contacts (source, stage)`,
     ]),
     applyIndexesSafely(crm, [
       `CREATE INDEX IF NOT EXISTS idx_order_trackings_lookup ON order_trackings (lookup_key)`,

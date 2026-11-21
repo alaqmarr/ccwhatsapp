@@ -27,6 +27,7 @@ export async function GET(req: Request) {
     range: searchParams.get("range") || "30d",
     teamId: searchParams.get("teamId") || "ALL",
     scope,
+    bypassCache: searchParams.get("refresh") === "1",
   });
 
   return NextResponse.json(payload);

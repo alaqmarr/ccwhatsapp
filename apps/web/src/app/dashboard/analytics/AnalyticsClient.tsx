@@ -27,6 +27,13 @@ const AnalyticsPerformanceTables = dynamic(
   }
 );
 
+const AnalyticsBusinessInsights = dynamic(
+  () => import("./AnalyticsBusinessInsights"),
+  {
+    loading: () => <CardListSkeleton rows={4} />,
+  }
+);
+
 const AnalyticsCategoriesAndAuditLog = dynamic(
   () => import("./AnalyticsCategoriesAndAuditLog"),
   {
@@ -60,7 +67,7 @@ export function AnalyticsClient({
         const res = await fetch(
           `/api/analytics?range=${encodeURIComponent(
             range
-          )}&teamId=${encodeURIComponent(teamFilter)}`,
+          )}&teamId=${encodeURIComponent(teamFilter)}${manual ? "&refresh=1" : ""}`,
           { cache: "no-store" }
         );
         const json = await res.json().catch(() => ({}));
@@ -217,6 +224,7 @@ export function AnalyticsClient({
         <>
           <AnalyticsKpiGrid data={data} />
           <AnalyticsVolumeCharts data={data} />
+          <AnalyticsBusinessInsights data={data} />
           <AnalyticsPerformanceTables data={data} />
           <AnalyticsCategoriesAndAuditLog
             data={data}

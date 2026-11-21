@@ -195,6 +195,57 @@ export interface AnalyticsResponse {
     endedAt: string | null;
     outcome: string;
   }[];
+  businessInsights?: {
+    templateInsights: {
+      templateName: string;
+      sentCount: number;
+      deliveredCount: number;
+      readCount: number;
+      failedCount: number;
+      err131049Count: number;
+      repliedCount: number;
+      readRatePct: number;
+      replyRatePct: number;
+    }[];
+    leadSourceBreakdown: {
+      source: string;
+      label: string;
+      totalContacts: number;
+      optedInCount: number;
+      convertedCount: number;
+      conversionRatePct: number;
+      lifetimeValueInr: number;
+    }[];
+    followUpInsights: {
+      expiringWindowCount: number;
+      expiringWindowChats: {
+        conversationId: string;
+        customerName: string;
+        customerPhone: string;
+        assignedStaffName: string;
+        minutesRemaining: number;
+        windowExpiresAt: string;
+      }[];
+      missingPreferredStaffCount: number;
+      staleHotLeadsCount: number;
+      staleHotLeads: {
+        contactId: string;
+        name: string;
+        phone: string;
+        stage: string;
+        preferredStaffName: string;
+        conversationId: string | null;
+        lastContactedAt: string | null;
+      }[];
+    };
+    slaBreachHoursIst: {
+      hour: number;
+      label: string;
+      assignmentsCount: number;
+      over5MinCount: number;
+      breachRatePct: number;
+    }[];
+  };
 }
 
 export function formatDuration(seconds: number | null | undefined): string {

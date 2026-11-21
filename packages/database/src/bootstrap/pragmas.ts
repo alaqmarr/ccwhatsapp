@@ -17,6 +17,8 @@ export async function applyAllDatabasePragmas(): Promise<void> {
     "PRAGMA busy_timeout = 5000;",
     "PRAGMA foreign_keys = ON;",
     "PRAGMA temp_store = MEMORY;",
+    "PRAGMA cache_size = -16000;",
+    "PRAGMA mmap_size = 67108864;",
   ];
 
   await Promise.all(

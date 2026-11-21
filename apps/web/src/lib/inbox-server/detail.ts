@@ -42,6 +42,7 @@ export async function getConversationDetailServer(
     orderTrackings,
     liveBrandInfo,
     sharedMediaVault,
+    phoneEnquiries,
   ] = await Promise.all([
     conv.execute({
       sql: `SELECT * FROM (
@@ -69,6 +70,12 @@ export async function getConversationDetailServer(
     listOrderTrackings({ customerPhone }).catch(() => []),
     getVerifiedLiveBrandAndTeamInfo().catch(() => null),
     listCustomerSharedMediaForCustomer({ customerPhone, conversationId }).catch(() => []),
+    rememberWhatsAppCache(
+      `customer-enq:${customerPhone}`,
+      ["customer-history"],
+      300,
+      () => fetchWebsiteEnquiriesForCustomer(customerPhone)
+    ),
     markRead && Number(cRow.unread_count ?? 0) > 0
       ? conv.execute({
           sql: `UPDATE conversations SET unread_count = 0 WHERE id = ?`,
@@ -78,13 +85,15 @@ export async function getConversationDetailServer(
   ]);
 
   const customerRow = custRes.rows[0] as Record<string, unknown> | undefined;
-  const lookupKey = customerRow?.email ? String(customerRow.email) : customerPhone;
-  const websiteEnquiries = await rememberWhatsAppCache(
-    `customer-enq:${lookupKey}`,
-    ["customer-history"],
-    300,
-    () => fetchWebsiteEnquiriesForCustomer(lookupKey)
-  );
+  const customerEmail = customerRow?.email ? String(customerRow.email).trim() : "";
+  const websiteEnquiries = customerEmail
+    ? await rememberWhatsAppCache(
+        `customer-enq:${customerEmail}`,
+        ["customer-history"],
+        300,
+        () => fetchWebsiteEnquiriesForCustomer(customerEmail)
+      )
+    : phoneEnquiries;
 
   const rawMsgRows = msgRes.rows;
   const hasOlderMessages = rawMsgRows.length > 250;

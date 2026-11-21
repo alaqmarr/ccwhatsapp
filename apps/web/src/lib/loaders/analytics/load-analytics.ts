@@ -2,7 +2,9 @@ import { fromZonedTime } from "date-fns-tz";
 import type { AuthenticatedUser } from "@cc/auth";
 import { ensureDatabasesBootstrapped, getRawLibSqlClient } from "@cc/database";
 import { canViewCostBreakdown, isDevRole } from "@cc/rbac";
+import { rememberWhatsAppCache } from "@cc/storage";
 import { buildBillingAndAiSummary } from "./billing-and-ai";
+import { loadAnalyticsBusinessInsights } from "./business-insights";
 import { buildConversationAndMessageMetrics } from "./conversations-metrics";
 import {
   APP_TIMEZONE,
@@ -17,6 +19,7 @@ export async function loadAnalyticsPayload(
     range?: string;
     teamId?: string;
     scope?: string | null;
+    bypassCache?: boolean;
   }
 ) {
   await ensureDatabasesBootstrapped();
@@ -24,6 +27,17 @@ export async function loadAnalyticsPayload(
   const teamFilter = opts?.teamId || "ALL";
   const hasTeamFilter = teamFilter !== "ALL";
   const { range, cutoffIso, daysSpan, nowMs } = resolveAnalyticsCutoff(opts?.range);
+  const requestedScope = opts?.scope ?? null;
+  const canViewBilling = canViewCostBreakdown(user.role);
+  const isDevPricing = isDevRole(user.role) && requestedScope === "dev";
+  const pricingMode = isDevPricing
+    ? "dev_actual_and_margin"
+    : canViewBilling
+    ? "client_set_pricing"
+    : "hidden";
+
+  const cacheKey = `analytics:${range}:${teamFilter}:${pricingMode}`;
+  const compute = async () => {
 
   const chartDays = Math.min(daysSpan, 30);
   const chartStartKey = toIstDateKey(
@@ -37,6 +51,7 @@ export async function loadAnalyticsPayload(
   const dailyAssignCutoff = cutoffIso > chartStartIso ? cutoffIso : chartStartIso;
 
   const conv = getRawLibSqlClient("conversations");
+  const contacts = getRawLibSqlClient("contacts");
   const crm = getRawLibSqlClient("crm_orders");
   const mkt = getRawLibSqlClient("marketing");
   const bill = getRawLibSqlClient("billing_ops");
@@ -79,6 +94,7 @@ export async function loadAnalyticsPayload(
     ledgerAggRes,
     pricingCfgRes,
     usersRes,
+    businessInsights,
   ] = await Promise.all([
     conv.execute({
       sql: `SELECT COALESCE(NULLIF(status, ''), 'OPEN') AS status,
@@ -293,16 +309,15 @@ export async function loadAnalyticsPayload(
        WHERE status = 'ACTIVE' AND role != 'CLIENT'
        ORDER BY name ASC`
     ),
+    loadAnalyticsBusinessInsights({
+      conv,
+      contacts,
+      cutoffIso,
+      nowMs,
+      hasTeamFilter,
+      teamFilter,
+    }),
   ]);
-
-  const requestedScope = opts?.scope ?? null;
-  const canViewBilling = canViewCostBreakdown(user.role);
-  const isDevPricing = isDevRole(user.role) && requestedScope === "dev";
-  const pricingMode = isDevPricing
-    ? "dev_actual_and_margin"
-    : canViewBilling
-    ? "client_set_pricing"
-    : "hidden";
 
   const metrics = buildConversationAndMessageMetrics({
     convStatusRows: convStatusRes.rows as Record<string, unknown>[],
@@ -542,5 +557,14 @@ export async function loadAnalyticsPayload(
       lastClickedAt: lnk.last_clicked_at ? String(lnk.last_clicked_at) : null,
     })),
     assignmentLogs,
+    businessInsights,
   };
+  };
+
+  if (opts?.bypassCache) {
+    return compute();
+  }
+  return rememberWhatsAppCache(cacheKey, ["customer-history"], 20, compute, {
+    skipClone: true,
+  });
 }
