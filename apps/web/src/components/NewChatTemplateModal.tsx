@@ -20,6 +20,7 @@ import {
 import {
   selectClientInitiationTemplates,
   smartFillTemplateForCustomer,
+  sortTemplatesForPicker,
 } from "@/lib/template-variables";
 
 export type { NewChatModalMode } from "@/components/new-chat/NewChatModeFields";
@@ -59,10 +60,16 @@ export function NewChatTemplateModal({
   );
   const [buttonPayload, setButtonPayload] = useState("");
   const [tplSearch, setTplSearch] = useState("");
+  const orderedTemplates = useMemo(
+    () => sortTemplatesForPicker(templates),
+    [templates]
+  );
+  const starterTemplates = useMemo(
+    () => selectClientInitiationTemplates(orderedTemplates, 2),
+    [orderedTemplates]
+  );
   const defaultReadyTplId =
-    selectClientInitiationTemplates(templates, 1)[0]?.id ||
-    templates[0]?.id ||
-    "";
+    starterTemplates[0]?.id || orderedTemplates[0]?.id || "";
   const [selectedTplId, setSelectedTplId] = useState<string>(defaultReadyTplId);
   const [headerVals, setHeaderVals] = useState<Record<number, string>>({});
   const [bodyVals, setBodyVals] = useState<Record<number, string>>({});
@@ -76,10 +83,10 @@ export function NewChatTemplateModal({
     setName(initialName);
     setError("");
     setButtonPayload("");
-    if (defaultReadyTplId && !selectedTplId) {
+    if (defaultReadyTplId) {
       setSelectedTplId(defaultReadyTplId);
     }
-  }, [open, initialMode, initialPhone, initialName, defaultReadyTplId, selectedTplId]);
+  }, [open, initialMode, initialPhone, initialName, defaultReadyTplId]);
 
   const existingMatch = useMemo(() => {
     const targetKey = phoneMatchKey(phone);
@@ -91,21 +98,21 @@ export function NewChatTemplateModal({
 
   const filteredTemplates = useMemo(() => {
     const q = tplSearch.trim().toLowerCase();
-    if (!q) return templates;
-    return templates.filter(
+    if (!q) return orderedTemplates;
+    return orderedTemplates.filter(
       (t) =>
         t.name.toLowerCase().includes(q) ||
         t.bodyText.toLowerCase().includes(q) ||
         t.category.toLowerCase().includes(q)
     );
-  }, [templates, tplSearch]);
+  }, [orderedTemplates, tplSearch]);
 
   const activeTpl = useMemo(
     () =>
-      templates.find((t) => t.id === selectedTplId) ||
+      orderedTemplates.find((t) => t.id === selectedTplId) ||
       filteredTemplates[0] ||
       null,
-    [templates, filteredTemplates, selectedTplId]
+    [orderedTemplates, filteredTemplates, selectedTplId]
   );
 
   const headerVars = useMemo(
@@ -367,7 +374,8 @@ export function NewChatTemplateModal({
 
           {mode === "TEMPLATE" ? (
             <TemplateSelectorSection
-              templates={templates}
+              templates={orderedTemplates}
+              starterTemplates={starterTemplates}
               filteredTemplates={filteredTemplates}
               activeTpl={activeTpl}
               tplSearch={tplSearch}

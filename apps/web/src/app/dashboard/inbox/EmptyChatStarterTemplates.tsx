@@ -86,7 +86,7 @@ export function EmptyChatStarterTemplates({
           readyTemplates.length === 1 ? "grid-cols-1" : "grid-cols-1 md:grid-cols-2"
         }`}
       >
-        {readyTemplates.map((tpl) => {
+        {readyTemplates.map((tpl, idx) => {
           const filled = smartFillTemplateForCustomer(tpl, customer, {
             headerValues: headerEdits[tpl.id],
             bodyValues: bodyEdits[tpl.id],
@@ -105,7 +105,7 @@ export function EmptyChatStarterTemplates({
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-[#111b21] truncate">
-                    {tpl.name}
+                    {idx + 1}. {tpl.name}
                   </span>
                   <span className="px-2 py-0.5 rounded bg-white border border-neutral-200 text-[10px] font-medium text-[#54656f] shrink-0">
                     {tpl.category}
@@ -202,6 +202,10 @@ export function EmptyChatStarterTemplates({
                   setSendingTplId(tpl.id);
                   setErrorByTplId((prev) => ({ ...prev, [tpl.id]: "" }));
                   try {
+                    const existingHeaderMedia =
+                      tpl.headerMediaUrl && /^https?:\/\//i.test(tpl.headerMediaUrl)
+                        ? tpl.headerMediaUrl
+                        : undefined;
                     const res = await onSendTemplate({
                       template: tpl,
                       headerValues: filled.orderedHeaderValues.map((v) =>
@@ -210,6 +214,9 @@ export function EmptyChatStarterTemplates({
                       bodyValues: filled.orderedBodyValues.map((v) =>
                         cleanTemplateVarValue(v)
                       ),
+                      ...(existingHeaderMedia
+                        ? { headerMediaUrl: existingHeaderMedia }
+                        : {}),
                       renderedText: filled.renderedText,
                     });
                     if (!res.ok) {

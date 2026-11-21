@@ -24,6 +24,7 @@ export function fillTemplateText(
 
 export function TemplateSelectorSection({
   templates,
+  starterTemplates = [],
   filteredTemplates,
   activeTpl,
   tplSearch,
@@ -38,6 +39,7 @@ export function TemplateSelectorSection({
   renderedPreview,
 }: {
   templates: ApprovedTemplateOption[];
+  starterTemplates?: ApprovedTemplateOption[];
   filteredTemplates: ApprovedTemplateOption[];
   activeTpl: ApprovedTemplateOption | null;
   tplSearch: string;
@@ -53,6 +55,43 @@ export function TemplateSelectorSection({
 }) {
   return (
     <div className="space-y-3">
+      {starterTemplates.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-xs font-medium text-neutral-700">
+            Quick Start Templates
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {starterTemplates.map((tpl, idx) => {
+              const selected = activeTpl?.id === tpl.id;
+              return (
+                <button
+                  key={tpl.id}
+                  type="button"
+                  onClick={() => onSelectTemplate(tpl.id)}
+                  className={`text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer ${
+                    selected
+                      ? "border-[#00a884] bg-emerald-50/70"
+                      : "border-neutral-200 bg-white hover:border-[#00a884]/70 hover:bg-neutral-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-neutral-900 truncate">
+                      {tpl.name}
+                    </span>
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 shrink-0">
+                      {idx === 0 ? "#1 First" : `#${idx + 1}`}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-neutral-600 line-clamp-2 mt-1">
+                    {tpl.bodyText}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label className="text-xs font-medium text-neutral-700">

@@ -256,8 +256,23 @@ export function smartFillTemplateForCustomer(
   };
 }
 
+/** Canonical ordered names shown first when starting a client chat or picking a template. */
+export const CLIENT_INITIATION_TEMPLATE_ORDER = [
+  "intro_template",
+  "cc_contact_form_reply",
+] as const;
+
+export function getClientInitiationRank(name: string | null | undefined): number {
+  const norm = String(name || "").trim().toLowerCase();
+  const idx = CLIENT_INITIATION_TEMPLATE_ORDER.indexOf(
+    norm as (typeof CLIENT_INITIATION_TEMPLATE_ORDER)[number]
+  );
+  return idx >= 0 ? idx : 99;
+}
+
 /** True for internal staff-notification or OTP templates that should not initiate a client conversation. */
 export function isInternalStaffAlertTemplate(tpl: ApprovedTemplateOption): boolean {
+  if (getClientInitiationRank(tpl.name) < 99) return false;
   const lowerName = tpl.name.trim().toLowerCase();
   if (INTERNAL_STAFF_TEMPLATE_NAMES.has(lowerName)) return true;
   if (tpl.category === "AUTHENTICATION") return true;
@@ -274,6 +289,9 @@ export function isInternalStaffAlertTemplate(tpl: ApprovedTemplateOption): boole
 
 function scoreClientInitiationTemplate(tpl: ApprovedTemplateOption): number {
   const name = tpl.name.trim().toLowerCase();
+  if (name === "intro_template") return 1000;
+  if (name === "cc_contact_form_reply") return 900;
+
   const hay = `${name} ${tpl.headerText || ""} ${tpl.bodyText}`.toLowerCase();
   const varCount = varIndices(tpl.bodyText).length + varIndices(tpl.headerText).length;
   let score = 0;
@@ -299,6 +317,7 @@ function scoreClientInitiationTemplate(tpl: ApprovedTemplateOption): number {
 /**
  * Selects our ready client-facing WhatsApp templates (up to `limit`, default 2)
  * for starting a new conversation in an empty chat window.
+ * Prioritizes `intro_template` first, then `cc_contact_form_reply`.
  */
 export function selectClientInitiationTemplates(
   templates: ApprovedTemplateOption[],
@@ -309,4 +328,22 @@ export function selectClientInitiationTemplates(
   return [...pool]
     .sort((a, b) => scoreClientInitiationTemplate(b) - scoreClientInitiationTemplate(a))
     .slice(0, limit);
+}
+
+/** Orders full template pickers with `intro_template` first and `cc_contact_form_reply` second. */
+export function sortTemplatesForPicker(
+  templates: ApprovedTemplateOption[]
+): ApprovedTemplateOption[] {
+  const catRank = (c: string) =>
+    c === "UTILITY" ? 0 : c === "MARKETING" ? 1 : 2;
+  return [...templates].sort((a, b) => {
+    const prioDiff = getClientInitiationRank(a.name) - getClientInitiationRank(b.name);
+    if (prioDiff !== 0) return prioDiff;
+    const intA = isInternalStaffAlertTemplate(a) ? 1 : 0;
+    const intB = isInternalStaffAlertTemplate(b) ? 1 : 0;
+    if (intA !== intB) return intA - intB;
+    const rankDiff = catRank(a.category) - catRank(b.category);
+    if (rankDiff !== 0) return rankDiff;
+    return a.name.localeCompare(b.name);
+  });
 }

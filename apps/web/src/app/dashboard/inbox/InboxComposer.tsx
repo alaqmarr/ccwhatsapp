@@ -211,7 +211,7 @@ export function InboxComposer({
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-100/90 border border-amber-300 text-[11px] font-medium text-amber-950">
               <Lock className="w-3 h-3 shrink-0" />
               <span className="truncate">
-                Private team note (@ detected). Customer will not see this, and chat returns right after saving.
+                Private team note (@mention tagged). Customer will not see this, and chat returns right after saving.
               </span>
             </div>
           )}
@@ -248,7 +248,7 @@ export function InboxComposer({
                 isAtNote
                   ? "Private note for teammates or @ACRIO..."
                   : windowOpen
-                  ? "Type a message, or type @ for a private note..."
+                  ? "Type a message, or @teammate / @ACRIO for a private note..."
                   : "Type @teammate or @ACRIO for a private note..."
               }
               className={`w-full rounded-lg px-3 py-2 text-sm text-[#111b21] resize-none focus:outline-none border ${

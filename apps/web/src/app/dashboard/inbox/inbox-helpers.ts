@@ -55,26 +55,31 @@ export function buildClientMergedCorrection(noteText: string, refBody: string): 
   return null;
 }
 
-/** True when the text mentions @ACRIO or a teammate by name. */
+/** True when the text explicitly tags @ACRIO or a teammate by full name or first name. */
 export function hasTeamMention(text: string, people: { name: string }[]): boolean {
-  const names = ["ACRIO", ...people.map((p) => p.name)];
-  return names.some((name) => {
+  const names = new Set<string>(["ACRIO"]);
+  for (const p of people) {
+    const clean = String(p.name || "").trim();
+    if (!clean) continue;
+    names.add(clean);
+    const first = clean.split(/\s+/)[0] || "";
+    if (first.length >= 2) names.add(first);
+  }
+  return Array.from(names).some((name) => {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`(^|[\\s(])@${esc}(?![A-Za-z0-9_])`, "i").test(text);
   });
 }
 
 /**
- * True whenever the user writes an @mention or starts an @note trigger
- * (ignores email addresses such as name@domain.com because @ must follow start/space/paren).
+ * True ONLY when the user explicitly tags @ACRIO or an active teammate by name.
+ * Bare "@", prices like "@315/-", handles, or emails stay in WhatsApp Reply mode for the client.
  */
 export function shouldRouteTextAsInternalNote(
   text: string,
   people: { name: string }[]
 ): boolean {
-  return (
-    hasTeamMention(text, people) || /(^|[\s(])@[A-Za-z0-9._-]*/.test(text)
-  );
+  return hasTeamMention(text, people);
 }
 
 /** Makes @ACRIO and @Teammate names bold inside note text. */

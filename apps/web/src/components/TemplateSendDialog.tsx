@@ -5,8 +5,10 @@ import { AlertTriangle, ArrowLeft, Check, CheckCircle2, FileText, Loader2, Searc
 import type { ApprovedTemplateOption } from "@/lib/inbox-server-data";
 import {
   fillTemplateText,
+  getClientInitiationRank,
   guessTemplateVariableValue,
   isInternalStaffAlertTemplate,
+  sortTemplatesForPicker,
   varIndices,
   type TemplateCustomerContext,
 } from "@/lib/template-variables";
@@ -86,22 +88,13 @@ export function TemplateSendDialog({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const catRank = (c: string) =>
-      c === "UTILITY" ? 0 : c === "MARKETING" ? 1 : 2;
-    return templates
-      .filter((t) => {
+    return sortTemplatesForPicker(
+      templates.filter((t) => {
         if (cat !== "ALL" && t.category !== cat) return false;
         if (!q) return true;
         return `${t.name} ${t.bodyText} ${t.headerText || ""}`.toLowerCase().includes(q);
       })
-      .sort((a, b) => {
-        const intA = isInternalStaffAlertTemplate(a) ? 1 : 0;
-        const intB = isInternalStaffAlertTemplate(b) ? 1 : 0;
-        if (intA !== intB) return intA - intB;
-        const rankDiff = catRank(a.category) - catRank(b.category);
-        if (rankDiff !== 0) return rankDiff;
-        return a.name.localeCompare(b.name);
-      });
+    );
   }, [templates, query, cat]);
 
   const bodyIdx = useMemo(() => varIndices(tpl?.bodyText), [tpl]);
@@ -308,16 +301,26 @@ export function TemplateSendDialog({
                   {filtered.map((t) => {
                     const n = varIndices(t.bodyText).length + varIndices(t.headerText).length;
                     const isInternalAlert = isInternalStaffAlertTemplate(t);
+                    const initRank = getClientInitiationRank(t.name);
                     return (
                       <button
                         key={t.id}
                         type="button"
                         onClick={() => choose(t)}
-                        className="text-left rounded-xl border border-neutral-200 hover:border-[#00a884] hover:bg-emerald-50/40 p-3 space-y-1.5 cursor-pointer"
+                        className={`text-left rounded-xl border p-3 space-y-1.5 cursor-pointer ${
+                          initRank < 99
+                            ? "border-[#00a884]/60 bg-emerald-50/30 hover:border-[#00a884] hover:bg-emerald-50/60"
+                            : "border-neutral-200 hover:border-[#00a884] hover:bg-emerald-50/40"
+                        }`}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm font-semibold text-slate-900 truncate">{t.name}</span>
                           <div className="flex items-center gap-1 shrink-0">
+                            {initRank < 99 && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">
+                                {initRank === 0 ? "Start Chat #1" : "Start Chat #2"}
+                              </span>
+                            )}
                             {isInternalAlert && (
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-neutral-100 text-neutral-600">
                                 Team Alert

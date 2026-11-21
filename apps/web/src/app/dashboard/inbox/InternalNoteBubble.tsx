@@ -145,6 +145,7 @@ export const InternalNoteBubble = React.memo(function InternalNoteBubble({
         ) : (
           <InternalNoteMistakeGuard
             message={m}
+            staffList={staffList}
             quotedReply={quotedReply}
             isBusy={isBusy}
             onSendNoteInChat={onSendNoteInChat}

@@ -2,17 +2,23 @@
 
 import React from "react";
 import { Check, CornerUpLeft, Loader2 } from "lucide-react";
-import type { ChatMessage, QuotedMessageRef } from "@/lib/inbox-server-data";
-import { buildClientMergedCorrection } from "./inbox-helpers";
+import type {
+  ChatMessage,
+  QuotedMessageRef,
+  StaffOption,
+} from "@/lib/inbox-server-data";
+import { buildClientMergedCorrection, hasTeamMention } from "./inbox-helpers";
 
 export function InternalNoteMistakeGuard({
   message: m,
+  staffList = [],
   quotedReply,
   isBusy,
   onSendNoteInChat,
   onMoveNoteToReplyBox,
 }: {
   message: ChatMessage;
+  staffList?: StaffOption[];
   quotedReply: QuotedMessageRef | null;
   isBusy: boolean;
   onSendNoteInChat: (
@@ -36,7 +42,7 @@ export function InternalNoteMistakeGuard({
       : null;
 
   const bodyTrimmed = String(m.body || "").trim();
-  const hasAtMention = bodyTrimmed.includes("@");
+  const hasAtMention = hasTeamMention(bodyTrimmed, staffList);
   const clientDetectedMistake =
     !hasAtMention &&
     (Boolean(quotedReply) ||
