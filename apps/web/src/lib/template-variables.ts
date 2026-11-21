@@ -50,7 +50,7 @@ function looksLikePhone(s: string): boolean {
 }
 
 /** Strips line breaks, tabs, and long runs of spaces rejected by Meta template checks. */
-export function cleanTemplateVarValue(raw: string | null | undefined, maxLen = 200): string {
+export function cleanTemplateVarValue(raw: string | null | undefined, maxLen = 600): string {
   return String(raw || "")
     .replace(/[\r\n\t]+/g, " ")
     .replace(/ {4,}/g, " ")
@@ -108,6 +108,59 @@ function contextSnippetBeforeVar(text: string | null | undefined, index: number)
   return text.slice(start, pos).toLowerCase();
 }
 
+/** Resolves variable metadata cleanly and corrects stale synced schemas (e.g. cc_contact_form_reply {{2}} as Custom Message). */
+export function resolveTemplateVariableSpec(
+  tpl: Pick<ApprovedTemplateOption, "name" | "headerText" | "bodyText" | "variablesSchema">,
+  part: "HEADER" | "BODY",
+  index: number
+) {
+  if (part === "HEADER") {
+    return index === 1 && tpl.variablesSchema[0]?.sourceField === "customer.firstName"
+      ? tpl.variablesSchema[0]
+      : undefined;
+  }
+
+  const rawSpec = tpl.variablesSchema.find((v) => v.index === index);
+  const lowerName = tpl.name.trim().toLowerCase();
+  const snippetBefore = contextSnippetBeforeVar(tpl.bodyText, index);
+  const hasOrderWord = /\border\b/i.test(
+    `${tpl.name} ${tpl.headerText || ""} ${tpl.bodyText}`
+  );
+  const looksLikeReplySlot =
+    (lowerName === "cc_contact_form_reply" && index === 2) ||
+    /\b(?:reply|sent you|response|custom message)\b/i.test(snippetBefore);
+  const isStaleOrderSchema =
+    rawSpec?.sourceField === "order.latestNumber" ||
+    /^order\s*number$/i.test(String(rawSpec?.label || "").trim());
+
+  if (looksLikeReplySlot || (isStaleOrderSchema && !hasOrderWord)) {
+    return {
+      index,
+      label: "Custom Message",
+      sourceField: "custom",
+      sampleValue: "Type your reply message for the client",
+    };
+  }
+
+  return rawSpec;
+}
+
+export function normalizeTemplateVariablesSchema(
+  tpl: Pick<ApprovedTemplateOption, "name" | "headerText" | "bodyText" | "variablesSchema">
+) {
+  const bodyIndices = varIndices(tpl.bodyText);
+  if (bodyIndices.length === 0) return tpl.variablesSchema;
+  return bodyIndices.map(
+    (idx) =>
+      resolveTemplateVariableSpec(tpl, "BODY", idx) || {
+        index: idx,
+        label: idx === 1 ? "Customer First Name" : `Detail ${idx}`,
+        sourceField: "custom",
+        sampleValue: "",
+      }
+  );
+}
+
 export function guessTemplateVariableValue(
   tpl: ApprovedTemplateOption,
   part: "HEADER" | "BODY",
@@ -118,12 +171,7 @@ export function guessTemplateVariableValue(
   const full = extractCustomerFullName(ctx.name);
   const fallbackName = "Hey there";
 
-  const spec =
-    part === "BODY"
-      ? tpl.variablesSchema.find((v) => v.index === index)
-      : index === 1 && tpl.variablesSchema[0]?.sourceField === "customer.firstName"
-      ? tpl.variablesSchema[0]
-      : undefined;
+  const spec = resolveTemplateVariableSpec(tpl, part, index);
 
   const src = spec?.sourceField || "";
   const labelLower = String(spec?.label || "").toLowerCase();

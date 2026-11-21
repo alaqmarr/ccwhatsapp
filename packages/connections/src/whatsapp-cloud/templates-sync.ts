@@ -257,14 +257,25 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
         const bodyMatches = Array.from(bodyText.matchAll(/\{\{(\d+)\}\}/g)).map((m) =>
           Number(m[1])
         );
+        const exampleValues: string[] = Array.isArray(bodyComp?.example?.body_text?.[0])
+          ? bodyComp.example.body_text[0].map((x: unknown) => String(x || "").trim())
+          : [];
         const uniqueVarNums = Array.from(new Set(bodyMatches)).sort((a, b) => a - b);
+        const lowerName = name.toLowerCase();
         const varSpecs = uniqueVarNums.map((num) => {
+          const exampleVal = exampleValues[num - 1] || "";
+          const tokenPos = bodyText.indexOf(`{{${num}}}`);
+          const snippetBefore =
+            tokenPos >= 0
+              ? bodyText.slice(Math.max(0, tokenPos - 65), tokenPos).toLowerCase()
+              : "";
+
           if (item.category === "AUTHENTICATION" && num === 1) {
             return {
               index: 1,
               label: "Verification Code",
               sourceField: "custom" as const,
-              sampleValue: "482910",
+              sampleValue: exampleVal || "482910",
             };
           }
           if (num === 1) {
@@ -272,22 +283,57 @@ export async function syncTemplatesFromMetaCloud(): Promise<{
               index: 1,
               label: "Customer First Name",
               sourceField: "customer.firstName" as const,
-              sampleValue: "Rahul",
+              sampleValue: exampleVal || "Rahul",
             };
           }
-          if (num === 2) {
+
+          if (
+            lowerName === "cc_contact_form_reply" ||
+            /\b(?:reply|sent you|response|custom message)\b/i.test(snippetBefore)
+          ) {
             return {
-              index: 2,
+              index: num,
+              label: "Custom Message",
+              sourceField: "custom" as const,
+              sampleValue: exampleVal || "Type your reply message for the client",
+            };
+          }
+
+          if (
+            /\border(?:\s*(?:id|no|number|#))?\b/i.test(snippetBefore) ||
+            /\b(?:order_status|order_tracking|dispatch|order_update)\b/i.test(lowerName)
+          ) {
+            return {
+              index: num,
               label: "Order Number",
               sourceField: "order.latestNumber" as const,
-              sampleValue: "CC-2026-1089",
+              sampleValue: exampleVal || "CC-2026-1089",
             };
           }
+
+          if (/\b(?:company|business|organization|firm)\b/i.test(snippetBefore)) {
+            return {
+              index: num,
+              label: "Company Name",
+              sourceField: "customer.companyName" as const,
+              sampleValue: exampleVal || "Classic Concepts",
+            };
+          }
+
+          if (/\b(?:city|location|town)\b/i.test(snippetBefore)) {
+            return {
+              index: num,
+              label: "City",
+              sourceField: "customer.city" as const,
+              sampleValue: exampleVal || "Hyderabad",
+            };
+          }
+
           return {
             index: num,
-            label: `Detail ${num}`,
+            label: num === 2 ? "Custom Message" : `Detail ${num}`,
             sourceField: "custom" as const,
-            sampleValue: "ready for dispatch",
+            sampleValue: exampleVal || "Enter value",
           };
         });
         const variablesSchemaJson = JSON.stringify(varSpecs);

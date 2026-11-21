@@ -6,6 +6,7 @@ import type { TemplateSendPayload } from "@/components/TemplateSendDialog";
 import type { ApprovedTemplateOption } from "@/lib/inbox-server-data";
 import {
   cleanTemplateVarValue,
+  resolveTemplateVariableSpec,
   selectClientInitiationTemplates,
   smartFillTemplateForCustomer,
   varIndices,
@@ -140,9 +141,8 @@ export function EmptyChatStarterTemplates({
                     ))}
 
                     {bodyIdx.map((idx) => {
-                      const spec = tpl.variablesSchema.find(
-                        (v) => v.index === idx
-                      );
+                      const spec = resolveTemplateVariableSpec(tpl, "BODY", idx);
+                      const isCustomMsg = spec?.label === "Custom Message";
                       return (
                         <div key={`b_${tpl.id}_${idx}`} className="space-y-0.5">
                           <label className="block text-[11px] font-medium text-[#54656f]">
@@ -151,23 +151,44 @@ export function EmptyChatStarterTemplates({
                               ? ` (auto-filled from ${filled.sources[`b${idx}`]})`
                               : ""}
                           </label>
-                          <input
-                            type="text"
-                            value={filled.bodyValues[idx] || ""}
-                            onChange={(e) =>
-                              setBodyEdits((prev) => ({
-                                ...prev,
-                                [tpl.id]: {
-                                  ...(prev[tpl.id] || {}),
-                                  [idx]: e.target.value,
-                                },
-                              }))
-                            }
-                            placeholder={
-                              spec?.sampleValue || `Enter value for {{${idx}}}`
-                            }
-                            className="w-full rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-xs text-[#111b21]"
-                          />
+                          {isCustomMsg ? (
+                            <textarea
+                              rows={2}
+                              value={filled.bodyValues[idx] || ""}
+                              onChange={(e) => {
+                                const cleaned = e.target.value.replace(/[\r\n\t]+/g, " ");
+                                setBodyEdits((prev) => ({
+                                  ...prev,
+                                  [tpl.id]: {
+                                    ...(prev[tpl.id] || {}),
+                                    [idx]: cleaned,
+                                  },
+                                }));
+                              }}
+                              placeholder={
+                                spec?.sampleValue || "Type your reply message for the client"
+                              }
+                              className="w-full rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-xs text-[#111b21] resize-none"
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={filled.bodyValues[idx] || ""}
+                              onChange={(e) =>
+                                setBodyEdits((prev) => ({
+                                  ...prev,
+                                  [tpl.id]: {
+                                    ...(prev[tpl.id] || {}),
+                                    [idx]: e.target.value,
+                                  },
+                                }))
+                              }
+                              placeholder={
+                                spec?.sampleValue || `Enter value for {{${idx}}}`
+                              }
+                              className="w-full rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-xs text-[#111b21]"
+                            />
+                          )}
                         </div>
                       );
                     })}

@@ -6,6 +6,7 @@ import {
 import { canAssignToDev, type UserRole } from "@cc/rbac";
 import { ensureBackgroundWorkersRunning } from "@cc/workers";
 import { getConversationDetailServer } from "./detail";
+import { normalizeTemplateVariablesSchema } from "@/lib/template-variables";
 import {
   pickInitialConversationId,
   type InboxQuickFilter,
@@ -215,21 +216,30 @@ export async function getInitialInboxPayload(params: {
     } catch {
       variablesSchema = [];
     }
+    const bodyText = String(tpl.body_text || "");
+    const headerText = tpl.header_text ? String(tpl.header_text) : null;
+    const tplName = String(tpl.name);
+    const normalizedSchema = normalizeTemplateVariablesSchema({
+      name: tplName,
+      headerText,
+      bodyText,
+      variablesSchema,
+    });
     const rawHdrMedia = tpl.header_media_url ? String(tpl.header_media_url).trim() : "";
     const validHdrMediaUrl = /^https?:\/\//i.test(rawHdrMedia) ? rawHdrMedia : null;
     return {
       id: String(tpl.id),
-      name: String(tpl.name),
+      name: tplName,
       category,
       language: String(tpl.language || "en"),
-      headerText: tpl.header_text ? String(tpl.header_text) : null,
+      headerText,
       headerType: String(tpl.header_type || "NONE"),
       headerMediaUrl: validHdrMediaUrl,
-      bodyText: String(tpl.body_text || ""),
+      bodyText,
       footerText: tpl.footer_text ? String(tpl.footer_text) : null,
       ctaUrl: tpl.cta_url ? String(tpl.cta_url) : null,
       buttons,
-      variablesSchema,
+      variablesSchema: normalizedSchema,
     };
   });
 

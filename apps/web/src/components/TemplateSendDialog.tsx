@@ -8,6 +8,7 @@ import {
   getClientInitiationRank,
   guessTemplateVariableValue,
   isInternalStaffAlertTemplate,
+  resolveTemplateVariableSpec,
   sortTemplatesForPicker,
   varIndices,
   type TemplateCustomerContext,
@@ -33,12 +34,12 @@ const COST: Record<string, string> = {
 
 const fillText = fillTemplateText;
 
-function validateValue(v: string): string | null {
+function validateValue(v: string, maxLen = 200): string | null {
   const t = v.trim();
   if (!t) return "Required";
   if (/[\n\r\t]/.test(v)) return "No line breaks or tabs allowed";
   if (/ {4,}/.test(v)) return "No more than 3 spaces in a row";
-  if (t.length > 200) return "Keep it under 200 characters";
+  if (t.length > maxLen) return `Keep it under ${maxLen} characters`;
   return null;
 }
 
@@ -144,7 +145,9 @@ export function TemplateSendDialog({
   const allErrors = useMemo(() => {
     const errs: string[] = [];
     for (const i of bodyIdx) {
-      const e = validateValue(bodyVals[i] || "");
+      const spec = tpl ? resolveTemplateVariableSpec(tpl, "BODY", i) : undefined;
+      const limit = spec?.label === "Custom Message" ? 600 : 200;
+      const e = validateValue(bodyVals[i] || "", limit);
       if (e) errs.push(`Body {{${i}}}: ${e}`);
     }
     for (const i of headerIdx) {
@@ -378,9 +381,14 @@ export function TemplateSendDialog({
                   ...headerIdx.map((i) => ({ key: `h${i}`, idx: i, kind: "Header" as const })),
                   ...bodyIdx.map((i) => ({ key: `b${i}`, idx: i, kind: "Body" as const })),
                 ].map((f) => {
-                  const spec = tpl.variablesSchema.find((v) => v.index === f.idx);
+                  const spec = resolveTemplateVariableSpec(
+                    tpl,
+                    f.kind === "Header" ? "HEADER" : "BODY",
+                    f.idx
+                  );
+                  const isCustomMsg = f.kind === "Body" && spec?.label === "Custom Message";
                   const value = (f.kind === "Header" ? headerVals[f.idx] : bodyVals[f.idx]) || "";
-                  const err = validateValue(value);
+                  const err = validateValue(value, isCustomMsg ? 600 : 200);
                   const auto = autoSrc[f.key];
                   return (
                     <label key={f.key} className="block space-y-1">
@@ -398,23 +406,43 @@ export function TemplateSendDialog({
                           <span className="text-[10.5px] text-slate-500">Typed by you</span>
                         )}
                       </span>
-                      <input
-                        value={value}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          if (f.kind === "Header") setHeaderVals((p) => ({ ...p, [f.idx]: v }));
-                          else setBodyVals((p) => ({ ...p, [f.idx]: v }));
-                          setAutoSrc((p) => {
-                            const n = { ...p };
-                            delete n[f.key];
-                            return n;
-                          });
-                        }}
-                        placeholder={spec?.sampleValue ? `For example: ${spec.sampleValue}` : "Enter value"}
-                        className={`w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
-                          err ? "border-rose-300 focus:border-rose-500" : "border-neutral-300 focus:border-[#00a884]"
-                        }`}
-                      />
+                      {isCustomMsg ? (
+                        <textarea
+                          rows={2}
+                          value={value}
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/[\r\n\t]+/g, " ");
+                            setBodyVals((p) => ({ ...p, [f.idx]: v }));
+                            setAutoSrc((p) => {
+                              const n = { ...p };
+                              delete n[f.key];
+                              return n;
+                            });
+                          }}
+                          placeholder={spec?.sampleValue || "Type your reply message for the client"}
+                          className={`w-full rounded-lg border px-3 py-2 text-sm resize-none focus:outline-none ${
+                            err ? "border-rose-300 focus:border-rose-500" : "border-neutral-300 focus:border-[#00a884]"
+                          }`}
+                        />
+                      ) : (
+                        <input
+                          value={value}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (f.kind === "Header") setHeaderVals((p) => ({ ...p, [f.idx]: v }));
+                            else setBodyVals((p) => ({ ...p, [f.idx]: v }));
+                            setAutoSrc((p) => {
+                              const n = { ...p };
+                              delete n[f.key];
+                              return n;
+                            });
+                          }}
+                          placeholder={spec?.sampleValue ? `For example: ${spec.sampleValue}` : "Enter value"}
+                          className={`w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
+                            err ? "border-rose-300 focus:border-rose-500" : "border-neutral-300 focus:border-[#00a884]"
+                          }`}
+                        />
+                      )}
                     </label>
                   );
                 })}

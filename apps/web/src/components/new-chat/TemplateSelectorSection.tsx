@@ -3,6 +3,7 @@
 import React from "react";
 import { Search } from "lucide-react";
 import type { ApprovedTemplateOption } from "@/lib/inbox-server-data";
+import { resolveTemplateVariableSpec } from "@/lib/template-variables";
 
 export function varIndices(text: string | null | undefined): number[] {
   if (!text) return [];
@@ -147,22 +148,36 @@ export function TemplateSelectorSection({
             </div>
           ))}
           {bodyVars.map((idx) => {
-            const spec = activeTpl?.variablesSchema.find(
-              (v) => v.index === idx
-            );
+            const spec = activeTpl
+              ? resolveTemplateVariableSpec(activeTpl, "BODY", idx)
+              : undefined;
+            const isCustomMsg = spec?.label === "Custom Message";
             return (
               <div key={`b_${idx}`}>
                 <label className="block text-[11px] text-neutral-600 mb-0.5">
                   {spec?.label || `Variable {{${idx}}}`}
                 </label>
-                <input
-                  type="text"
-                  required
-                  value={bodyVals[idx] || ""}
-                  onChange={(e) => onBodyValChange(idx, e.target.value)}
-                  placeholder={spec?.sampleValue || `Value for {{${idx}}}`}
-                  className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs"
-                />
+                {isCustomMsg ? (
+                  <textarea
+                    rows={2}
+                    required
+                    value={bodyVals[idx] || ""}
+                    onChange={(e) =>
+                      onBodyValChange(idx, e.target.value.replace(/[\r\n\t]+/g, " "))
+                    }
+                    placeholder={spec?.sampleValue || "Type your reply message for the client"}
+                    className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs resize-none"
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    required
+                    value={bodyVals[idx] || ""}
+                    onChange={(e) => onBodyValChange(idx, e.target.value)}
+                    placeholder={spec?.sampleValue || `Value for {{${idx}}}`}
+                    className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs"
+                  />
+                )}
               </div>
             );
           })}
